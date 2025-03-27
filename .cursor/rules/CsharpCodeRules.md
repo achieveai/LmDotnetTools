@@ -1,0 +1,72 @@
+## Namespace Declaration
+Most code files should declare a single namespace using file-scoped namespace declarations rather than block headers. This newer syntax doesn't require braces and is preferred in modern C# coding.
+
+For example, use:
+```csharp
+namespace MyCompany.MyProduct;
+// code goes here
+```
+
+Instead of:
+```csharp
+namespace MyCompany.MyProduct 
+{
+    // code goes here
+}
+```
+
+## General C# Cursor/IDE Style Rules
+
+1. **Indentation and Formatting**:
+   Use 2 spaces for indentation (no tabs), with a column limit of 100 characters. No line break before opening braces, but do add a line break between closing brace and else statement.
+
+2. **Naming Conventions**:
+   
+   - PascalCase for classes, methods, enumerations, public fields, properties, and namespaces
+   - camelCase for local variables and parameters
+   - _camelCase for private, protected, internal fields and properties
+   - S_camelCase for static fields.
+
+3. **Using Directives**:
+   Place namespace using declarations at the top, before any namespaces. Order them alphabetically, with System imports always first.
+
+4. **Code Organization**:
+   When organizing code within a class, follow this order:
+   - Nested classes, enums, delegates and events
+   - Static, const and readonly fields
+   - Fields and properties
+   - Constructors and finalizers
+   - Methods
+
+5. **Braces and Spacing**:
+   Use braces even when optional. Add space after if/for/while statements and after commas. No space after opening parenthesis or before closing parenthesis.
+
+6. **Method Parameters**:
+   When writing method parameters, use camel casing.
+
+7. **Type Parameters**:
+   Give descriptive names to generic type parameters, unless a single letter name is completely self-explanatory.
+
+8. **Testing Requirement**:
+   Add a corresponding test case for every functionality change made to the codebase. Tests should be:
+   - Named clearly to describe what they're testing
+   - Independent of each other
+   - Focused on a single functionality
+   - Maintainable and easy to understand
+
+9. **Windsurf Settings**:
+   While not directly from the search results, most IDEs allow cursor customization in settings (appearance and behavior).
+
+10. **File Organization**:
+    - Place namespace declarations at the top of the file, before any other code.
+    - Group related code within classes and namespaces.
+    - Use meaningful file names that reflect their purpose.
+
+## Agent behavior
+
+1. When making changes Agent will always address lint errors, and address them.
+2. Before completing task (if making changes to code files), will always run dotnet build / test and validate everything is fine.
+   a. If things are failing, it will fix them.
+   b. If can't fix the issue, then analyze what may be fundamentally broken and address it (or consider a different approach).
+
+These rules will help you maintain consistent and readable C# code in your IDE with the namespace declared as a statement rather than a block header, while ensuring proper test coverage for all functionality changes.
