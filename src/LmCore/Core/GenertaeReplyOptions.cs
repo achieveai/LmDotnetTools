@@ -4,6 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+
 
 public record GenerateReplyOptions
 {
@@ -28,6 +30,8 @@ public record GenerateReplyOptions
     public string[]? StopSequence { get; init; }
 
     public FunctionContract[]? Functions { get; set; }
+
+    public ResponseFormat? ResponseFormat { get; set; }
 
     /// <summary>
     /// Creates a new GenerateReplyOptions by merging this instance with properties from another instance.

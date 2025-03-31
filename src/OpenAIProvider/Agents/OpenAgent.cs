@@ -1,11 +1,6 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
@@ -18,8 +13,8 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
     public OpenClientAgent(
         string name,
-        IOpenClient client
-    ) {
+        IOpenClient client)
+    {
         _client = client;
         Name = name;
     }
@@ -35,7 +30,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var request = CreateCompletionRequest(messages, options);
+        var request = ChatCompletionRequest.FromMessages(messages, options);
 
         var response = await _client.CreateChatCompletionsAsync(
             request,
@@ -77,8 +72,9 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var request = CreateCompletionRequest(messages, options);
-        request.Stream = true;
+        var request = CreateCompletionRequest(messages, options) with {
+            Stream = true
+        };
 
         // Create stream options to include usage information
         var jsonOptions = new JsonObject();
@@ -150,9 +146,11 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         }
     }
 
-    private ChatCompletionRequest CreateCompletionRequest(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
+    private static ChatCompletionRequest CreateCompletionRequest(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options)
     {
-        string modelName = "gpt-3.5-turbo";
+        string modelName = "Gpt-4o-mini";
         if (options?.ExtraProperties != null && 
             options.ExtraProperties.TryGetValue("model", out var modelObj) && 
             modelObj is string modelStr)
@@ -198,15 +196,17 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         if (functions != null && functions.Length > 0)
         {
             // Convert function contracts to OpenAI function definitions
-            request.Tools = functions.Select(tool => 
-                new FunctionTool(
-                    new FunctionDefinition(
-                        tool.Name,
-                        tool.Description ?? "",
-                        null // We can't directly use the schema here
+            request = request with {
+                Tools = functions.Select(tool => 
+                    new FunctionTool(
+                        new FunctionDefinition(
+                            tool.Name,
+                            tool.Description ?? "",
+                            null // We can't directly use the schema here
+                        )
                     )
-                )
-            ).ToList();
+                ).ToList()
+            };
         }
 
         // Add additional parameters from options
