@@ -198,9 +198,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         {
             // Convert function contracts to OpenAI function definitions
             request = request with {
-                Tools = functions.Select(tool => 
-                    new FunctionTool(tool.ToOpenFunctionDefinition())
-                ).ToList()
+                Tools = functions.Select(tool => new FunctionTool(tool.ToOpenFunctionDefinition())).ToList()
             };
         }
 

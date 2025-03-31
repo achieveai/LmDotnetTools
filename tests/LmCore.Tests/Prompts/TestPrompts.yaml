@@ -1,0 +1,54 @@
+SimplePrompt:
+  v1.0: "This is a simple prompt."
+  v1.1: "This is a newer simple prompt."
+
+TemplatePrompt:
+  v1.0: "Hello {{name}}, welcome to {{company}}."
+
+TemplatePromptWithList:
+  v1.0: |
+    Here are your items:
+    {{for item in items}}
+    - {{item}}
+    {{end}}
+
+TemplatePromptWithDictionary:
+  v1.0: |
+    User Profile:
+    {{for pair in profile}}
+    - {{pair.key}}: {{pair.value}}
+    {{end}}
+
+ChainPrompt:
+  v1.0:
+    - system: "You are a helpful assistant."
+    - user: "What can you tell me about programming?"
+    - assistant: "Programming is the process of creating a set of instructions for computers."
+
+TemplateChainPrompt:
+  v1.0:
+    - system: "You are a helpful assistant for {{company}}."
+    - user: "Hello, I'm {{name}}. What can you tell me about {{topic}}?"
+    - assistant: "Hello {{name}}, here's what I know about {{topic}}..."
+
+TemplateChainPromptWithList:
+  v1.0:
+    - system: "You are a helpful assistant."
+    - user: |
+        Here are my interests:
+        {{for interest in interests}}
+        - {{interest}}
+        {{end}}
+        Can you recommend something based on these?
+    - assistant: "Based on your interests in {{interests | array.join ', '}}, I recommend..."
+
+TemplateChainPromptWithDictionary:
+  v1.0:
+    - system: "You are a helpful assistant for {{company}}."
+    - user: |
+        Here is my profile:
+        {{for pair in profile}}
+        - {{pair.key}}: {{pair.value}}
+        {{end}}
+        What can you suggest for me?
+    - assistant: "Based on your profile, I suggest..."

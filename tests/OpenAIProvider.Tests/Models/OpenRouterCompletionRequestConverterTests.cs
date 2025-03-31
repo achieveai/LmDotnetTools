@@ -115,7 +115,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
 
             // Assert
             Assert.NotNull(result.ResponseFormat);
-            Assert.Equal("json_object", result.ResponseFormat.Type);
+            Assert.Equal("json_object", result.ResponseFormat.ResponseFormatType);
         }
 
         [Fact]

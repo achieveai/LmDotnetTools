@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Json.Schema;
 
@@ -61,10 +62,8 @@ public static class ChatCompletionRequestFactory
             maxTokens
         );
         
-        // Set additional options
-        ApplyStandardOptions(request, options);
-        
-        return request;
+        // Apply additional options and return the new instance
+        return ApplyStandardOptions(request, options);
     }
     
     /// <summary>
@@ -75,10 +74,8 @@ public static class ChatCompletionRequestFactory
         // First create a standard request
         var request = CreateStandardRequest(messages, options);
         
-        // Then apply OpenRouter specific parameters
-        ApplyOpenRouterOptions(request, options);
-        
-        return request;
+        // Then apply OpenRouter specific parameters and return the new instance
+        return ApplyOpenRouterOptions(request, options);
     }
     
     private static string GetModelName(GenerateReplyOptions? options)
@@ -175,58 +172,64 @@ public static class ChatCompletionRequestFactory
         }).ToList();
     }
     
-    private static void ApplyStandardOptions(ChatCompletionRequest request, GenerateReplyOptions? options)
+    private static ChatCompletionRequest ApplyStandardOptions(ChatCompletionRequest request, GenerateReplyOptions? options)
     {
-        if (options == null) return;
+        if (options == null) return request;
         
-        // Apply standard parameters
-        if (options.TopP.HasValue)
-            request.TopP = options.TopP.Value;
+        // Prepare properties for the new request instance
+        float? topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
+        string[]? stop = options.StopSequence ?? request.Stop;
+        bool? stream = options.Stream.HasValue ? options.Stream.Value : request.Stream;
+        bool? safePrompt = options.SafePrompt.HasValue ? options.SafePrompt.Value : request.SafePrompt;
+        int? randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
         
-        if (options.StopSequence != null)
-            request.Stop = options.StopSequence;
+        // Prepare tools if functions are provided
+        List<FunctionTool>? tools = request.Tools;
         
-        if (options.Stream.HasValue)
-            request.Stream = options.Stream.Value;
-        
-        if (options.SafePrompt.HasValue)
-            request.SafePrompt = options.SafePrompt.Value;
-        
-        if (options.RandomSeed.HasValue)
-            request.RandomSeed = options.RandomSeed.Value;
-        
-        // Convert function definitions to tools
         if (options.Functions != null && options.Functions.Length > 0)
         {
-            request.Tools = new List<FunctionTool>();
-            
-            foreach (var f in options.Functions)
-            {
-                // Create new function definition with the available properties
-                var def = new FunctionDefinition(
-                    f.Name,
-                    f.Description ?? string.Empty,
-                    f.Parameters as JsonSchema
-                );
-                
-                request.Tools.Add(new FunctionTool(def));
-            }
+            tools = options.Functions.Select(f => new FunctionTool(f.ToOpenFunctionDefinition())).ToList();
         }
         
         // Check for response format
+        ResponseFormat? responseFormat = request.ResponseFormat;
+        
         if (options.ExtraProperties != null && 
             options.ExtraProperties.TryGetValue("response_format", out var formatObj) && 
             formatObj is Dictionary<string, object?> formatDict &&
             formatDict.TryGetValue("type", out var typeObj) &&
             typeObj is string typeStr)
         {
-            request.ResponseFormat = new ResponseFormat { Type = typeStr };
+            responseFormat = new ResponseFormat { ResponseFormatType = typeStr };
         }
+        
+        // Create a new instance with all the updated properties
+        return new ChatCompletionRequest(
+            request.Model,
+            request.Messages,
+            request.Temperature,
+            request.MaxTokens,
+            request.AdditionalParameters)
+        {
+            TopP = topP,
+            Stop = stop,
+            Stream = stream ?? false,
+            SafePrompt = safePrompt,
+            RandomSeed = randomSeed,
+            Tools = tools,
+            ResponseFormat = responseFormat,
+            N = request.N,
+            PresencePenalty = request.PresencePenalty,
+            FrequencyPenalty = request.FrequencyPenalty,
+            LogitBias = request.LogitBias,
+            User = request.User,
+            ToolChoice = request.ToolChoice,
+        };
     }
     
-    private static void ApplyOpenRouterOptions(ChatCompletionRequest request, GenerateReplyOptions? options)
+    private static ChatCompletionRequest ApplyOpenRouterOptions(ChatCompletionRequest request, GenerateReplyOptions? options)
     {
-        if (options?.ExtraProperties == null) return;
+        if (options?.ExtraProperties == null) return request;
         
         // Create a new JsonObject for the additional parameters
         var jsonObject = new JsonObject();
@@ -276,31 +279,27 @@ public static class ChatCompletionRequestFactory
             }
         }
         
-        // Create a new request with the updated additional parameters
-        var newRequest = new ChatCompletionRequest(
+        // Create a new request with all the properties from the original plus our changes
+        return new ChatCompletionRequest(
             request.Model,
             request.Messages,
             request.Temperature,
             request.MaxTokens,
-            jsonObject
-        );
-        
-        // Copy over other properties from the original request
-        newRequest.Stream = request.Stream;
-        newRequest.N = request.N;
-        newRequest.Stop = request.Stop;
-        newRequest.PresencePenalty = request.PresencePenalty;
-        newRequest.FrequencyPenalty = request.FrequencyPenalty;
-        newRequest.LogitBias = request.LogitBias;
-        newRequest.User = request.User;
-        newRequest.TopP = request.TopP;
-        newRequest.SafePrompt = request.SafePrompt;
-        newRequest.RandomSeed = request.RandomSeed;
-        newRequest.Tools = request.Tools;
-        newRequest.ToolChoice = request.ToolChoice;
-        newRequest.ResponseFormat = request.ResponseFormat;
-        
-        // Replace the original request with the new one
-        request = newRequest;
+            jsonObject)
+        {
+            Stream = request.Stream,
+            N = request.N,
+            Stop = request.Stop,
+            PresencePenalty = request.PresencePenalty,
+            FrequencyPenalty = request.FrequencyPenalty,
+            LogitBias = request.LogitBias,
+            User = request.User,
+            TopP = request.TopP,
+            SafePrompt = request.SafePrompt,
+            RandomSeed = request.RandomSeed,
+            Tools = request.Tools,
+            ToolChoice = request.ToolChoice,
+            ResponseFormat = request.ResponseFormat
+        };
     }
-} 
+}

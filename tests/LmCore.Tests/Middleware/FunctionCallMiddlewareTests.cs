@@ -1,17 +1,7 @@
-using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
-using Moq;
-using Xunit;
-using System.Runtime.CompilerServices;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -329,7 +319,7 @@ public class FunctionCallMiddlewareTests
   
   #region Mock Function Implementations
   
-  private string GetWeatherAsync(string argsJson)
+  private static string GetWeatherAsync(string argsJson)
   {
     try
     {
@@ -358,7 +348,7 @@ public class FunctionCallMiddlewareTests
     }
   }
   
-  private string GetWeatherHistoryAsync(string argsJson)
+  private static string GetWeatherHistoryAsync(string argsJson)
   {
     try
     {

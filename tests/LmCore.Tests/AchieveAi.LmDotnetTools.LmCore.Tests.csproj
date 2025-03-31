@@ -26,4 +26,8 @@
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Prompts\TestPrompts.yaml" />
+  </ItemGroup>
+
 </Project>

@@ -49,7 +49,7 @@ public class OpenClient : IOpenClient, IDisposable
         ChatCompletionRequest chatCompletionRequest,
         CancellationToken cancellationToken = default)
     {
-        chatCompletionRequest.Stream = false;
+        chatCompletionRequest = chatCompletionRequest with { Stream = false };
         var response = await HttpRequestRaw(
             _httpClient,
             HttpMethod.Post,
@@ -69,7 +69,7 @@ public class OpenClient : IOpenClient, IDisposable
         ChatCompletionRequest chatCompletionRequest,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        chatCompletionRequest.Stream = true;
+        chatCompletionRequest = chatCompletionRequest with { Stream = true };
         var response = await HttpRequestRaw(
             _httpClient,
             HttpMethod.Post,
