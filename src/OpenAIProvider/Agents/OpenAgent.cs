@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
@@ -198,13 +199,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             // Convert function contracts to OpenAI function definitions
             request = request with {
                 Tools = functions.Select(tool => 
-                    new FunctionTool(
-                        new FunctionDefinition(
-                            tool.Name,
-                            tool.Description ?? "",
-                            null // We can't directly use the schema here
-                        )
-                    )
+                    new FunctionTool(tool.ToOpenFunctionDefinition())
                 ).ToList()
             };
         }
