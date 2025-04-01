@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
+using System.Text.Json.Nodes;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -245,7 +246,7 @@ public class OptionsOverridingMiddlewareTests
     // Set up original options with ExtraProperties
     var originalOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object?>
+      ExtraProperties = new Dictionary<string, object>
       {
         ["originalProp1"] = "value1",
         ["originalProp2"] = 123,
@@ -257,11 +258,11 @@ public class OptionsOverridingMiddlewareTests
     // and override an existing property
     var overridingOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object?>
+      ExtraProperties = new Dictionary<string, object>
       {
         ["newProp1"] = "newValue1",
         ["propToOverride"] = "overriddenValue",
-        ["nullProp"] = null // This will remain null in the merged result
+        ["strProp"] = "strProp" // This will remain null in the merged result
       }
     };
     
@@ -318,7 +319,7 @@ public class OptionsOverridingMiddlewareTests
     // Set up original options with nested ExtraProperties
     var originalOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object?>
+      ExtraProperties = new Dictionary<string, object>
       {
         ["simple"] = "value",
         ["nested"] = new Dictionary<string, object?>
@@ -333,7 +334,7 @@ public class OptionsOverridingMiddlewareTests
     // Set up overriding options with nested dictionary
     var overridingOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object?>
+      ExtraProperties = new Dictionary<string, object>
       {
         ["nested"] = new Dictionary<string, object?>
         {

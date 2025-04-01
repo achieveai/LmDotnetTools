@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -16,13 +17,14 @@ public record ChatCompletionRequest
         IEnumerable<ChatMessage> messages,
         double temperature = 0.7,
         int maxTokens = 4096,
-        JsonObject? additionalParameters = null)
+        IDictionary<string, object>? additionalParameters = null)
     {
         Model = model;
         Messages = messages.ToList();
         Temperature = temperature;
         MaxTokens = maxTokens;
-        AdditionalParameters = additionalParameters;
+        AdditionalParameters = additionalParameters?.ToImmutableDictionary()
+            ?? ImmutableDictionary<string, object>.Empty;
     }
 
     [JsonPropertyName("model")]
@@ -74,7 +76,7 @@ public record ChatCompletionRequest
     public ResponseFormat? ResponseFormat { get; init; }
 
     [JsonExtensionData]
-    public JsonObject? AdditionalParameters { get; }
+    public ImmutableDictionary<string, object>? AdditionalParameters { get; }
 
     [JsonPropertyName("messages")]
     public List<ChatMessage> Messages { get; private set; }
@@ -180,7 +182,7 @@ public record ChatCompletionRequest
         }
     }
 
-    private static JsonObject? CreateAdditionalParameters(GenerateReplyOptions options)
+    private static Dictionary<string, object>? CreateAdditionalParameters(GenerateReplyOptions options)
     {
         // Only create JsonObject if there are actual parameters to add
         bool hasProviders = options.Providers != null;
@@ -209,6 +211,8 @@ public record ChatCompletionRequest
             }
         }
     
-        return parameters;
+        return parameters
+            .Select(kvp => new KeyValuePair<string, object>(kvp.Key, kvp.Value!))
+            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
     }
 } 

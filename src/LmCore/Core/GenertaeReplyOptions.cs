@@ -21,7 +21,7 @@ public record GenerateReplyOptions
 
     public int? RandomSeed { get; init; }
 
-    public Dictionary<string, object?> ExtraProperties { get; init; } = new Dictionary<string, object?>();
+    public Dictionary<string, object> ExtraProperties { get; init; } = new Dictionary<string, object>();
 
     public float? Temperature { get; init; }
 

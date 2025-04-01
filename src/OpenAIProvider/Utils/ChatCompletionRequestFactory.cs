@@ -232,18 +232,17 @@ public static class ChatCompletionRequestFactory
         if (options?.ExtraProperties == null) return request;
         
         // Create a new JsonObject for the additional parameters
-        var jsonObject = new JsonObject();
+        var jsonObject = new Dictionary<string, object>();
         
         // Add the existing AdditionalParameters if any
         if (request.AdditionalParameters != null)
         {
-            var existingJson = request.AdditionalParameters.ToJsonString();
-            var deserializedObject = JsonSerializer.Deserialize<JsonObject>(existingJson);
+            var deserializedObject = request.AdditionalParameters.ToDictionary();
             if (deserializedObject != null)
             {
                 foreach (var prop in deserializedObject)
                 {
-                    jsonObject[prop.Key] = prop.Value;
+                    jsonObject[prop.Key] = prop.Value!;
                 }
             }
         }
@@ -255,7 +254,7 @@ public static class ChatCompletionRequestFactory
             {
                 case "transforms":
                     if (kvp.Value is string[] transforms)
-                        jsonObject["transforms"] = JsonValue.Create(transforms);
+                        jsonObject["transforms"] = transforms;
                     break;
                 case "route":
                     if (kvp.Value is string route)
@@ -263,7 +262,7 @@ public static class ChatCompletionRequestFactory
                     break;
                 case "models":
                     if (kvp.Value is string[] modelPreferences)
-                        jsonObject["models"] = JsonValue.Create(modelPreferences);
+                        jsonObject["models"] = modelPreferences;
                     break;
                 case "http_headers":
                     if (kvp.Value is Dictionary<string, string> headers)

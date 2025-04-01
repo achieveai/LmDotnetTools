@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -65,7 +66,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             }
         };
 
-        return openMessage.ToMessage().AsEnvelope();
+        return openMessage.ToMessage();
     }
 
     public virtual async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -81,12 +82,12 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         var jsonOptions = new JsonObject();
         jsonOptions["include_usage"] = true;
         
-        JsonObject? updatedParams = null;
+        Dictionary<string, object>? updatedParams = null;
         
         if (request.AdditionalParameters != null)
         {
             // Add stream_options to existing AdditionalParameters
-            updatedParams = JsonSerializer.Deserialize<JsonObject>(request.AdditionalParameters.ToJsonString());
+            updatedParams = request.AdditionalParameters.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
             if (updatedParams != null)
             {
                 updatedParams["stream_options"] = jsonOptions;
@@ -95,7 +96,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         else
         {
             // Create a new params object with stream_options
-            updatedParams = new JsonObject();
+            updatedParams = new Dictionary<string, object>();
             updatedParams["stream_options"] = jsonOptions;
         }
         
@@ -205,20 +206,20 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         // Add additional parameters from options
         if (options?.ExtraProperties != null && options.ExtraProperties.Count > 0)
         {
-            var additionalParams = new Dictionary<string, object?>();
+            var additionalParams = new Dictionary<string, object>();
             foreach (var prop in options.ExtraProperties)
             {
                 // Skip properties we've already handled
                 if (prop.Key != "model")
                 {
-                    additionalParams[prop.Key] = prop.Value;
+                    additionalParams[prop.Key] = prop.Value!;
                 }
             }
             
             if (additionalParams.Count > 0)
             {
                 // Create a new request with additional parameters
-                var jsonParams = JsonSerializer.SerializeToNode(additionalParams)?.AsObject();
+                var jsonParams = additionalParams.ToDictionary();
                 if (jsonParams != null)
                 {
                     request = new ChatCompletionRequest(

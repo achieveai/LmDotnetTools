@@ -24,7 +24,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             { 
                 ModelId = "anthropic/claude-3-opus",
                 Providers = new[] { "openrouter" },
-                ExtraProperties = new Dictionary<string, object?>
+                ExtraProperties = new Dictionary<string, object>
                 {
                     ["transforms"] = new[] { "trim" }
                 }
@@ -71,7 +71,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             
             var options = new GenerateReplyOptions 
             { 
-                ExtraProperties = new Dictionary<string, object?>
+                ExtraProperties = new Dictionary<string, object>
                 {
                     ["models"] = new[] 
                     { 
@@ -101,7 +101,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var options = new GenerateReplyOptions 
             { 
                 ModelId = "openai/gpt-4",
-                ExtraProperties = new Dictionary<string, object?>
+                ExtraProperties = new Dictionary<string, object>
                 {
                     ["response_format"] = new Dictionary<string, object?>
                     {
@@ -130,7 +130,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var options = new GenerateReplyOptions 
             { 
                 ModelId = "anthropic/claude-3-haiku",
-                ExtraProperties = new Dictionary<string, object?>
+                ExtraProperties = new Dictionary<string, object>
                 {
                     ["http_headers"] = new Dictionary<string, string>
                     {

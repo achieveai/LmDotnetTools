@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -20,7 +22,13 @@ public class DatabasedClientWrapper : IOpenClient
   private static readonly JsonSerializerOptions _jsonOptions = new()
   {
     WriteIndented = true,
-    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    Converters = {
+        new UnionJsonConverter<int, string>(),
+        new UnionJsonConverter<string, BinaryData, ToolCallResult>(),
+        new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>(),
+        new UnionJsonConverter<TextContent, ImageContent>(),
+    }
   };
 
   /// <summary>
