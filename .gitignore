@@ -2,3 +2,4 @@
 **/obj/
 **/TestResults/
 .env
+.env.test
