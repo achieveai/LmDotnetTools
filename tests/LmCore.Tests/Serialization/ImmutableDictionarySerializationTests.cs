@@ -22,7 +22,16 @@ public class ImmutableDictionarySerializationTests
     _output = output;
   }
 
+  private class TestClassWithExtensionDataConverter : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
+  {
+    protected override TestClassWithExtensionData CreateInstance()
+    {
+      return new TestClassWithExtensionData();
+    }
+  }
+
   // Test class with JsonExtensionData for testing inline extra properties
+  [JsonConverter(typeof(TestClassWithExtensionDataConverter))]
   private record TestClassWithExtensionData
   {
     [JsonPropertyName("name")]

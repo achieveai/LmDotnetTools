@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using AchieveAi.LmDotnetTools.TestUtils;
 using dotenv.net;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Mocks;
@@ -57,7 +58,14 @@ public static class OpenClientFactory
     string? testDirectory = Environment.GetEnvironmentVariable("TEST_DIRECTORY");
     if (string.IsNullOrEmpty(testDirectory))
     {
-      testDirectory = Path.Combine(Directory.GetCurrentDirectory(), "TestData");
+      string workspaceRoot = TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+      testDirectory = Path.Combine(workspaceRoot, "tests", "OpenAIProvider.Tests", "TestData");
+    }
+    else if (!Path.IsPathRooted(testDirectory))
+    {
+      // If testDirectory is a relative path, make it relative to the workspace root
+      string workspaceRoot = TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+      testDirectory = Path.Combine(workspaceRoot, testDirectory);
     }
     
     // Ensure the test directory exists
@@ -95,9 +103,13 @@ public static class OpenClientFactory
     }
     else
     {
+      // Try to find the .env.test file in the workspace root
+      string workspaceRoot = TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+      string workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
+      
       DotEnv.Load(options: new DotEnvOptions(
-        ignoreExceptions: false,
-        probeForEnv: true
+        envFilePaths: new[] { workspaceEnvPath },
+        ignoreExceptions: false
       ));
     }
     

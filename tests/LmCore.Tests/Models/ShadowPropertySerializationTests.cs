@@ -127,13 +127,13 @@ public class ShadowPropertySerializationTests
     using var doc = JsonDocument.Parse(json);
     
     // Check standard properties
-    Assert.True(doc.RootElement.TryGetProperty("ModelId", out var modelId));
+    Assert.True(doc.RootElement.TryGetProperty("model", out var modelId));
     Assert.Equal("gpt-4", modelId.GetString());
     
-    Assert.True(doc.RootElement.TryGetProperty("Temperature", out var temperature));
+    Assert.True(doc.RootElement.TryGetProperty("temperature", out var temperature));
     Assert.Equal(0.7f, temperature.GetSingle());
     
-    Assert.True(doc.RootElement.TryGetProperty("MaxToken", out var maxToken));
+    Assert.True(doc.RootElement.TryGetProperty("max_tokens", out var maxToken));
     Assert.Equal(1000, maxToken.GetInt32());
     
     // Check extra properties are serialized inline
@@ -149,9 +149,9 @@ public class ShadowPropertySerializationTests
   {
     // Arrange
     var json = @"{
-      ""ModelId"": ""gpt-4"",
-      ""Temperature"": 0.7,
-      ""MaxToken"": 1000,
+      ""model"": ""gpt-4"",
+      ""temperature"": 0.7,
+      ""max_tokens"": 1000,
       ""function_call"": ""auto"",
       ""top_k"": 50
     }";

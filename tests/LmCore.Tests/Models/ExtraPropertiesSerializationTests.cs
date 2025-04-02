@@ -76,11 +76,10 @@ public class ExtraPropertiesSerializationTests
     Assert.Equal(2, deserialized.ExtraProperties.Count);
     
     // Verify that the extra properties can be accessed through GetExtraProperty
-    var estimatedCost = deserialized.ExtraProperties["estimated_cost"];
-    Assert.Equal(0.05, (estimatedCost as JsonElement?)?.GetDouble());
+    Assert.Equal(0.05, deserialized.ExtraProperties["estimated_cost"]);
     
     var cached = deserialized.ExtraProperties["cached"];
-    Assert.True((cached as JsonElement?)?.GetBoolean());
+    Assert.True(deserialized.ExtraProperties["cached"] is bool cachedBool && cachedBool);
   }
 
   [Fact]
@@ -110,13 +109,13 @@ public class ExtraPropertiesSerializationTests
     using var doc = JsonDocument.Parse(json);
     
     // Assert - verify that the standard properties are present
-    Assert.True(doc.RootElement.TryGetProperty("ModelId", out var modelIdElement));
+    Assert.True(doc.RootElement.TryGetProperty("model", out var modelIdElement));
     Assert.Equal("gpt-4", modelIdElement.GetString());
     
-    Assert.True(doc.RootElement.TryGetProperty("Temperature", out var temperatureElement));
+    Assert.True(doc.RootElement.TryGetProperty("temperature", out var temperatureElement));
     Assert.Equal(0.7f, temperatureElement.GetSingle());
     
-    Assert.True(doc.RootElement.TryGetProperty("MaxToken", out var maxTokenElement));
+    Assert.True(doc.RootElement.TryGetProperty("max_tokens", out var maxTokenElement));
     Assert.Equal(1000, maxTokenElement.GetInt32());
     
     // Verify that the extra properties are serialized directly in the parent object

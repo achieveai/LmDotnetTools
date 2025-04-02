@@ -29,6 +29,6 @@ public class ImmutableDictionaryJsonConverterFactory : JsonConverterFactory
         var valueType = typeToConvert.GetGenericArguments()[1];
 
         var converterType = typeof(ImmutableDictionaryJsonConverter<,>).MakeGenericType(keyType, valueType);
-        return (JsonConverter)Activator.CreateInstance(converterType, options)!;
+        return (JsonConverter)Activator.CreateInstance(converterType)!;
     }
 }

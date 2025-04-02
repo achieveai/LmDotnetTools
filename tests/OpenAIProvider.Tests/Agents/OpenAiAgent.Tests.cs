@@ -4,6 +4,7 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Mocks;
+using AchieveAi.LmDotnetTools.TestUtils;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -16,14 +17,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class OpenAiAgentTests
 {
-  const string envTestPath = "d:/source/repos/LmDotNetTools/.env.test";
+  private static string EnvTestPath => Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
 
   [Fact]
   public async Task SimpleConversation_ShouldReturnResponse()
   {
     // Use the factory to create a DatabasedClientWrapper with the .env.test file
     string testCaseName = "SimpleConversation_ShouldReturnResponse";
-    IOpenClient client = OpenClientFactory.CreateDatabasedClient(testCaseName, envTestPath);
+    IOpenClient client = OpenClientFactory.CreateDatabasedClient(testCaseName, EnvTestPath);
     
     var agent = new OpenClientAgent("TestAgent", client);
     
@@ -79,7 +80,7 @@ public class OpenAiAgentTests
     var request = ChatCompletionRequest.FromMessages(messages, options);
     IOpenClient client = OpenClientFactory.CreateDatabasedClient(
       "ChatCompletionRequest_SerializesToCorrectJson",
-      envTestPath);
+      EnvTestPath);
     var agent = new OpenClientAgent("TestAgent", client);
     var response = await agent.GenerateReplyAsync(
       messages,
@@ -132,7 +133,7 @@ public class OpenAiAgentTests
     // Act
     IOpenClient client = OpenClientFactory.CreateDatabasedClient(
       "FunctionToolCall_ShouldReturnToolMessage",
-      envTestPath);
+      EnvTestPath);
     var agent = new OpenClientAgent("TestAgent", client);
     var response = await agent.GenerateReplyAsync(
       messages,

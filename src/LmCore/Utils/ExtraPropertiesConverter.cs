@@ -104,11 +104,13 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
     ImmutableDictionary<string, object?> value, 
     JsonSerializerOptions options)
   {
+    writer.WriteStartObject();
     foreach (var kvp in value)
     {
       writer.WritePropertyName(kvp.Key);
       WriteValue(writer, kvp.Value, options);
     }
+    writer.WriteEndObject();
   }
   
   private static void WriteValue(Utf8JsonWriter writer, object? value, JsonSerializerOptions options)

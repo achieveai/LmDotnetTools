@@ -4,29 +4,41 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
 /// Options for generating a reply.
 /// </summary>
+[JsonConverter(typeof(GenerateReplyOptionsJsonConverter))]
 public record GenerateReplyOptions
 {
+    [JsonPropertyName("model")]
     public string ModelId { get; init; } = string.Empty;
 
+    [JsonPropertyName("temperature")]
     public float? Temperature { get; init; }
 
+    [JsonPropertyName("top_p")]
     public float? TopP { get; init; }
 
+    [JsonPropertyName("seed")]
     public int? RandomSeed { get; init; }
 
+    [JsonPropertyName("max_tokens")]
     public int? MaxToken { get; init; }
 
+    [JsonPropertyName("stop")]
     public string[]? StopSequence { get; init; }
 
+    [JsonPropertyName("tools")]
     public FunctionContract[]? Functions { get; set; }
 
+    [JsonPropertyName("response_format")]
     public ResponseFormat? ResponseFormat { get; set; }
 
+    [JsonIgnore]
     public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
 
     public GenerateReplyOptions Merge(GenerateReplyOptions? other)
