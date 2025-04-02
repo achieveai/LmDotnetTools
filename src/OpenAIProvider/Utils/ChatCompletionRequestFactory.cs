@@ -101,7 +101,9 @@ public static class ChatCompletionRequestFactory
     private static bool IsOpenRouterRequest(GenerateReplyOptions? options)
     {
         // Check if Providers includes "openrouter"
-        if (options?.Providers != null && options.Providers.Contains("openrouter"))
+        if (options?.ExtraProperties.TryGetValue("providers", out var providers) == true
+            && providers is IEnumerable<string> providerArray
+            && providerArray.Any())
         {
             return true;
         }
@@ -179,8 +181,10 @@ public static class ChatCompletionRequestFactory
         // Prepare properties for the new request instance
         float? topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
         string[]? stop = options.StopSequence ?? request.Stop;
-        bool? stream = options.Stream.HasValue ? options.Stream.Value : request.Stream;
-        bool? safePrompt = options.SafePrompt.HasValue ? options.SafePrompt.Value : request.SafePrompt;
+        bool? stream = options.ExtraProperties.TryGetValue("stream", out var streamObj)
+            && streamObj is bool streamBool ? streamBool : request.Stream;
+        bool? safePrompt = options.ExtraProperties.TryGetValue("safe_prompt", out var safePromptObj)
+            && safePromptObj is bool safePromptBool ? safePromptBool : request.SafePrompt;
         int? randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
         
         // Prepare tools if functions are provided

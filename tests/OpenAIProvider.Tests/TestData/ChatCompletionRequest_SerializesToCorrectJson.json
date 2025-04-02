@@ -1,0 +1,54 @@
+{
+  "SerializedRequest": {
+    "model": "gpt-4o-mini",
+    "temperature": 0.699999988079071,
+    "max_tokens": 1000,
+    "n": 1,
+    "stop": [],
+    "response_format": {
+      "type": "json_object"
+    },
+    "messages": [
+      {
+        "role": "system",
+        "index": 0,
+        "content": "You will always respond in JSON as `{\"response\": \"...\"}`"
+      },
+      {
+        "role": "user",
+        "index": 0,
+        "content": "Hello Bot!!!"
+      }
+    ]
+  },
+  "SerializedResponse": {
+    "id": "gen-1743531820-r8e7u0OwKjnK9KDrtCSI",
+    "object": "chat.completion",
+    "created": 1743531820,
+    "model": "openai/gpt-4o-mini",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "index": 0,
+          "content": "{\"response\": \"Hello! How can I assist you today?\"}"
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 28,
+      "completion_tokens": 15,
+      "total_tokens": 43,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    }
+  },
+  "SerializedResponseFragments": [],
+  "IsStreaming": false
+}

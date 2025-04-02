@@ -2,28 +2,22 @@ namespace AchieveAi.LmDotnetTools.LmCore.Agents;
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
-
+/// <summary>
+/// Options for generating a reply.
+/// </summary>
 public record GenerateReplyOptions
 {
     public string ModelId { get; init; } = string.Empty;
 
+    public float? Temperature { get; init; }
+
     public float? TopP { get; init; }
 
-    public string[]? Providers { get; init; }
-
-    public bool? Stream { get; init; }
-
-    public bool? SafePrompt { get; init; }
-
     public int? RandomSeed { get; init; }
-
-    public Dictionary<string, object> ExtraProperties { get; init; } = new Dictionary<string, object>();
-
-    public float? Temperature { get; init; }
 
     public int? MaxToken { get; init; }
 
@@ -33,13 +27,8 @@ public record GenerateReplyOptions
 
     public ResponseFormat? ResponseFormat { get; set; }
 
-    /// <summary>
-    /// Creates a new GenerateReplyOptions by merging this instance with properties from another instance.
-    /// If a property is set in the other instance, it overrides the value in this instance.
-    /// For ExtraProperties, the dictionaries are merged recursively.
-    /// </summary>
-    /// <param name="other">The other options to merge with.</param>
-    /// <returns>A new GenerateReplyOptions with merged properties.</returns>
+    public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
+
     public GenerateReplyOptions Merge(GenerateReplyOptions? other)
     {
         if (other == null)
@@ -48,20 +37,20 @@ public record GenerateReplyOptions
         }
 
         // Deep merge the extra properties
-        var mergedExtraProps = new Dictionary<string, object?>();
+        var mergedExtraProps = ImmutableDictionary<string, object?>.Empty;
         
         // First copy the original properties
         foreach (var prop in ExtraProperties)
         {
-            mergedExtraProps[prop.Key] = CloneExtraPropertyValue(prop.Value);
+            mergedExtraProps = mergedExtraProps.SetItem(prop.Key, CloneExtraPropertyValue(prop.Value));
         }
         
         // Then merge with the other properties
         foreach (var extraProperty in other.ExtraProperties)
         {
-            mergedExtraProps[extraProperty.Key] = MergeExtraPropertyValues(
+            mergedExtraProps = mergedExtraProps.SetItem(extraProperty.Key, MergeExtraPropertyValues(
                 ExtraProperties.TryGetValue(extraProperty.Key, out var value) ? value : null,
-                extraProperty.Value);
+                extraProperty.Value));
         }
 
         // Merge main properties, using other's values if they're set
@@ -69,9 +58,6 @@ public record GenerateReplyOptions
         {
             ModelId = !string.IsNullOrEmpty(other.ModelId) ? other.ModelId : ModelId,
             TopP = other.TopP ?? TopP,
-            Providers = other.Providers ?? Providers,
-            Stream = other.Stream ?? Stream,
-            SafePrompt = other.SafePrompt ?? SafePrompt,
             RandomSeed = other.RandomSeed ?? RandomSeed,
             Temperature = other.Temperature ?? Temperature,
             MaxToken = other.MaxToken ?? MaxToken,

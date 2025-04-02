@@ -33,7 +33,10 @@ public sealed record ResponseFormat
     /// <param name="schemaObject">JSON Schema object definition</param>
     /// <param name="strictValidation">Whether to enforce strict schema validation</param>
     /// <returns>A ResponseFormat configured for schema validation</returns>
-    public static ResponseFormat CreateWithSchema(string schemaName, JsonSchemaObject schemaObject, bool strictValidation = true)
+    public static ResponseFormat CreateWithSchema(
+        string schemaName,
+        JsonSchemaObject schemaObject,
+        bool strictValidation = true)
     {
         return new ResponseFormat
         {

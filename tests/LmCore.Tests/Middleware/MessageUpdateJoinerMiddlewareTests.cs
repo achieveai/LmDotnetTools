@@ -36,7 +36,7 @@ public class MessageUpdateJoinerMiddlewareTests
     // Create context with empty messages
     var context = new MiddlewareContext(
       new List<IMessage>(),
-      new GenerateReplyOptions { Stream = false });
+      new GenerateReplyOptions());
     
     // Act
     var result = await middleware.InvokeAsync(context, mockAgent.Object, cancellationToken);

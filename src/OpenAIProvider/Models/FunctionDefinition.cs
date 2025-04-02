@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Models;
+namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 /// <summary>
 /// Represents a function definition for tool calling

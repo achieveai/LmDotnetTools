@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.Serialization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -23,8 +24,12 @@ public record ChatCompletionRequest
         Messages = messages.ToList();
         Temperature = temperature;
         MaxTokens = maxTokens;
-        AdditionalParameters = additionalParameters?.ToImmutableDictionary()
-            ?? ImmutableDictionary<string, object>.Empty;
+        
+        // Initialize the additional parameters
+        if (additionalParameters != null)
+        {
+            AdditionalParameters = additionalParameters.ToImmutableDictionary();
+        }
     }
 
     [JsonPropertyName("model")]
@@ -75,8 +80,15 @@ public record ChatCompletionRequest
     [JsonPropertyName("response_format")]
     public ResponseFormat? ResponseFormat { get; init; }
 
+    // Public property that exposes as ImmutableDictionary with caching
     [JsonExtensionData]
-    public ImmutableDictionary<string, object>? AdditionalParameters { get; }
+    private Dictionary<string, object> AdditionalParametersInternal {
+        get { return AdditionalParameters.ToDictionary(); } 
+        init { AdditionalParameters = value.ToImmutableDictionary(); }
+    }
+
+    [JsonIgnore]
+    public ImmutableDictionary<string, object> AdditionalParameters  { get; init; } = ImmutableDictionary<string, object>.Empty;
 
     [JsonPropertyName("messages")]
     public List<ChatMessage> Messages { get; private set; }
@@ -97,8 +109,11 @@ public record ChatCompletionRequest
                 CreateAdditionalParameters(options)
             ) {
                 TopP = options.TopP,
-                Stream = options.Stream ?? false,
-                SafePrompt = options.SafePrompt,
+                Stream = options.ExtraProperties
+                    .TryGetValue("stream", out var stream) && stream is bool ? (bool)stream : false,
+                SafePrompt = options.ExtraProperties
+                    .TryGetValue("safe_prompt", out var safePrompt) && safePrompt is bool
+                    ? (bool)safePrompt : null,
                 RandomSeed = options.RandomSeed,
                 ResponseFormat = options.ResponseFormat,
                 Temperature = options.Temperature ?? 0.0,
@@ -185,8 +200,10 @@ public record ChatCompletionRequest
     private static Dictionary<string, object>? CreateAdditionalParameters(GenerateReplyOptions options)
     {
         // Only create JsonObject if there are actual parameters to add
-        bool hasProviders = options.Providers != null;
         bool hasExtraProperties = options.ExtraProperties.Count > 0;
+        bool hasProviders = options.ExtraProperties.TryGetValue("providers", out var providers)
+            && providers is IEnumerable<string> providerList
+            && providerList.Any();
     
         if (!hasProviders && !hasExtraProperties)
         {
@@ -198,7 +215,7 @@ public record ChatCompletionRequest
         if (hasProviders)
         {
             parameters["provider"] = new JsonObject {
-                ["order"] = new JsonArray(options.Providers!.Select(p => JsonValue.Create(p)).ToArray()),
+                ["order"] = new JsonArray(((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p)).ToArray()),
                 ["allow_fallbacks"] = false
             };
         }

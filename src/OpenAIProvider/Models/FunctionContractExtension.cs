@@ -1,8 +1,7 @@
-using System;
-using System.Collections.Generic;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Models;
+namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 public static class FunctionContractExtension
 {

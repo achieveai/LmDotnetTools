@@ -1,37 +1,32 @@
+using System.Collections.Immutable;
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Core;
 
-public class Usage
+public record Usage
 {
-    [JsonPropertyName("prompt_tokens")]
-    public int PromptTokens { get; set; }
+    public int PromptTokens { get; init; }
 
-    //
-    // Summary:
-    //     Gets or Sets CompletionTokens
-    [JsonPropertyName("completion_tokens")]
-    public int CompletionTokens { get; set; }
+    public int CompletionTokens { get; init; }
 
-    //
-    // Summary:
-    //     Gets or Sets TotalTokens
-    [JsonPropertyName("total_tokens")]
-    public int TotalTokens { get; set; }
+    public int TotalTokens { get; init; }
 
-    [JsonPropertyName("completion_tokens_details")]
-    public CompletionTokenDetails? CompletionTokenDetails { get; set; }
+    public CompletionTokenDetails? CompletionTokenDetails { get; init; }
 
-    [JsonExtensionData]
-    public Dictionary<string, object?>? ExtraProperties { get; set; }
+    public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
 
-    public void SetExtraProperty<T>(string key, T value)
+    public Usage SetExtraProperty<T>(string key, T value)
     {
+        var rv = this;
         if (ExtraProperties == null)
         {
-            ExtraProperties = new Dictionary<string, object?>();
+            rv = this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty };
         }
 
-        ExtraProperties[key] = value;
+        rv = rv with { ExtraProperties = rv.ExtraProperties!.Add(key, value) };
+        return rv;
     }
 
     public T? GetExtraProperty<T>(string key)
@@ -41,10 +36,37 @@ public class Usage
             return default;
         }
 
-        if (ExtraProperties.TryGetValue(key, out var value)
-            && value is T)
+        if (ExtraProperties.TryGetValue(key, out var value) && value is not null)
         {
-            return (T)value;
+            if (value is JsonElement jsonElement)
+            {
+                if (jsonElement.ValueKind == JsonValueKind.Null)
+                {
+                    return default;
+                }
+
+                if (typeof(T) == typeof(string))
+                {
+                    return (T)(object)jsonElement.GetString()!;
+                }
+
+                if (typeof(T) == typeof(int))
+                {
+                    return (T)(object)jsonElement.GetInt32();
+                }
+
+                if (typeof(T) == typeof(double))
+                {
+                    return (T)(object)jsonElement.GetDouble();
+                }
+
+                if (typeof(T) == typeof(bool))
+                {
+                    return (T)(object)jsonElement.GetBoolean();
+                }
+            }
+
+            return (T)value!;
         }
 
         return default;

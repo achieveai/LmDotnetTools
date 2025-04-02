@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -11,4 +12,6 @@ public interface IMessage
     public JsonObject? Metadata { get; }
     
     public string? GenerationId { get; }
+
+    public ImmutableDictionary<string, object?>? GetMetaTools() => null;
 }

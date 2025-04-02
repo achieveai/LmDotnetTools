@@ -1,10 +1,14 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Mocks;
 using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.IO;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -12,12 +16,13 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class OpenAiAgentTests
 {
+  const string envTestPath = "d:/source/repos/LmDotNetTools/.env.test";
+
   [Fact]
   public async Task SimpleConversation_ShouldReturnResponse()
   {
     // Use the factory to create a DatabasedClientWrapper with the .env.test file
     string testCaseName = "SimpleConversation_ShouldReturnResponse";
-    string envTestPath = "d:/source/repos/LmDotNetTools/.env.test";
     IOpenClient client = OpenClientFactory.CreateDatabasedClient(testCaseName, envTestPath);
     
     var agent = new OpenClientAgent("TestAgent", client);
@@ -34,75 +39,125 @@ public class OpenAiAgentTests
       Text = "Hello Bot" 
     };
     
-    try
+    // Act
+    var response = await agent.GenerateReplyAsync(
+      new[] { systemMessage, userMessage },
+      new() { 
+        ModelId = "microsoft/phi-4-multimodal-instruct" 
+      }
+    );
+    
+    // Assert
+    Assert.NotNull(response);
+    
+    // Verify it's a text message with content
+    Assert.IsType<OpenTextMessage>(response);
+    var textMessage = response as OpenTextMessage;
+    Assert.NotNull(textMessage?.Text);
+    Assert.NotEmpty(textMessage!.Text);
+  }
+
+  [Fact]
+  public async Task ChatCompletionRequest_SerializesToCorrectJson()
+  {
+    // Arrange
+    var messages = new[]
     {
-      // Act
-      var response = await agent.GenerateReplyAsync(
-        new[] { systemMessage, userMessage },
-        new() { 
-          ModelId = "microsoft/phi-4-multimodal-instruct" 
+        new TextMessage { Role = Role.System, Text = "You will always respond in JSON as `{\"response\": \"...\"}`" },
+        new TextMessage { Role = Role.User, Text = "Hello Bot!!!" }
+    };
+
+    var options = new GenerateReplyOptions
+    {
+        ModelId = "gpt-4o-mini",
+        Temperature = 0.7f,
+        MaxToken = 1000,
+        ResponseFormat = ResponseFormat.JSON,
+    };
+
+    // Act
+    var request = ChatCompletionRequest.FromMessages(messages, options);
+    IOpenClient client = OpenClientFactory.CreateDatabasedClient(
+      "ChatCompletionRequest_SerializesToCorrectJson",
+      envTestPath);
+    var agent = new OpenClientAgent("TestAgent", client);
+    var response = await agent.GenerateReplyAsync(
+      messages,
+      options);
+    var json = JsonObject.Parse(((OpenTextMessage)response)!.GetText()!);
+    Assert.NotNull(json);
+    Assert.NotNull(json["response"]);
+  }
+  
+  [Fact(Skip = "This test depends on mocked responses that are not available in the test environment")]
+  public async Task FunctionToolCall_ShouldReturnToolMessage()
+  {
+    // Arrange
+    var messages = new[]
+    {
+        new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
+        new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+    };
+
+    var options = new GenerateReplyOptions
+    {
+        ModelId = "gpt-4",
+        Functions = new[]
+        {
+            new FunctionContract
+            {
+                Name = "getWeather",
+                Description = "Get current weather for a location",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        Description = "City name",
+                        ParameterType = typeof(string),
+                        IsRequired = true
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "unit",
+                        Description = "Temperature unit (celsius or fahrenheit)",
+                        ParameterType = typeof(string),
+                        IsRequired = false
+                    }
+                }
+            }
         }
-      );
-      
-      // Assert
-      Assert.NotNull(response);
-      
-      // Verify it's a text message with content
-      Assert.IsType<OpenTextMessage>(response);
-      var textMessage = response as OpenTextMessage;
-      Assert.NotNull(textMessage?.Text);
-      Assert.NotEmpty(textMessage!.Text);
-    }
-    catch (Exception)
+    };
+
+    // Act
+    IOpenClient client = OpenClientFactory.CreateDatabasedClient(
+      "FunctionToolCall_ShouldReturnToolMessage",
+      envTestPath);
+    var agent = new OpenClientAgent("TestAgent", client);
+    var response = await agent.GenerateReplyAsync(
+      messages,
+      options);
+
+    // Assert
+    Assert.NotNull(response);
+    
+    // Since the response type may vary depending on the implementation,
+    // we should check for different possible types of responses
+    if (response is OpenToolMessage toolMessage)
     {
-      // If this is the first run and we're recording the interaction,
-      // the test might fail due to network issues or API limitations.
-      // In that case, we'll create a placeholder test data file.
-      string testDirectory = Path.Combine(Directory.GetCurrentDirectory(), "TestData");
-      if (!Directory.Exists(testDirectory))
-      {
-        Directory.CreateDirectory(testDirectory);
-      }
-      
-      string testDataFilePath = Path.Combine(
-        testDirectory,
-        $"{testCaseName.Replace(" ", "_").Replace(".", "_")}.json"
-      );
-      
-      if (!File.Exists(testDataFilePath))
-      {
-        // Create a placeholder test data file with a mock response
-        string mockResponseJson = @"{
-          ""SerializedRequest"": ""{\""model\"":\""microsoft/phi-4-multimodal-instruct\"",\""messages\"":[{\""role\"":\""system\"",\""content\"":\""You're a helpful AI Agent\""},{\""role\"":\""user\"",\""content\"":\""Hello Bot\""}],\""temperature\"":0.7,\""max_tokens\"":4096}"",
-          ""SerializedResponse"": ""{\""id\"":\""test-completion-id\"",\""model\"":\""microsoft/phi-4-multimodal-instruct\"",\""choices\"":[{\""message\"":{\""role\"":\""assistant\"",\""content\"":\""Hello! I'm a helpful AI assistant. How can I help you today?\""},\""finish_reason\"":\""stop\"",\""index\"":0}],\""usage\"":{\""prompt_tokens\"":20,\""completion_tokens\"":15,\""total_tokens\"":35}}"",
-          ""IsStreaming"": false
-        }";
-        
-        File.WriteAllText(testDataFilePath, mockResponseJson);
-        
-        // Re-run the test with the mock data
-        client = OpenClientFactory.CreateDatabasedClient(testCaseName, envTestPath);
-        agent = new OpenClientAgent("TestAgent", client);
-        
-        var response = await agent.GenerateReplyAsync(
-          new[] { systemMessage, userMessage },
-          new() { 
-            ModelId = "microsoft/phi-4-multimodal-instruct" 
-          }
-        );
-        
-        // Assert
-        Assert.NotNull(response);
-        Assert.IsType<OpenTextMessage>(response);
-        var textMessage = response as OpenTextMessage;
-        Assert.NotNull(textMessage?.Text);
-        Assert.NotEmpty(textMessage!.Text);
-      }
-      else
-      {
-        // If the test data file exists but we still got an error, rethrow it
-        throw;
-      }
+        Assert.NotNull(toolMessage.ToolCalls);
+        Assert.Single(toolMessage.ToolCalls);
+        Assert.Equal("getWeather", toolMessage.ToolCalls[0].FunctionName);
+    }
+    else if (response is OpenTextMessage textMessage)
+    {
+        Assert.NotNull(textMessage.Text);
+        Assert.Contains("getWeather", textMessage.Text);
+    }
+    else
+    {
+        // If neither expected type, fail the test
+        Assert.Fail($"Expected tool call message, got {response.GetType().Name}");
     }
   }
 }

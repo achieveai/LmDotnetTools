@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -23,11 +24,10 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var options = new GenerateReplyOptions 
             { 
                 ModelId = "anthropic/claude-3-opus",
-                Providers = new[] { "openrouter" },
-                ExtraProperties = new Dictionary<string, object>
+                ExtraProperties = new Dictionary<string, object?>
                 {
                     ["transforms"] = new[] { "trim" }
-                }
+                }.ToImmutableDictionary()
             };
 
             // Act - use the create method to test detection logic
@@ -71,14 +71,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             
             var options = new GenerateReplyOptions 
             { 
-                ExtraProperties = new Dictionary<string, object>
+                ExtraProperties = new Dictionary<string, object?>
                 {
                     ["models"] = new[] 
                     { 
                         "openai/gpt-4-turbo", 
                         "anthropic/claude-3-opus" 
                     }
-                }
+                }.ToImmutableDictionary()
             };
 
             // Act
@@ -101,13 +101,13 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var options = new GenerateReplyOptions 
             { 
                 ModelId = "openai/gpt-4",
-                ExtraProperties = new Dictionary<string, object>
+                ExtraProperties = new Dictionary<string, object?>
                 {
                     ["response_format"] = new Dictionary<string, object?>
                     {
                         ["type"] = "json_object"
                     }
-                }
+                }.ToImmutableDictionary()
             };
 
             // Act
@@ -130,14 +130,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var options = new GenerateReplyOptions 
             { 
                 ModelId = "anthropic/claude-3-haiku",
-                ExtraProperties = new Dictionary<string, object>
+                ExtraProperties = new Dictionary<string, object?>
                 {
                     ["http_headers"] = new Dictionary<string, string>
                     {
                         ["Anthropic-Version"] = "2023-06-01",
                         ["X-Custom-Header"] = "value"
                     }
-                }
+                }.ToImmutableDictionary()
             };
 
             // Act

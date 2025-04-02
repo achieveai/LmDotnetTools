@@ -1,0 +1,85 @@
+{
+  "SerializedRequest": {
+    "model": "gpt-4",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "n": 1,
+    "stop": [],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "getWeather",
+          "description": "Get current weather for a location",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "string",
+                "description": "City name"
+              },
+              "unit": {
+                "type": "string",
+                "description": "Temperature unit (celsius or fahrenheit)"
+              }
+            },
+            "required": [
+              "location"
+            ],
+            "additionalProperties": true,
+            "description": "Parameters for getWeather"
+          }
+        }
+      }
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "index": 0,
+        "content": "You're a helpful AI Agent that can use tools"
+      },
+      {
+        "role": "user",
+        "index": 0,
+        "content": "What's the weather in San Francisco?"
+      }
+    ]
+  },
+  "SerializedResponse": {
+    "id": "gen-1743549067-7JsbJd6MmYBRA7bXDJke",
+    "object": "chat.completion",
+    "created": 1743549067,
+    "model": "openai/gpt-4",
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "index": 0,
+          "tool_calls": [
+            {
+              "id": "call_fYtgBAs8B61IrQXkxkJUaPDP",
+              "type": "function",
+              "function": {
+                "name": "getWeather",
+                "arguments": "{\n  \"location\": \"San Francisco\"\n}"
+              }
+            }
+          ],
+          "content": ""
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 83,
+      "completion_tokens": 17,
+      "total_tokens": 100,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      }
+    }
+  },
+  "SerializedResponseFragments": [],
+  "IsStreaming": false
+}

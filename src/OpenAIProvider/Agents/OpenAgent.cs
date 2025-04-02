@@ -49,7 +49,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 _ => null
             };
 
-            response.Usage.ExtraProperties["estimated_cost"] = totalCost;
+            response.Usage = response.Usage.SetExtraProperty("estimated_cost", totalCost);
         }
 
         var openMessage = new OpenMessage {
@@ -66,7 +66,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             }
         };
 
-        return openMessage.ToMessage();
+        return openMessage.ToOpenMessage();
     }
 
     public virtual async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(

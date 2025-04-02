@@ -1,8 +1,6 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Models;
+namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 /// <summary>
 /// Represents a function tool for LLM tool calling

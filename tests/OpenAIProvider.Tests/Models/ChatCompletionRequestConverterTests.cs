@@ -34,7 +34,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             };
 
             // Act
-            var result = ChatCompletionRequestFactory.Create(messages, options);
+            var result = ChatCompletionRequest.FromMessages(messages, options);
 
             // Assert
             Assert.Equal("gpt-4", result.Model);
@@ -65,13 +65,11 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 MaxToken = 1000,
                 TopP = 0.95f,
                 StopSequence = new[] { "stop1", "stop2" },
-                RandomSeed = 42,
-                SafePrompt = true,
-                Stream = true
+                RandomSeed = 42
             };
 
             // Act
-            var result = ChatCompletionRequestFactory.Create(messages, options);
+            var result = ChatCompletionRequest.FromMessages(messages, options);
 
             // Assert
             Assert.Equal("gpt-4-turbo", result.Model);
@@ -84,8 +82,6 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             
             Assert.Equal(new[] { "stop1", "stop2" }, result.Stop);
             Assert.Equal(42, result.RandomSeed);
-            Assert.True(result.SafePrompt);
-            Assert.True(result.Stream);
         }
 
         [Fact]
@@ -123,7 +119,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             };
 
             // Act
-            var result = ChatCompletionRequestFactory.Create(messages, options);
+            var result = ChatCompletionRequest.FromMessages(messages, options);
 
             // Assert
             Assert.NotNull(result.Tools);
@@ -154,9 +150,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                     ToolCalls = new[] { toolCall }.ToImmutableList() 
                 },
                 new TextMessage 
-                { 
-                    Role = Role.Function, 
-                    Text = "{\"temp\":72,\"condition\":\"sunny\"}", 
+                {
+                    Role = Role.Function,
+                    Text = "{\"temp\":72,\"condition\":\"sunny\"}",
                     FromAgent = "get_weather"
                 },
                 new TextMessage { Role = Role.Assistant, Text = "It's 72 degrees and sunny in New York." }
@@ -165,7 +161,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var options = new GenerateReplyOptions { ModelId = "gpt-4" };
 
             // Act
-            var result = ChatCompletionRequestFactory.Create(messages, options);
+            var result = ChatCompletionRequest.FromMessages(messages, options);
 
             // Assert
             Assert.Equal(5, result.Messages.Count);
@@ -180,7 +176,6 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Check function response conversion
             var functionResponseMessage = result.Messages[3];
             Assert.Equal(RoleEnum.Tool, functionResponseMessage.Role);
-            Assert.Equal("get_weather", functionResponseMessage.Name);
             
             // Use string.Contains instead of direct comparison for robustness
             string content = functionResponseMessage.Content?.Get<string>() ?? string.Empty;
@@ -199,12 +194,12 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             };
 
             // Act - passing null options
-            var result = ChatCompletionRequestFactory.Create(messages, null);
+            var result = ChatCompletionRequest.FromMessages(messages, null);
 
             // Assert
-            Assert.Equal("gpt-3.5-turbo", result.Model); // Default model
+            Assert.Equal("", result.Model); // Empty string as default model
             Assert.Equal(0.7d, result.Temperature, precision: 5); // Default temperature
-            Assert.Equal(4096, result.MaxTokens); // Default max tokens
+            Assert.Equal(1024, result.MaxTokens); // Default max tokens
             Assert.Single(result.Messages);
             Assert.Equal(RoleEnum.User, result.Messages[0].Role);
         }

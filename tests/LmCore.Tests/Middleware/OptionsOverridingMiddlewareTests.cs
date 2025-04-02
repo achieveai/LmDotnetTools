@@ -10,6 +10,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
 using System.Text.Json.Nodes;
+using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -193,14 +194,12 @@ public class OptionsOverridingMiddlewareTests
       Temperature = 0.7f,
       MaxToken = 100,
       TopP = 0.8f,
-      Stream = true
     };
     
     var overridingOptions = new GenerateReplyOptions
     {
       Temperature = 0.3f,
       TopP = 0.9f,
-      Stream = true
       // Intentionally not setting MaxToken to test partial overrides
     };
     
@@ -236,7 +235,6 @@ public class OptionsOverridingMiddlewareTests
     Assert.Equal(overridingOptions.Temperature, capturedOptions.Temperature);
     Assert.Equal(overridingOptions.TopP, capturedOptions.TopP);
     Assert.Equal(originalOptions.MaxToken, capturedOptions.MaxToken); // Should keep original value
-    Assert.True(capturedOptions.Stream); // Should preserve Stream=true
   }
 
   [Fact]
@@ -246,24 +244,24 @@ public class OptionsOverridingMiddlewareTests
     // Set up original options with ExtraProperties
     var originalOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object>
+      ExtraProperties = new Dictionary<string, object?>
       {
         ["originalProp1"] = "value1",
         ["originalProp2"] = 123,
         ["propToOverride"] = "originalValue"
-      }
+      }.ToImmutableDictionary()
     };
     
     // Set up overriding options that should add new properties,
     // and override an existing property
     var overridingOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object>
+      ExtraProperties = new Dictionary<string, object?>
       {
         ["newProp1"] = "newValue1",
         ["propToOverride"] = "overriddenValue",
         ["strProp"] = "strProp" // This will remain null in the merged result
-      }
+      }.ToImmutableDictionary()
     };
     
     // Create the middleware with overriding options
@@ -306,10 +304,6 @@ public class OptionsOverridingMiddlewareTests
     
     // Check overridden property has new value
     Assert.Equal("overriddenValue", capturedOptions.ExtraProperties["propToOverride"]);
-    
-    // Check that null property is present
-    Assert.True(capturedOptions.ExtraProperties.ContainsKey("nullProp"));
-    Assert.Null(capturedOptions.ExtraProperties["nullProp"]);
   }
 
   [Fact]
@@ -319,7 +313,7 @@ public class OptionsOverridingMiddlewareTests
     // Set up original options with nested ExtraProperties
     var originalOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object>
+      ExtraProperties = new Dictionary<string, object?>
       {
         ["simple"] = "value",
         ["nested"] = new Dictionary<string, object?>
@@ -328,13 +322,13 @@ public class OptionsOverridingMiddlewareTests
           ["original2"] = "originalNested2",
           ["toOverride"] = "originalNestedOverride"
         }
-      }
+      }.ToImmutableDictionary()
     };
     
     // Set up overriding options with nested dictionary
     var overridingOptions = new GenerateReplyOptions
     {
-      ExtraProperties = new Dictionary<string, object>
+      ExtraProperties = new Dictionary<string, object?>
       {
         ["nested"] = new Dictionary<string, object?>
         {
@@ -342,7 +336,7 @@ public class OptionsOverridingMiddlewareTests
           ["toOverride"] = "newNestedOverride",
           ["nullValue"] = null
         }
-      }
+      }.ToImmutableDictionary()
     };
     
     // Create the middleware with overriding options

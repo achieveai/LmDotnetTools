@@ -16,6 +16,47 @@ public record OpenMessage
     public IMessage ToMessage()
     {
         var baseMessage = ChatMessage.ToMessage(ChatMessage.Name);
+        
+        // Create metadata with OpenMessage-specific properties
+        var metadata = baseMessage.Metadata?.DeepClone() as JsonObject ?? new JsonObject();
+        metadata["completion_id"] = CompletionId;
+        if (Usage != null)
+        {
+            metadata["usage"] = JsonSerializer.SerializeToNode(Usage);
+        }
+        
+        // Update the message with the metadata containing OpenMessage properties
+        if (baseMessage is TextMessage textMessage)
+        {
+            return textMessage with { Metadata = metadata };
+        }
+        else if (baseMessage is ToolsCallMessage toolCallMessage)
+        {
+            return toolCallMessage with { Metadata = metadata };
+        }
+        else if (baseMessage is ImageMessage imageMessage)
+        {
+            // Create a new instance since ImageMessage is not a record type
+            return new ImageMessage
+            {
+                FromAgent = imageMessage.FromAgent,
+                Role = imageMessage.Role,
+                Metadata = metadata,
+                GenerationId = imageMessage.GenerationId,
+                ImageData = imageMessage.ImageData
+            };
+        }
+        else if (baseMessage is CompositeMessage compositeMessage)
+        {
+            return compositeMessage with { Metadata = metadata };
+        }
+        
+        return baseMessage;
+    }
+
+    public IMessage ToOpenMessage()
+    {
+        var baseMessage = ChatMessage.ToMessage(ChatMessage.Name);
 
         // Fill in the OpenMessage specific fields
         if (baseMessage is ToolsCallMessage toolCallMessage)
