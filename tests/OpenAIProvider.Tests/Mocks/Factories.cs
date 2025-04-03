@@ -96,10 +96,19 @@ public static class OpenClientFactory
     
     if (envFilePath != null)
     {
-      DotEnv.Load(options: new DotEnvOptions(
-        envFilePaths: new[] { envFilePath },
-        ignoreExceptions: false
-      ));
+      Console.WriteLine($"Loading environment variables from specified path: {envFilePath}");
+      if (File.Exists(envFilePath))
+      {
+        Console.WriteLine($"File exists at {envFilePath}");
+        DotEnv.Load(options: new DotEnvOptions(
+          envFilePaths: new[] { envFilePath },
+          ignoreExceptions: false
+        ));
+      }
+      else
+      {
+        Console.WriteLine($"WARNING: File does not exist at {envFilePath}");
+      }
     }
     else
     {
@@ -107,11 +116,27 @@ public static class OpenClientFactory
       string workspaceRoot = TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
       string workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
       
-      DotEnv.Load(options: new DotEnvOptions(
-        envFilePaths: new[] { workspaceEnvPath },
-        ignoreExceptions: false
-      ));
+      Console.WriteLine($"Loading environment variables from workspace root: {workspaceEnvPath}");
+      if (File.Exists(workspaceEnvPath))
+      {
+        Console.WriteLine($"File exists at {workspaceEnvPath}");
+        DotEnv.Load(options: new DotEnvOptions(
+          envFilePaths: new[] { workspaceEnvPath },
+          ignoreExceptions: false
+        ));
+      }
+      else
+      {
+        Console.WriteLine($"WARNING: File does not exist at {workspaceEnvPath}");
+      }
     }
+    
+    // Verify that the environment variables were loaded
+    string? apiKey = Environment.GetEnvironmentVariable("LLM_API_KEY");
+    string? baseUrl = Environment.GetEnvironmentVariable("LLM_API_BASE_URL");
+    
+    Console.WriteLine($"After loading, LLM_API_KEY exists: {!string.IsNullOrEmpty(apiKey)}");
+    Console.WriteLine($"After loading, LLM_API_BASE_URL: {baseUrl}");
     
     _envLoaded = true;
   }
