@@ -118,8 +118,8 @@ public abstract class McpIntegrationTestBase : IAsyncDisposable
       McpClients[toolName + "Tool"] = client;
     }
     
-    // Create the middleware
-    Middleware = new McpMiddleware.McpMiddleware(McpClients);
+    // Create the middleware using the async factory pattern
+    Middleware = await McpMiddleware.McpMiddleware.CreateAsync(McpClients);
   }
 
   [Fact]
@@ -170,9 +170,6 @@ public abstract class McpIntegrationTestBase : IAsyncDisposable
         Console.Error.WriteLine($"Server error: {ex}");
       }
     });
-    
-    // Wait a moment for the server to start
-    await Task.Delay(1000);
     
     try
     {

@@ -26,7 +26,7 @@ public class McpServerTests
       ["GreetingTool"] = mockClient
     };
     
-    var middleware = new McpMiddleware.McpMiddleware(clients);
+    var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
     
     // Create a test agent and inject a tool call message to be returned
     var agent = new SimpleTestAgent();

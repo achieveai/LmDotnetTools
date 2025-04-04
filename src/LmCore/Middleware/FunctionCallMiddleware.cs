@@ -14,10 +14,39 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     private readonly IDictionary<string, Func<string, Task<string>>>? _functionMap;
 
     public FunctionCallMiddleware(
-        IEnumerable<FunctionContract>? functions = null,
-        IDictionary<string, Func<string, Task<string>>>? functionMap = null,
+        IEnumerable<FunctionContract> functions,
+        IDictionary<string, Func<string, Task<string>>> functionMap,
         string? name = null)
     {
+        // Validate functions parameter
+        if (functions == null)
+        {
+            throw new ArgumentNullException(nameof(functions));
+        }
+        
+        // Validate that each function has a corresponding entry in the function map
+        if (functions.Any())
+        {
+            if (functionMap != null)
+            {
+                var missingFunctions = functions
+                    .Where(f => !functionMap.ContainsKey(f.Name))
+                    .Select(f => f.Name)
+                    .ToList();
+
+                if (missingFunctions.Any() || functionMap.Count != functions.Count())
+                {
+                    throw new ArgumentException(
+                        $"The following functions do not have corresponding entries in the function map: {string.Join(", ", missingFunctions)}",
+                        nameof(functionMap));
+                }
+            }
+            else
+            {
+                throw new ArgumentException("Function map must be provided when functions are specified", nameof(functionMap));
+            }
+        }
+
         Name = name ?? nameof(FunctionCallMiddleware);
         _functions = functions;
         _functionMap = functionMap;
@@ -37,9 +66,12 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Clone options and add functions
         var options = context.Options ?? new GenerateReplyOptions();
         var combinedFunctions = CombineFunctions(options.Functions);
-        options.Functions = combinedFunctions?.ToArray();
+        options = options with { Functions = combinedFunctions?.ToArray() };
 
-        var reply = await agent.GenerateReplyAsync(context.Messages, options, cancellationToken);
+        var reply = await agent.GenerateReplyAsync(
+            context.Messages,
+            options,
+            cancellationToken);
 
         // Process any tool calls in the response
         var responseToolCall = reply as ICanGetToolCalls;
@@ -68,10 +100,13 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Clone options and add functions
         var options = context.Options ?? new GenerateReplyOptions();
         var combinedFunctions = CombineFunctions(options.Functions);
-        options.Functions = combinedFunctions?.ToArray();
+        options = options with { Functions = combinedFunctions?.ToArray() };
 
         // Get the streaming response from the agent
-        var streamingResponse = await agent.GenerateReplyStreamingAsync(context.Messages, options, cancellationToken);
+        var streamingResponse = await agent.GenerateReplyStreamingAsync(
+            context.Messages,
+            options,
+            cancellationToken);
         
         // Return a transformed stream that applies the builder pattern
         return TransformStreamWithBuilder(streamingResponse, cancellationToken);

@@ -9,8 +9,11 @@ using AchieveAi.LmDotnetTools.McpTransport;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol;
+using ModelContextProtocol.Protocol.Types;
 using ModelContextProtocol.Server;
+
+// Use an alias to avoid ambiguity with IMcpClient
+using McpClient = AchieveAi.LmDotnetTools.McpMiddleware.IMcpClient;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -68,18 +71,11 @@ public class McpTransportIntegrationTests
       })
       .ConfigureServices(services =>
       {
-        // Register MCP server
-        var serverBuilder = services.AddMcpServer();
-        
         // Register the transport
-        serverBuilder = AchieveAi.LmDotnetTools.McpTransport.McpServerBuilderExtensions
-          .WithServerTransport(serverBuilder, serverTransport) as IMcpServerBuilder;
-        
-        // Register tools
-        if (serverBuilder != null)
-        {
-          serverBuilder.WithToolsFromAssembly(typeof(GreetingTool).Assembly);
-        }
+        _ = services
+          .AddMcpServer()
+          .WithServerTransport(serverTransport)
+          .WithToolsFromAssembly(typeof(GreetingTool).Assembly);
       });
     
     // Build and start the host
@@ -89,19 +85,19 @@ public class McpTransportIntegrationTests
     try
     {
       // Wait for server to start
-      await Task.Delay(1000);
+      await Task.Delay(100);
       
-      // Create a mock client that implements IMcpClient
-      var mockClient = new TestHelpers.MockMcpClient("test-client", "Test Client");
+      // Create a transport-based client that implements IMcpClient
+      var client = new TransportMcpClient(clientTransport, "test-client", "Test Client");
       
-      // Create middleware with the mock client
-      var clients = new Dictionary<string, IMcpClient>
+      // Create middleware with the transport client
+      var clients = new Dictionary<string, McpClient>
       {
-        ["test-client"] = mockClient,
-        ["GreetingTool"] = mockClient
+        ["test-client"] = client,
+        ["GreetingTool"] = client
       };
       
-      var middleware = new McpMiddleware.McpMiddleware(clients);
+      var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
       
       // Create a test agent
       var agent = new SimpleTestAgent();
@@ -143,17 +139,9 @@ public class McpTransportIntegrationTests
       .ConfigureServices(services =>
       {
         // Register MCP server
-        var serverBuilder = services.AddMcpServer();
-        
-        // Register the transport
-        serverBuilder = AchieveAi.LmDotnetTools.McpTransport.McpServerBuilderExtensions
-          .WithServerTransport(serverBuilder, serverTransport) as IMcpServerBuilder;
-        
-        // Register tools
-        if (serverBuilder != null)
-        {
-          serverBuilder.WithToolsFromAssembly(typeof(CalculatorTool).Assembly);
-        }
+        _ = services.AddMcpServer()
+          .WithServerTransport(serverTransport)
+          .WithToolsFromAssembly(typeof(CalculatorTool).Assembly);
       });
     
     // Build and start the host
@@ -165,17 +153,17 @@ public class McpTransportIntegrationTests
       // Wait for server to start
       await Task.Delay(1000);
       
-      // Create a mock client that implements IMcpClient
-      var mockClient = new TestHelpers.MockMcpClient("test-client", "Test Client");
+      // Create a transport-based client that implements IMcpClient
+      var client = new TransportMcpClient(clientTransport, "test-client", "Test Client");
       
-      // Create middleware with the mock client
-      var clients = new Dictionary<string, IMcpClient>
+      // Create middleware with the transport client
+      var clients = new Dictionary<string, McpClient>
       {
-        ["test-client"] = mockClient,
-        ["CalculatorTool"] = mockClient
+        ["test-client"] = client,
+        ["CalculatorTool"] = client
       };
       
-      var middleware = new McpMiddleware.McpMiddleware(clients);
+      var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
       
       // Create a test agent
       var agent = new SimpleTestAgent();
@@ -201,4 +189,4 @@ public class McpTransportIntegrationTests
   }
 }
 
-// Using the MockMcpClient class defined in McpServerTests.cs
+// Now using TransportMcpClient for proper transport-based testing

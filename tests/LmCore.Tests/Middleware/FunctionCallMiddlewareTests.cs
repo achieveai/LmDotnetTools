@@ -7,6 +7,124 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class FunctionCallMiddlewareTests
 {
+  #region Constructor Tests
+
+  [Fact]
+  public void Constructor_ShouldThrowArgumentNullException_WhenFunctionsIsNull()
+  {
+    // Arrange
+    var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+    
+    // Act & Assert
+    var exception = Assert.Throws<ArgumentNullException>(() => 
+      new FunctionCallMiddleware(
+        functions: null!, 
+        functionMap: functionMap));
+    
+    Assert.Equal("functions", exception.ParamName);
+  }
+
+  [Fact]
+  public void Constructor_ShouldThrowArgumentException_WhenFunctionMissingFromMap()
+  {
+    // Arrange
+    var functions = new List<FunctionContract>
+    {
+      new FunctionContract
+      {
+        Name = "getWeather",
+        Description = "Get the weather in a location",
+        Parameters = new[]
+        {
+          new FunctionParameterContract
+          {
+            Name = "location",
+            ParameterType = typeof(string),
+            Description = "City name",
+            IsRequired = true
+          }
+        }
+      }
+    };
+    
+    var functionMap = new Dictionary<string, Func<string, Task<string>>>
+    {
+      // Missing the "getWeather" function
+      { "add", args => Task.FromResult("10") }
+    };
+    
+    // Act & Assert
+    var exception = Assert.Throws<ArgumentException>(() => 
+      new FunctionCallMiddleware(functions, functionMap));
+    
+    Assert.Contains("getWeather", exception.Message);
+    Assert.Equal("functionMap", exception.ParamName);
+  }
+
+  [Fact]
+  public void Constructor_ShouldThrowArgumentException_WhenFunctionMapIsNullButFunctionsAreProvided()
+  {
+    // Arrange
+    var functions = new List<FunctionContract>
+    {
+      new FunctionContract
+      {
+        Name = "getWeather",
+        Description = "Get the weather in a location"
+      }
+    };
+    
+    // Act & Assert
+    var exception = Assert.Throws<ArgumentException>(() => 
+      new FunctionCallMiddleware(functions, null!));
+    
+    Assert.Contains("Function map must be provided", exception.Message);
+    Assert.Equal("functionMap", exception.ParamName);
+  }
+
+  [Fact]
+  public void Constructor_ShouldNotThrow_WhenFunctionsIsEmpty()
+  {
+    // Arrange
+    var functions = new List<FunctionContract>();
+    var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+    
+    // Act & Assert - no exception should be thrown
+    var middleware = new FunctionCallMiddleware(functions, functionMap);
+    Assert.NotNull(middleware);
+  }
+
+  [Fact]
+  public void Constructor_ShouldNotThrow_WhenAllFunctionsHaveCorrespondingMapEntries()
+  {
+    // Arrange
+    var functions = new List<FunctionContract>
+    {
+      new FunctionContract
+      {
+        Name = "function1",
+        Description = "Test function 1"
+      },
+      new FunctionContract
+      {
+        Name = "function2",
+        Description = "Test function 2"
+      }
+    };
+    
+    var functionMap = new Dictionary<string, Func<string, Task<string>>>
+    {
+      { "function1", args => Task.FromResult("result1") },
+      { "function2", args => Task.FromResult("result2") }
+    };
+    
+    // Act & Assert - no exception should be thrown
+    var middleware = new FunctionCallMiddleware(functions, functionMap);
+    Assert.NotNull(middleware);
+  }
+
+  #endregion
+  
   #region Test Methods
   
   [Fact]
@@ -279,6 +397,72 @@ public class FunctionCallMiddlewareTests
       {
         Name = "add",
         Description = "Add two numbers",
+        Parameters = new[]
+        {
+          new FunctionParameterContract
+          {
+            Name = "a",
+            ParameterType = typeof(double),
+            Description = "First number",
+            IsRequired = true
+          },
+          new FunctionParameterContract
+          {
+            Name = "b",
+            ParameterType = typeof(double),
+            Description = "Second number",
+            IsRequired = true
+          }
+        }
+      },
+      new FunctionContract
+      {
+        Name = "subtract",
+        Description = "Subtract second number from first number",
+        Parameters = new[]
+        {
+          new FunctionParameterContract
+          {
+            Name = "a",
+            ParameterType = typeof(double),
+            Description = "First number",
+            IsRequired = true
+          },
+          new FunctionParameterContract
+          {
+            Name = "b",
+            ParameterType = typeof(double),
+            Description = "Second number",
+            IsRequired = true
+          }
+        }
+      },
+      new FunctionContract
+      {
+        Name = "multiply",
+        Description = "Multiply two numbers",
+        Parameters = new[]
+        {
+          new FunctionParameterContract
+          {
+            Name = "a",
+            ParameterType = typeof(double),
+            Description = "First number",
+            IsRequired = true
+          },
+          new FunctionParameterContract
+          {
+            Name = "b",
+            ParameterType = typeof(double),
+            Description = "Second number",
+            IsRequired = true
+          }
+        }
+      },
+      new FunctionContract
+      {
+        Name = "divide",
+        Description = "Divide first number by second number",
         Parameters = new[]
         {
           new FunctionParameterContract

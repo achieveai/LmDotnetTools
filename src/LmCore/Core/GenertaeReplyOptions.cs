@@ -33,10 +33,10 @@ public record GenerateReplyOptions
     public string[]? StopSequence { get; init; }
 
     [JsonPropertyName("tools")]
-    public FunctionContract[]? Functions { get; set; }
+    public FunctionContract[]? Functions { get; init; }
 
     [JsonPropertyName("response_format")]
-    public ResponseFormat? ResponseFormat { get; set; }
+    public ResponseFormat? ResponseFormat { get; init; }
 
     [JsonIgnore]
     public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;

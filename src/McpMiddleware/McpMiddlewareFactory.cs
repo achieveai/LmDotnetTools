@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
@@ -23,28 +24,30 @@ public class McpMiddlewareFactory
     }
 
     /// <summary>
-    /// Creates a new MCP middleware from a configuration file
+    /// Creates a new MCP middleware from a configuration file asynchronously
     /// </summary>
     /// <param name="configFilePath">Path to the configuration file</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The created middleware</returns>
-    public IStreamingMiddleware CreateFromConfigFile(string configFilePath)
+    public async Task<IStreamingMiddleware> CreateFromConfigFileAsync(string configFilePath, CancellationToken cancellationToken = default)
     {
-        _logger?.LogInformation("Creating MCP middleware from config file: {ConfigFilePath}", configFilePath);
+        _logger?.LogInformation("Creating MCP middleware from config file asynchronously: {ConfigFilePath}", configFilePath);
         
         // Read and parse the configuration file
-        var configJson = File.ReadAllText(configFilePath);
+        var configJson = await File.ReadAllTextAsync(configFilePath, cancellationToken);
         var config = JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson) 
             ?? throw new InvalidOperationException($"Failed to deserialize config file: {configFilePath}");
         
-        return CreateFromConfig(config);
+        return await CreateFromConfigAsync(config, cancellationToken);
     }
 
     /// <summary>
-    /// Creates a new MCP middleware from a configuration object
+    /// Creates a new MCP middleware from a configuration object asynchronously
     /// </summary>
     /// <param name="config">The configuration object</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The created middleware</returns>
-    public IStreamingMiddleware CreateFromConfig(McpMiddlewareConfiguration config)
+    public async Task<IStreamingMiddleware> CreateFromConfigAsync(McpMiddlewareConfiguration config, CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
         
@@ -90,18 +93,35 @@ public class McpMiddlewareFactory
             }
         }
         
-        // Create the middleware
-        return new McpMiddleware(mcpClients);
+        // Create the middleware using the async factory pattern
+        return await McpMiddleware.CreateAsync(mcpClients, cancellationToken: cancellationToken);
     }
 
     /// <summary>
-    /// Creates a new MCP middleware from a collection of MCP clients
+    /// Creates a new MCP middleware from a collection of MCP clients asynchronously
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
+    /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The created middleware</returns>
-    public IStreamingMiddleware CreateFromClients(Dictionary<string, IMcpClient> mcpClients)
+    public async Task<IStreamingMiddleware> CreateFromClientsAsync(
+        Dictionary<string, IMcpClient> mcpClients,
+        CancellationToken cancellationToken = default)
     {
-        _logger?.LogInformation("Creating MCP middleware from {ClientCount} clients", mcpClients.Count);
-        return new McpMiddleware(mcpClients);
+        _logger?.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
+        
+        // Use the async factory pattern from McpMiddleware
+        // This will automatically extract function contracts from the clients
+        return await McpMiddleware.CreateAsync(mcpClients, cancellationToken: cancellationToken);
     }
+
+    /// <summary>
+    /// Converts an MCP client tool to a function contract
+    /// </summary>
+    /// <param name="tool">The MCP client tool</param>
+    /// <returns>The function contract</returns>
+
+
+
+
+
 }
