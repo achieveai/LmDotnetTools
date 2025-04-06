@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using ModelContextProtocol;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -9,7 +10,7 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware;
 /// <param name="Name">Display name for the client</param>
 /// <param name="TransportType">Transport type (e.g., StdIo, Http)</param>
 /// <param name="TransportOptions">Options specific to the transport type</param>
-public record McpClientConfiguration(
+public record McpClientConfiguration2(
     string Id,
     string Name,
     string TransportType,
@@ -24,5 +25,5 @@ public class McpMiddlewareConfiguration
     /// Dictionary of MCP client configurations
     /// </summary>
     [JsonPropertyName("clients")]
-    public Dictionary<string, McpClientConfiguration> Clients { get; set; } = new();
+    public Dictionary<string, McpServerConfig> Clients { get; set; } = new();
 }

@@ -11,9 +11,4 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.3" />
     <PackageReference Include="ModelContextProtocol" Version="0.1.0-preview.4" />
   </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\McpTransport\AchieveAi.LmDotnetTools.McpTransport.csproj" />
-  </ItemGroup>
-
 </Project>

@@ -1,4 +1,6 @@
 using ModelContextProtocol;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol.Messages;
 using ModelContextProtocol.Protocol.Types;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
@@ -9,6 +11,13 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware;
 public class McpClientWrapper : IMcpClient
 {
     private readonly IMcpClient _client;
+
+    public ServerCapabilities? ServerCapabilities => _client.ServerCapabilities;
+
+    public Implementation? ServerInfo => _client.ServerInfo;
+
+    public string? ServerInstructions => _client.ServerInstructions;
+
 
     /// <summary>
     /// Creates a new instance of the McpClientWrapper
@@ -26,7 +35,7 @@ public class McpClientWrapper : IMcpClient
     /// <returns>List of tools</returns>
     public Task<IList<McpClientTool>> ListToolsAsync(CancellationToken cancellationToken = default)
     {
-        return _client.ListToolsAsync(cancellationToken);
+        return McpClientExtensions.ListToolsAsync(_client, cancellationToken);
     }
 
     /// <summary>
@@ -43,4 +52,25 @@ public class McpClientWrapper : IMcpClient
     {
         return _client.CallToolAsync(toolName, arguments, cancellationToken);
     }
+
+    public void AddNotificationHandler(string method, Func<JsonRpcNotification, Task> handler)
+    {
+        _client.AddNotificationHandler(method, handler);
+    }
+
+    public Task<TResult> SendRequestAsync<TResult>(JsonRpcRequest request, CancellationToken cancellationToken = default) where TResult : class
+    {
+        return _client.SendRequestAsync<TResult>(request, cancellationToken);
+    }
+
+    public Task SendMessageAsync(IJsonRpcMessage message, CancellationToken cancellationToken = default)
+    {
+        return _client.SendMessageAsync(message, cancellationToken);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return _client.DisposeAsync();
+    }
+
 }

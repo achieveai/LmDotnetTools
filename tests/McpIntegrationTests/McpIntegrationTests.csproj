@@ -20,8 +20,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
-    <ProjectReference Include="..\..\src\McpTransport\AchieveAi.LmDotnetTools.McpTransport.csproj" />
     <ProjectReference Include="..\..\src\McpSampleServer\AchieveAi.LmDotnetTools.McpSampleServer.csproj" />
+    <ProjectReference Include="..\TestUtils\AchieveAi.LmDotnetTools.TestUtils.csproj" />
   </ItemGroup>
 
 </Project>

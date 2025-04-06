@@ -37,7 +37,7 @@ public static class GreetingTool
     /// </summary>
     /// <param name="name">The name to greet</param>
     /// <returns>A greeting message</returns>
-    [Description("Greets a person by name")]
+    [McpServerTool, Description("Greets a person by name")]
     public static string SayHello(string name)
     {
         return $"Hello, {name}! Nice to meet you.";
@@ -48,7 +48,7 @@ public static class GreetingTool
     /// </summary>
     /// <param name="name">The name to say goodbye to</param>
     /// <returns>A goodbye message</returns>
-    [Description("Says goodbye to a person by name")]
+    [McpServerTool, Description("Says goodbye to a person by name")]
     public static string SayGoodbye(string name)
     {
         return $"Goodbye, {name}! Have a great day.";

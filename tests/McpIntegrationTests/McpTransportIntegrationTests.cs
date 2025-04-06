@@ -2,18 +2,9 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
-using AchieveAi.LmDotnetTools.McpMiddleware;
-using AchieveAi.LmDotnetTools.McpSampleServer;
-using AchieveAi.LmDotnetTools.McpTransport;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Protocol.Types;
-using ModelContextProtocol.Server;
-
-// Use an alias to avoid ambiguity with IMcpClient
-using McpClient = AchieveAi.LmDotnetTools.McpMiddleware.IMcpClient;
+using ModelContextProtocol;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol.Transport;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -60,38 +51,25 @@ public class McpTransportIntegrationTests
   {
     // Arrange - Setup server and client
     using var cts = new CancellationTokenSource();
-    var (clientTransport, serverTransport) = InMemoryTransportFactory.CreateTransportPair("TestTransport");
-    
-    // Create a host builder
-    var builder = Host.CreateDefaultBuilder()
-      .ConfigureLogging(logging =>
+    var serverOption = new McpServerConfig
+    {
+      Id = "test-server",
+      Name = "Test Server",
+      TransportType = TransportTypes.StdIo,
+      Location = McpServerTests.ServerLocation,
+      Arguments = [],
+      TransportOptions = new Dictionary<string, string>
       {
-        logging.AddConsole();
-        logging.SetMinimumLevel(LogLevel.Information);
-      })
-      .ConfigureServices(services =>
-      {
-        // Register the transport
-        _ = services
-          .AddMcpServer()
-          .WithServerTransport(serverTransport)
-          .WithToolsFromAssembly(typeof(GreetingTool).Assembly);
-      });
-    
-    // Build and start the host
-    using var host = builder.Build();
-    var serverTask = host.RunAsync(cts.Token);
-    
+        ["command"] = McpServerTests.ServerLocation
+      }
+    };
+
+    var client = await McpClientFactory.CreateAsync(serverOption);
+
     try
     {
-      // Wait for server to start
-      await Task.Delay(100);
-      
-      // Create a transport-based client that implements IMcpClient
-      var client = new TransportMcpClient(clientTransport, "test-client", "Test Client");
-      
       // Create middleware with the transport client
-      var clients = new Dictionary<string, McpClient>
+      var clients = new Dictionary<string, IMcpClient>
       {
         ["test-client"] = client,
         ["GreetingTool"] = client
@@ -117,6 +95,7 @@ public class McpTransportIntegrationTests
     finally
     {
       // Cleanup
+      await client.DisposeAsync();
       cts.Cancel();
       await Task.Delay(500); // Give time for server to shut down
     }
@@ -127,37 +106,25 @@ public class McpTransportIntegrationTests
   {
     // Arrange - Setup server and client
     using var cts = new CancellationTokenSource();
-    var (clientTransport, serverTransport) = InMemoryTransportFactory.CreateTransportPair("TestTransport");
-    
-    // Create a host builder
-    var builder = Host.CreateDefaultBuilder()
-      .ConfigureLogging(logging =>
+    var serverOption = new McpServerConfig
+    {
+      Id = "test-server",
+      Name = "Test Server",
+      TransportType = TransportTypes.StdIo,
+      Location = McpServerTests.ServerLocation,
+      Arguments = [],
+      TransportOptions = new Dictionary<string, string>
       {
-        logging.AddConsole();
-        logging.SetMinimumLevel(LogLevel.Information);
-      })
-      .ConfigureServices(services =>
-      {
-        // Register MCP server
-        _ = services.AddMcpServer()
-          .WithServerTransport(serverTransport)
-          .WithToolsFromAssembly(typeof(CalculatorTool).Assembly);
-      });
-    
-    // Build and start the host
-    using var host = builder.Build();
-    var serverTask = host.RunAsync(cts.Token);
+        ["command"] = McpServerTests.ServerLocation
+      }
+    };
+
+    var client = await McpClientFactory.CreateAsync(serverOption);
     
     try
     {
-      // Wait for server to start
-      await Task.Delay(1000);
-      
-      // Create a transport-based client that implements IMcpClient
-      var client = new TransportMcpClient(clientTransport, "test-client", "Test Client");
-      
       // Create middleware with the transport client
-      var clients = new Dictionary<string, McpClient>
+      var clients = new Dictionary<string, IMcpClient>
       {
         ["test-client"] = client,
         ["CalculatorTool"] = client
@@ -183,6 +150,7 @@ public class McpTransportIntegrationTests
     finally
     {
       // Cleanup
+      await client.DisposeAsync();
       cts.Cancel();
       await Task.Delay(500); // Give time for server to shut down
     }

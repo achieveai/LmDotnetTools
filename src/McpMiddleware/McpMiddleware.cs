@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using ModelContextProtocol.Client;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -96,7 +97,7 @@ public class McpMiddleware : IStreamingMiddleware
             foreach (var tool in tools)
             {
                 // Create a delegate that calls the appropriate MCP client
-                functionMap[tool.Name] = async (argsJson) => 
+                functionMap[$"{kvp.Key}.{tool.Name}"] = async (argsJson) => 
                 {
                     try 
                     {
@@ -140,13 +141,13 @@ public class McpMiddleware : IStreamingMiddleware
     {
         var functionContracts = new List<FunctionContract>();
         
-        foreach (var client in mcpClients.Values)
+        foreach (var kvp in mcpClients)
         {
-            var tools = await client.ListToolsAsync(cancellationToken);
+            var tools = await kvp.Value.ListToolsAsync(cancellationToken);
             
             foreach (var tool in tools)
             {
-                functionContracts.Add(ConvertToFunctionContract(tool));
+                functionContracts.Add(ConvertToFunctionContract(kvp.Key, tool));
             }
         }
         
@@ -158,13 +159,15 @@ public class McpMiddleware : IStreamingMiddleware
     /// </summary>
     /// <param name="tool">The MCP client tool</param>
     /// <returns>A function contract</returns>
-    private static FunctionContract ConvertToFunctionContract(McpClientTool tool)
+    private static FunctionContract ConvertToFunctionContract(
+        string clientName,
+        McpClientTool tool)
     {
         return new FunctionContract
         {
-            Name = tool.Name,
+            Name = $"{clientName}.{tool.Name}",
             Description = tool.Description,
-            Parameters = ExtractParametersFromSchema(tool.InputSchema)
+            Parameters = ExtractParametersFromSchema(tool.JsonSchema)
         };
     }
 
@@ -173,7 +176,7 @@ public class McpMiddleware : IStreamingMiddleware
     /// </summary>
     /// <param name="inputSchema">The input schema</param>
     /// <returns>Collection of parameter contracts</returns>
-    private static IEnumerable<FunctionParameterContract>? ExtractParametersFromSchema(object? inputSchema)
+    private static IList<FunctionParameterContract>? ExtractParametersFromSchema(object? inputSchema)
     {
         if (inputSchema == null)
         {

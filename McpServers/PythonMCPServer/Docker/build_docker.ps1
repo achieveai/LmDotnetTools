@@ -1,0 +1,1 @@
+docker build -t python-executor:v1.0 .

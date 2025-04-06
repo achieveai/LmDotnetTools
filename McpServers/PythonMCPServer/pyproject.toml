@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docker_python_exec_mcp"
+version = "0.1.0"
+description = "MCP server for executing Python code in Docker containers"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+requires-python = ">=3.9"
+readme = "README.md"
+license = {file = "LICENSE"}
+dependencies = [
+    "mcp>=1.2.0",
+    "docker>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=22.3.0",
+    "isort>=5.10.1",
+    "mypy>=0.950",
+    "pytest>=7.0.0",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build]
+packages = ["src"]
+
+[project.scripts]
+docker-python-exec-mcp = "src.server:main"

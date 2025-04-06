@@ -2,6 +2,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
+using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol.Types;
 using System.Text.Json;
 
@@ -47,7 +48,9 @@ public class McpMiddlewareFactory
     /// <param name="config">The configuration object</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The created middleware</returns>
-    public async Task<IStreamingMiddleware> CreateFromConfigAsync(McpMiddlewareConfiguration config, CancellationToken cancellationToken = default)
+    public async Task<IStreamingMiddleware> CreateFromConfigAsync(
+        McpMiddlewareConfiguration config,
+        CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
         
@@ -74,13 +77,7 @@ public class McpMiddlewareFactory
                 }
                 
                 // Create the client
-                var client = McpClientFactory.Create(new McpClientOptions
-                {
-                    Id = clientSettings.Id,
-                    Name = clientSettings.Name,
-                    TransportType = clientSettings.TransportType,
-                    TransportOptions = transportOptions
-                });
+                var client = await McpClientFactory.CreateAsync(clientConfig.Value);
                 
                 mcpClients[clientId] = client;
                 
