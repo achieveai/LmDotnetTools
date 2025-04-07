@@ -1,22 +1,28 @@
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using DotNetEnv;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol.Transport;
+using System.IO;
+using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
 class Program
 {
-  // For a real application, you would store this in a secure configuration
-  private const string S_openAiKey = "REPLACE_WITH_YOUR_OPENAI_KEY";
-  
-  static async Task Main(string[] args)
+  static async Task Main()
   {
+    // Load environment variables from .env file
+    LoadEnvironmentVariables();
+    
+    string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
+    string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
     Console.WriteLine("Example Python MCP Client Demo");
     
     // Create the MCP client to connect to the Python server
@@ -27,7 +33,7 @@ class Program
       TransportType = TransportTypes.StdIo,
       TransportOptions = new Dictionary<string, string>
       {
-        ["command"] = "uvx d:/Source/repos/LmDotnetTools/McpServers/PythonMCPServer"
+        ["command"] = "uvx d:/Source/repos/LmDotnetTools/McpServers/PythonMCPServer --image pyexec"
       }
     };
     
@@ -45,8 +51,8 @@ class Program
       }
       
       // Create an OpenAI client
-      var openClient = new OpenClient(S_openAiKey, "https://api.openai.com/v1");
-      var llmAgent = new OpenClientAgent("GPT-4o", openClient);
+      var openClient = new OpenClient(API_KEY, API_URL);
+      var llmAgent = new OpenClientAgent("meta-llama/llama-4-maverick", openClient);
       
       // Create the agent pipeline with MCP middleware
       var mcpClientDictionary = new Dictionary<string, ModelContextProtocol.Client.IMcpClient>
@@ -79,9 +85,10 @@ class Program
       
       var options = new GenerateReplyOptions
       {
+        ModelId = "meta-llama/llama-4-maverick",
         Temperature = 0.7f,
         MaxToken = 2000,
-        ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty.Add("model", "gpt-4o")
+        ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty
       };
       
       var reply = await agentWithMcp.GenerateReplyAsync(messages, options);
@@ -92,60 +99,27 @@ class Program
         Console.WriteLine("\nAgent Response:\n");
         Console.WriteLine(textReply.Text);
       }
-      else if (reply is ToolsCallMessage toolsCallMessage)
+      else if (reply is ToolCallAggregateMessage toolsCallMessage)
       {
         Console.WriteLine("\nAgent is making tool calls:\n");
-        foreach (var toolCall in toolsCallMessage.ToolCalls)
+        foreach (var (toolCall, result) in toolsCallMessage.ToolCallMessage.ToolCalls.Zip(toolsCallMessage.ToolCallResult.ToolCallResults))
         {
           Console.WriteLine($"Tool: {toolCall.FunctionName}");
           Console.WriteLine($"Arguments: {toolCall.FunctionArgs}");
           
-          // Execute the tool call
-          var result = await mcpClient.CallToolAsync(
-            toolCall.FunctionName,
-            JsonSerializer.Deserialize<Dictionary<string, object?>>(toolCall.FunctionArgs) ?? new Dictionary<string, object?>(),
-            CancellationToken.None);
-          
           Console.WriteLine("\nTool Response:\n");
-          
-          // Extract text from the content items
-          string responseText = "";
-          if (result.Content != null)
-          {
-            foreach (var content in result.Content)
-            {
-              if (content.Type == "text" && !string.IsNullOrEmpty(content.Text))
-              {
-                responseText += content.Text;
-                Console.WriteLine(content.Text);
-              }
-            }
-          }
-          else
-          {
-            responseText = "[No content in response]";
-            Console.WriteLine(responseText);
-          }
-          
-          // Add the tool response back to messages
-          messages.Add(toolsCallMessage);
-          messages.Add(new TextMessage
-          {
-            Role = Role.Function,
-            FromAgent = toolCall.FunctionName,
-            Text = responseText
-          });
-          
-          // Get the agent's final response
-          reply = await agentWithMcp.GenerateReplyAsync(messages, options);
-          
-          if (reply is TextMessage finalTextReply)
-          {
-            Console.WriteLine("\nFinal Agent Response:\n");
-            Console.WriteLine(finalTextReply.Text);
-          }
+          Console.WriteLine(result);
         }
       }
+
+      messages.Add(reply);
+      var reply2 = await agentWithMcp.GenerateReplyAsync(messages, options);
+      Console.WriteLine("\nAgent Response:\n");
+      Console.WriteLine(reply2 switch {
+        ICanGetText txtReply => txtReply.GetText(),
+        ToolsCallResultMessage toolsCallMessage => string.Join("\n", toolsCallMessage.ToolCallResults.Select(tc => tc.Result)),
+        _ => reply.ToString()
+      });
     }
     catch (Exception ex)
     {
@@ -155,5 +129,27 @@ class Program
     
     Console.WriteLine("\nPress any key to exit...");
     Console.ReadKey();
+  }
+  
+  /// <summary>
+  /// Loads environment variables from .env file in the project root
+  /// </summary>
+  /// <remarks>
+  /// Tries multiple locations to find the .env file:
+  /// 1. Current directory
+  /// 2. Project directory
+  /// 3. Solution root directory
+  /// </remarks>
+  private static void LoadEnvironmentVariables()
+  {
+    var curPath = Environment.CurrentDirectory;
+    while (curPath != null && !string.IsNullOrEmpty(curPath) && !File.Exists(Path.Combine(curPath, ".env")))
+    {
+      curPath = Path.GetDirectoryName(curPath);
+    }
+
+    _ = curPath != null && !string.IsNullOrEmpty(curPath) && File.Exists(Path.Combine(curPath, ".env"))
+      ? DotNetEnv.Env.Load(Path.Combine(curPath, ".env"))
+      : throw new FileNotFoundException(".env file not found in the current directory or any parent directories.");
   }
 }

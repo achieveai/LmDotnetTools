@@ -7,7 +7,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// <summary>
 /// A message that can contain a mix of different content types (text, binary data, tool call results)
 /// </summary>
-public record CompositeMessage : IMessage, ICanGetText, ICanGetBinary, ICanGetToolCalls
+public record CompositeMessage : IMessage, ICanGetText, ICanGetBinary
 {
     public string? FromAgent { get; init; } = null;
 
@@ -62,44 +62,6 @@ public record CompositeMessage : IMessage, ICanGetText, ICanGetBinary, ICanGetTo
         }
 
         return binaryCount == 1 ? binaryContent : null;
-    }
-
-    public ToolCall? GetToolCalls()
-    {
-        // Only return tool call if there's exactly one tool call result item
-        int toolCallCount = 0;
-        ToolCall? toolCall = null;
-
-        foreach (var content in Contents)
-        {
-            if (content.Is<ToolCallResult>())
-            {
-                toolCallCount++;
-                toolCall = content.Get<ToolCallResult>().ToolCall;
-                if (toolCallCount > 1)
-                {
-                    return null; // More than one tool call result, return null
-                }
-            }
-        }
-
-        return toolCallCount == 1 ? toolCall : null;
-    }
-
-    // Implementation for ICanGetToolCalls
-    IEnumerable<ToolCall>? ICanGetToolCalls.GetToolCalls()
-    {
-        var toolCalls = new List<ToolCall>();
-        
-        foreach (var content in Contents)
-        {
-            if (content.Is<ToolCallResult>())
-            {
-                toolCalls.Add(content.Get<ToolCallResult>().ToolCall);
-            }
-        }
-        
-        return toolCalls.Count > 0 ? toolCalls : null;
     }
 
     public IEnumerable<IMessage>? GetMessages() => null;
@@ -217,7 +179,12 @@ public record CompositeMessage : IMessage, ICanGetText, ICanGetBinary, ICanGetTo
     /// <summary>
     /// Creates a CompositeMessage by extracting content from an array of different message types
     /// </summary>
-    public static CompositeMessage CreateFromMessages(IEnumerable<IMessage> messages, Role? role = null, string? fromAgent = null, JsonObject? metadata = null, string? generationId = null)
+    public static CompositeMessage CreateFromMessages(
+        IEnumerable<IMessage> messages,
+        Role? role = null,
+        string? fromAgent = null,
+        JsonObject? metadata = null,
+        string? generationId = null)
     {
         var builder = ImmutableList.CreateBuilder<Union<string, BinaryData, ToolCallResult>>();
         Role effectiveRole = Role.None;
@@ -272,10 +239,7 @@ public record CompositeMessage : IMessage, ICanGetText, ICanGetBinary, ICanGetTo
             var toolCalls = (message as ICanGetToolCalls)?.GetToolCalls();
             if (toolCalls != null)
             {
-                foreach (var toolCall in toolCalls)
-                {
-                    builder.Add(new Union<string, BinaryData, ToolCallResult>(new ToolCallResult(toolCall, string.Empty)));
-                }
+                throw new NotImplementedException("Tool calls extraction not implemented yet.");
             }
         }
         

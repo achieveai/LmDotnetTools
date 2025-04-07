@@ -10,7 +10,7 @@ public class ToolCallAggregateMessage : IMessage
     /// <summary>
     /// The original tool call message
     /// </summary>
-    public IMessage ToolCallMessage { get; }
+    public ToolsCallMessage ToolCallMessage { get; }
     
     /// <summary>
     /// The result of the tool call
@@ -37,7 +37,7 @@ public class ToolCallAggregateMessage : IMessage
     /// </summary>
     public string? GenerationId => ToolCallMessage.GenerationId;
     
-    public ToolCallAggregateMessage(IMessage toolCallMessage, ToolsCallResultMessage toolCallResult, string? fromAgent = null)
+    public ToolCallAggregateMessage(ToolsCallMessage toolCallMessage, ToolsCallResultMessage toolCallResult, string? fromAgent = null)
     {
         ToolCallMessage = toolCallMessage;
         ToolCallResult = toolCallResult;
@@ -92,11 +92,5 @@ public class ToolCallAggregateMessage : IMessage
         
         // Otherwise, delegate to the tool call message
         return null;
-    }
-    
-    public IEnumerable<IMessage>? GetMessages()
-    {
-        // Return both messages
-        return new[] { ToolCallMessage, ToolCallResult };
     }
 } 

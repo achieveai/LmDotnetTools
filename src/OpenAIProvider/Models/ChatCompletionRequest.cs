@@ -161,8 +161,7 @@ public record ChatCompletionRequest
                 return toolCallResultMessage.ToolCallResults
                     .Where(tc => tc.Result != null)
                     .Select(tc => {
-                        var functionCall = new FunctionContent.FunctionCall(tc.ToolCall.FunctionName, tc.ToolCall.FunctionArgs);
-                        var toolCallId = tc.ToolCall.ToolCallId ?? functionCall.ComputeToolCallId();
+                        var toolCallId = tc.ToolCallId;
                         return 
                             new ChatMessage {
                                 Role = RoleEnum.Tool,

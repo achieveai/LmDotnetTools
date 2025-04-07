@@ -33,7 +33,7 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = ImmutableList.Create(new ToolCallResult(toolCall, result ?? string.Empty))
+            ToolCallResults = ImmutableList.Create(new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty))
         };
     }
 
@@ -46,7 +46,7 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = results.Select(r => new ToolCallResult(r.toolCall, r.result ?? string.Empty)).ToImmutableList()
+            ToolCallResults = results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)).ToImmutableList()
         };
     }
 }

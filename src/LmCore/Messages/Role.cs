@@ -6,5 +6,5 @@ public enum Role
     User,
     Assistant,
     System,
-    Function
+    Tool
 }

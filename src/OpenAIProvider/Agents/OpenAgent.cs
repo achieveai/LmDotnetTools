@@ -170,7 +170,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             // This is a simplified version - would need to handle different message types
             var role = message.Role == Role.User ? RoleEnum.User :
                        message.Role == Role.System ? RoleEnum.System :
-                       message.Role == Role.Function ? RoleEnum.Tool :
+                       message.Role == Role.Tool ? RoleEnum.Tool :
                        RoleEnum.Assistant;
 
             var chatMessage = new ChatMessage { 

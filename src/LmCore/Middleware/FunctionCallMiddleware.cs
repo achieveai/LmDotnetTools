@@ -10,8 +10,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class FunctionCallMiddleware : IStreamingMiddleware
 {
-    private readonly IEnumerable<FunctionContract>? _functions;
-    private readonly IDictionary<string, Func<string, Task<string>>>? _functionMap;
+    private readonly IEnumerable<FunctionContract> _functions;
+    private readonly IDictionary<string, Func<string, Task<string>>> _functionMap;
 
     public FunctionCallMiddleware(
         IEnumerable<FunctionContract> functions,
@@ -78,7 +78,10 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         var responseToolCalls = responseToolCall?.GetToolCalls();
         if (responseToolCalls != null && responseToolCalls.Any())
         {
-            return await ProcessResponseToolCallsAsync(responseToolCalls, agent);
+            var result = await ProcessResponseToolCallsAsync(responseToolCalls, agent);
+            return new ToolCallAggregateMessage(
+                (ToolsCallMessage)reply,
+                result);
         }
 
         return reply;
@@ -132,13 +135,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return _functions.Concat(optionFunctions);
     }
 
-    private async Task<IMessage> ProcessToolCallsAsync(IEnumerable<ToolCall> toolCalls, IAgent agent)
+    private async Task<ToolsCallResultMessage> ProcessToolCallsAsync(IEnumerable<ToolCall> toolCalls, IAgent agent)
     {
-        if (_functionMap == null || !_functionMap.Any())
-        {
-            throw new InvalidOperationException("Function map is not available");
-        }
-
         var toolCallResults = new List<ToolCallResult>();
         
         foreach (var toolCall in toolCalls)
@@ -149,14 +147,14 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             if (_functionMap.TryGetValue(functionName, out var func))
             {
                 var result = await func(functionArgs);
-                toolCallResults.Add(new ToolCallResult(toolCall, result));
+                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
             }
             else
             {
                 // Add error result for unavailable function
                 var availableFunctions = string.Join(", ", _functionMap.Keys);
                 var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
-                toolCallResults.Add(new ToolCallResult(toolCall, errorMessage));
+                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, errorMessage));
             }
         }
         
@@ -164,27 +162,15 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return new ToolsCallResultMessage
         {
             ToolCallResults = toolCallResults.ToImmutableList(),
-            Role = Role.Assistant,
+            Role = Role.Tool,
             FromAgent = string.Empty  // No Id property in IAgent
         };
     }
 
-    private async Task<IMessage> ProcessResponseToolCallsAsync(
+    private async Task<ToolsCallResultMessage> ProcessResponseToolCallsAsync(
         IEnumerable<ToolCall> toolCalls,
         IAgent agent)
     {
-        if (_functionMap == null || !_functionMap.Any())
-        {
-            // If no function map is available, just return a message about the tool calls
-            var toolCallNames = string.Join(", ", toolCalls.Select(tc => tc.FunctionName));
-            return new TextMessage
-            {
-                Text = $"Tool calls requested: {toolCallNames}",
-                Role = Role.Assistant,
-                FromAgent = string.Empty  // No Id property in IAgent
-            };
-        }
-
         var toolCallResults = new List<ToolCallResult>();
         
         foreach (var toolCall in toolCalls)
@@ -196,14 +182,14 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             {
                 // Execute the function
                 var result = await func(functionArgs);
-                toolCallResults.Add(new ToolCallResult(toolCall, result));
+                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
             }
             else
             {
                 // Add error result for unavailable function
                 var availableFunctions = string.Join(", ", _functionMap.Keys);
                 var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
-                toolCallResults.Add(new ToolCallResult(toolCall, errorMessage));
+                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, errorMessage));
             }
         }
         
@@ -211,7 +197,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return new ToolsCallResultMessage
         {
             ToolCallResults = toolCallResults.ToImmutableList(),
-            Role = Role.Assistant,
+            Role = Role.Tool,
             FromAgent = string.Empty  // No Id property in IAgent
         };
     }
@@ -336,25 +322,28 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 if (_functionMap.TryGetValue(functionName, out var func))
                 {
                     var result = func(functionArgs).GetAwaiter().GetResult(); // Sync execution at end of stream
-                    toolCallResults.Add(new ToolCallResult(toolCall, result));
+                    toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
                 }
                 else
                 {
                     // Add error result for unavailable function
                     var availableFunctions = string.Join(", ", _functionMap.Keys);
                     var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
-                    toolCallResults.Add(new ToolCallResult(toolCall, errorMessage));
+                    toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, errorMessage));
                 }
             }
             
             if (toolCallResults.Any())
             {
-                return Task.FromResult<IMessage>(new ToolsCallResultMessage
-                {
-                    ToolCallResults = toolCallResults.ToImmutableList(),
-                    Role = Role.Assistant,
-                    FromAgent = toolCallMessage.FromAgent
-                });
+                return Task.FromResult<IMessage>(
+                    new ToolCallAggregateMessage(
+                        toolCallMessage,
+                        new ToolsCallResultMessage
+                        {
+                            ToolCallResults = toolCallResults.ToImmutableList(),
+                            Role = Role.Tool,
+                            FromAgent = toolCallMessage.FromAgent
+                        }));
             }
         }
 
@@ -403,7 +392,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
     }
 
-    private IEnumerable<IMessage> ProcessFinalToolCallMessage(ToolsCallMessageBuilder toolsCallBuilder)
+    private IEnumerable<ToolCallAggregateMessage> ProcessFinalToolCallMessage(ToolsCallMessageBuilder toolsCallBuilder)
     {
         var builtMessage = toolsCallBuilder.Build();
         var toolCallResults = new List<ToolCallResult>();
@@ -418,35 +407,29 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     try
                     {
                         var result = func(toolCall.FunctionArgs).GetAwaiter().GetResult(); // Sync execution at end of stream
-                        toolCallResults.Add(new ToolCallResult(toolCall, result));
+                        toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
                     }
                     catch (Exception ex)
                     {
                         // Add error result
-                        toolCallResults.Add(new ToolCallResult(toolCall, $"Error executing function: {ex.Message}"));
+                        toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, $"Error executing function: {ex.Message}"));
                     }
                 }
                 else
                 {
-                    toolCallResults.Add(new ToolCallResult(toolCall, string.Empty));
+                    toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, string.Empty));
                 }
             }
         }
 
-        if (toolCallResults.Count > 0)
-        {
-            yield return new ToolsCallResultMessage
+        yield return new ToolCallAggregateMessage(
+            builtMessage,
+            new ToolsCallResultMessage
             {
-                Role = Role.Assistant,
-                FromAgent = builtMessage.FromAgent,
-                ToolCallResults = toolCallResults.ToImmutableList()
-            };
-        }
-        else
-        {
-            // Otherwise, just return the built message
-            yield return builtMessage;
-        }
+                ToolCallResults = toolCallResults.ToImmutableList(),
+                Role = Role.Tool,
+                FromAgent = builtMessage.FromAgent
+            });
     }
 }
 

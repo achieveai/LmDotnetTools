@@ -226,7 +226,7 @@ public class ChatMessage
             RoleEnum.System => LmCore.Messages.Role.System,
             RoleEnum.User => LmCore.Messages.Role.User,
             RoleEnum.Assistant => LmCore.Messages.Role.Assistant,
-            RoleEnum.Tool => LmCore.Messages.Role.Function,
+            RoleEnum.Tool => LmCore.Messages.Role.Tool,
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, null),
         };
     }
@@ -239,7 +239,7 @@ public class ChatMessage
             ? RoleEnum.User
             : role == LmCore.Messages.Role.Assistant
             ? RoleEnum.Assistant
-            : role == LmCore.Messages.Role.Function
+            : role == LmCore.Messages.Role.Tool
             ? RoleEnum.Tool
             : throw new ArgumentOutOfRangeException(nameof(role), role, null);
     }

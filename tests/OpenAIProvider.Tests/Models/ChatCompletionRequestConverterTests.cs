@@ -151,7 +151,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 },
                 new TextMessage 
                 {
-                    Role = Role.Function,
+                    Role = Role.Tool,
                     Text = "{\"temp\":72,\"condition\":\"sunny\"}",
                     FromAgent = "get_weather"
                 },

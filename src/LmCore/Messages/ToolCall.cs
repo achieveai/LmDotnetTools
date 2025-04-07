@@ -7,7 +7,7 @@ public record struct ToolCall(string FunctionName, string FunctionArgs)
     public string? ToolCallId { get; init; }
 }
 
-public record struct ToolCallResult(ToolCall ToolCall, string Result);
+public record struct ToolCallResult(string? ToolCallId, string Result);
 
 public record ToolCallUpdate
 {

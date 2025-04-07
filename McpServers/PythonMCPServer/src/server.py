@@ -5,6 +5,7 @@ import tempfile
 import shutil
 import argparse
 import pathlib
+import logging
 
 # Create MCP server
 mcp = FastMCP("Docker Python Execution")
@@ -119,16 +120,24 @@ async def execute_python_in_container(code: str) -> str:
             command=["python", "/code/script.py"],
             volumes={script_dir: {'bind': '/code', 'mode': 'ro'}},
             detach=True,
-            remove=True,
+            remove=False,  # Set to False to prevent automatic removal
             network_mode="none",
             mem_limit="512m",
             cap_drop=["ALL"],
             security_opt=["no-new-privileges"]
         )
         
-        # Get output with timeout
-        container.wait(timeout=30)
-        result = container.logs()
+        try:
+            # Wait for the container to complete naturally
+            container.wait(timeout=30)
+            # Get logs after the container has completed
+            result = container.logs()
+        finally:
+            # Clean up the container after getting the logs
+            try:
+                container.remove()
+            except Exception as e:
+                logging.warning(f"Failed to remove container: {e}")
         
         # Clean up - explicitly delete the script file first, then the directory
         if os.path.exists(script_path):
