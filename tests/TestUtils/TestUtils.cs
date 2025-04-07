@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Linq;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
@@ -39,5 +41,25 @@ public static class TestUtils
 
         // If we can't find the workspace root, return the current directory
         return AppDomain.CurrentDomain.BaseDirectory;
+    }
+    
+    /// <summary>
+    /// Extracts text content from various message types
+    /// </summary>
+    /// <param name="message">The message to extract text from</param>
+    /// <returns>The extracted text or null if the message is null</returns>
+    public static string? GetText(IMessage? message)
+    {
+        if (message == null) return null;
+        
+        return message switch
+        {
+            TextMessage textMessage => textMessage.Text,
+            ToolsCallResultMessage toolCallResult => string.Join(Environment.NewLine, 
+                toolCallResult.ToolCallResults.Select(tcr => tcr.Result)),
+            ToolCallAggregateMessage toolCallAggregate => string.Join(Environment.NewLine, 
+                toolCallAggregate.ToolCallResult.ToolCallResults.Select(tcr => tcr.Result)),
+            _ => message.ToString()
+        };
     }
 }

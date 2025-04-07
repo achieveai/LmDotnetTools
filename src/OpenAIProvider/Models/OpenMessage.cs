@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using System.Text.Json;
+using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -225,11 +226,17 @@ public class OpenToolCallAggregateMessage : ToolCallAggregateMessage, ICanGetUsa
 {
     public OpenToolCallAggregateMessage(
         string completionId,
-        IMessage toolCallMsg,
+        OpenToolMessage toolCallMsg,
         ToolsCallResultMessage toolCallResult,
         string? fromAgent = null,
         OpenUsage? usage = null)
-        : base(toolCallMsg, toolCallResult, fromAgent)
+        : base(
+            new ToolsCallMessage {
+                FromAgent = toolCallMsg.FromAgent,
+                Role = toolCallMsg.Role,
+                ToolCalls = toolCallMsg.ToolCalls.ToImmutableList(),
+            },
+            toolCallResult, fromAgent)
     {
         CompletionId = completionId;
         Usage = usage;

@@ -2,6 +2,8 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
+using AchieveAi.LmDotnetTools.TestUtils;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol.Transport;
@@ -32,19 +34,7 @@ public class McpTransportIntegrationTests
     }
   }
 
-  /// <summary>
-  /// Extension method to get text from an IMessage
-  /// </summary>
-  private static string? GetText(IMessage? message)
-  {
-    if (message == null) return null;
-    
-    return message switch
-    {
-      TextMessage textMessage => textMessage.Text,
-      _ => message.ToString()
-    };
-  }
+
 
   [Fact]
   public async Task GreetingTool_SayHello_ReturnsGreeting()
@@ -89,7 +79,7 @@ public class McpTransportIntegrationTests
       
       // Assert
       Assert.NotNull(response);
-      var responseText = GetText(response);
+      var responseText = response.GetText();
       Assert.NotNull(responseText);
     }
     finally
@@ -144,7 +134,7 @@ public class McpTransportIntegrationTests
       
       // Assert
       Assert.NotNull(response);
-      var responseText = GetText(response);
+      var responseText = response.GetText();
       Assert.NotNull(responseText);
     }
     finally

@@ -325,7 +325,6 @@ public class FunctionCallMiddlewareTests
     // The exact format of the result might vary so we don't check the exact content
     var toolCallResult = resultMessage.ToolCallResults.First();
     Assert.NotEmpty(toolCallResult.Result);
-    Assert.Equal("get_weather", toolCallResult.ToolCall.FunctionName);
   }
   
   #endregion

@@ -1,5 +1,3 @@
-using System.Security.Cryptography.X509Certificates;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -9,8 +7,6 @@ using DotNetEnv;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol.Transport;
-using System.IO;
-using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 

@@ -2,6 +2,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
+
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol.Transport;
@@ -64,7 +65,7 @@ public class McpServerTests
       
       // Assert
       Assert.NotNull(response);
-      var responseText = GetText(response);
+      var responseText = response.GetText();
       Assert.NotNull(responseText);
       
       // The response should contain a greeting from the MockMcpClient
@@ -142,19 +143,5 @@ public class McpServerTests
     }
   }
   
-  /// <summary>
-  /// Helper method to get text from an IMessage
-  /// </summary>
-  private static string? GetText(IMessage? message)
-  {
-    if (message == null) return null;
-    
-    return message switch
-    {
-      TextMessage textMessage => textMessage.Text,
-      ToolsCallResultMessage toolCallResult => string.Join(Environment.NewLine, 
-        toolCallResult.ToolCallResults.Select(tcr => tcr.Result)),
-      _ => message.ToString()
-    };
-  }
+
 }
