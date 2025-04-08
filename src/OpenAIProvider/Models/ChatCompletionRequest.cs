@@ -169,7 +169,7 @@ public record ChatCompletionRequest
                                 Content = new Union<string, Union<TextContent, ImageContent>[]>(tc.Result!)
                             };
                     });
-            case ToolCallAggregateMessage toolCallAggregateMessage:
+            case ToolsCallAggregateMessage toolCallAggregateMessage:
                 return FromMessage(toolCallAggregateMessage.ToolCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolCallResult));
             case ICanGetText textMessage:

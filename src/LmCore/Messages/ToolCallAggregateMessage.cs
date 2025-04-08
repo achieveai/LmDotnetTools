@@ -5,12 +5,12 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// <summary>
 /// Combines a tool call message and its result into a single message
 /// </summary>
-public class ToolCallAggregateMessage : IMessage
+public class ToolsCallAggregateMessage : IMessage
 {
     /// <summary>
     /// The original tool call message
     /// </summary>
-    public ToolsCallMessage ToolCallMessage { get; }
+    public ICanGetToolCalls ToolCallMessage { get; }
     
     /// <summary>
     /// The result of the tool call
@@ -37,7 +37,7 @@ public class ToolCallAggregateMessage : IMessage
     /// </summary>
     public string? GenerationId => ToolCallMessage.GenerationId;
     
-    public ToolCallAggregateMessage(ToolsCallMessage toolCallMessage, ToolsCallResultMessage toolCallResult, string? fromAgent = null)
+    public ToolsCallAggregateMessage(ICanGetToolCalls toolCallMessage, ToolsCallResultMessage toolCallResult, string? fromAgent = null)
     {
         ToolCallMessage = toolCallMessage;
         ToolCallResult = toolCallResult;

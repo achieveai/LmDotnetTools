@@ -57,7 +57,7 @@ public static class TestUtils
             TextMessage textMessage => textMessage.Text,
             ToolsCallResultMessage toolCallResult => string.Join(Environment.NewLine, 
                 toolCallResult.ToolCallResults.Select(tcr => tcr.Result)),
-            ToolCallAggregateMessage toolCallAggregate => string.Join(Environment.NewLine, 
+            ToolsCallAggregateMessage toolCallAggregate => string.Join(Environment.NewLine, 
                 toolCallAggregate.ToolCallResult.ToolCallResults.Select(tcr => tcr.Result)),
             _ => message.ToString()
         };

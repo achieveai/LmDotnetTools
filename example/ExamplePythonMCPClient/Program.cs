@@ -29,7 +29,7 @@ class Program
       TransportType = TransportTypes.StdIo,
       TransportOptions = new Dictionary<string, string>
       {
-        ["command"] = "uvx d:/Source/repos/LmDotnetTools/McpServers/PythonMCPServer --image pyexec"
+        ["command"] = $"uvx {GetWorkspaceRootPath()}/McpServers/PythonMCPServer --image pyexec"
       }
     };
     
@@ -95,10 +95,10 @@ class Program
         Console.WriteLine("\nAgent Response:\n");
         Console.WriteLine(textReply.Text);
       }
-      else if (reply is ToolCallAggregateMessage toolsCallMessage)
+      else if (reply is ToolsCallAggregateMessage toolsCallMessage)
       {
         Console.WriteLine("\nAgent is making tool calls:\n");
-        foreach (var (toolCall, result) in toolsCallMessage.ToolCallMessage.ToolCalls.Zip(toolsCallMessage.ToolCallResult.ToolCallResults))
+        foreach (var (toolCall, result) in toolsCallMessage.ToolCallMessage.GetToolCalls()!.Zip(toolsCallMessage.ToolCallResult.ToolCallResults))
         {
           Console.WriteLine($"Tool: {toolCall.FunctionName}");
           Console.WriteLine($"Arguments: {toolCall.FunctionArgs}");
@@ -123,9 +123,22 @@ class Program
       Console.WriteLine(ex.StackTrace);
     }
     
+    await mcpClient.DisposeAsync();
     Console.WriteLine("\nPress any key to exit...");
-    Console.ReadKey();
+    _ = Console.Read();
   }
+
+  public static string GetWorkspaceRootPath()
+  {
+    var curPath = Environment.CurrentDirectory;
+    while (curPath != null && !string.IsNullOrEmpty(curPath) && !Directory.GetFiles(curPath, "*.sln").Any())
+    {
+      curPath = Path.GetDirectoryName(curPath);
+    }
+
+    return curPath ?? throw new DirectoryNotFoundException("Solution root directory not found in the current directory or any parent directories.");
+  }
+
   
   /// <summary>
   /// Loads environment variables from .env file in the project root

@@ -222,20 +222,16 @@ public class OpenToolMessage : IMessage, ICanGetToolCalls, ICanGetUsage
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
-public class OpenToolCallAggregateMessage : ToolCallAggregateMessage, ICanGetUsage
+public class OpenToolCallAggregateMessage : ToolsCallAggregateMessage, ICanGetUsage
 {
     public OpenToolCallAggregateMessage(
         string completionId,
-        OpenToolMessage toolCallMsg,
+        ICanGetToolCalls toolCallMsg,
         ToolsCallResultMessage toolCallResult,
         string? fromAgent = null,
         OpenUsage? usage = null)
         : base(
-            new ToolsCallMessage {
-                FromAgent = toolCallMsg.FromAgent,
-                Role = toolCallMsg.Role,
-                ToolCalls = toolCallMsg.ToolCalls.ToImmutableList(),
-            },
+            toolCallMsg,
             toolCallResult, fromAgent)
     {
         CompletionId = completionId;

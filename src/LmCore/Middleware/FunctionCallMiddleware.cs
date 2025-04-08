@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
@@ -56,18 +57,14 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
     public async Task<IMessage> InvokeAsync(MiddlewareContext context, IAgent agent, CancellationToken cancellationToken = default)
     {
-        var lastMessage = context.Messages.Last() as ICanGetToolCalls;
-        var toolCalls = lastMessage?.GetToolCalls();
-        if (toolCalls != null && toolCalls.Any())
+        // Process any existing tool calls in the last message
+        var (hasPendingToolCalls, toolCalls, options) = PrepareInvocation(context);
+        if (hasPendingToolCalls)
         {
-            return await ProcessToolCallsAsync(toolCalls, agent);
+            return await ExecuteToolCallsAsync(toolCalls!, agent);
         }
 
-        // Clone options and add functions
-        var options = context.Options ?? new GenerateReplyOptions();
-        var combinedFunctions = CombineFunctions(options.Functions);
-        options = options with { Functions = combinedFunctions?.ToArray() };
-
+        // Generate reply with the configured options
         var reply = await agent.GenerateReplyAsync(
             context.Messages,
             options,
@@ -78,9 +75,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         var responseToolCalls = responseToolCall?.GetToolCalls();
         if (responseToolCalls != null && responseToolCalls.Any())
         {
-            var result = await ProcessResponseToolCallsAsync(responseToolCalls, agent);
-            return new ToolCallAggregateMessage(
-                (ToolsCallMessage)reply,
+            var result = await ExecuteToolCallsAsync(responseToolCalls, agent);
+            return new ToolsCallAggregateMessage(
+                responseToolCall!,
                 result);
         }
 
@@ -92,18 +89,13 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         IStreamingAgent agent,
         CancellationToken cancellationToken = default)
     {
-        var lastMessage = context.Messages.Last() as ICanGetToolCalls;
-        var toolCalls = lastMessage?.GetToolCalls();
-        if (toolCalls != null && toolCalls.Any())
+        // Process any existing tool calls in the last message
+        var (hasPendingToolCalls, toolCalls, options) = PrepareInvocation(context);
+        if (hasPendingToolCalls)
         {
-            var result = await ProcessToolCallsAsync(toolCalls, agent);
+            var result = await ExecuteToolCallsAsync(toolCalls!, agent);
             return new[] { result }.ToAsyncEnumerable();
         }
-
-        // Clone options and add functions
-        var options = context.Options ?? new GenerateReplyOptions();
-        var combinedFunctions = CombineFunctions(options.Functions);
-        options = options with { Functions = combinedFunctions?.ToArray() };
 
         // Get the streaming response from the agent
         var streamingResponse = await agent.GenerateReplyStreamingAsync(
@@ -135,27 +127,65 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return _functions.Concat(optionFunctions);
     }
 
-    private async Task<ToolsCallResultMessage> ProcessToolCallsAsync(IEnumerable<ToolCall> toolCalls, IAgent agent)
+    /// <summary>
+    /// Common method to prepare invocation by checking for tool calls and configuring options
+    /// </summary>
+    private (bool HasPendingToolCalls, IEnumerable<ToolCall>? ToolCalls, GenerateReplyOptions Options) PrepareInvocation(MiddlewareContext context)
+    {
+        // Check for existing tool calls that need processing
+        var lastMessage = context.Messages.Last() as ICanGetToolCalls;
+        var toolCalls = lastMessage?.GetToolCalls();
+        var hasPendingToolCalls = toolCalls != null && toolCalls.Any();
+        
+        // Clone options and add functions
+        var options = context.Options ?? new GenerateReplyOptions();
+        var combinedFunctions = CombineFunctions(options.Functions);
+        options = options with { Functions = combinedFunctions?.ToArray() };
+        
+        return (hasPendingToolCalls, toolCalls, options);
+    }
+    
+    /// <summary>
+    /// Execute a single tool call and return the result
+    /// </summary>
+    private async Task<ToolCallResult> ExecuteToolCallAsync(ToolCall toolCall)
+    {
+        var functionName = toolCall.FunctionName;
+        var functionArgs = toolCall.FunctionArgs;
+        
+        if (_functionMap.TryGetValue(functionName, out var func))
+        {
+            try
+            {
+                var result = await func(functionArgs);
+                return new ToolCallResult(toolCall.ToolCallId, result);
+            }
+            catch (Exception ex)
+            {
+                // Handle exceptions during function execution
+                return new ToolCallResult(toolCall.ToolCallId, $"Error executing function: {ex.Message}");
+            }
+        }
+        else
+        {
+            // Return error for unavailable function
+            var availableFunctions = string.Join(", ", _functionMap.Keys);
+            var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
+            return new ToolCallResult(toolCall.ToolCallId, errorMessage);
+        }
+    }
+    
+    /// <summary>
+    /// Execute multiple tool calls and return a message with results
+    /// </summary>
+    private async Task<ToolsCallResultMessage> ExecuteToolCallsAsync(IEnumerable<ToolCall> toolCalls, IAgent agent)
     {
         var toolCallResults = new List<ToolCallResult>();
         
         foreach (var toolCall in toolCalls)
         {
-            var functionName = toolCall.FunctionName;
-            var functionArgs = toolCall.FunctionArgs;
-            
-            if (_functionMap.TryGetValue(functionName, out var func))
-            {
-                var result = await func(functionArgs);
-                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
-            }
-            else
-            {
-                // Add error result for unavailable function
-                var availableFunctions = string.Join(", ", _functionMap.Keys);
-                var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
-                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, errorMessage));
-            }
+            var result = await ExecuteToolCallAsync(toolCall);
+            toolCallResults.Add(result);
         }
         
         // Return a ToolsCallResultMessage with all results
@@ -167,41 +197,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         };
     }
 
-    private async Task<ToolsCallResultMessage> ProcessResponseToolCallsAsync(
-        IEnumerable<ToolCall> toolCalls,
-        IAgent agent)
-    {
-        var toolCallResults = new List<ToolCallResult>();
-        
-        foreach (var toolCall in toolCalls)
-        {
-            var functionName = toolCall.FunctionName;
-            var functionArgs = toolCall.FunctionArgs;
-            
-            if (_functionMap.TryGetValue(functionName, out var func))
-            {
-                // Execute the function
-                var result = await func(functionArgs);
-                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
-            }
-            else
-            {
-                // Add error result for unavailable function
-                var availableFunctions = string.Join(", ", _functionMap.Keys);
-                var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
-                toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, errorMessage));
-            }
-        }
-        
-        // Return a ToolsCallResultMessage with all results
-        return new ToolsCallResultMessage
-        {
-            ToolCallResults = toolCallResults.ToImmutableList(),
-            Role = Role.Tool,
-            FromAgent = string.Empty  // No Id property in IAgent
-        };
-    }
+    // Method removed as it was replaced by ExecuteToolCallsAsync
 
+    /// <summary>
+    /// Transform a stream of messages using message builders for aggregation
+    /// </summary>
     private async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
         IAsyncEnumerable<IMessage> sourceStream,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -222,8 +222,36 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             // Update last message type
             lastMessageType = message.GetType();
             
-            // Process the current message
-            yield return await ProcessStreamingMessage(message, builders, cancellationToken);
+            // Process the current message based on its type
+            if (message is TextMessage textMessage)
+            {
+                yield return ProcessTextMessage(textMessage, builders);
+            }
+            // Handle ToolsCallUpdateMessage (partial updates to be accumulated)
+            else if (message is ToolsCallUpdateMessage updateMessage)
+            {
+                // Process partial tool call update
+                yield return await ProcessToolCallUpdate(updateMessage, builders);
+            }
+            // Handle complete ToolsCallMessage (no builder needed)
+            else if (message is ICanGetToolCalls toolsCallMessage)
+            {
+                // If it has tool calls, execute them directly
+                if (toolsCallMessage.GetToolCalls() != null && toolsCallMessage.GetToolCalls()!.Any())
+                {
+                    yield return await ProcessCompleteToolCallMessage(toolsCallMessage);
+                }
+                else
+                {
+                    // Just pass through empty tool call messages
+                    yield return toolsCallMessage;
+                }
+            }
+            else
+            {
+                // Pass through other message types
+                yield return message;
+            }
         }
         
         // Process any final built messages at the end of the stream
@@ -254,32 +282,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return Task.FromResult<IMessage>(new TextMessage { Text = string.Empty, Role = Role.System });
     }
 
-    private Task<IMessage> ProcessStreamingMessage(
-        IMessage message, 
-        Dictionary<Type, object> builders,
-        CancellationToken cancellationToken)
-    {
-        // Handle tool call updates for ToolsCallUpdateMessage
-        if (message is ToolsCallUpdateMessage toolCallUpdate)
-        {
-            return ProcessToolCallUpdate(toolCallUpdate, builders);
-        }
-        
-        // Handle completed tool call messages
-        if (message is ToolsCallMessage toolCallMessage)
-        {
-            return ProcessCompleteToolCallMessage(toolCallMessage, builders);
-        }
-        
-        // For text messages, use the TextMessageBuilder - but let TextUpdateMessage pass through
-        if (message is TextMessage textMessage && !(message.GetType().Name.Contains("Update")))
-        {
-            return Task.FromResult(ProcessTextMessage(textMessage, builders));
-        }
-        
-        // For all other message types, pass through as-is
-        return Task.FromResult(message);
-    }
+    // This method has been removed as its functionality has been integrated into TransformStreamWithBuilder
 
     private Task<IMessage> ProcessToolCallUpdate(
         ToolsCallUpdateMessage toolCallUpdate, 
@@ -304,39 +307,28 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return Task.FromResult<IMessage>(new TextMessage { Text = string.Empty, Role = Role.System });
     }
 
-    private Task<IMessage> ProcessCompleteToolCallMessage(
-        ToolsCallMessage toolCallMessage,
-        Dictionary<Type, object> builders)
+    /// <summary>
+    /// Process a complete tool call message by executing all tool calls
+    /// </summary>
+    private Task<IMessage> ProcessCompleteToolCallMessage(ICanGetToolCalls toolCallMessage)
     {
         // Process the tool calls if needed
-        var toolCalls = toolCallMessage.ToolCalls;
-        if (toolCalls.Any() && _functionMap != null)
+        var toolCalls = toolCallMessage.GetToolCalls();
+        if (toolCalls != null && toolCalls.Any() && _functionMap != null)
         {
             var toolCallResults = new List<ToolCallResult>();
             
             foreach (var toolCall in toolCalls)
             {
-                var functionName = toolCall.FunctionName;
-                var functionArgs = toolCall.FunctionArgs;
-                
-                if (_functionMap.TryGetValue(functionName, out var func))
-                {
-                    var result = func(functionArgs).GetAwaiter().GetResult(); // Sync execution at end of stream
-                    toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
-                }
-                else
-                {
-                    // Add error result for unavailable function
-                    var availableFunctions = string.Join(", ", _functionMap.Keys);
-                    var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
-                    toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, errorMessage));
-                }
+                // Use the common execution logic but run it synchronously
+                var result = ExecuteToolCallAsync(toolCall).GetAwaiter().GetResult();
+                toolCallResults.Add(result);
             }
             
             if (toolCallResults.Any())
             {
                 return Task.FromResult<IMessage>(
-                    new ToolCallAggregateMessage(
+                    new ToolsCallAggregateMessage(
                         toolCallMessage,
                         new ToolsCallResultMessage
                         {
@@ -350,7 +342,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         return Task.FromResult<IMessage>(toolCallMessage);
     }
 
-    private IMessage ProcessTextMessage(
+    private static TextMessage ProcessTextMessage(
         TextMessage textMessage,
         Dictionary<Type, object> builders)
     {
@@ -373,6 +365,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
     }
 
+    /// <summary>
+    /// Process all final message builders into complete messages
+    /// </summary>
     private IEnumerable<IMessage> ProcessFinalBuiltMessages(Dictionary<Type, object> builders)
     {
         foreach (var (type, builder) in builders)
@@ -389,40 +384,30 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 var textBuilder = (TextMessageBuilder)builder;
                 yield return textBuilder.Build();
             }
+            // Extensible: additional message types can be added here
         }
     }
 
-    private IEnumerable<ToolCallAggregateMessage> ProcessFinalToolCallMessage(ToolsCallMessageBuilder toolsCallBuilder)
+    /// <summary>
+    /// Process a final tool call message by executing all tool calls synchronously
+    /// </summary>
+    private IEnumerable<ToolsCallAggregateMessage> ProcessFinalToolCallMessage(ToolsCallMessageBuilder toolsCallBuilder)
     {
         var builtMessage = toolsCallBuilder.Build();
         var toolCallResults = new List<ToolCallResult>();
         
         if (builtMessage.ToolCalls.Count > 0)
         {
-            // Process each tool call if we have a function map
+            // Process each tool call synchronously
             foreach (var toolCall in builtMessage.ToolCalls)
             {
-                if (_functionMap != null && _functionMap.TryGetValue(toolCall.FunctionName, out var func))
-                {
-                    try
-                    {
-                        var result = func(toolCall.FunctionArgs).GetAwaiter().GetResult(); // Sync execution at end of stream
-                        toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, result));
-                    }
-                    catch (Exception ex)
-                    {
-                        // Add error result
-                        toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, $"Error executing function: {ex.Message}"));
-                    }
-                }
-                else
-                {
-                    toolCallResults.Add(new ToolCallResult(toolCall.ToolCallId, string.Empty));
-                }
+                // Use the same execution logic but run it synchronously
+                var result = ExecuteToolCallAsync(toolCall).GetAwaiter().GetResult();
+                toolCallResults.Add(result);
             }
         }
 
-        yield return new ToolCallAggregateMessage(
+        yield return new ToolsCallAggregateMessage(
             builtMessage,
             new ToolsCallResultMessage
             {
@@ -434,19 +419,3 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 }
 
 // Extension method to convert an array to IAsyncEnumerable
-public static class AsyncEnumerableExtensions
-{
-    public static IAsyncEnumerable<T> ToAsyncEnumerable<T>(this T[] array)
-    {
-        return array.ToAsyncEnumerableInternal();
-    }
-    
-    private static async IAsyncEnumerable<T> ToAsyncEnumerableInternal<T>(this T[] array)
-    {
-        foreach (var item in array)
-        {
-            await Task.Yield(); // Add await to make this truly async
-            yield return item;
-        }
-    }
-}
