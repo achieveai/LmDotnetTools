@@ -110,15 +110,4 @@ public class McpMiddlewareFactory
         // This will automatically extract function contracts from the clients
         return await McpMiddleware.CreateAsync(mcpClients, cancellationToken: cancellationToken);
     }
-
-    /// <summary>
-    /// Converts an MCP client tool to a function contract
-    /// </summary>
-    /// <param name="tool">The MCP client tool</param>
-    /// <returns>The function contract</returns>
-
-
-
-
-
 }
