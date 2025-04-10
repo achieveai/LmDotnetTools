@@ -25,7 +25,7 @@ public record TextMessage : IMessage, ICanGetText
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
-public class TextMessageBuilder : IMessageBuilder<TextMessage, TextMessage>
+public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage>
 {
     private readonly StringBuilder _textBuilder = new StringBuilder();
 
@@ -37,7 +37,12 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextMessage>
 
     public string? GenerationId { get; set; }
 
-    public void Add(TextMessage streamingMessageUpdate)
+    IMessage IMessageBuilder.Build()
+    {
+        return this.Build();
+    }
+
+    public void Add(TextUpdateMessage streamingMessageUpdate)
     {
         _textBuilder.Append(streamingMessageUpdate.Text);
         

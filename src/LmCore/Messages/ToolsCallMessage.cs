@@ -36,14 +36,6 @@ public record ToolsCallUpdateMessage : IMessage
     public string? GenerationId { get; init; } = null;
 
     public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = ImmutableList<ToolCallUpdate>.Empty;
-    
-    public string? GetText() => null;
-    
-    public BinaryData? GetBinary() => null;
-    
-    public ToolCall? GetToolCalls() => null;
-    
-    public IEnumerable<IMessage>? GetMessages() => null;
 }
 
 public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCallUpdateMessage>
@@ -56,34 +48,67 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public string? GenerationId { get; init; } = null;
 
+    public Action<ToolCall> OnToolCall { get; init; } = _ => { };
+
     private ImmutableList<ToolCall> _completedToolCalls = ImmutableList<ToolCall>.Empty;
     
     // Current partial tool call we're building
     private string? _currentFunctionName = null;
     private string _accumulatedArgs = "";
+    private string? _currentToolCallId = null;
+    private int? _currentIndex = null;
+
+    IMessage IMessageBuilder.Build()
+    {
+        return this.Build();
+    }
     
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
         // Process each update
         foreach (var update in streamingMessageUpdate.ToolCallUpdates)
         {
-            // If update contains a function name, it's the start of a new tool call
-            if (update.FunctionName != null)
+            // Check if this update completes a current tool call based on Id or Index
+            bool isNewToolCall = false;
+            
+            // Rule 0: If we have both IDs (non-null) and they're different, it's a new tool call
+            if (_currentToolCallId != null && update.ToolCallId != null && _currentToolCallId != update.ToolCallId)
             {
-                // Complete any existing partial update first
-                if (_currentFunctionName != null)
-                {
-                    TryCompletePartialUpdate();
-                }
-                
-                // Start a new partial update
+                CompleteCurrentToolCall();
+                isNewToolCall = true;
+            }
+            // Rule 1: If we have both Indexes (non-null) and they're different, it's a new tool call
+            else if (_currentIndex != null && update.Index != null && _currentIndex != update.Index)
+            {
+                CompleteCurrentToolCall();
+                isNewToolCall = true;
+            }
+            
+            // If update contains a function name, it's the start of a new tool call
+            if (isNewToolCall || update.FunctionName != null)
+            {
+                // Start a new tool call
                 _currentFunctionName = update.FunctionName;
                 _accumulatedArgs = update.FunctionArgs ?? "";
+                _currentToolCallId = update.ToolCallId;
+                _currentIndex = update.Index;
             }
             // Otherwise, it's an update to the current partial tool call
             else if (_currentFunctionName != null && update.FunctionArgs != null)
             {
                 _accumulatedArgs += update.FunctionArgs;
+                
+                // Update tool call ID if it's now provided
+                if (_currentToolCallId == null && update.ToolCallId != null)
+                {
+                    _currentToolCallId = update.ToolCallId;
+                }
+                
+                // Update index if it's now provided
+                if (_currentIndex == null && update.Index != null)
+                {
+                    _currentIndex = update.Index;
+                }
             }
         }
         
@@ -105,25 +130,41 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         }
     }
     
-    private void TryCompletePartialUpdate()
+    private void CompleteCurrentToolCall()
     {
         if (_currentFunctionName != null)
         {
             var toolCall = new ToolCall
             {
                 FunctionName = _currentFunctionName,
-                FunctionArgs = _accumulatedArgs
+                FunctionArgs = _accumulatedArgs,
+                ToolCallId = _currentToolCallId,
+                Index = _currentIndex
             };
+            
+            // Add to completed tool calls
             _completedToolCalls = _completedToolCalls.Add(toolCall);
+            
+            // Invoke callback for completed tool call
+            OnToolCall(toolCall);
+            
+            // Reset the current tool call state
             _currentFunctionName = null;
             _accumulatedArgs = "";
+            _currentToolCallId = null;
+            _currentIndex = null;
         }
+    }
+    
+    private void TryCompletePartialUpdate()
+    {
+        CompleteCurrentToolCall();
     }
     
     public ToolsCallMessage Build()
     {
-        // Complete any final partial update
-        TryCompletePartialUpdate();
+        // Rule 2: When build is called, complete any final partial update
+        CompleteCurrentToolCall();
         
         return new ToolsCallMessage
         {

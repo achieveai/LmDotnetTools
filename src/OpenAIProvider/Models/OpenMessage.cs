@@ -55,37 +55,6 @@ public record OpenMessage
         return baseMessage;
     }
 
-    public IMessage ToOpenMessage()
-    {
-        var baseMessage = ChatMessage.ToMessage(ChatMessage.Name);
-
-        // Fill in the OpenMessage specific fields
-        if (baseMessage is ToolsCallMessage toolCallMessage)
-        {
-            return new OpenToolMessage
-            {
-                ToolCalls = toolCallMessage.ToolCalls.ToList(),
-                CompletionId = CompletionId,
-                FromAgent = ChatMessage.Name,
-                Role = toolCallMessage.Role,
-                Usage = Usage
-            };
-        }
-        else if (baseMessage is TextMessage textMessage)
-        {
-            return new OpenTextMessage
-            {
-                Text = textMessage.Text,
-                Role = textMessage.Role,
-                FromAgent = ChatMessage.Name,
-                CompletionId = CompletionId,
-                Usage = Usage
-            };
-        }
-
-        return baseMessage;
-    }
-
     public IMessage ToStreamingMessage()
     {
         var baseMessage = ChatMessage.ToStreamingMessage(ChatMessage.Name);
@@ -93,13 +62,16 @@ public record OpenMessage
         // Fill in the OpenMessage specific fields
         if (baseMessage is ToolsCallMessage toolCallMessage)
         {
-            return new OpenToolMessage
-            {
-                ToolCalls = toolCallMessage.ToolCalls.ToList(),
-                CompletionId = CompletionId,
+            return toolCallMessage with {
+                GenerationId = CompletionId,
                 FromAgent = ChatMessage.Name,
                 Role = toolCallMessage.Role,
-                Usage = Usage
+                Metadata = new JsonObject
+                {
+                    ["is_streaming"] = true,
+                    ["completion_id"] = CompletionId,
+                    ["usage"] = Usage != null ? JsonSerializer.SerializeToNode(Usage) : null,
+                }
             };
         }
         else if (baseMessage is TextMessage textMessage)

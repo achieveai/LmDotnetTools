@@ -40,13 +40,18 @@ public class ChatMessage
         if (ToolCalls?.Count > 0)
         {
             var toolCalls = ToolCalls.Select(tc =>
-                new ToolCall(tc.Function.Name, tc.Function.Arguments) { ToolCallId = tc.Id }
+                new ToolCallUpdate{
+                    FunctionName = tc.Function.Name,
+                    FunctionArgs = tc.Function.Arguments,
+                    ToolCallId = tc.Id,
+                    Index = tc.Index,
+                }
             ).ToArray();
 
-            return new ToolsCallMessage
+            return new ToolsCallUpdateMessage
             {
                 Role = ToRole(role!.Value),
-                ToolCalls = toolCalls.ToImmutableList(),
+                ToolCallUpdates = toolCalls.ToImmutableList(),
                 FromAgent = name,
                 GenerationId = Id,
             };
@@ -314,6 +319,9 @@ public class FunctionContent
 
     [JsonPropertyName("id")]
     public string Id { get; set; }
+
+    [JsonPropertyName("index")]
+    public int? Index { get; set; }
 
     [JsonPropertyName("type")]
     public string Type { get; } = "function";

@@ -200,38 +200,36 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     // Method removed as it was replaced by ExecuteToolCallsAsync
 
     /// <summary>
-    /// Transform a stream of messages using message builders for aggregation
+    /// Transform a stream of messages using a message builder for aggregation
     /// </summary>
     private async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
         IAsyncEnumerable<IMessage> sourceStream,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        // Dictionary to track message builders by their type
-        var builders = new Dictionary<Type, object>();
-        Type? lastMessageType = null;
+        // Single builder for tool call messages
+        ToolsCallMessageBuilder? toolsCallBuilder = null;
+        bool wasProcessingToolCallUpdate = false;
         
         await foreach (var message in sourceStream.WithCancellation(cancellationToken))
         {
-            // Check if we're switching message types and need to complete any pending builders
-            if (lastMessageType != null && lastMessageType != message.GetType() && builders.ContainsKey(lastMessageType))
+            // Check if we're switching message types and need to complete any pending builder
+            bool isToolCallUpdate = message is ToolsCallUpdateMessage;
+            
+            if (wasProcessingToolCallUpdate && !isToolCallUpdate && toolsCallBuilder != null)
             {
                 // Complete the previous builder before processing the new message
-                yield return await CompletePendingBuilder(lastMessageType, builders);
+                yield return await ProcessFinalToolCallMessage(toolsCallBuilder);
+                toolsCallBuilder = null;
             }
             
-            // Update last message type
-            lastMessageType = message.GetType();
+            // Update tracking state
+            wasProcessingToolCallUpdate = isToolCallUpdate;
             
-            // Process the current message based on its type
-            if (message is TextMessage textMessage)
-            {
-                yield return ProcessTextMessage(textMessage, builders);
-            }
             // Handle ToolsCallUpdateMessage (partial updates to be accumulated)
-            else if (message is ToolsCallUpdateMessage updateMessage)
+            if (message is ToolsCallUpdateMessage updateMessage)
             {
                 // Process partial tool call update
-                yield return await ProcessToolCallUpdate(updateMessage, builders);
+                toolsCallBuilder = ProcessToolCallUpdate(updateMessage, toolsCallBuilder);
             }
             // Handle complete ToolsCallMessage (no builder needed)
             else if (message is ICanGetToolCalls toolsCallMessage)
@@ -254,160 +252,161 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             }
         }
         
-        // Process any final built messages at the end of the stream
-        foreach (var finalMessage in ProcessFinalBuiltMessages(builders))
+        // Process any final built message at the end of the stream
+        if (toolsCallBuilder != null)
         {
-            yield return finalMessage;
+            yield return await ProcessFinalToolCallMessage(toolsCallBuilder);
         }
     }
 
-    private Task<IMessage> CompletePendingBuilder(Type messageType, Dictionary<Type, object> builders)
+    private Task<IMessage> CompletePendingBuilder(ToolsCallMessageBuilder builder)
     {
-        if (messageType == typeof(ToolsCallUpdateMessage) && builders.TryGetValue(typeof(ToolsCallMessage), out var toolsCallBuilder))
-        {
-            var builder = (ToolsCallMessageBuilder)toolsCallBuilder;
-            var builtMessage = builder.Build();
-            builders.Remove(typeof(ToolsCallMessage));
-            return Task.FromResult<IMessage>(builtMessage);
-        }
-        else if (messageType == typeof(TextMessage) && builders.TryGetValue(typeof(TextMessage), out var textBuilder))
-        {
-            var builder = (TextMessageBuilder)textBuilder;
-            var builtMessage = builder.Build();
-            builders.Remove(typeof(TextMessage));
-            return Task.FromResult<IMessage>(builtMessage);
-        }
-        
-        // No pending builder to complete
-        return Task.FromResult<IMessage>(new TextMessage { Text = string.Empty, Role = Role.System });
+        var builtMessage = builder.Build();
+        return Task.FromResult<IMessage>(builtMessage);
     }
 
     // This method has been removed as its functionality has been integrated into TransformStreamWithBuilder
 
-    private Task<IMessage> ProcessToolCallUpdate(
-        ToolsCallUpdateMessage toolCallUpdate, 
-        Dictionary<Type, object> builders)
+    private ToolsCallMessageBuilder ProcessToolCallUpdate(
+        ToolsCallUpdateMessage toolCallUpdate,
+        ToolsCallMessageBuilder? existingBuilder)
     {
         // Get or create a ToolsCallMessageBuilder
-        if (!builders.TryGetValue(typeof(ToolsCallMessage), out var builderObj))
+        var builder = existingBuilder;
+        
+        if (builder == null)
         {
-            var builder = new ToolsCallMessageBuilder
+            builder = new ToolsCallMessageBuilder
             {
                 FromAgent = toolCallUpdate.FromAgent,
                 Role = toolCallUpdate.Role,
-                GenerationId = toolCallUpdate.GenerationId
+                GenerationId = toolCallUpdate.GenerationId,
+                OnToolCall = OnToolCall
             };
-            builders[typeof(ToolsCallMessage)] = builder;
-            builderObj = builder;
         }
 
-        var toolsCallBuilder = (ToolsCallMessageBuilder)builderObj;
-        toolsCallBuilder.Add(toolCallUpdate);
-
-        return Task.FromResult<IMessage>(new TextMessage { Text = string.Empty, Role = Role.System });
+        builder.Add(toolCallUpdate);
+        return builder;
     }
+
+    // Dictionary to track pending tool call results by their ID
+    private readonly Dictionary<string, Task<ToolCallResult>> _pendingToolCallResults = new();
+
+    // Execute tool calls as soon as they're received during streaming
+    private void OnToolCall(ToolCall call)
+    {
+        // Skip if we don't have a valid tool call ID or if we've already started processing this tool call
+        if (string.IsNullOrEmpty(call.ToolCallId) || _pendingToolCallResults.ContainsKey(call.ToolCallId))
+        {
+            return;
+        }
+
+        // Start executing the tool call immediately and store the task
+        _pendingToolCallResults[call.ToolCallId] = ExecuteToolCallAsync(call);
+    }
+
 
     /// <summary>
     /// Process a complete tool call message by executing all tool calls
     /// </summary>
-    private Task<IMessage> ProcessCompleteToolCallMessage(ICanGetToolCalls toolCallMessage)
+    private async Task<IMessage> ProcessCompleteToolCallMessage(ICanGetToolCalls toolCallMessage)
     {
         // Process the tool calls if needed
         var toolCalls = toolCallMessage.GetToolCalls();
         if (toolCalls != null && toolCalls.Any() && _functionMap != null)
         {
             var toolCallResults = new List<ToolCallResult>();
+            var pendingToolCallTasks = new List<Task<ToolCallResult>>();
             
             foreach (var toolCall in toolCalls)
             {
-                // Use the common execution logic but run it synchronously
-                var result = ExecuteToolCallAsync(toolCall).GetAwaiter().GetResult();
-                toolCallResults.Add(result);
+                // Check if we already started executing this tool call
+                if (!string.IsNullOrEmpty(toolCall.ToolCallId) && _pendingToolCallResults.TryGetValue(toolCall.ToolCallId, out var pendingTask))
+                {
+                    // Add to pending tasks to await later
+                    pendingToolCallTasks.Add(pendingTask);
+                }
+                else
+                {
+                    // Execute the tool call now if it wasn't done already
+                    pendingToolCallTasks.Add(ExecuteToolCallAsync(toolCall));
+                }
+            }
+
+            // Await all pending tool call tasks
+            var results = await Task.WhenAll(pendingToolCallTasks);
+            toolCallResults.AddRange(results);
+
+            // Clear completed tasks from the pending dictionary
+            foreach (var toolCall in toolCalls)
+            {
+                if (!string.IsNullOrEmpty(toolCall.ToolCallId))
+                {
+                    _pendingToolCallResults.Remove(toolCall.ToolCallId);
+                }
             }
             
             if (toolCallResults.Any())
             {
-                return Task.FromResult<IMessage>(
-                    new ToolsCallAggregateMessage(
-                        toolCallMessage,
-                        new ToolsCallResultMessage
-                        {
-                            ToolCallResults = toolCallResults.ToImmutableList(),
-                            Role = Role.Tool,
-                            FromAgent = toolCallMessage.FromAgent
-                        }));
+                return new ToolsCallAggregateMessage(
+                    toolCallMessage,
+                    new ToolsCallResultMessage
+                    {
+                        ToolCallResults = toolCallResults.ToImmutableList(),
+                        Role = Role.Tool,
+                        FromAgent = toolCallMessage.FromAgent
+                    });
             }
         }
 
-        return Task.FromResult<IMessage>(toolCallMessage);
-    }
-
-    private static TextMessage ProcessTextMessage(
-        TextMessage textMessage,
-        Dictionary<Type, object> builders)
-    {
-        if (!builders.TryGetValue(typeof(TextMessage), out var builderObj))
-        {
-            var builder = new TextMessageBuilder
-            {
-                Role = textMessage.Role,
-                FromAgent = textMessage.FromAgent
-            };
-            builders[typeof(TextMessage)] = builder;
-            builder.Add(textMessage);
-            return textMessage; // First message is passed through as-is
-        }
-        else
-        {
-            var builder = (TextMessageBuilder)builderObj;
-            builder.Add(textMessage);
-            return builder.Build(); // Return the accumulated message
-        }
-    }
-
-    /// <summary>
-    /// Process all final message builders into complete messages
-    /// </summary>
-    private IEnumerable<IMessage> ProcessFinalBuiltMessages(Dictionary<Type, object> builders)
-    {
-        foreach (var (type, builder) in builders)
-        {
-            if (type == typeof(ToolsCallMessage))
-            {
-                foreach (var message in ProcessFinalToolCallMessage((ToolsCallMessageBuilder)builder))
-                {
-                    yield return message;
-                }
-            }
-            else if (type == typeof(TextMessage))
-            {
-                var textBuilder = (TextMessageBuilder)builder;
-                yield return textBuilder.Build();
-            }
-            // Extensible: additional message types can be added here
-        }
+        return toolCallMessage;
     }
 
     /// <summary>
     /// Process a final tool call message by executing all tool calls synchronously
     /// </summary>
-    private IEnumerable<ToolsCallAggregateMessage> ProcessFinalToolCallMessage(ToolsCallMessageBuilder toolsCallBuilder)
+    private async Task<ToolsCallAggregateMessage> ProcessFinalToolCallMessage(ToolsCallMessageBuilder toolsCallBuilder)
     {
         var builtMessage = toolsCallBuilder.Build();
         var toolCallResults = new List<ToolCallResult>();
-        
+        var pendingToolCallTasks = new List<Task<ToolCallResult>>();
+
         if (builtMessage.ToolCalls.Count > 0)
         {
-            // Process each tool call synchronously
+            // Process each tool call, using pre-executed results when available
             foreach (var toolCall in builtMessage.ToolCalls)
             {
-                // Use the same execution logic but run it synchronously
-                var result = ExecuteToolCallAsync(toolCall).GetAwaiter().GetResult();
-                toolCallResults.Add(result);
+                // Check if we already started executing this tool call
+                if (!string.IsNullOrEmpty(toolCall.ToolCallId) && _pendingToolCallResults.TryGetValue(toolCall.ToolCallId, out var pendingTask))
+                {
+                    // Add to pending tasks to await later
+                    pendingToolCallTasks.Add(pendingTask);
+                }
+                else
+                {
+                    // Execute the tool call now if it wasn't done already
+                    pendingToolCallTasks.Add(ExecuteToolCallAsync(toolCall));
+                }
             }
         }
 
-        yield return new ToolsCallAggregateMessage(
+        // Await all pending tool call tasks
+        if (pendingToolCallTasks.Count > 0)
+        {
+            var results = await Task.WhenAll(pendingToolCallTasks);
+            toolCallResults.AddRange(results);
+            
+            // Clear completed tasks from the pending dictionary
+            foreach (var toolCall in builtMessage.ToolCalls)
+            {
+                if (!string.IsNullOrEmpty(toolCall.ToolCallId))
+                {
+                    _pendingToolCallResults.Remove(toolCall.ToolCallId);
+                }
+            }
+        }
+        
+        return new ToolsCallAggregateMessage(
             builtMessage,
             new ToolsCallResultMessage
             {
@@ -417,5 +416,3 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             });
     }
 }
-
-// Extension method to convert an array to IAsyncEnumerable

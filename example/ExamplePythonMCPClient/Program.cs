@@ -7,6 +7,7 @@ using DotNetEnv;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol.Transport;
+using System.Runtime.CompilerServices;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
@@ -87,7 +88,15 @@ class Program
         ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty
       };
       
-      var reply = await agentWithMcp.GenerateReplyAsync(messages, options);
+      // Get the first message from the async enumerable using await foreach
+      IMessage? reply = null;
+      var replies = new List<IMessage>();
+      await foreach (var message in await agentWithMcp.GenerateReplyStreamingAsync(messages, options))
+      {
+        replies.Add(message);
+      }
+
+      reply = replies.LastOrDefault();
       
       // Display the response
       if (reply is TextMessage textReply)
@@ -107,14 +116,22 @@ class Program
           Console.WriteLine(result);
         }
       }
+      else if (reply == null)
+      {
+        Console.WriteLine("\nNo response received from the agent.");
+      }
 
-      messages.Add(reply);
+      // Add reply to messages only if it's not null
+      if (reply != null)
+      {
+        messages.Add(reply);
+      }
       var reply2 = await agentWithMcp.GenerateReplyAsync(messages, options);
       Console.WriteLine("\nAgent Response:\n");
       Console.WriteLine(reply2 switch {
         ICanGetText txtReply => txtReply.GetText(),
         ToolsCallResultMessage toolsCallMessage => string.Join("\n", toolsCallMessage.ToolCallResults.Select(tc => tc.Result)),
-        _ => reply.ToString()
+        _ => reply?.ToString() ?? "[No response]"
       });
     }
     catch (Exception ex)

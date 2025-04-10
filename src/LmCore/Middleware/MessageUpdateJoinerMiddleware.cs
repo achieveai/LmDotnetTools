@@ -12,19 +12,15 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 {
-    private readonly bool _preserveUpdateMessages;
-
     /// <summary>
     /// Initializes a new instance of the <see cref="MessageUpdateJoinerMiddleware"/> class.
     /// </summary>
-    /// <param name="preserveUpdateMessages">If true, update messages will still be emitted alongside the joined messages.</param>
     /// <param name="name">Optional name for the middleware.</param>
+    /// 
     public MessageUpdateJoinerMiddleware(
-        bool preserveUpdateMessages = false,
         string? name = null)
     {
         Name = name ?? nameof(MessageUpdateJoinerMiddleware);
-        _preserveUpdateMessages = preserveUpdateMessages;
     }
 
     /// <summary>
@@ -61,7 +57,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // Dictionary to track message builders by their type
-        var builders = new Dictionary<Type, object>();
+        var builders = new Dictionary<Type, IMessageBuilder>();
         Type? lastMessageType = null;
         
         await foreach (var message in sourceStream.WithCancellation(cancellationToken))
@@ -77,11 +73,13 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             lastMessageType = message.GetType();
             
             // Process the current message
-            var processedMessage = await ProcessStreamingMessage(message, builders);
+            var processedMessage = await ProcessStreamingMessage(
+                message,
+                builders);
             
             // Only emit the message if it's not an update message or if we're preserving update messages
             bool isUpdateMessage = message.GetType().Name.Contains("Update");
-            if (_preserveUpdateMessages || !isUpdateMessage)
+            if (!isUpdateMessage)
             {
                 yield return processedMessage;
             }
@@ -94,7 +92,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         }
     }
 
-    private Task<IMessage> CompletePendingBuilder(Type messageType, Dictionary<Type, object> builders)
+    private Task<IMessage> CompletePendingBuilder(Type messageType, Dictionary<Type, IMessageBuilder> builders)
     {
         if (messageType.Name.Contains("Update"))
         {
@@ -123,7 +121,9 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         return Task.FromResult<IMessage>(new TextMessage { Text = string.Empty, Role = Role.System });
     }
 
-    private Task<IMessage> ProcessStreamingMessage(IMessage message, Dictionary<Type, object> builders)
+    private Task<IMessage> ProcessStreamingMessage(
+        IMessage message,
+        Dictionary<Type, IMessageBuilder> builders)
     {
         // Handle tool call updates (ToolsCallUpdateMessage)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
@@ -134,7 +134,9 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // For text update messages - assume there's a TextUpdateMessage similar to ToolsCallUpdateMessage
         if (message.GetType().Name.Contains("TextUpdate"))
         {
-            return ProcessTextUpdate(message, builders);
+            return ProcessTextUpdate(
+                message,
+                builders);
         }
         
         // For all other message types, pass through as-is
@@ -143,7 +145,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 
     private Task<IMessage> ProcessToolCallUpdate(
         ToolsCallUpdateMessage toolCallUpdate, 
-        Dictionary<Type, object> builders)
+        Dictionary<Type, IMessageBuilder> builders)
     {
         Type builderKey = typeof(ToolsCallMessage);
         
@@ -170,26 +172,57 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         }
     }
 
-    private Task<IMessage> ProcessTextUpdate(IMessage textUpdate, Dictionary<Type, object> builders)
+    private static Task<IMessage> ProcessTextUpdate(
+        IMessage textUpdate,
+        Dictionary<Type, IMessageBuilder> builders)
     {
-        // This would handle TextUpdateMessage if it exists
-        // Similar to ProcessToolCallUpdate but for text updates
-        // For now just returning the original message
+        if (textUpdate is TextUpdateMessage textUpdateMessage)
+        {
+            Type builderKey = typeof(TextMessage);
+            
+            if (!builders.TryGetValue(builderKey, out var builderObj))
+            {
+                // Create a new builder for the first update
+                var builder = new TextMessageBuilder
+                {
+                    FromAgent = textUpdateMessage.FromAgent,
+                    Role = textUpdateMessage.Role,
+                    GenerationId = textUpdateMessage.GenerationId
+                };
+                builders[builderKey] = builder;
+                
+                // Convert the update to a TextMessage for the builder
+                builder.Add(textUpdateMessage);
+                
+                // Return the original update for the first time
+                return Task.FromResult<IMessage>(textUpdateMessage);
+            }
+            else
+            {
+                // Add to existing builder
+                var builder = (TextMessageBuilder)builderObj;
+                
+                // Convert the update to a TextMessage for the builder
+                builder.Add(textUpdateMessage);
+                
+                // Return the current accumulated state
+                return Task.FromResult<IMessage>(builder.Build());
+            }
+        }
+        
+        // If it's not a TextUpdateMessage, just return it as-is
         return Task.FromResult(textUpdate);
     }
 
-    private IEnumerable<IMessage> ProcessFinalBuiltMessages(Dictionary<Type, object> builders)
+    private IEnumerable<IMessage> ProcessFinalBuiltMessages(Dictionary<Type, IMessageBuilder> builders)
     {
         // Process all accumulated builders and emit final complete messages
-        foreach (var builderEntry in builders)
+        foreach (var builder in builders)
         {
-            if (builderEntry.Value is IMessageBuilder<IMessage, IMessage> builder)
+            var builtMessage = builder.Value.Build();
+            if (builtMessage != null)
             {
-                var builtMessage = builder.Build();
-                if (builtMessage != null)
-                {
-                    yield return builtMessage;
-                }
+                yield return builtMessage;
             }
         }
     }

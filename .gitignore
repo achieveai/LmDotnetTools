@@ -8,3 +8,6 @@
 *.pyd
 __pycache__
 .venv/
+.vs/
+.suo
+.csproj.user

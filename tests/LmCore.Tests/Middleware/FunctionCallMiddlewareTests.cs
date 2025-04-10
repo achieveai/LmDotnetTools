@@ -2,6 +2,8 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
+using AchieveAi.LmDotnetTools.TestUtils;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -693,4 +695,256 @@ public class FunctionCallMiddlewareTests
   }
   
   #endregion
+    [Fact]
+    public async Task FunctionCallMiddleware_ShouldReturnToolAggregateMessage_Streaming_WithJoin()
+    {
+        // Arrange
+        var functionContracts = new[]
+        {
+            new FunctionContract
+            {
+                Name = "getWeather",
+                Description = "Get current weather for a location",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        Description = "City name",
+                        ParameterType = typeof(string),
+                        IsRequired = true
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "unit",
+                        Description = "Temperature unit (celsius or fahrenheit)",
+                        ParameterType = typeof(string),
+                        IsRequired = false
+                    }
+                }
+            }
+        };
+
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        {
+            ["getWeather"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "{\"location\":\"San Francisco\",\"temperature\":23,\"unit\":\"celsius\"}";
+            }
+        };
+
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
+            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+        };
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "gpt-4",
+            Functions = functionContracts
+        };
+
+        var context = new MiddlewareContext(messages, options);
+
+        var client = OpenClientFactory.CreateDatabasedClient(
+            "FunctionToolCall_ShouldReturnToolMessage_streaming",
+            null,
+            false);
+
+        var agent = new OpenClientAgent("TestAgent", client);
+
+        // Act
+        var responseStream = await middleware.InvokeStreamingAsync(context, agent);
+
+        var responses = new List<IMessage>();
+        await foreach (var response in responseStream)
+        {
+            responses.Add(response);
+        }
+
+        // Assert
+        Assert.NotEmpty(responses);
+
+        var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
+        Assert.NotNull(lastMessage);
+        Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
+
+        var aggregate = (ToolsCallAggregateMessage)lastMessage;
+        Assert.NotEmpty(aggregate.ToolCallMessage.GetToolCalls()!);
+        Assert.Contains(aggregate.ToolCallMessage.GetToolCalls()!, call => call.FunctionName == "getWeather");
+    }
+
+    [Fact]
+    public async Task FunctionCallMiddleware_ShouldReturnMultipleToolAggregateMessages_Streaming()
+    {
+        // Arrange
+        var functionContracts = new[]
+        {
+            new FunctionContract
+            {
+                Name = "python-mcp.execute_python_in_container",
+                Description = "\nExecute Python code in a Docker container. The environment is limited to the container.\nFollowing packages are available:\n- pandas\n- numpy\n- matplotlib\n- seaborn\n- plotly\n- bokeh\n- hvplot\n- datashader\n- plotnine\n- cufflinks\n- graphviz\n- scipy\n- statsmodels\n- openpyxl\n- xlrd\n- xlsxwriter\n- pandasql\n- csv23\n- csvkit\n- polars\n- pyarrow\n- fastparquet\n- dask\n- vaex\n- python-dateutil\n- beautifulsoup4\n- requests\n- lxml\n- geopandas\n- folium\n- pydeck\n- holoviews\n- altair\n- visualkeras\n- kaleido\n- panel\n- voila\n\nArgs:\n    code: Python code to execute\n\nReturns:\n    Output from executed code\n",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "code",
+                        Description = "",
+                        ParameterType = typeof(string),
+                        IsRequired = true
+                    }
+                }
+            },
+            new FunctionContract
+            {
+                Name = "python-mcp.list_directory",
+                Description = "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "relative_path",
+                        Description = "",
+                        ParameterType = typeof(string),
+                        IsRequired = false
+                    }
+                }
+            },
+            new FunctionContract
+            {
+                Name = "python-mcp.read_file",
+                Description = "\nRead a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    File contents as a string\n",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "relative_path",
+                        Description = "",
+                        ParameterType = typeof(string),
+                        IsRequired = true
+                    }
+                }
+            },
+            new FunctionContract
+            {
+                Name = "python-mcp.write_file",
+                Description = "\nWrite content to a file in the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    content: Content to write to the file\n    \nReturns:\n    Status message\n",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "relative_path",
+                        Description = "",
+                        ParameterType = typeof(string),
+                        IsRequired = true
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "content",
+                        Description = "",
+                        ParameterType = typeof(string),
+                        IsRequired = true
+                    }
+                }
+            },
+            new FunctionContract
+            {
+                Name = "python-mcp.delete_file",
+                Description = "\nDelete a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    Status message\n",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "relative_path",
+                        Description = "",
+                        ParameterType = typeof(string),
+                        IsRequired = true
+                    }
+                }
+            },
+            new FunctionContract
+            {
+                Name = "python-mcp.get_directory_tree",
+                Description = "\nGet an ASCII tree representation of a directory structure where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: root code directory)\n    \nReturns:\n    ASCII tree representation as a string\n",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "relative_path",
+                        Description = "",
+                        ParameterType = typeof(string),
+                        IsRequired = false
+                    }
+                }
+            },
+            new FunctionContract
+            {
+                Name = "python-mcp.cleanup_code_directory",
+                Description = "\nClean up the code directory by removing all files and subdirectories\n\nReturns:\n    Status message\n",
+                Parameters = new List<FunctionParameterContract>()
+            }
+        };
+
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        {
+            ["python-mcp.execute_python_in_container"] = async argsJson => { await Task.Delay(1); return ""; },
+            ["python-mcp.list_directory"] = async argsJson => { await Task.Delay(1); return ""; },
+            ["python-mcp.read_file"] = async argsJson => { await Task.Delay(1); return ""; },
+            ["python-mcp.write_file"] = async argsJson => { await Task.Delay(1); return ""; },
+            ["python-mcp.delete_file"] = async argsJson => { await Task.Delay(1); return ""; },
+            ["python-mcp.get_directory_tree"] = async argsJson => { await Task.Delay(1); return ""; },
+            ["python-mcp.cleanup_code_directory"] = async argsJson => { await Task.Delay(1); return ""; }
+        };
+
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Role = Role.System, Text = "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool." },
+            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." }
+        };
+
+        var options = new GenerateReplyOptions
+        {
+            ModelId = "meta-llama/llama-4-maverick",
+            Temperature = (float?)0.699999988079071,
+            Functions = functionContracts
+        };
+
+        var context = new MiddlewareContext(messages, options);
+
+        var client = OpenClientFactory.CreateDatabasedClient(
+            "FunctionToolCall_MultipleToolCalls_streaming",
+            null,
+            false);
+
+        var agent = new OpenClientAgent("TestAgent", client);
+
+        // Act
+        var responseStream = await middleware.InvokeStreamingAsync(context, agent);
+
+        var responses = new List<IMessage>();
+        await foreach (var response in responseStream)
+        {
+            responses.Add(response);
+        }
+
+        // Assert
+        Assert.NotEmpty(responses);
+
+        var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
+        Assert.NotNull(lastMessage);
+        Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
+
+        var aggregate = (ToolsCallAggregateMessage)lastMessage;
+        var toolCalls = aggregate.ToolCallMessage.GetToolCalls();
+        Assert.NotNull(toolCalls);
+        Assert.True(toolCalls!.Count() >= 2, "Should contain at least two tool calls");
+        Assert.Contains(toolCalls, call => call.FunctionName == "python-mcp.list_directory");
+        // Optionally, check that both tool calls are present (by id or argument)
+    }
 }

@@ -36,6 +36,11 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
 
     public List<BinaryData> ImageData { get; init; } = new List<BinaryData>();
 
+    IMessage IMessageBuilder.Build()
+    {
+        return this.Build();
+    }
+
     public void Add(ImageMessage streamingMessageUpdate)
     {
         ImageData.Add(streamingMessageUpdate.ImageData);

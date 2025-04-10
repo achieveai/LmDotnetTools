@@ -64,7 +64,16 @@ public static class CalculatorTool
     /// <summary>
     /// Adds two numbers
     /// </summary>
-    [McpServerTool, Description("Adds two numbers")]
+    [
+        McpServerTool(
+            Destructive = false,
+            Idempotent = true,
+            Name = "Add",
+            OpenWorld = false,
+            ReadOnly = true,
+            Title = "Add numbers"),
+        Description("Adds two numbers")
+    ]
     public static double Add(double a, double b) => a + b;
 
     /// <summary>

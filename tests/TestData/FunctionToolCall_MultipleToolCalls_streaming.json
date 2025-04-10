@@ -1,0 +1,217 @@
+{
+  "Interactions": [
+    {
+      "SerializedRequest": {
+        "model": "meta-llama/llama-4-maverick",
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "python-mcp.list_directory",
+              "description": "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "relative_path": {
+                    "type": "string",
+                    "description": ""
+                  }
+                },
+                "additionalProperties": true,
+                "description": "Parameters for python-mcp.list_directory"
+              }
+            }
+          }
+        ],
+        "messages": [
+          {
+            "role": "system",
+            "index": 0,
+            "content": "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool."
+          },
+          {
+            "role": "user",
+            "index": 0,
+            "content": "List files in root and \"code\" directories."
+          }
+        ]
+      },
+      "SerializedResponse": {},
+      "SerializedResponseFragments": [
+        {
+          "id": "gen-1744265218-PPPNQcmBmR4zjiyJ7Hlo",
+          "provider": "Together",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1744265218,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1744265218-PPPNQcmBmR4zjiyJ7Hlo",
+          "provider": "Together",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1744265218,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "id": "call_5icx1th9hrzxy4l4jngkpm55",
+                    "type": "function",
+                    "function": {
+                      "name": "python-mcp.list_directory",
+                      "arguments": ""
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": null,
+              "native_finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1744265218-PPPNQcmBmR4zjiyJ7Hlo",
+          "provider": "Together",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1744265218,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "function": {
+                      "arguments": "{\"relative_path\":{\"type\":\"string\",\"value\":{\"relative_path\":\"\"}}}"
+                    },
+                    "type": "function"
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": null,
+              "native_finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1744265218-PPPNQcmBmR4zjiyJ7Hlo",
+          "provider": "Together",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1744265218,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 1,
+                    "id": "call_ufu6hn5g0wlqnqbnd7yquet6",
+                    "type": "function",
+                    "function": {
+                      "name": "python-mcp.list_directory",
+                      "arguments": ""
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": null,
+              "native_finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1744265218-PPPNQcmBmR4zjiyJ7Hlo",
+          "provider": "Together",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1744265218,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 1,
+                    "function": {
+                      "arguments": "{\"relative_path\":{\"type\":\"string\",\"value\":{\"relative_path\":\"code\"}}}"
+                    },
+                    "type": "function"
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": null,
+              "native_finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1744265218-PPPNQcmBmR4zjiyJ7Hlo",
+          "provider": "Together",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1744265218,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": "tool_calls",
+              "native_finish_reason": "tool_calls",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1744265218-PPPNQcmBmR4zjiyJ7Hlo",
+          "provider": "Together",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1744265218,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 1286,
+            "completion_tokens": 89,
+            "total_tokens": 1375
+          }
+        },
+        { "event": "done", "data": "[DONE]" }
+      ],
+      "IsStreaming": true
+    }
+  ]
+}

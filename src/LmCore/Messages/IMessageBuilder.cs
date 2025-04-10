@@ -1,6 +1,11 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
-public interface IMessageBuilder<T, U> where T : IMessage where U: IMessage
+public interface IMessageBuilder
+{
+    public IMessage Build();
+}
+
+public interface IMessageBuilder<T, U> : IMessageBuilder where T : IMessage where U: IMessage
 {
     public string? FromAgent { get; }
 
@@ -8,5 +13,5 @@ public interface IMessageBuilder<T, U> where T : IMessage where U: IMessage
 
     public void Add(U streamingMessageUpdate);
 
-    public T Build();
+    new public T Build();
 }

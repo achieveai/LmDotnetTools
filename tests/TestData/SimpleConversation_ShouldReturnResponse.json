@@ -1,0 +1,49 @@
+{
+  "Interactions": [
+    {
+      "SerializedRequest": {
+        "model": "microsoft/phi-4-multimodal-instruct",
+        "temperature": 0,
+        "max_tokens": 4096,
+        "n": 1,
+        "stop": [],
+        "messages": [
+          {
+            "role": "system",
+            "index": 0,
+            "content": "You're a helpful AI Agent"
+          },
+          {
+            "role": "user",
+            "index": 0,
+            "content": "Hello Bot"
+          }
+        ]
+      },
+      "SerializedResponse": {
+        "id": "gen-1744322095-9k3QTetfq1cZfF3bZOTN",
+        "object": "chat.completion",
+        "created": 1744322095,
+        "model": "microsoft/phi-4-multimodal-instruct",
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "index": 0,
+              "content": "Hello! How can I assist you today?"
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 12,
+          "completion_tokens": 10,
+          "total_tokens": 22
+        }
+      },
+      "SerializedResponseFragments": [],
+      "IsStreaming": false
+    }
+  ]
+}

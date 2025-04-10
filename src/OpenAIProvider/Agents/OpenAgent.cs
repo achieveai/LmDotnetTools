@@ -1,10 +1,7 @@
-using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
@@ -66,7 +63,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             }
         };
 
-        return openMessage.ToOpenMessage();
+        return openMessage.ToMessage();
     }
 
     public virtual async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -74,43 +71,11 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var request = CreateCompletionRequest(messages, options) with {
-            Stream = true
-        };
-
-        // Create stream options to include usage information
-        var jsonOptions = new JsonObject();
-        jsonOptions["include_usage"] = true;
-        
-        Dictionary<string, object>? updatedParams = null;
-        
-        if (request.AdditionalParameters != null)
-        {
-            // Add stream_options to existing AdditionalParameters
-            updatedParams = request.AdditionalParameters.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-            if (updatedParams != null)
-            {
-                updatedParams["stream_options"] = jsonOptions;
-            }
-        }
-        else
-        {
-            // Create a new params object with stream_options
-            updatedParams = new Dictionary<string, object>();
-            updatedParams["stream_options"] = jsonOptions;
-        }
-        
-        // Create a new request with the updated parameters
-        var newRequest = new ChatCompletionRequest(
-            request.Model,
-            request.Messages,
-            request.Temperature,
-            request.MaxTokens,
-            updatedParams
-        );
+        var request = ChatCompletionRequest.FromMessages(messages, options)
+            with { Stream = true };
         
         // Return the streaming response as an IAsyncEnumerable
-        return await Task.FromResult(GenerateStreamingMessages(newRequest, cancellationToken));
+        return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
     }
 
     private async IAsyncEnumerable<IMessage> GenerateStreamingMessages(
@@ -144,7 +109,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 }
             };
 
-            yield return openMessage.ToStreamingMessage().AsEnvelope();
+            yield return openMessage.ToStreamingMessage();
         }
     }
 

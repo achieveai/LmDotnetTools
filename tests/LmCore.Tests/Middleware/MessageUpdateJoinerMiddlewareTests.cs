@@ -1,195 +1,215 @@
-using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Linq;
+using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
-using Xunit;
-using Moq;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageUpdateJoinerMiddlewareTests
 {
-  [Fact]
-  public async Task InvokeAsync_ShouldPassThrough_ForNonStreamingRequests()
-  {
-    // Arrange
-    var middleware = new MessageUpdateJoinerMiddleware();
-    var cancellationToken = CancellationToken.None;
-    
-    // Create a regular non-streaming message
-    var message = new TextMessage { Text = "This is a non-streaming response" };
-    
-    // Mock the agent to return our test message
-    var mockAgent = new Mock<IAgent>();
-    mockAgent
-      .Setup(a => a.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-      .ReturnsAsync(message);
-    
-    // Create context with empty messages
-    var context = new MiddlewareContext(
-      new List<IMessage>(),
-      new GenerateReplyOptions());
-    
-    // Act
-    var result = await middleware.InvokeAsync(context, mockAgent.Object, cancellationToken);
-    
-    // Assert
-    Assert.NotNull(result);
-    Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)result).GetText());
-    
-    // Verify the agent was called exactly once
-    mockAgent.Verify(a => a.GenerateReplyAsync(
-      It.IsAny<IEnumerable<IMessage>>(), 
-      It.IsAny<GenerateReplyOptions>(), 
-      It.IsAny<CancellationToken>()), Times.Once);
-  }
-  
-  [Fact]
-  public void SplitStringPreservingSpaces_ShouldKeepSpacesWithFollowingWord()
-  {
-    // Arrange
-    string testString = "This is a test";
-    
-    // Act
-    var result = SplitStringPreservingSpaces(testString);
-    
-    // Assert
-    Assert.Equal(4, result.Count);
-    Assert.Equal("This", result[0]);
-    Assert.Equal(" is", result[1]);
-    Assert.Equal(" a", result[2]);
-    Assert.Equal(" test", result[3]);
-    
-    // Verify we can reconstruct the original string
-    Assert.Equal(testString, string.Concat(result));
-  }
-  
-  [Fact]
-  public void CreateTextUpdateMessages_ShouldAccumulateText()
-  {
-    // Arrange
-    string testString = "This is a test";
-    var parts = SplitStringPreservingSpaces(testString);
-    
-    // Act
-    var updates = CreateTextUpdateMessages(parts);
-    
-    // Assert
-    Assert.Equal(4, updates.Count);
-    
-    // Check the progressive accumulation of text
-    Assert.Equal("This", ((LmCore.Messages.ICanGetText)updates[0]).GetText());
-    Assert.Equal("This is", ((LmCore.Messages.ICanGetText)updates[1]).GetText());
-    Assert.Equal("This is a", ((LmCore.Messages.ICanGetText)updates[2]).GetText());
-    Assert.Equal("This is a test", ((LmCore.Messages.ICanGetText)updates[3]).GetText());
-  }
-  
-  [Fact]
-  public void CreateToolCallUpdateSequence_ShouldBuildJsonIncrementally()
-  {
-    // Act
-    var updates = CreateToolCallUpdateSequence();
-    
-    // Assert
-    Assert.Equal(4, updates.Count);
-    
-    // Check progressive updates to the function arguments
-    var firstUpdate = updates[0] as ToolsCallUpdateMessage;
-    Assert.NotNull(firstUpdate);
-    Assert.Equal("get_weather", firstUpdate.ToolCallUpdates[0].FunctionName);
-    Assert.Null(firstUpdate.ToolCallUpdates[0].FunctionArgs);
-    
-    var secondUpdate = updates[1] as ToolsCallUpdateMessage;
-    Assert.NotNull(secondUpdate);
-    Assert.Contains("San", secondUpdate.ToolCallUpdates[0].FunctionArgs);
-    
-    var thirdUpdate = updates[2] as ToolsCallUpdateMessage;
-    Assert.NotNull(thirdUpdate);
-    Assert.Contains("San Francisco", thirdUpdate.ToolCallUpdates[0].FunctionArgs);
-    
-    var finalUpdate = updates[3] as ToolsCallUpdateMessage;
-    Assert.NotNull(finalUpdate);
-    Assert.Contains("celsius", finalUpdate.ToolCallUpdates[0].FunctionArgs);
-    
-    // Verify the final update has a complete JSON object with both location and unit
-    Assert.Contains("location", finalUpdate.ToolCallUpdates[0].FunctionArgs ?? "");
-    Assert.Contains("unit", finalUpdate.ToolCallUpdates[0].FunctionArgs ?? "");
-  }
-  
-  [Fact]
-  public void PreserveUpdateMessages_ShouldKeepAllUpdateMessages_WhenSet()
-  {
-    // This test verifies the _preserveUpdateMessages flag behavior using reflection
-    
-    // Arrange - create middleware with preserveUpdateMessages = true
-    var middleware = new MessageUpdateJoinerMiddleware(preserveUpdateMessages: true);
-    
-    // Get the private field value using reflection to verify it was set correctly
-    var preserveField = typeof(MessageUpdateJoinerMiddleware)
-      .GetField("_preserveUpdateMessages", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-    
-    // Assert
-    Assert.NotNull(preserveField);
-    var fieldValue = preserveField.GetValue(middleware);
-    Assert.NotNull(fieldValue);
-    var preserveValue = (bool)fieldValue;
-    Assert.True(preserveValue);
-    
-    // Additional verification can be done by examining the InvokeStreamingAsync method
-    // but that would involve more complex mocking
-  }
-  
-  #region Helper Methods
-  
-  // Helper method to split string on spaces while including spaces in the parts
-  private List<string> SplitStringPreservingSpaces(string input)
-  {
-    var result = new List<string>();
-    var words = input.Split(' ');
-    
-    // Add first word
-    result.Add(words[0]);
-    
-    // Add remaining words with preceding space
-    for (int i = 1; i < words.Length; i++)
+    [Fact]
+    public async Task InvokeAsync_ShouldPassThrough_ForNonStreamingRequests()
     {
-      result.Add(" " + words[i]);
+        // Arrange
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var cancellationToken = CancellationToken.None;
+
+        // Create a regular non-streaming message
+        var message = new TextMessage { Text = "This is a non-streaming response" };
+
+        // Mock the agent to return our test message
+        var mockAgent = new Mock<IAgent>();
+        mockAgent
+          .Setup(a => a.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+          .ReturnsAsync(message);
+
+        // Create context with empty messages
+        var context = new MiddlewareContext(
+          new List<IMessage>(),
+          new GenerateReplyOptions());
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object, cancellationToken);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)result).GetText());
+
+        // Verify the agent was called exactly once
+        mockAgent.Verify(a => a.GenerateReplyAsync(
+          It.IsAny<IEnumerable<IMessage>>(),
+          It.IsAny<GenerateReplyOptions>(),
+          It.IsAny<CancellationToken>()), Times.Once);
     }
-    
-    return result;
-  }
-  
-  // Create a series of text update messages
-  private List<IMessage> CreateTextUpdateMessages(List<string> parts)
-  {
-    var messages = new List<IMessage>();
-    var accumulatedText = "";
-    
-    foreach (var part in parts)
+
+    [Fact]
+    public async Task InvokeStreamingAsync_JoinTextMessages()
     {
-      accumulatedText += part;
-      messages.Add(new TextUpdateMessage 
-      { 
-        Text = accumulatedText,
-        Role = Role.Assistant
-      });
+        // Arrange
+        string testString = "This is a test";
+        // Default behavior is to not preserve update messages
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var cancellationToken = CancellationToken.None;
+
+        // Create updates from the test string
+        var updateMessages = CreateTextUpdateMessages(SplitStringPreservingSpaces(testString));
+
+        // Set up mock streaming agent to return our updates as an async enumerable
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        mockStreamingAgent
+          .Setup(a => a.GenerateReplyStreamingAsync(
+            It.IsAny<IEnumerable<IMessage>>(),
+            It.IsAny<GenerateReplyOptions>(),
+            It.IsAny<CancellationToken>()))
+          .ReturnsAsync(updateMessages.ToAsyncEnumerable());
+
+        // Create context with empty messages
+        var context = new MiddlewareContext(
+          new List<IMessage>(),
+          new GenerateReplyOptions());
+
+        // Act - Get the stream from the middleware
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
+
+        // Manually collect all messages from the stream
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert - With current implementation of ProcessTextUpdate, no update messages should be emitted
+        // since it just returns the original message and preserveUpdateMessages is false
+        Assert.Single(results);
+
+        Assert.Equal(testString, ((ICanGetText)results[0]).GetText());
+
+        // Verify the streaming agent was called exactly once
+        mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(
+          It.IsAny<IEnumerable<IMessage>>(),
+          It.IsAny<GenerateReplyOptions>(),
+          It.IsAny<CancellationToken>()), Times.Once);
     }
-    
-    return messages;
-  }
-  
-  // Create tool call update messages that build incrementally
-  private List<IMessage> CreateToolCallUpdateSequence()
-  {
-    return new List<IMessage>
+
+    [Fact]
+    public async Task InvokeStreaminAsync_ValidateUsage()
+    {
+        // Arrange
+        string testString = "This is a test";
+        // Set preserveUpdateMessages to true to see all messages
+        var middleware = new MessageUpdateJoinerMiddleware();
+        var cancellationToken = CancellationToken.None;
+
+        // Create updates from the test string
+        var updateMessages = CreateTextUpdateMessages(
+            new List<string> { "", "", "" }
+            .Concat(SplitStringPreservingSpaces(testString))
+            .Concat([""]));
+
+        var usage = new Usage
+        {
+            PromptTokens = 10,
+            CompletionTokens = 10,
+            TotalTokens = 20,
+            CompletionTokenDetails = null,
+        };
+
+        updateMessages[updateMessages.Count - 1] = new TextUpdateMessage
+        {
+            Text = "",
+            Metadata = JsonSerializer.SerializeToNode(
+                new Dictionary<string, object>
+                {
+                    ["Usage"] = usage,
+                }) as JsonObject
+        };
+
+        // Set up mock streaming agent to return our updates as an async enumerable
+        var mockStreamingAgent = new Mock<IStreamingAgent>();
+        mockStreamingAgent
+          .Setup(a => a.GenerateReplyStreamingAsync(
+            It.IsAny<IEnumerable<IMessage>>(),
+            It.IsAny<GenerateReplyOptions>(),
+            It.IsAny<CancellationToken>()))
+          .ReturnsAsync(updateMessages.ToAsyncEnumerable());
+
+        // Create context with empty messages
+        var context = new MiddlewareContext(
+          new List<IMessage>(),
+          new GenerateReplyOptions());
+
+        // Act - Get the stream from the middleware
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
+
+        // Manually collect all messages from the stream
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert - With preserveUpdateMessages:true, we should get all the update messages
+        Assert.Single(results);
+
+        // Check that the final message contains the complete text
+        var finalMessage = results[results.Count - 1];
+        Assert.NotNull(finalMessage);
+        Assert.Equal(testString, ((LmCore.Messages.ICanGetText)finalMessage).GetText());
+
+        Assert.NotNull(finalMessage.Metadata);
+        Assert.Null(finalMessage.Metadata["usage"]);
+        Assert.NotNull(finalMessage.Metadata["Usage"]);
+        Assert.Equal(usage, JsonSerializer.Deserialize<Usage>(finalMessage.Metadata!["Usage"]!.AsObject()));
+
+        // Verify the streaming agent was called exactly once
+        mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(
+          It.IsAny<IEnumerable<IMessage>>(),
+          It.IsAny<GenerateReplyOptions>(),
+          It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    #region Helper Methods
+
+    // Helper method to split string on spaces while including spaces in the parts
+    private List<string> SplitStringPreservingSpaces(string input)
+    {
+        var result = new List<string>();
+        var words = input.Split(' ');
+
+        // Add first word
+        result.Add(words[0]);
+
+        // Add remaining words with preceding space
+        for (int i = 1; i < words.Length; i++)
+        {
+            result.Add(" " + words[i]);
+        }
+
+        return result;
+    }
+
+    // Create a series of text update messages
+    private List<IMessage> CreateTextUpdateMessages(IEnumerable<string> parts)
+    {
+        var messages = new List<IMessage>();
+
+        foreach (var part in parts)
+        {
+            messages.Add(new TextUpdateMessage
+            {
+                Text = part,
+                Role = Role.Assistant
+            });
+        }
+
+        return messages;
+    }
+
+    // Create tool call update messages that build incrementally
+    private List<IMessage> CreateToolCallUpdateSequence()
+    {
+        return new List<IMessage>
     {
       // First update: Just the function name
       new ToolsCallUpdateMessage
@@ -230,41 +250,7 @@ public class MessageUpdateJoinerMiddlewareTests
         })
       }
     };
-  }
-  
-  #endregion
-}
+    }
 
-// Define these message types for testing purposes only
-// These simulate the actual update message types that would be in the real codebase
-public record TextUpdateMessage : IMessage, LmCore.Messages.ICanGetText
-{
-  public string? FromAgent { get; init; } = null;
-  
-  public Role Role { get; init; } = Role.Assistant;
-  
-  public JsonObject? Metadata { get; init; } = null;
-  
-  public string? GenerationId { get; init; } = null;
-  
-  public string Text { get; init; } = string.Empty;
-  
-  public string? GetText() => Text;
-  
-  public BinaryData? GetBinary() => null;
-  
-  public ToolCall? GetToolCalls() => null;
-  
-  public IEnumerable<IMessage>? GetMessages() => null;
-}
-
-// Mock of BinaryData for testing
-public class BinaryData
-{
-  public byte[] Data { get; }
-
-  public BinaryData(byte[] data)
-  {
-    Data = data;
-  }
+    #endregion
 }
