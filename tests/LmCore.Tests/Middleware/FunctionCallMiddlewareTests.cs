@@ -2,6 +2,8 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
+using AchieveAi.LmDotnetTools.McpMiddleware;
+using AchieveAi.LmDotnetTools.McpSampleServer;
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
@@ -9,347 +11,325 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class FunctionCallMiddlewareTests
 {
-  #region Constructor Tests
-
-  [Fact]
-  public void Constructor_ShouldThrowArgumentNullException_WhenFunctionsIsNull()
-  {
-    // Arrange
-    var functionMap = new Dictionary<string, Func<string, Task<string>>>();
-    
-    // Act & Assert
-    var exception = Assert.Throws<ArgumentNullException>(() => 
-      new FunctionCallMiddleware(
-        functions: null!, 
-        functionMap: functionMap));
-    
-    Assert.Equal("functions", exception.ParamName);
-  }
-
-  [Fact]
-  public void Constructor_ShouldThrowArgumentException_WhenFunctionMissingFromMap()
-  {
-    // Arrange
-    var functions = new List<FunctionContract>
+    [Fact]
+    public void Constructor_ShouldThrowArgumentNullException_WhenFunctionsIsNull()
     {
-      new FunctionContract
-      {
-        Name = "getWeather",
-        Description = "Get the weather in a location",
-        Parameters = new[]
-        {
-          new FunctionParameterContract
-          {
-            Name = "location",
-            ParameterType = typeof(string),
-            Description = "City name",
-            IsRequired = true
-          }
-        }
-      }
-    };
-    
-    var functionMap = new Dictionary<string, Func<string, Task<string>>>
-    {
-      // Missing the "getWeather" function
-      { "add", args => Task.FromResult("10") }
-    };
-    
-    // Act & Assert
-    var exception = Assert.Throws<ArgumentException>(() => 
-      new FunctionCallMiddleware(functions, functionMap));
-    
-    Assert.Contains("getWeather", exception.Message);
-    Assert.Equal("functionMap", exception.ParamName);
-  }
+        // Arrange
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
 
-  [Fact]
-  public void Constructor_ShouldThrowArgumentException_WhenFunctionMapIsNullButFunctionsAreProvided()
-  {
-    // Arrange
-    var functions = new List<FunctionContract>
-    {
-      new FunctionContract
-      {
-        Name = "getWeather",
-        Description = "Get the weather in a location"
-      }
-    };
-    
-    // Act & Assert
-    var exception = Assert.Throws<ArgumentException>(() => 
-      new FunctionCallMiddleware(functions, null!));
-    
-    Assert.Contains("Function map must be provided", exception.Message);
-    Assert.Equal("functionMap", exception.ParamName);
-  }
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentNullException>(() =>
+          new FunctionCallMiddleware(
+            functions: null!,
+            functionMap: functionMap));
 
-  [Fact]
-  public void Constructor_ShouldNotThrow_WhenFunctionsIsEmpty()
-  {
-    // Arrange
-    var functions = new List<FunctionContract>();
-    var functionMap = new Dictionary<string, Func<string, Task<string>>>();
-    
-    // Act & Assert - no exception should be thrown
-    var middleware = new FunctionCallMiddleware(functions, functionMap);
-    Assert.NotNull(middleware);
-  }
-
-  [Fact]
-  public void Constructor_ShouldNotThrow_WhenAllFunctionsHaveCorrespondingMapEntries()
-  {
-    // Arrange
-    var functions = new List<FunctionContract>
-    {
-      new FunctionContract
-      {
-        Name = "function1",
-        Description = "Test function 1"
-      },
-      new FunctionContract
-      {
-        Name = "function2",
-        Description = "Test function 2"
-      }
-    };
-    
-    var functionMap = new Dictionary<string, Func<string, Task<string>>>
-    {
-      { "function1", args => Task.FromResult("result1") },
-      { "function2", args => Task.FromResult("result2") }
-    };
-    
-    // Act & Assert - no exception should be thrown
-    var middleware = new FunctionCallMiddleware(functions, functionMap);
-    Assert.NotNull(middleware);
-  }
-
-  #endregion
-  
-  #region Test Methods
-  
-  [Fact]
-  public async Task InvokeAsync_ShouldExecuteFunction_WhenFunctionExists()
-  {
-    // Arrange
-    var functionMap = CreateMockFunctionMap();
-    var functionContracts = CreateMockFunctionContracts();
-    var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
-    
-    // Create a message with a tool call for the getWeather function
-    var toolCallMessage = CreateToolCallMessage("getWeather", 
-      new { location = "San Francisco", unit = "celsius" });
-    
-    // Create the context with our tool call message
-    var context = new MiddlewareContext(
-      new[] { toolCallMessage },
-      new GenerateReplyOptions());
-    
-    // Mock the agent
-    var mockAgent = new Mock<IAgent>();
-    
-    // Act
-    var result = await middleware.InvokeAsync(context, mockAgent.Object);
-    
-    // Assert
-    Assert.NotNull(result);
-    Assert.IsType<ToolsCallResultMessage>(result);
-    
-    var resultMessage = (ToolsCallResultMessage)result;
-    Assert.NotEmpty(resultMessage.ToolCallResults);
-    
-    // Check that the tool call result contains the expected content
-    var toolCallResult = resultMessage.ToolCallResults.First();
-    Assert.Contains("San Francisco", toolCallResult.Result);
-    Assert.Contains("23", toolCallResult.Result); // Temperature from mock
-    Assert.Contains("celsius", toolCallResult.Result);
-  }
-  
-  [Fact]
-  public async Task InvokeAsync_ShouldReturnError_WhenFunctionDoesNotExist()
-  {
-    // Arrange
-    var functionMap = CreateMockFunctionMap();
-    var functionContracts = CreateMockFunctionContracts();
-    var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
-    
-    // Create a message with a tool call for a non-existent function
-    var toolCallMessage = CreateToolCallMessage("getNonExistentFunction", 
-      new { param = "value" });
-    
-    // Create the context with our tool call message
-    var context = new MiddlewareContext(
-      new[] { toolCallMessage },
-      new GenerateReplyOptions());
-    
-    // Mock the agent
-    var mockAgent = new Mock<IAgent>();
-    
-    // Act
-    var result = await middleware.InvokeAsync(context, mockAgent.Object);
-    
-    // Assert
-    Assert.NotNull(result);
-    Assert.IsType<ToolsCallResultMessage>(result);
-    
-    var resultMessage = (ToolsCallResultMessage)result;
-    Assert.NotEmpty(resultMessage.ToolCallResults);
-    
-    // Check that the tool call result contains the expected error message
-    var toolCallResult = resultMessage.ToolCallResults.First();
-    Assert.Contains("not available", toolCallResult.Result);
-    Assert.Contains("getWeather", toolCallResult.Result); // Should list available functions
-    Assert.Contains("getWeatherHistory", toolCallResult.Result);
-    Assert.Contains("add", toolCallResult.Result);
-  }
-  
-  [Fact]
-  public async Task InvokeAsync_ShouldAddFunctionsToOptions_WhenForwardingToAgent()
-  {
-    // Arrange
-    var functionMap = CreateMockFunctionMap();
-    var functionContracts = CreateMockFunctionContracts();
-    var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
-    
-    // Create a regular text message (no tool call)
-    var message = new TextMessage { Text = "What's the weather in San Francisco?", Role = Role.User };
-    
-    // Create the context with our message
-    var context = new MiddlewareContext(
-      new[] { message },
-      new GenerateReplyOptions());
-    
-    // Mock the agent
-    var mockAgent = new Mock<IAgent>();
-    GenerateReplyOptions? capturedOptions = null;
-    
-    mockAgent
-      .Setup(a => a.GenerateReplyAsync(
-        It.IsAny<IEnumerable<IMessage>>(),
-        It.IsAny<GenerateReplyOptions>(),
-        It.IsAny<CancellationToken>()))
-      .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-        (msgs, options, token) => capturedOptions = options)
-      .ReturnsAsync(new TextMessage { Text = "Mock response", Role = Role.Assistant });
-    
-    // Act
-    await middleware.InvokeAsync(context, mockAgent.Object);
-    
-    // Assert
-    Assert.NotNull(capturedOptions);
-    Assert.NotNull(capturedOptions.Functions);
-    Assert.Equal(functionContracts.Count(), capturedOptions.Functions.Length);
-    
-    // Verify all our function contracts were added
-    Assert.Contains(capturedOptions.Functions, f => f.Name == "getWeather");
-    Assert.Contains(capturedOptions.Functions, f => f.Name == "getWeatherHistory");
-    Assert.Contains(capturedOptions.Functions, f => f.Name == "add");
-  }
-  
-  [Fact]
-  public async Task InvokeAsync_ShouldExecuteMathFunction_WhenCalledWithCorrectParameters()
-  {
-    // Arrange
-    var functionMap = CreateMockFunctionMap();
-    var functionContracts = CreateMockFunctionContracts();
-    var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
-    
-    // Create a message with a tool call for the add function
-    var toolCallMessage = CreateToolCallMessage("add", 
-      new { a = 5, b = 7 });
-    
-    // Create the context with our tool call message
-    var context = new MiddlewareContext(
-      new[] { toolCallMessage },
-      new GenerateReplyOptions());
-    
-    // Mock the agent
-    var mockAgent = new Mock<IAgent>();
-    
-    // Act
-    var result = await middleware.InvokeAsync(context, mockAgent.Object);
-    
-    // Assert
-    Assert.NotNull(result);
-    Assert.IsType<ToolsCallResultMessage>(result);
-    
-    var resultMessage = (ToolsCallResultMessage)result;
-    Assert.NotEmpty(resultMessage.ToolCallResults);
-    
-    // Check that the tool call result contains the expected content
-    var toolCallResult = resultMessage.ToolCallResults.First();
-    Assert.Contains("12", toolCallResult.Result); // 5 + 7 = 12
-  }
-  
-  [Fact]
-  public async Task InvokeStreamingAsync_ShouldExecuteFunction_WhenToolCallIsPresent()
-  {
-    // Arrange
-    var functionMap = CreateMockFunctionMap();
-    var functionContracts = CreateMockFunctionContracts();
-    var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
-    
-    // Create a message with a tool call
-    var toolCallMessage = CreateToolCallMessage("get_weather", 
-      new { location = "San Francisco", unit = "celsius" });
-    
-    // Create the context with our tool call message
-    var context = new MiddlewareContext(
-      new[] { toolCallMessage },
-      new GenerateReplyOptions());
-    
-    // Create a simple streaming agent that returns no messages
-    var nextAgent = new MockStreamingAgent(Array.Empty<IMessage>());
-    
-    // Act - invoke the streaming middleware
-    var resultStreamTask = middleware.InvokeStreamingAsync(context, nextAgent);
-    var resultStream = await resultStreamTask;
-    
-    // Collect the results
-    var results = new List<IMessage>();
-    await foreach (var message in resultStream)
-    {
-      results.Add(message);
+        Assert.Equal("functions", exception.ParamName);
     }
-    
-    // Assert
-    Assert.NotEmpty(results);
-    
-    // Check that there is a valid response message
-    var lastMessage = results.Last();
-    Assert.IsType<ToolsCallResultMessage>(lastMessage);
-    
-    var resultMessage = (ToolsCallResultMessage)lastMessage;
-    Assert.NotEmpty(resultMessage.ToolCallResults);
-    
-    // Verify that we have a result from the function execution
-    // The exact format of the result might vary so we don't check the exact content
-    var toolCallResult = resultMessage.ToolCallResults.First();
-    Assert.NotEmpty(toolCallResult.Result);
-  }
-  
-  #endregion
-  
-  #region Helper Methods
-  
-  private Dictionary<string, Func<string, Task<string>>> CreateMockFunctionMap()
-  {
-    return new Dictionary<string, Func<string, Task<string>>>
+
+    [Fact]
+    public void Constructor_ShouldThrowArgumentException_WhenFunctionMissingFromMap()
     {
-      ["getWeather"] = argsJson => Task.FromResult(GetWeatherAsync(argsJson)),
-      ["getWeatherHistory"] = argsJson => Task.FromResult(GetWeatherHistoryAsync(argsJson)),
-      ["add"] = argsJson => Task.FromResult(AddAsync(argsJson)),
-      ["subtract"] = argsJson => Task.FromResult(SubtractAsync(argsJson)),
-      ["multiply"] = argsJson => Task.FromResult(MultiplyAsync(argsJson)),
-      ["divide"] = argsJson => Task.FromResult(DivideAsync(argsJson))
-    };
-  }
-  
-  private IEnumerable<FunctionContract> CreateMockFunctionContracts()
-  {
-    return new[]
+        // Arrange
+        var functions = new List<FunctionContract> {
+            new FunctionContract {
+                Name = "getWeather",
+                Description = "Get the weather in a location",
+                Parameters = [
+                    new FunctionParameterContract {
+                        Name = "location",
+                        ParameterType = typeof(string),
+                        Description = "City name",
+                        IsRequired = true
+                    }
+                ]
+            }
+        };
+
+        var functionMap = new Dictionary<string, Func<string, Task<string>>> {
+            ["add"] = args => Task.FromResult("10")
+        };
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new FunctionCallMiddleware(functions, functionMap));
+
+        Assert.Contains("getWeather", exception.Message);
+        Assert.Equal("functionMap", exception.ParamName);
+    }
+
+    [Fact]
+    public void Constructor_ShouldThrowArgumentException_WhenFunctionMapIsNullButFunctionsAreProvided()
     {
+        // Arrange
+        var functions = new List<FunctionContract> {
+            new FunctionContract {
+                Name = "getWeather",
+                Description = "Get the weather in a location"
+            }
+        };
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentException>(() =>
+            new FunctionCallMiddleware(functions, null!));
+
+        Assert.Contains("Function map must be provided", exception.Message);
+        Assert.Equal("functionMap", exception.ParamName);
+    }
+
+    [Fact]
+    public void Constructor_ShouldNotThrow_WhenFunctionsIsEmpty()
+    {
+        // Arrange
+        var functions = new List<FunctionContract>();
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+
+        // Act & Assert - no exception should be thrown
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+        Assert.NotNull(middleware);
+    }
+
+    [Fact]
+    public void Constructor_ShouldNotThrow_WhenAllFunctionsHaveCorrespondingMapEntries()
+    {
+        // Arrange
+        var functions = new List<FunctionContract> {
+            new FunctionContract {
+                Name = "function1",
+                Description = "Test function 1"
+            },
+            new FunctionContract {
+                Name = "function2",
+                Description = "Test function 2"
+            }
+        };
+
+        var functionMap = new Dictionary<string, Func<string, Task<string>>> {
+            ["function1"] = args => Task.FromResult("result1"),
+            ["function2"] = args => Task.FromResult("result2"),
+        };
+
+        // Act & Assert - no exception should be thrown
+        var middleware = new FunctionCallMiddleware(functions, functionMap);
+        Assert.NotNull(middleware);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ShouldExecuteFunction_WhenFunctionExists()
+    {
+        // Arrange
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        // Create a message with a tool call for the getWeather function
+        var toolCallMessage = CreateToolCallMessage("getWeather",
+          new { location = "San Francisco", unit = "celsius" });
+
+        // Create the context with our tool call message
+        var context = new MiddlewareContext(
+          new[] { toolCallMessage },
+          new GenerateReplyOptions());
+
+        // Mock the agent
+        var mockAgent = new Mock<IAgent>();
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.IsType<ToolsCallResultMessage>(result);
+
+        var resultMessage = (ToolsCallResultMessage)result;
+        Assert.NotEmpty(resultMessage.ToolCallResults);
+
+        // Check that the tool call result contains the expected content
+        var toolCallResult = resultMessage.ToolCallResults.First();
+        Assert.Contains("San Francisco", toolCallResult.Result);
+        Assert.Contains("23", toolCallResult.Result); // Temperature from mock
+        Assert.Contains("celsius", toolCallResult.Result);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ShouldReturnError_WhenFunctionDoesNotExist()
+    {
+        // Arrange
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        // Create a message with a tool call for a non-existent function
+        var toolCallMessage = CreateToolCallMessage("getNonExistentFunction",
+          new { param = "value" });
+
+        // Create the context with our tool call message
+        var context = new MiddlewareContext(
+          new[] { toolCallMessage },
+          new GenerateReplyOptions());
+
+        // Mock the agent
+        var mockAgent = new Mock<IAgent>();
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.IsType<ToolsCallResultMessage>(result);
+
+        var resultMessage = (ToolsCallResultMessage)result;
+        Assert.NotEmpty(resultMessage.ToolCallResults);
+
+        // Check that the tool call result contains the expected error message
+        var toolCallResult = resultMessage.ToolCallResults.First();
+        Assert.Contains("not available", toolCallResult.Result);
+        Assert.Contains("getWeather", toolCallResult.Result); // Should list available functions
+        Assert.Contains("getWeatherHistory", toolCallResult.Result);
+        Assert.Contains("add", toolCallResult.Result);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ShouldAddFunctionsToOptions_WhenForwardingToAgent()
+    {
+        // Arrange
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        // Create a regular text message (no tool call)
+        var message = new TextMessage { Text = "What's the weather in San Francisco?", Role = Role.User };
+
+        // Create the context with our message
+        var context = new MiddlewareContext(
+          new[] { message },
+          new GenerateReplyOptions());
+
+        // Mock the agent
+        var mockAgent = new Mock<IAgent>();
+        GenerateReplyOptions? capturedOptions = null;
+
+        mockAgent
+          .Setup(a => a.GenerateReplyAsync(
+            It.IsAny<IEnumerable<IMessage>>(),
+            It.IsAny<GenerateReplyOptions>(),
+            It.IsAny<CancellationToken>()))
+          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+            (msgs, options, token) => capturedOptions = options)
+          .ReturnsAsync(new TextMessage { Text = "Mock response", Role = Role.Assistant });
+
+        // Act
+        await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        Assert.NotNull(capturedOptions);
+        Assert.NotNull(capturedOptions.Functions);
+        Assert.Equal(functionContracts.Count(), capturedOptions.Functions.Length);
+
+        // Verify all our function contracts were added
+        Assert.Contains(capturedOptions.Functions, f => f.Name == "getWeather");
+        Assert.Contains(capturedOptions.Functions, f => f.Name == "getWeatherHistory");
+        Assert.Contains(capturedOptions.Functions, f => f.Name == "add");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ShouldExecuteMathFunction_WhenCalledWithCorrectParameters()
+    {
+        // Arrange
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        // Create a message with a tool call for the add function
+        var toolCallMessage = CreateToolCallMessage("add",
+          new { a = 5, b = 7 });
+
+        // Create the context with our tool call message
+        var context = new MiddlewareContext(
+          new[] { toolCallMessage },
+          new GenerateReplyOptions());
+
+        // Mock the agent
+        var mockAgent = new Mock<IAgent>();
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent.Object);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.IsType<ToolsCallResultMessage>(result);
+
+        var resultMessage = (ToolsCallResultMessage)result;
+        Assert.NotEmpty(resultMessage.ToolCallResults);
+
+        // Check that the tool call result contains the expected content
+        var toolCallResult = resultMessage.ToolCallResults.First();
+        Assert.Contains("12", toolCallResult.Result); // 5 + 7 = 12
+    }
+
+    [Fact]
+    public async Task InvokeStreamingAsync_ShouldExecuteFunction_WhenToolCallIsPresent()
+    {
+        // Arrange
+        var functionMap = CreateMockFunctionMap();
+        var functionContracts = CreateMockFunctionContracts();
+        var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        // Create a message with a tool call
+        var toolCallMessage = CreateToolCallMessage("get_weather",
+          new { location = "San Francisco", unit = "celsius" });
+
+        // Create the context with our tool call message
+        var context = new MiddlewareContext(
+          new[] { toolCallMessage },
+          new GenerateReplyOptions());
+
+        // Create a simple streaming agent that returns no messages
+        var nextAgent = new MockStreamingAgent(Array.Empty<IMessage>());
+
+        // Act - invoke the streaming middleware
+        var resultStreamTask = middleware.InvokeStreamingAsync(context, nextAgent);
+        var resultStream = await resultStreamTask;
+
+        // Collect the results
+        var results = new List<IMessage>();
+        await foreach (var message in resultStream)
+        {
+            results.Add(message);
+        }
+
+        // Assert
+        Assert.NotEmpty(results);
+
+        // Check that there is a valid response message
+        var lastMessage = results.Last();
+        Assert.IsType<ToolsCallResultMessage>(lastMessage);
+
+        var resultMessage = (ToolsCallResultMessage)lastMessage;
+        Assert.NotEmpty(resultMessage.ToolCallResults);
+
+        // Verify that we have a result from the function execution
+        // The exact format of the result might vary so we don't check the exact content
+        var toolCallResult = resultMessage.ToolCallResults.First();
+        Assert.NotEmpty(toolCallResult.Result);
+    }
+
+    private Dictionary<string, Func<string, Task<string>>> CreateMockFunctionMap()
+    {
+        return new Dictionary<string, Func<string, Task<string>>>
+        {
+            ["getWeather"] = argsJson => Task.FromResult(GetWeatherAsync(argsJson)),
+            ["getWeatherHistory"] = argsJson => Task.FromResult(GetWeatherHistoryAsync(argsJson)),
+            ["add"] = argsJson => Task.FromResult(AddAsync(argsJson)),
+            ["subtract"] = argsJson => Task.FromResult(SubtractAsync(argsJson)),
+            ["multiply"] = argsJson => Task.FromResult(MultiplyAsync(argsJson)),
+            ["divide"] = argsJson => Task.FromResult(DivideAsync(argsJson))
+        };
+    }
+
+    private IEnumerable<FunctionContract> CreateMockFunctionContracts()
+    {
+        return new[]
+        {
       new FunctionContract
       {
         Name = "getWeather",
@@ -483,218 +463,213 @@ public class FunctionCallMiddlewareTests
         }
       }
     };
-  }
-  
-  private ToolsCallMessage CreateToolCallMessage(string functionName, object args)
-  {
-    // Serialize the arguments to a JSON string
-    var jsonArgs = JsonSerializer.Serialize(args);
-    
-    return new ToolsCallMessage
-    {
-      ToolCalls = ImmutableList.Create(new ToolCall(functionName, jsonArgs)
-      {
-        ToolCallId = Guid.NewGuid().ToString()
-      }),
-      Role = Role.Assistant
-    };
-  }
-  
-  #endregion
-  
-  #region Mock Function Implementations
-  
-  private static string GetWeatherAsync(string argsJson)
-  {
-    try
-    {
-      var argsNode = JsonNode.Parse(argsJson);
-      if (argsNode == null)
-      {
-        return "Error: Invalid arguments";
-      }
-      
-      var location = argsNode["location"]?.GetValue<string>();
-      if (string.IsNullOrEmpty(location))
-      {
-        return "Error: Location is required";
-      }
-      
-      var unitNode = argsNode["unit"];
-      string unit = unitNode != null ? unitNode.GetValue<string>().ToLower() : "celsius";
-      int temperature = unit == "celsius" ? 23 : 73;
-      string condition = "Sunny";
-      
-      return $"Weather in {location}: {temperature}°{unit.Substring(0, 1).ToUpper()}, {condition}. Unit: {unit}";
     }
-    catch (Exception ex)
+
+    private ToolsCallMessage CreateToolCallMessage(string functionName, object args)
     {
-      return $"Error processing weather request: {ex.Message}";
+        // Serialize the arguments to a JSON string
+        var jsonArgs = JsonSerializer.Serialize(args);
+
+        return new ToolsCallMessage
+        {
+            ToolCalls = ImmutableList.Create(new ToolCall(functionName, jsonArgs)
+            {
+                ToolCallId = Guid.NewGuid().ToString()
+            }),
+            Role = Role.Assistant
+        };
     }
-  }
-  
-  private static string GetWeatherHistoryAsync(string argsJson)
-  {
-    try
+
+    private static string GetWeatherAsync(string argsJson)
     {
-      var argsNode = JsonNode.Parse(argsJson);
-      if (argsNode == null)
-      {
-        return "Error: Invalid arguments";
-      }
-      
-      var location = argsNode["location"]?.GetValue<string>();
-      if (string.IsNullOrEmpty(location))
-      {
-        return "Error: Location is required";
-      }
-      
-      var daysNode = argsNode["days"];
-      if (daysNode == null || daysNode.GetValue<int>() <= 0)
-      {
-        return "Error: Days must be greater than 0";
-      }
-      
-      int days = daysNode.GetValue<int>();
-      
-      // Ensure we have the exact phrase "weather history" for the test to pass
-      return $"Weather history for {location} (last {days} days):\n" +
-             $"- Day 1: 22°C, Sunny\n" +
-             $"- Day 2: 20°C, Partly Cloudy\n" +
-             $"- Day 3: 19°C, Light Rain";
+        try
+        {
+            var argsNode = JsonNode.Parse(argsJson);
+            if (argsNode == null)
+            {
+                return "Error: Invalid arguments";
+            }
+
+            var location = argsNode["location"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(location))
+            {
+                return "Error: Location is required";
+            }
+
+            var unitNode = argsNode["unit"];
+            string unit = unitNode != null ? unitNode.GetValue<string>().ToLower() : "celsius";
+            int temperature = unit == "celsius" ? 23 : 73;
+            string condition = "Sunny";
+
+            return $"Weather in {location}: {temperature}°{unit.Substring(0, 1).ToUpper()}, {condition}. Unit: {unit}";
+        }
+        catch (Exception ex)
+        {
+            return $"Error processing weather request: {ex.Message}";
+        }
     }
-    catch (Exception ex)
+
+    private static string GetWeatherHistoryAsync(string argsJson)
     {
-      return $"Error processing weather history request: {ex.Message}";
+        try
+        {
+            var argsNode = JsonNode.Parse(argsJson);
+            if (argsNode == null)
+            {
+                return "Error: Invalid arguments";
+            }
+
+            var location = argsNode["location"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(location))
+            {
+                return "Error: Location is required";
+            }
+
+            var daysNode = argsNode["days"];
+            if (daysNode == null || daysNode.GetValue<int>() <= 0)
+            {
+                return "Error: Days must be greater than 0";
+            }
+
+            int days = daysNode.GetValue<int>();
+
+            // Ensure we have the exact phrase "weather history" for the test to pass
+            return $"Weather history for {location} (last {days} days):\n" +
+                   $"- Day 1: 22°C, Sunny\n" +
+                   $"- Day 2: 20°C, Partly Cloudy\n" +
+                   $"- Day 3: 19°C, Light Rain";
+        }
+        catch (Exception ex)
+        {
+            return $"Error processing weather history request: {ex.Message}";
+        }
     }
-  }
-  
-  private string AddAsync(string argsJson)
-  {
-    try
+
+    private string AddAsync(string argsJson)
     {
-      var argsNode = JsonNode.Parse(argsJson);
-      if (argsNode == null)
-      {
-        return "Error: Invalid arguments";
-      }
-      
-      var aNode = argsNode["a"];
-      var bNode = argsNode["b"];
-      
-      if (aNode == null || bNode == null)
-      {
-        return "Error: Both a and b parameters are required";
-      }
-      
-      double a = aNode.GetValue<double>();
-      double b = bNode.GetValue<double>();
-      double result = a + b;
-      
-      return $"{a} + {b} = {result}";
+        try
+        {
+            var argsNode = JsonNode.Parse(argsJson);
+            if (argsNode == null)
+            {
+                return "Error: Invalid arguments";
+            }
+
+            var aNode = argsNode["a"];
+            var bNode = argsNode["b"];
+
+            if (aNode == null || bNode == null)
+            {
+                return "Error: Both a and b parameters are required";
+            }
+
+            double a = aNode.GetValue<double>();
+            double b = bNode.GetValue<double>();
+            double result = a + b;
+
+            return $"{a} + {b} = {result}";
+        }
+        catch (Exception ex)
+        {
+            return $"Error processing add request: {ex.Message}";
+        }
     }
-    catch (Exception ex)
+
+    private string SubtractAsync(string argsJson)
     {
-      return $"Error processing add request: {ex.Message}";
+        try
+        {
+            var argsNode = JsonNode.Parse(argsJson);
+            if (argsNode == null)
+            {
+                return "Error: Invalid arguments";
+            }
+
+            var aNode = argsNode["a"];
+            var bNode = argsNode["b"];
+
+            if (aNode == null || bNode == null)
+            {
+                return "Error: Both a and b parameters are required";
+            }
+
+            double a = aNode.GetValue<double>();
+            double b = bNode.GetValue<double>();
+            double result = a - b;
+
+            return $"{a} - {b} = {result}";
+        }
+        catch (Exception ex)
+        {
+            return $"Error processing subtract request: {ex.Message}";
+        }
     }
-  }
-  
-  private string SubtractAsync(string argsJson)
-  {
-    try
+
+    private string MultiplyAsync(string argsJson)
     {
-      var argsNode = JsonNode.Parse(argsJson);
-      if (argsNode == null)
-      {
-        return "Error: Invalid arguments";
-      }
-      
-      var aNode = argsNode["a"];
-      var bNode = argsNode["b"];
-      
-      if (aNode == null || bNode == null)
-      {
-        return "Error: Both a and b parameters are required";
-      }
-      
-      double a = aNode.GetValue<double>();
-      double b = bNode.GetValue<double>();
-      double result = a - b;
-      
-      return $"{a} - {b} = {result}";
+        try
+        {
+            var argsNode = JsonNode.Parse(argsJson);
+            if (argsNode == null)
+            {
+                return "Error: Invalid arguments";
+            }
+
+            var aNode = argsNode["a"];
+            var bNode = argsNode["b"];
+
+            if (aNode == null || bNode == null)
+            {
+                return "Error: Both a and b parameters are required";
+            }
+
+            double a = aNode.GetValue<double>();
+            double b = bNode.GetValue<double>();
+            double result = a * b;
+
+            return $"{a} × {b} = {result}";
+        }
+        catch (Exception ex)
+        {
+            return $"Error processing multiply request: {ex.Message}";
+        }
     }
-    catch (Exception ex)
+
+    private string DivideAsync(string argsJson)
     {
-      return $"Error processing subtract request: {ex.Message}";
+        try
+        {
+            var argsNode = JsonNode.Parse(argsJson);
+            if (argsNode == null)
+            {
+                return "Error: Invalid arguments";
+            }
+
+            var aNode = argsNode["a"];
+            var bNode = argsNode["b"];
+
+            if (aNode == null || bNode == null)
+            {
+                return "Error: Both a and b parameters are required";
+            }
+
+            double a = aNode.GetValue<double>();
+            double b = bNode.GetValue<double>();
+
+            if (Math.Abs(b) < 0.0001)
+            {
+                return "Error: Cannot divide by zero";
+            }
+
+            double result = a / b;
+            return $"{a} ÷ {b} = {result}";
+        }
+        catch (Exception ex)
+        {
+            return $"Error processing divide request: {ex.Message}";
+        }
     }
-  }
-  
-  private string MultiplyAsync(string argsJson)
-  {
-    try
-    {
-      var argsNode = JsonNode.Parse(argsJson);
-      if (argsNode == null)
-      {
-        return "Error: Invalid arguments";
-      }
-      
-      var aNode = argsNode["a"];
-      var bNode = argsNode["b"];
-      
-      if (aNode == null || bNode == null)
-      {
-        return "Error: Both a and b parameters are required";
-      }
-      
-      double a = aNode.GetValue<double>();
-      double b = bNode.GetValue<double>();
-      double result = a * b;
-      
-      return $"{a} × {b} = {result}";
-    }
-    catch (Exception ex)
-    {
-      return $"Error processing multiply request: {ex.Message}";
-    }
-  }
-  
-  private string DivideAsync(string argsJson)
-  {
-    try
-    {
-      var argsNode = JsonNode.Parse(argsJson);
-      if (argsNode == null)
-      {
-        return "Error: Invalid arguments";
-      }
-      
-      var aNode = argsNode["a"];
-      var bNode = argsNode["b"];
-      
-      if (aNode == null || bNode == null)
-      {
-        return "Error: Both a and b parameters are required";
-      }
-      
-      double a = aNode.GetValue<double>();
-      double b = bNode.GetValue<double>();
-      
-      if (Math.Abs(b) < 0.0001)
-      {
-        return "Error: Cannot divide by zero";
-      }
-      
-      double result = a / b;
-      return $"{a} ÷ {b} = {result}";
-    }
-    catch (Exception ex)
-    {
-      return $"Error processing divide request: {ex.Message}";
-    }
-  }
-  
-  #endregion
+
     [Fact]
     public async Task FunctionCallMiddleware_ShouldReturnToolAggregateMessage_Streaming_WithJoin()
     {
@@ -946,5 +921,63 @@ public class FunctionCallMiddlewareTests
         Assert.True(toolCalls!.Count() >= 2, "Should contain at least two tool calls");
         Assert.Contains(toolCalls, call => call.FunctionName == "python-mcp.list_directory");
         // Optionally, check that both tool calls are present (by id or argument)
+    }
+
+    [Fact]
+    public async Task McpFunctionCallMiddleware_ShouldAddLargeNumbers_WhenUsingCalculatorTool()
+    {
+        // Arrange
+        // Get the McpSampleServer assembly to access its tools
+        var mcpSampleServerAssembly = typeof(CalculatorTool).Assembly;
+
+        // Create function call middleware components from the MCP sample server assembly
+        var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromAssembly(mcpSampleServerAssembly);
+
+        // Create the middleware with the MCP tools
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "McpCalculatorTest");
+
+        // Create large numbers to test with
+        double firstNumber = 9876543210.123;
+        double secondNumber = 1234567890.987;
+        double expectedSum = firstNumber + secondNumber; // 11111111101.11
+
+        // Set up a fixed tool call ID for testing
+        string toolCallId = Guid.NewGuid().ToString();
+
+        // Create a tool call message with the calculator add function and our large numbers
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls = ImmutableList.Create(new ToolCall("CalculatorTool.Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
+            {
+                ToolCallId = toolCallId
+            }),
+            Role = Role.Assistant
+        };
+
+        var messages = new List<IMessage> { toolCallMessage };
+        var context = new MiddlewareContext(messages, new GenerateReplyOptions());
+
+        // Create a mock agent that won't actually be used for generation
+        // since we're directly testing the middleware function execution
+        var mockAgent = new MockAgent(new TextMessage { Role = Role.Assistant, Text = "This is a mock response" });
+
+        // Act
+        var result = await middleware.InvokeAsync(context, mockAgent);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.IsType<ToolsCallResultMessage>(result);
+
+        var toolsCallResultMessage = (ToolsCallResultMessage)result;
+        Assert.Single(toolsCallResultMessage.ToolCallResults);
+        var resultJson = toolsCallResultMessage.ToolCallResults
+                .FirstOrDefault(tr => tr.ToolCallId == toolCallId)
+                .Result!;
+        Assert.NotNull(resultJson);
+
+        var resultValue = JsonSerializer.Deserialize<double>(resultJson);
+        // Verify the sum is correct
+        Assert.Equal(expectedSum, resultValue);
+        Assert.Equal(11111111101.11, resultValue, 5); // Compare with 5 decimal precision
     }
 }

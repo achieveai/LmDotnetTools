@@ -91,7 +91,7 @@ public class McpFunctionCallExtensionsTests
         // Verify function map contains all the function names from the contracts
         foreach (var contract in contractsList)
         {
-            Assert.True(functionMap.ContainsKey(contract.Name));
+            Assert.True(functionMap.ContainsKey(contract.ClassName + "." + contract.Name));
         }
     }
 
@@ -108,23 +108,23 @@ public class McpFunctionCallExtensionsTests
         var (_, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
 
         // Act & Assert for SayHello
-        var sayHelloResult = await functionMap["SayHello"]("{\"name\":\"Test User\"}");
+        var sayHelloResult = await functionMap["GreetingTool.SayHello"]("{\"name\":\"Test User\"}");
         Assert.Contains("Hello, Test User", sayHelloResult);
 
         // Act & Assert for Add
-        var addResult = await functionMap["Add"]("{\"a\":5,\"b\":3}");
+        var addResult = await functionMap["CalculatorTool.Add"]("{\"a\":5,\"b\":3}");
         // Parse the result to verify it's a valid number
         double addNumber = double.Parse(addResult.Trim('\"'));
         Assert.Equal(8, addNumber);
 
         // Act & Assert for Divide
-        var divideResult = await functionMap["Divide"]("{\"a\":10,\"b\":2}");
+        var divideResult = await functionMap["CalculatorTool.Divide"]("{\"a\":10,\"b\":2}");
         // Parse the result to verify it's a valid number
         double divideNumber = double.Parse(divideResult.Trim('\"'));
         Assert.Equal(5, divideNumber);
 
         // Test error handling for Divide by zero
-        var divideByZeroResult = await functionMap["Divide"]("{\"a\":10,\"b\":0}");
+        var divideByZeroResult = await functionMap["CalculatorTool.Divide"]("{\"a\":10,\"b\":0}");
         // Parse the result to verify it contains an error message
         var errorObj = JsonSerializer.Deserialize<JsonElement>(divideByZeroResult);
         Assert.True(errorObj.TryGetProperty("error", out _));
