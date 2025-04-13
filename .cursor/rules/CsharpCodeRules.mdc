@@ -1,3 +1,8 @@
+---
+description: 
+globs: *.cs
+alwaysApply: false
+---
 ## Namespace Declaration
 Most code files should declare a single namespace using file-scoped namespace declarations rather than block headers. This newer syntax doesn't require braces and is preferred in modern C# coding.
 
@@ -62,11 +67,51 @@ namespace MyCompany.MyProduct
     - Group related code within classes and namespaces.
     - Use meaningful file names that reflect their purpose.
 
+## Nullables
+
+1. Always make use of Nullables.
+2. Always be very specific in Nullables, and express them clearly.
+3. If a method expects non-null parameter, do not make it nullable.
+4. When using `!` for enforcing nullable to non-nullable, make sure it's guaranteed
+   Because of previous logic.
+
+## Data objects
+
+1. Always use record types for DataObjects
+2. It's extremely desirable that DataObjects are immutable, so use `init` instead of
+   `set` properties.
+3. Where ever possible use Immutable collections. Immutable record type should always
+   nest immutable collection of immutable record types (preferably).
+
+## Serialization / Deserialization
+
+1. Each module should use single set of Serialization Options.
+2. Be vary of Immutable `deserialization` use helpers that we've created for them.
+3. Be vary of Enum serialization / deserialization. Use helpers that we've created.
+4. Be vary of `Union` types serialization and deserialization. Use helpers.
+
+## File size
+
+1. ** Avoid ** large classes
+2. ** Avoid ** large methods
+3. Only one class per file.
+4. Split test cases into related tests. It's OK to have multiple test files per class.
+
 ## Agent behavior
 
 1. When making changes Agent will always address lint errors, and address them.
 2. Before completing task (if making changes to code files), will always run dotnet build / test and validate everything is fine.
    a. If things are failing, it will fix them.
    b. If can't fix the issue, then analyze what may be fundamentally broken and address it (or consider a different approach).
+3. Use following flow to fix the issue:
+   a. Analyze the issue. Check what could be the root cause.
+   b. See if there are any other examples where such a issue was addressed.
+   c. Plan on how to fix the issue (based on current code base).
+   d. Attempt to fix the issue.
+   e. If the issue is not fixed, go back to step "a"
+4. Completing a task.
+   a. After a task has been completed, self review the code.
+   b. Fix each review comment.
+   c. Make sure there is no code duplication (across the code base).
 
 These rules will help you maintain consistent and readable C# code in your IDE with the namespace declared as a statement rather than a block header, while ensuring proper test coverage for all functionality changes.

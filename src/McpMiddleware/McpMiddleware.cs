@@ -93,7 +93,7 @@ public class McpMiddleware : IStreamingMiddleware
             foreach (var tool in tools)
             {
                 // Create a delegate that calls the appropriate MCP client
-                functionMap[$"{kvp.Key}.{tool.Name}"] = async (argsJson) => 
+                functionMap[$"{kvp.Key}-{tool.Name}"] = async (argsJson) => 
                 {
                     try 
                     {

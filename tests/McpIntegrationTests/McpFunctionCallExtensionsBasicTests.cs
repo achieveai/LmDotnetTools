@@ -97,7 +97,7 @@ public class McpFunctionCallExtensionsBasicTests
   }
   
   [Fact]
-  public async Task FunctionCallMiddleware_ExecutesToolCalls()
+  public Task FunctionCallMiddleware_ExecutesToolCalls()
   {
     // Arrange - create simple function contracts and handlers
     var functionContracts = new List<FunctionContract>
@@ -136,5 +136,7 @@ public class McpFunctionCallExtensionsBasicTests
     // Assert middleware is properly created
     Assert.NotNull(middleware);
     Assert.Equal("FunctionCallMiddleware", middleware.Name);
+    
+    return Task.CompletedTask;
   }
 }

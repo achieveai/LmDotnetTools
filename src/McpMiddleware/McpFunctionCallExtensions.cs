@@ -62,7 +62,7 @@ public static class McpFunctionCallExtensions
                 functionContracts.Add(contract);
 
                 // Create the function callback handler
-                functionMap[$"{contract.ClassName}.{contract.Name}"] = async (argsJson) =>
+                functionMap[$"{contract.ClassName}-{contract.Name}"] = async (argsJson) =>
                 {
                     try
                     {

@@ -1,0 +1,110 @@
+[
+{
+    "model": "claude-3-7-sonnet-20250219",
+    "max_tokens": 2000,
+    "thinking": {
+        "type": "enabled",
+        "budget_tokens": 1024
+  },
+    "stream": false,
+    "tools": [
+        {
+                "name": "python_mcp-execute_python_in_container",
+                "description": "\nExecute Python code in a Docker container. The environment is limited to the container.\nFollowing packages are available:\n- pandas\n- numpy\n- matplotlib\n- seaborn\n- plotly\n- bokeh\n- hvplot\n- datashader\n- plotnine\n- cufflinks\n- graphviz\n- scipy\n- statsmodels\n- openpyxl\n- xlrd\n- xlsxwriter\n- pandasql\n- csv23\n- csvkit\n- polars\n- pyarrow\n- fastparquet\n- dask\n- vaex\n- python-dateutil\n- beautifulsoup4\n- requests\n- lxml\n- geopandas\n- folium\n- pydeck\n- holoviews\n- altair\n- visualkeras\n- kaleido\n- panel\n- voila\n\nArgs:\n    code: Python code to execute\n\nReturns:\n    Output from executed code\n",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": ""
+                        }
+                    },
+                    "required": [
+                        "code"
+                    ],
+                    "additionalProperties": true,
+                    "description": "Parameters for python-mcp.execute_python_in_container"
+                }
+        }
+    ],
+    "system": "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool.",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Find the files in /code that are not present in /code_old."
+        }
+    ]
+},
+{
+    "model": "claude-3-7-sonnet-20250219",
+    "temperature": 0.699999988079071,
+    "max_tokens": 2000,
+    "stream": true,
+    "tools": [
+        {
+            "name": "python_mcp-list_directory",
+            "description": "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "relative_path": {
+                        "type": "string",
+                        "description": ""
+                    }
+                },
+                "additionalProperties": true,
+                "description": "Parameters for python-mcp.list_directory"
+            }
+        },
+        {
+            "name": "python_mcp-delete_file",
+            "description": "\nDelete a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    Status message\n",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "relative_path": {
+                        "type": "string",
+                        "description": ""
+                    }
+                },
+                "required": [
+                    "relative_path"
+                ],
+                "additionalProperties": true,
+                "description": "Parameters for python-mcp.delete_file"
+            }
+        },
+        {
+            "name": "python_mcp-get_directory_tree",
+            "description": "\nGet an ASCII tree representation of a directory structure where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: root code directory)\n    \nReturns:\n    ASCII tree representation as a string\n",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "relative_path": {
+                        "type": "string",
+                        "description": ""
+                    }
+                },
+                "additionalProperties": true,
+                "description": "Parameters for python-mcp.get_directory_tree"
+            }
+        },
+        {
+            "name": "python_mcp-cleanup_code_directory",
+            "description": "\nClean up the code directory by removing all files and subdirectories\n\nReturns:\n    Status message\n",
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Parameters for python-mcp.cleanup_code_directory"
+            }
+        }
+    ],
+    "system": "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool.",
+    "messages": [
+        {
+            "role": "user",
+            "content": "List files in root and \"code\" directories."
+        }
+    ]
+}
+]

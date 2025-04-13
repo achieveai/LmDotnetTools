@@ -20,6 +20,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         IDictionary<string, Func<string, Task<string>>> functionMap,
         string? name = null)
     {
+        _functions = functions ?? throw new ArgumentNullException(nameof(functions));
+
         // Validate that each function has a corresponding entry in the function map
         if (functions.Any())
         {
@@ -44,7 +46,6 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
 
         Name = name ?? nameof(FunctionCallMiddleware);
-        _functions = functions;
         _functionMap = functionMap;
     }
 
@@ -204,7 +205,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Single builder for tool call messages
         ToolsCallMessageBuilder? toolsCallBuilder = null;
         bool wasProcessingToolCallUpdate = false;
-        
+
         await foreach (var message in sourceStream.WithCancellation(cancellationToken))
         {
             // Check if we're switching message types and need to complete any pending builder
@@ -212,7 +213,6 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             var textUpdateMessage = message as TextUpdateMessage;
             var hasUsage = textUpdateMessage != null && textUpdateMessage.Metadata != null && textUpdateMessage.Metadata.ContainsKey("usage");
 
-            
             if (wasProcessingToolCallUpdate && toolUpdateMessage == null && toolsCallBuilder != null)
             {
                 // Check if text update message is present and contains usage. In which case we are at the last message.
@@ -226,9 +226,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
                 if (usage != null && rv is ToolsCallAggregateMessage aggregateMessage)
                 {
+                    // Clone the usage node instead of reusing it directly
+                    var usageClone = JsonNode.Parse(usage.ToJsonString());
                     rv = aggregateMessage with { Metadata = new JsonObject
                         {
-                            ["usage"] = usage,
+                            ["usage"] = usageClone,
                         }
                     };
 

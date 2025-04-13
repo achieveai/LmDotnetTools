@@ -1,0 +1,98 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Enhanced Cursor Rules with Self-Review Process
+
+---
+Description: Core Project Guidelines with Self-Review Process
+Globs: *
+---
+
+## CRITICAL: Review Process Before Task Completion
+
+Before completing any coding task, you MUST perform a thorough self-review focusing on the following areas:
+
+### Design Pattern Review
+- Identify and explicitly name the design patterns used in the solution
+- Verify that the chosen patterns are appropriate for the problem domain
+- Check if patterns are implemented correctly and completely
+- Ensure patterns are consistently applied across related components
+- Look for opportunities to refactor toward cleaner pattern implementations
+
+### Code Duplication Detection
+- Scan all newly written code for duplicated or similar code blocks
+- Check for duplicated logic across different files and components
+- Identify opportunities to extract repeated code into reusable methods
+- Look for similar functionality that could be abstracted into base classes or utilities
+- Cross-reference with existing codebase to avoid reimplementing existing functionality
+
+### Async Code Validation
+- NEVER use blocking methods like `.GetAwaiter().GetResult()` or `.Result` on async tasks
+- Always use async/await pattern consistently throughout the codebase
+- Ensure proper propagation of async calls up the call stack
+- Check for potential deadlocks in async code
+- Verify that cancellation tokens are properly used where appropriate
+- Ensure exception handling in async code follows best practices
+
+### External Knowledge
+- When encountering unfamiliar frameworks or libraries, search the web for best practices
+- Research modern approaches before implementing solutions for complex problems
+- Look up official documentation for APIs being used
+- Verify compatibility between different libraries and frameworks
+- Check for deprecated methods or approaching obsolescence
+
+### Build and Test Validation
+- Use `dotnet build` to verify code compiles without warnings
+- Run `dotnet test` to validate that all tests pass
+- Address any build warnings that appear during compilation
+- Fix test failures before considering the task complete
+- Run appropriate linting tools as part of the review
+
+## Test Code Standards
+
+### Data-Driven Testing Approach
+- Structure all test code to be data-driven by default
+- Separate test logic from test data
+- Design tests to easily accommodate new test cases by simply adding data samples
+- Use parameterized tests for testing multiple scenarios with the same logic
+- Implement test data factories to generate varied test cases
+- Minimize the number of test methods; instead, have fewer methods that run against more data points
+- Each data sample should clearly indicate its purpose in the test name or description
+
+### Diagnostic Output for Debugging
+- Use `System.Diagnostics` for writing debug output in test code
+- Include detailed context in diagnostic messages
+- Log input parameters and output results for each test case
+- Write diagnostic information for each critical step in test execution
+- Use different verbosity levels appropriately (Verbose, Debug, Information, etc.)
+- Format diagnostic output to be easily readable in test runners
+- Include timing information for performance-sensitive operations
+- Ensure diagnostic output clearly identifies which test case is running when using data-driven tests
+
+## Production Code Standards
+
+### SOLID Principles Enforcement
+- Single Responsibility: Each class should have only one reason to change
+- Open/Closed: Classes should be open for extension but closed for modification
+- Liskov Substitution: Derived classes must be substitutable for their base classes
+- Interface Segregation: Many client-specific interfaces are better than one general-purpose interface
+- Dependency Inversion: Depend on abstractions, not concretions
+
+### Clean Code Practices
+- Use meaningful and consistent naming conventions
+- Keep methods short and focused (generally under 20 lines)
+- Minimize method parameters (generally 3 or fewer)
+- Avoid deeply nested code blocks (maximum nesting level of 3)
+- Write self-documenting code with appropriate comments for complex logic
+- Use immutable objects where possible
+- Follow consistent formatting and style throughout the codebase
+
+### Error Handling
+- Use appropriate exception types for different error scenarios
+- Include meaningful error messages that aid debugging
+- Log exceptions with full context at appropriate levels
+- Implement retry mechanisms for transient failures where appropriate
+- Never swallow exceptions without proper handling
+- Use defensive programming techniques for critical code paths
