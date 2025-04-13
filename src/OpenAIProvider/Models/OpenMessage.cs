@@ -194,7 +194,7 @@ public class OpenToolMessage : IMessage, ICanGetToolCalls, ICanGetUsage
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
-public class OpenToolCallAggregateMessage : ToolsCallAggregateMessage, ICanGetUsage
+public record OpenToolCallAggregateMessage : ToolsCallAggregateMessage, ICanGetUsage
 {
     public OpenToolCallAggregateMessage(
         string completionId,

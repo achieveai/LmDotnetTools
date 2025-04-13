@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -19,12 +20,6 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         IDictionary<string, Func<string, Task<string>>> functionMap,
         string? name = null)
     {
-        // Validate functions parameter
-        if (functions == null)
-        {
-            throw new ArgumentNullException(nameof(functions));
-        }
-        
         // Validate that each function has a corresponding entry in the function map
         if (functions.Any())
         {
@@ -213,17 +208,47 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         await foreach (var message in sourceStream.WithCancellation(cancellationToken))
         {
             // Check if we're switching message types and need to complete any pending builder
-            bool isToolCallUpdate = message is ToolsCallUpdateMessage;
+            var toolUpdateMessage = message as ToolsCallUpdateMessage;
+            var textUpdateMessage = message as TextUpdateMessage;
+            var hasUsage = textUpdateMessage != null && textUpdateMessage.Metadata != null && textUpdateMessage.Metadata.ContainsKey("usage");
+
             
-            if (wasProcessingToolCallUpdate && !isToolCallUpdate && toolsCallBuilder != null)
+            if (wasProcessingToolCallUpdate && toolUpdateMessage == null && toolsCallBuilder != null)
             {
+                // Check if text update message is present and contains usage. In which case we are at the last message.
+                var usage = hasUsage
+                    ? textUpdateMessage!.Metadata!["usage"]
+                    : null;
+
                 // Complete the previous builder before processing the new message
-                yield return await ProcessFinalToolCallMessage(toolsCallBuilder);
+                var rv = await ProcessFinalToolCallMessage(toolsCallBuilder);
                 toolsCallBuilder = null;
+
+                if (usage != null && rv is ToolsCallAggregateMessage aggregateMessage)
+                {
+                    rv = aggregateMessage with { Metadata = new JsonObject
+                        {
+                            ["usage"] = usage,
+                        }
+                    };
+
+                    yield return rv;
+                    continue;
+                }
+                else
+                {
+                    yield return rv;
+                }
             }
             
             // Update tracking state
-            wasProcessingToolCallUpdate = isToolCallUpdate;
+            wasProcessingToolCallUpdate = toolUpdateMessage != null;
+
+            // Skip empty text updates
+            if (textUpdateMessage != null && string.IsNullOrEmpty(textUpdateMessage.Text) && !hasUsage)
+            {
+                continue;
+            }
             
             // Handle ToolsCallUpdateMessage (partial updates to be accumulated)
             if (message is ToolsCallUpdateMessage updateMessage)

@@ -5,7 +5,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// <summary>
 /// Combines a tool call message and its result into a single message
 /// </summary>
-public class ToolsCallAggregateMessage : IMessage
+public record ToolsCallAggregateMessage : IMessage
 {
     /// <summary>
     /// The original tool call message
@@ -30,7 +30,7 @@ public class ToolsCallAggregateMessage : IMessage
     /// <summary>
     /// Combined metadata from the tool call and its result
     /// </summary>
-    public JsonObject? Metadata { get; }
+    public JsonObject? Metadata { get; init; }
     
     /// <summary>
     /// Generation ID from the original tool call
