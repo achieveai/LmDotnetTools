@@ -3,6 +3,7 @@ using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Net.ServerSentEvents;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -79,54 +80,49 @@ public class OpenClient : IOpenClient, IDisposable
             cancellationToken: cancellationToken);
 
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using StreamReader reader = new StreamReader(stream);
-        string? line;
-
-        SseEvent currentEvent = new SseEvent();
-        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
+        await foreach (var sseItem in SseParser.Create(stream).EnumerateAsync(cancellationToken))
         {
-            if (!string.IsNullOrEmpty(line)) {
-                if (line.StartsWith("data:"))
-                {
-                    currentEvent.Data = line.Substring("data:".Length).Trim();
-                    continue;
-                }
-                else if (!string.IsNullOrEmpty(currentEvent.Data))
-                {
-                    currentEvent.Data += line;
-                    continue;
-                }
-            }
-
-            if (currentEvent.Data == "[DONE]")
+            // Skip "[DONE]" event which indicates the end of the stream
+            if (sseItem.Data == "[DONE]")
             {
                 break;
             }
-            else if (string.IsNullOrEmpty(line)
-                && !string.IsNullOrEmpty(currentEvent.Data))
-            {
-                var res = await JsonSerializer.DeserializeAsync<ChatCompletionResponse>(
-                        new MemoryStream(Encoding.UTF8.GetBytes(currentEvent.Data!)),
-                        S_jsonSerializerOptions,
-                        cancellationToken
-                    ) ?? throw new Exception("Failed to deserialize response");
 
+            // Parse the SSE data as JSON into a ChatCompletionResponse
+            ChatCompletionResponse? res = null;
+            try
+            {
+                res = JsonSerializer.Deserialize<ChatCompletionResponse>(
+                    sseItem.Data,
+                    S_jsonSerializerOptions);
+
+                if (res == null)
+                {
+                    continue;
+                }
+
+                // Add default assistant role if not present
                 if (res.Choices?.Count > 0 && res.Choices[0].FinishReason != null)
                 {
                     if (res.Choices[0].Delta?.Role.HasValue != true)
                     {
-                        res.Choices[0].Delta = new ChatMessage {
+                        res.Choices[0].Delta = new ChatMessage
+                        {
                             Role = RoleEnum.Assistant,
                             Content = res.Choices[0].Delta?.Content ?? new Union<string, Union<TextContent, ImageContent>[]>(string.Empty)
                         };
                     }
                 }
-
-                yield return res;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Failed to deserialize SSE response: {ex.Message}, Data: {sseItem.Data}");
             }
 
-            // Reset the current event for the next one
-            currentEvent = new SseEvent();
+            if (res != null)
+            {
+                yield return res;
+            }
         }
     }
 
@@ -289,13 +285,5 @@ public class OpenClient : IOpenClient, IDisposable
         jsonSerializerOptions.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
 
         return jsonSerializerOptions;
-    }
-
-    public class SseEvent(
-        string? eventType = null,
-        string? data = null)
-    {
-        public string? EventType { get; set; } = eventType;
-        public string? Data { get; set; } = data;
     }
 }

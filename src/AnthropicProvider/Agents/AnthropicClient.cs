@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Net.ServerSentEvents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
@@ -84,46 +85,32 @@ public class AnthropicClient : IAnthropicClient
     response.EnsureSuccessStatusCode();
     
     using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-    using var reader = new StreamReader(stream);
     
-    while (!reader.EndOfStream)
+    await foreach (var sseItem in SseParser.Create(stream).EnumerateAsync(cancellationToken))
     {
-      cancellationToken.ThrowIfCancellationRequested();
-      
-      var line = await reader.ReadLineAsync();
-      if (string.IsNullOrEmpty(line))
+      // Skip empty data or check for stream end
+      if (string.IsNullOrEmpty(sseItem.Data) || sseItem.Data == "[DONE]")
       {
         continue;
       }
       
-      // SSE format: lines starting with "data: "
-      if (line.StartsWith("data: "))
+      // Parse the event data
+      AnthropicStreamEvent? eventData = null;
+      try
       {
-        var data = line.Substring(6);
-        
-        // The stream is finished when we receive "[DONE]"
-        if (data == "[DONE]")
-        {
-          break;
-        }
-        
-        // Parse the event data outside the try/catch so we can yield return safely
-        AnthropicStreamEvent? eventData = null;
-        try
-        {
-          eventData = JsonSerializer.Deserialize<AnthropicStreamEvent>(data, _jsonOptions);
-        }
-        catch (JsonException ex)
-        {
-          // Log exception and continue
-          Console.Error.WriteLine($"Error parsing SSE data: {ex.Message}");
-        }
-        
-        // Return the event data if it was successfully parsed
-        if (eventData != null)
-        {
-          yield return eventData;
-        }
+        eventData = JsonSerializer.Deserialize<AnthropicStreamEvent>(sseItem.Data, _jsonOptions);
+      }
+      catch (JsonException ex)
+      {
+        // Log exception and continue
+        Console.Error.WriteLine($"Error parsing SSE data: {ex.Message}");
+        continue;
+      }
+      
+      // Return the event data if it was successfully parsed
+      if (eventData != null)
+      {
+        yield return eventData;
       }
     }
   }
