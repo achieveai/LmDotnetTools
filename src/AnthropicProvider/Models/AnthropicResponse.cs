@@ -29,7 +29,7 @@ public record AnthropicResponse
   /// The content of the response.
   /// </summary>
   [JsonPropertyName("content")]
-  public List<AnthropicContent> Content { get; init; } = new List<AnthropicContent>();
+  public List<AnthropicResponseContent> Content { get; init; } = new List<AnthropicResponseContent>();
 
   /// <summary>
   /// The model that generated the response.
@@ -68,6 +68,18 @@ public record AnthropicUsage
   public int InputTokens { get; init; }
 
   /// <summary>
+  /// The number of tokens used for cache creation, if any.
+  /// </summary>
+  [JsonPropertyName("cache_creation_input_tokens")]
+  public int CacheCreationInputTokens { get; init; }
+
+  /// <summary>
+  /// The number of tokens read from cache, if any.
+  /// </summary>
+  [JsonPropertyName("cache_read_input_tokens")]
+  public int CacheReadInputTokens { get; init; }
+
+  /// <summary>
   /// The number of output tokens generated.
   /// </summary>
   [JsonPropertyName("output_tokens")]
@@ -77,6 +89,8 @@ public record AnthropicUsage
 /// <summary>
 /// Represents a streaming event from the Anthropic API.
 /// </summary>
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(AnthropicPingEvent), typeDiscriminator: "ping")]
 public record AnthropicStreamEvent
 {
   /// <summary>
@@ -108,6 +122,19 @@ public record AnthropicStreamEvent
   /// </summary>
   [JsonPropertyName("usage")]
   public AnthropicUsage? Usage { get; init; }
+
+  /// <summary>
+  /// The content block for "content_block_start" events.
+  /// </summary>
+  [JsonPropertyName("content_block")]
+  public AnthropicResponseContent? ContentBlock { get; init; }
+}
+
+/// <summary>
+/// Represents a ping event in a streaming response.
+/// </summary>
+public record AnthropicPingEvent : AnthropicStreamEvent
+{
 }
 
 /// <summary>
@@ -131,5 +158,59 @@ public record AnthropicDelta
   /// The tool calls for "tool_use" deltas.
   /// </summary>
   [JsonPropertyName("tool_calls")]
-  public List<AnthropicToolCall>? ToolCalls { get; init; }
+  public List<AnthropicDeltaToolCall>? ToolCalls { get; init; }
+
+  /// <summary>
+  /// The partial JSON for "input_json_delta" deltas.
+  /// </summary>
+  [JsonPropertyName("partial_json")]
+  public string? PartialJson { get; init; }
+
+  /// <summary>
+  /// The stop reason for "message_delta" events.
+  /// </summary>
+  [JsonPropertyName("stop_reason")]
+  public string? StopReason { get; init; }
+
+  /// <summary>
+  /// The stop sequence for "message_delta" events.
+  /// </summary>
+  [JsonPropertyName("stop_sequence")]
+  public string? StopSequence { get; init; }
+}
+
+/// <summary>
+/// Represents a tool call in a delta update.
+/// </summary>
+public record AnthropicDeltaToolCall
+{
+  /// <summary>
+  /// The index of the tool call.
+  /// </summary>
+  [JsonPropertyName("index")]
+  public int Index { get; init; }
+
+  /// <summary>
+  /// The ID of the tool call.
+  /// </summary>
+  [JsonPropertyName("id")]
+  public string Id { get; init; } = string.Empty;
+
+  /// <summary>
+  /// The type of the tool call.
+  /// </summary>
+  [JsonPropertyName("type")]
+  public string Type { get; init; } = string.Empty;
+
+  /// <summary>
+  /// The name of the tool.
+  /// </summary>
+  [JsonPropertyName("name")]
+  public string Name { get; init; } = string.Empty;
+
+  /// <summary>
+  /// The input to the tool.
+  /// </summary>
+  [JsonPropertyName("input")]
+  public System.Text.Json.JsonElement Input { get; init; }
 }

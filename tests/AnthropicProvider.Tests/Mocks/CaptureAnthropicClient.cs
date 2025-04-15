@@ -69,9 +69,9 @@ internal class CaptureAnthropicClient : IAnthropicClient
         Type = "message",
         Role = "assistant",
         Model = request.Model ?? "claude-3-7-sonnet-20250219",
-        Content = new List<AnthropicContent>
+        Content = new List<AnthropicResponseContent>
         {
-          new AnthropicContent
+          new AnthropicResponseTextContent
           {
             Type = "text",
             Text = "This is a mock response for testing."

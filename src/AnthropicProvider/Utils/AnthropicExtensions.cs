@@ -24,9 +24,9 @@ public static class AnthropicExtensions
     string textContent = string.Empty;
     foreach (var content in response.Content)
     {
-      if (content.Type == "text" && content.Text != null)
+      if (content.Type == "text" && content is AnthropicResponseTextContent textContent1)
       {
-        textContent += content.Text;
+        textContent += textContent1.Text;
       }
     }
 
@@ -69,7 +69,8 @@ public static class AnthropicExtensions
     if (!hasToolCalls && response.Content.All(c => c.Type == "text"))
     {
       string combinedText = string.Join("", response.Content
-        .Where(c => c.Type == "text" && c.Text != null)
+        .Where(c => c.Type == "text")
+        .OfType<AnthropicResponseTextContent>()
         .Select(c => c.Text));
         
       return new[] { new TextMessage
@@ -83,7 +84,7 @@ public static class AnthropicExtensions
     // For tool calls or mixed content, convert each content item to a message
     foreach (var content in response.Content)
     {
-      var message = content.ToMessage(agentName);
+      var message = ContentToMessage(content, agentName);
       if (message != null)
       {
         messages.Add(message);
@@ -110,23 +111,23 @@ public static class AnthropicExtensions
   /// <param name="content">The content to convert.</param>
   /// <param name="agentName">The name of the agent that generated the content.</param>
   /// <returns>A message representing the content, or null if the content type is unsupported.</returns>
-  public static IMessage? ToMessage(this AnthropicContent content, string agentName)
+  private static IMessage? ContentToMessage(AnthropicResponseContent content, string agentName)
   {
     // Handle text content
-    if (content.Type == "text" && content.Text != null)
+    if (content is AnthropicResponseTextContent textContent)
     {
       return new TextMessage
       {
-        Text = content.Text,
+        Text = textContent.Text,
         Role = Role.Assistant,
         FromAgent = agentName
       };
     }
     // Handle tool use content
-    else if (content.Type == "tool_use" && content.Name != null)
+    else if (content is AnthropicResponseToolUseContent toolUseContent)
     {
-      var functionName = content.Name;
-      var arguments = content.Input != null ? content.Input.ToString() : "{}";
+      var functionName = toolUseContent.Name;
+      var arguments = toolUseContent.Input.ToString();
       
       return new ToolsCallMessage
       {
@@ -170,13 +171,13 @@ public static class AnthropicExtensions
   {
     foreach (var content in response.Content)
     {
-      if (content.Type == "tool_use" && content.Name != null)
+      if (content.Type == "tool_use" && content is AnthropicResponseToolUseContent toolUseContent)
       {
         try
         {
           // Extract tool info from the Content properties
-          var functionName = content.Name;
-          var arguments = content.Input?.ToString() ?? "{}";
+          var functionName = toolUseContent.Name;
+          var arguments = toolUseContent.Input.ToString();
           
           // Create a text message with tool call information
           return new TextMessage

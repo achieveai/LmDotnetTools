@@ -28,11 +28,11 @@ internal class MockAnthropicClient : IAnthropicClient
       Role = "assistant",
       Model = request.Model,
       StopReason = "end_turn",
-      Content = new List<AnthropicContent>()
+      Content = new List<AnthropicResponseContent>()
     };
     
     // Add a text response
-    response.Content.Add(new AnthropicContent
+    response.Content.Add(new AnthropicResponseTextContent
     {
       Type = "text",
       Text = "Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?"

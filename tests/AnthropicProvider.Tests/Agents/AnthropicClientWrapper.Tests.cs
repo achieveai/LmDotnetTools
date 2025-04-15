@@ -48,7 +48,9 @@ public class AnthropicClientWrapperTests
             Assert.Equal("assistant", response.Role);
             Assert.Single(response.Content);
             Assert.Equal("text", response.Content[0].Type);
-            Assert.Equal("Hello from mock Anthropic client!", response.Content[0].Text);
+            
+            var typedContent = Assert.IsType<AnthropicResponseTextContent>(response.Content[0]);
+            Assert.Equal("Hello from mock Anthropic client!", typedContent.Text);
             
             // Verify test data file was created
             Assert.True(File.Exists(testDataPath));
@@ -132,9 +134,9 @@ public class AnthropicClientWrapperTests
                 Type = "message",
                 Role = "assistant",
                 Model = request.Model,
-                Content = new List<AnthropicContent>
+                Content = new List<AnthropicResponseContent>
                 {
-                    new AnthropicContent
+                    new AnthropicResponseTextContent
                     {
                         Type = "text",
                         Text = "Hello from mock Anthropic client!"

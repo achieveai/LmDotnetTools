@@ -55,6 +55,12 @@ public record TextUpdateMessage : IMessage, ICanGetText
     public bool IsUpdate { get; init; } = true;
 
     /// <summary>
+    /// Indicates if this message is a thinking message (for Anthropic thinking content).
+    /// </summary>
+    [JsonPropertyName("isThinking")]
+    public bool IsThinking { get; init; }
+
+    /// <summary>
     /// Not supported for text updates.
     /// </summary>
     public BinaryData? GetBinary() => null;
@@ -81,7 +87,8 @@ public record TextUpdateMessage : IMessage, ICanGetText
             Role = Role,
             FromAgent = FromAgent,
             Metadata = Metadata,
-            GenerationId = GenerationId
+            GenerationId = GenerationId,
+            IsThinking = IsThinking
         };
     }
 }

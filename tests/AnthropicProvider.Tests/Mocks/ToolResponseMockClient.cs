@@ -30,14 +30,14 @@ internal class ToolResponseMockClient : IAnthropicClient
       Role = "assistant",
       Model = "claude-3-7-sonnet-20250219",
       StopReason = "tool_use",
-      Content = new List<AnthropicContent>
+      Content = new List<AnthropicResponseContent>
       {
-        new AnthropicContent
+        new AnthropicResponseTextContent
         {
           Type = "text",
           Text = "I'll help you list the files in the root directory. Let me do this for you by using the list_directory function."
         },
-        new AnthropicContent
+        new AnthropicResponseToolUseContent
         {
           Type = "tool_use",
           Id = "toolu_01AbCdEfGhIjKlMnOpQrStUv",
