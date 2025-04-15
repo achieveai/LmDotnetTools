@@ -1,8 +1,13 @@
+using System.Collections.Immutable;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using ModelContextProtocol.Client;
-using System.Text.Json;
+using ModelContextProtocol.Server;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -161,7 +166,7 @@ public class McpMiddleware : IStreamingMiddleware
     {
         return new FunctionContract
         {
-            Name = $"{clientName}.{tool.Name}",
+            Name = $"{clientName}-{tool.Name}",
             Description = tool.Description,
             Parameters = ExtractParametersFromSchema(tool.JsonSchema)
         };
@@ -227,7 +232,7 @@ public class McpMiddleware : IStreamingMiddleware
                     {
                         Name = paramName,
                         Description = paramDescription,
-                        ParameterType = paramType,
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(paramType),
                         IsRequired = isRequired
                     });
                 }
@@ -269,7 +274,7 @@ public class McpMiddleware : IStreamingMiddleware
     /// <summary>
     /// Invokes the middleware
     /// </summary>
-    public Task<IMessage> InvokeAsync(
+    public Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
         CancellationToken cancellationToken = default)

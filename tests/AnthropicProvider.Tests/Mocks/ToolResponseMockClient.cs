@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using System.Text.Json;
 
 /// <summary>
 /// Mock client that returns tool use responses
@@ -34,7 +35,14 @@ internal class ToolResponseMockClient : IAnthropicClient
         new AnthropicContent
         {
           Type = "text",
-          Text = "I'll help you list the files in the root directory. Let me do this for you by using the list_directory function. (tool_use: python_mcp-list_directory)"
+          Text = "I'll help you list the files in the root directory. Let me do this for you by using the list_directory function."
+        },
+        new AnthropicContent
+        {
+          Type = "tool_use",
+          Id = "toolu_01AbCdEfGhIjKlMnOpQrStUv",
+          Name = "python_mcp-list_directory",
+          Input = JsonSerializer.Deserialize<JsonElement>("{\"relative_path\": \".\"}")
         }
       },
       Usage = new AnthropicUsage

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
@@ -76,6 +77,30 @@ public record AnthropicContent
   /// </summary>
   [JsonPropertyName("source")]
   public ImageSource? Source { get; init; }
+  
+  /// <summary>
+  /// The tool usage information if Type is "tool_use".
+  /// </summary>
+  [JsonPropertyName("tool_use")]
+  public AnthropicToolUse? ToolUse { get; init; }
+  
+  /// <summary>
+  /// The ID of the tool use, when Type is "tool_use".
+  /// </summary>
+  [JsonPropertyName("id")]
+  public string? Id { get; init; }
+  
+  /// <summary>
+  /// The name of the tool, when Type is "tool_use".
+  /// </summary>
+  [JsonPropertyName("name")]
+  public string? Name { get; init; }
+  
+  /// <summary>
+  /// The input to the tool, when Type is "tool_use".
+  /// </summary>
+  [JsonPropertyName("input")]
+  public JsonElement? Input { get; init; }
 }
 
 /// <summary>
@@ -106,4 +131,28 @@ public record ImageSource
   /// </summary>
   [JsonPropertyName("url")]
   public string? Url { get; init; }
+}
+
+/// <summary>
+/// Represents tool usage in an Anthropic content item.
+/// </summary>
+public record AnthropicToolUse
+{
+  /// <summary>
+  /// The ID of the tool use.
+  /// </summary>
+  [JsonPropertyName("id")]
+  public string Id { get; init; } = string.Empty;
+  
+  /// <summary>
+  /// The name of the tool.
+  /// </summary>
+  [JsonPropertyName("name")]
+  public string Name { get; init; } = string.Empty;
+  
+  /// <summary>
+  /// The input to the tool as a JSON string.
+  /// </summary>
+  [JsonPropertyName("input")]
+  public string Input { get; init; } = string.Empty;
 }

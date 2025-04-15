@@ -47,7 +47,12 @@ public class AnthropicClient : IAnthropicClient
     var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
     
-    var response = await _httpClient.PostAsync($"{BaseUrl}/messages", content, cancellationToken);
+    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
+    {
+      Content = content
+    };
+    
+    var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
     response.EnsureSuccessStatusCode();
 
     var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -66,12 +71,13 @@ public class AnthropicClient : IAnthropicClient
     var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
     
-    var request_message = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages");
-    request_message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-    request_message.Content = content;
+    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
+    {
+      Content = content
+    };
     
     var response = await _httpClient.SendAsync(
-      request_message, 
+      requestMessage, 
       HttpCompletionOption.ResponseHeadersRead,
       cancellationToken);
     

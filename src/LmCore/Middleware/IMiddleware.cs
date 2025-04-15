@@ -16,7 +16,7 @@ public interface IMiddleware
     /// <summary>
     /// The method to invoke the middleware
     /// </summary>
-    public Task<IMessage> InvokeAsync(
+    public Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
         CancellationToken cancellationToken = default);

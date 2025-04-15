@@ -1,18 +1,27 @@
 using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
 public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
 {
+    [JsonPropertyName("from_agent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; set; }
 
+    [JsonPropertyName("role")]
     public Role Role { get; set; }
     
+    [JsonPropertyName("metadata")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonObject? Metadata { get; set; }
     
+    [JsonPropertyName("generation_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; set; }
     
+    [JsonPropertyName("image_data")]
     public required BinaryData ImageData { get; init; }
     
     public string? GetText() => ImageData.ToDataUrl();

@@ -1,10 +1,16 @@
+using System.Text.Json.Serialization;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Agents;
 
 [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = false)]
 public class FunctionAttribute : Attribute
 {
+    [JsonPropertyName("function_name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FunctionName { get; }
 
+    [JsonPropertyName("description")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Description { get; }
 
     public FunctionAttribute(string? functionName = null, string? description = null)

@@ -10,40 +10,22 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 public record AnthropicTool
 {
   /// <summary>
-  /// The type of the tool. Currently only "function" is supported.
-  /// </summary>
-  [JsonPropertyName("type")]
-  public string Type { get; init; } = "function";
-
-  /// <summary>
-  /// The function definition if Type is "function".
-  /// </summary>
-  [JsonPropertyName("function")]
-  public AnthropicFunction? Function { get; init; }
-}
-
-/// <summary>
-/// Represents a function that can be called by Claude.
-/// </summary>
-public record AnthropicFunction
-{
-  /// <summary>
-  /// The name of the function.
+  /// The name of the tool.
   /// </summary>
   [JsonPropertyName("name")]
   public string Name { get; init; } = string.Empty;
 
   /// <summary>
-  /// The description of the function.
+  /// The description of the tool.
   /// </summary>
   [JsonPropertyName("description")]
   public string? Description { get; init; }
 
   /// <summary>
-  /// The parameters of the function as a JSON schema object.
+  /// The input schema of the tool following JSON Schema format.
   /// </summary>
-  [JsonPropertyName("parameters")]
-  public JsonObject? Parameters { get; init; }
+  [JsonPropertyName("input_schema")]
+  public JsonObject? InputSchema { get; init; }
 }
 
 /// <summary>

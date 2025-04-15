@@ -1,0 +1,104 @@
+{
+  "Interactions": [
+    {
+      "SerializedRequest": {
+        "model": "gpt-4o",
+        "temperature": 0.699999988079071,
+        "max_tokens": 2000,
+        "n": 1,
+        "stop": [],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "python_mcp-list_directory",
+              "description": "List the contents of a directory within the code directory",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "relative_path": {
+                    "type": "string",
+                    "description": "Relative path within the code directory"
+                  }
+                },
+                "additionalProperties": true,
+                "description": "Parameters for python_mcp-list_directory"
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "python_mcp-get_directory_tree",
+              "description": "Get an ASCII tree representation of a directory structure",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "relative_path": {
+                    "type": "string",
+                    "description": "Relative path within the code directory"
+                  }
+                },
+                "additionalProperties": true,
+                "description": "Parameters for python_mcp-get_directory_tree"
+              }
+            }
+          }
+        ],
+        "messages": [
+          {
+            "role": "system",
+            "index": 0,
+            "content": "You are a helpful assistant that can use tools to help users."
+          },
+          {
+            "role": "user",
+            "index": 0,
+            "content": "List files in root and \"code\" directories."
+          }
+        ]
+      },
+      "SerializedResponse": {
+        "id": "gen-1744581920-kSL5uuAGXpzHz31dOuQZ",
+        "object": "chat.completion",
+        "created": 1744581920,
+        "model": "openai/gpt-4o",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "index": 0,
+              "tool_calls": [
+                {
+                  "id": "call_sMMMXnGva9rNlKl51F0OtPQi",
+                  "index": 0,
+                  "type": "function",
+                  "function": {
+                    "name": "python_mcp-list_directory",
+                    "arguments": "{\n  \"relative_path\": \"\"\n}"
+                  }
+                }
+              ],
+              "content": ""
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 124,
+          "completion_tokens": 18,
+          "total_tokens": 142,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "SerializedResponseFragments": [],
+      "IsStreaming": false
+    }
+  ]
+}

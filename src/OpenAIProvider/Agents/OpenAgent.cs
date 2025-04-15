@@ -24,7 +24,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         _client.Dispose();
     }
 
-    public virtual async Task<IMessage> GenerateReplyAsync(
+    public virtual async Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -63,7 +63,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             }
         };
 
-        return openMessage.ToMessage();
+        return openMessage.ToMessages();
     }
 
     public virtual async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -109,7 +109,10 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 }
             };
 
-            yield return openMessage.ToStreamingMessage();
+            foreach (var message in openMessage.ToStreamingMessage())
+            {
+                yield return message;
+            }
         }
     }
 

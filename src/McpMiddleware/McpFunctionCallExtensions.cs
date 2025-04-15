@@ -2,8 +2,10 @@ using System.Reflection;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using ModelContextProtocol.Server;
 using ModelContextProtocol.Utils;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -187,7 +189,7 @@ public static class McpFunctionCallExtensions
           {
               Name = p.Name!,
               Description = p.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()?.Description ?? $"Parameter {p.Name}",
-              ParameterType = p.ParameterType,
+              ParameterType = SchemaHelper.CreateJsonSchemaFromType(p.ParameterType),
               IsRequired = !p.HasDefaultValue && !p.IsOptional
           })
           .ToList();

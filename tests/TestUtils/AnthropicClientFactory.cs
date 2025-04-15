@@ -65,9 +65,16 @@ public static class AnthropicClientFactory
             Directory.CreateDirectory(testDirectory);
         }
 
-        // Generate a file path for the test data
+        // Create the Anthropic-specific subdirectory
+        string anthropicDirectory = Path.Combine(testDirectory, "Anthropic");
+        if (!Directory.Exists(anthropicDirectory))
+        {
+            Directory.CreateDirectory(anthropicDirectory);
+        }
+
+        // Generate a file path for the test data using the Anthropic subdirectory
         string testDataFilePath = Path.Combine(
-          testDirectory,
+          anthropicDirectory,
           $"{testCaseName.Replace(" ", "_").Replace(".", "_")}.json"
         );
 

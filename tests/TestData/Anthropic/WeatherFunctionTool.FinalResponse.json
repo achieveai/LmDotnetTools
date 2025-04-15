@@ -1,0 +1,19 @@
+[
+  {
+    "$type": "text",
+    "text": "I can check the current weather in San Francisco for you.",
+    "fromAgent": "TestAgent",
+    "role": "assistant"
+  },
+  {
+    "$type": "tools_call",
+    "from_agent": "TestAgent",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function_name": "getWeather",
+        "function_args": "{\u0022location\u0022:\u0022San Francisco\u0022}"
+      }
+    ]
+  }
+] 

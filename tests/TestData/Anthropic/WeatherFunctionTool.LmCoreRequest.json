@@ -1,0 +1,28 @@
+{
+  "messages": [
+    {
+      "text": "What\u0027s the weather in San Francisco?",
+      "role": "user"
+    }
+  ],
+  "options": {
+    "model": "claude-3-7-sonnet-20250219",
+    "tools": [
+      {
+        "name": "getWeather",
+        "description": "Get current weather for a location",
+        "parameters": [
+          {
+            "name": "location",
+            "description": "City name",
+            "schema": {
+              "type": "string",
+              "additionalProperties": true
+            },
+            "required": true
+          }
+        ]
+      }
+    ]
+  }
+}

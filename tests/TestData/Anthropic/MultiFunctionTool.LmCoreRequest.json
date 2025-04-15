@@ -1,0 +1,49 @@
+{
+  "messages": [
+    {
+      "text": "You are a helpful assistant that can use tools to help users.",
+      "role": "system"
+    },
+    {
+      "text": "List files in root and \"code\" directories.",
+      "role": "user"
+    }
+  ],
+  "options": {
+    "model": "claude-3-7-sonnet-20250219",
+    "temperature": 0.7,
+    "max_tokens": 2000,
+    "tools": [
+      {
+        "name": "python_mcp-list_directory",
+        "description": "List the contents of a directory within the code directory",
+        "parameters": [
+          {
+            "name": "relative_path",
+            "description": "Relative path within the code directory",
+            "schema": {
+              "type": "string",
+              "additionalProperties": true
+            },
+            "required": false
+          }
+        ]
+      },
+      {
+        "name": "python_mcp-get_directory_tree",
+        "description": "Get an ASCII tree representation of a directory structure",
+        "parameters": [
+          {
+            "name": "relative_path",
+            "description": "Relative path within the code directory",
+            "schema": {
+              "type": "string",
+              "additionalProperties": true
+            },
+            "required": false
+          }
+        ]
+      }
+    ]
+  }
+}

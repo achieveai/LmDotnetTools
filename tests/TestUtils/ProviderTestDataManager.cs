@@ -3,6 +3,12 @@ using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
+using static AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice;
+using FinishReasonEnum = AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice.FinishReasonEnum;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
@@ -12,16 +18,37 @@ namespace AchieveAi.LmDotnetTools.TestUtils;
 /// </summary>
 public class ProviderTestDataManager
 {
-    private const string DataDirectory = "tests/TestData";
+    private readonly string _dataDirectory;
     private const string OpenAIDirectory = "OpenAI";
     private const string AnthropicDirectory = "Anthropic";
     private const string CommonDirectory = "Common";
     
-    private readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
+    public static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
     {
         WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        Converters =
+        {
+            new GenerateReplyOptionsJsonConverter(),
+            new UnionJsonConverter<int, string>(),
+            new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>(),
+            new UnionJsonConverter<TextContent, ImageContent>(),
+            new JsonPropertyNameEnumConverter<Role>(),
+            new JsonPropertyNameEnumConverter<RoleEnum>(),
+            new JsonPropertyNameEnumConverter<FinishReasonEnum>(),
+            new JsonPropertyNameEnumConverter<ToolChoiceEnum>(),
+            new ImmutableDictionaryJsonConverterFactory(),
+            new ExtraPropertiesConverter(),
+            new UsageJsonConverter()
+        }
     };
+    
+    public ProviderTestDataManager()
+    {
+        string workspaceRoot = TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+        _dataDirectory = Path.Combine(workspaceRoot, "tests", "TestData");
+    }
     
     /// <summary>
     /// Gets a path to test data files using a standardized naming convention.
@@ -47,7 +74,7 @@ public class ProviderTestDataManager
             _ => throw new ArgumentOutOfRangeException(nameof(dataType))
         };
         
-        return Path.Combine(DataDirectory, providerDir, $"{testName}.{dataTypeStr}.json");
+        return Path.Combine(_dataDirectory, providerDir, $"{testName}.{dataTypeStr}.json");
     }
     
     /// <summary>
@@ -63,7 +90,7 @@ public class ProviderTestDataManager
         
         string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         EnsureDirectoryExists(filePath);
-        File.WriteAllText(filePath, JsonSerializer.Serialize(data, _jsonOptions));
+        File.WriteAllText(filePath, JsonSerializer.Serialize(data, JsonOptions));
     }
     
     /// <summary>
@@ -78,7 +105,7 @@ public class ProviderTestDataManager
         }
         
         var json = File.ReadAllText(filePath);
-        var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, _jsonOptions);
+        var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, JsonOptions);
         
         return (data?.Messages ?? Array.Empty<TextMessage>(), data?.Options ?? new GenerateReplyOptions());
     }
@@ -90,13 +117,13 @@ public class ProviderTestDataManager
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         EnsureDirectoryExists(filePath);
-        File.WriteAllText(filePath, JsonSerializer.Serialize(response, _jsonOptions));
+        File.WriteAllText(filePath, JsonSerializer.Serialize(response, JsonOptions));
     }
     
     /// <summary>
     /// Loads a final response from a file.
     /// </summary>
-    public TextMessage LoadFinalResponse(string testName, ProviderType providerType)
+    public List<IMessage> LoadFinalResponse(string testName, ProviderType providerType)
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         if (!File.Exists(filePath))
@@ -105,7 +132,7 @@ public class ProviderTestDataManager
         }
         
         var json = File.ReadAllText(filePath);
-        return JsonSerializer.Deserialize<TextMessage>(json, _jsonOptions)
+        return JsonSerializer.Deserialize<List<IMessage>>(json, JsonOptions)
             ?? throw new InvalidOperationException($"Failed to deserialize final response from {filePath}");
     }
     
@@ -134,7 +161,7 @@ public class ProviderTestDataManager
             _ => throw new ArgumentOutOfRangeException(nameof(providerType))
         };
         
-        string directoryPath = Path.Combine(DataDirectory, providerDir);
+        string directoryPath = Path.Combine(_dataDirectory, providerDir);
         if (!Directory.Exists(directoryPath))
         {
             return Enumerable.Empty<string>();

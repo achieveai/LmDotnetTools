@@ -1,19 +1,28 @@
 using System.Collections.Immutable;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
 public record ToolsCallResultMessage : IMessage
 {
+    [JsonPropertyName("from_agent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; init; } = null;
 
+    [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.User;
     
+    [JsonPropertyName("metadata")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonObject? Metadata { get; init; } = null;
 
+    [JsonPropertyName("generation_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; } = null;
 
+    [JsonPropertyName("tool_call_results")]
     public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = ImmutableList<ToolCallResult>.Empty;
 
     public string? GetText() => null;

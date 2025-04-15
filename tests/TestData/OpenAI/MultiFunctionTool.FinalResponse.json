@@ -1,0 +1,38 @@
+[
+  {
+    "$type": "tools_call",
+    "role": "assistant",
+    "metadata": {
+      "completion_id": "gen-1744581920-kSL5uuAGXpzHz31dOuQZ",
+      "usage": {
+        "ModelId": "openai/gpt-4o",
+        "CompletionTokens": 18,
+        "PromptTokens": 124,
+        "TotalCost": null,
+        "IsCached": false
+      }
+    },
+    "tool_calls": [
+      {
+        "function_name": "python_mcp-list_directory",
+        "function_args": "{\n  \u0022relative_path\u0022: \u0022\u0022\n}",
+        "tool_call_id": "call_sMMMXnGva9rNlKl51F0OtPQi"
+      }
+    ]
+  },
+  {
+    "$type": "text",
+    "text": "",
+    "role": "assistant",
+    "metadata": {
+      "completion_id": "gen-1744581920-kSL5uuAGXpzHz31dOuQZ",
+      "usage": {
+        "ModelId": "openai/gpt-4o",
+        "CompletionTokens": 18,
+        "PromptTokens": 124,
+        "TotalCost": null,
+        "IsCached": false
+      }
+    }
+  }
+]

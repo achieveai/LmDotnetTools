@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -32,31 +33,51 @@ public class ChatMessage
     [JsonPropertyName("content")]
     public Union<string, Union<TextContent, ImageContent>[]>? Content { get; set; }
 
-    public IMessage ToStreamingMessage(
+    private IEnumerable<IMessage> ToMessages(
         string? name,
-        RoleEnum? role = null)
+        RoleEnum? role = null,
+        bool isStreaming = false)
     {
         role = Role ?? role ?? RoleEnum.Assistant;
         if (ToolCalls?.Count > 0)
         {
-            var toolCalls = ToolCalls.Select(tc =>
-                new ToolCallUpdate{
-                    FunctionName = tc.Function.Name,
-                    FunctionArgs = tc.Function.Arguments,
-                    ToolCallId = tc.Id,
-                    Index = tc.Index,
-                }
-            ).ToArray();
-
-            return new ToolsCallUpdateMessage
+            if (isStreaming)
             {
-                Role = ToRole(role!.Value),
-                ToolCallUpdates = toolCalls.ToImmutableList(),
-                FromAgent = name,
-                GenerationId = Id,
-            };
-        }
+                var toolCallUpdates = ToolCalls.Select(tc =>
+                    new ToolCallUpdate{
+                        FunctionName = tc.Function.Name,
+                        FunctionArgs = tc.Function.Arguments,
+                        ToolCallId = tc.Id,
+                        Index = tc.Index,
+                    }
+                ).ToArray();
 
+                yield return new ToolsCallUpdateMessage
+                {
+                    Role = ToRole(role!.Value),
+                    ToolCallUpdates = toolCallUpdates.ToImmutableList(),
+                    FromAgent = name,
+                    GenerationId = Id,
+                };
+
+                yield break;
+            }
+            else
+            {
+                var toolCalls = ToolCalls.Select(tc =>
+                    new ToolCall(tc.Function.Name, tc.Function.Arguments) { ToolCallId = tc.Id }
+                ).ToArray();
+
+                yield return new ToolsCallMessage
+                {
+                    Role = ToRole(role!.Value),
+                    ToolCalls = toolCalls.ToImmutableList(),
+                    FromAgent = name,
+                    GenerationId = Id
+                };
+            }
+        }
+        
         if (Content == null)
         {
             throw new InvalidOperationException("Content is null");
@@ -69,7 +90,7 @@ public class ChatMessage
                 throw new InvalidOperationException("Content is null");
             }
 
-            return new TextMessage
+            yield return new TextMessage
             {
                 Role = ToRole(role!.Value),
                 Text = Content.Get<string>()!,
@@ -80,28 +101,9 @@ public class ChatMessage
         else if (Content.Is<Union<TextContent, ImageContent>[]>())
         {
             var content = Content.Get<Union<TextContent, ImageContent>[]>()!;
-            if (content.Length == 1)
+            foreach (var item in content)
             {
-                var item = content[0];
-                return item.Is<TextContent>()
-                    ? new TextMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        Text = item.Get<TextContent>().Text,
-                        FromAgent = name,
-                        GenerationId = Id
-                    }
-                    : new ImageMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        ImageData = BinaryData.FromString(item.Get<ImageContent>().Url.Url),
-                        FromAgent = name,
-                        GenerationId = Id
-                    };
-            }
-
-            var messages = content.Select(item =>
-                item.Is<TextContent>()
+                yield return item.Is<TextContent>()
                     ? new TextMessage
                     {
                         Role = ToRole(role!.Value),
@@ -115,113 +117,26 @@ public class ChatMessage
                         ImageData = BinaryData.FromString(item.Get<ImageContent>().Url.Url),
                         FromAgent = name,
                         GenerationId = Id
-                    }
-            ).ToArray();
-
-            return new CompositeMessage
-            {
-                Role = ToRole(role!.Value),
-                Contents = messages.Select(m => 
-                    m is TextMessage tm ? new Union<string, BinaryData, ToolCallResult>(tm.Text) :
-                    m is ImageMessage im ? new Union<string, BinaryData, ToolCallResult>(im.ImageData) :
-                    throw new InvalidOperationException("Unexpected message type")
-                ).ToImmutableList(),
-                FromAgent = name,
-                GenerationId = Id
-            };
+                    };
+            }
         }
-
-        return ToMessage(name, role);
+        else if (!isStreaming) // Only throw for non-streaming path
+        {
+            throw new InvalidOperationException("Invalid content type");
+        }
     }
 
-    public IMessage ToMessage(string? name, RoleEnum? role = null)
+    public IEnumerable<IMessage> ToStreamingMessages(
+        string? name,
+        RoleEnum? role = null)
     {
-        role = Role ?? role ?? RoleEnum.Assistant;
-        if (ToolCalls?.Count > 0)
-        {
-            var toolCalls = ToolCalls.Select(tc =>
-                new ToolCall(tc.Function.Name, tc.Function.Arguments) { ToolCallId = tc.Id }
-            ).ToArray();
+        return ToMessages(name, role, isStreaming: true);
+    }
 
-            return new ToolsCallMessage
-            {
-                Role = ToRole(role!.Value),
-                ToolCalls = toolCalls.ToImmutableList(),
-                FromAgent = name,
-                GenerationId = Id
-            };
-        }
-
-        if (Content == null)
-        {
-            throw new InvalidOperationException("Content is null");
-        }
-
-        if (Content.Is<string>())
-        {
-            return new TextMessage
-            {
-                Role = ToRole(role!.Value),
-                Text = Content.Get<string>()!,
-                FromAgent = name,
-                GenerationId = Id
-            };
-        }
-        else if (Content.Is<Union<TextContent, ImageContent>[]>())
-        {
-            var content = Content.Get<Union<TextContent, ImageContent>[]>()!;
-            if (content.Length == 1)
-            {
-                var item = content[0];
-                return item.Is<TextContent>()
-                    ? new TextMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        Text = item.Get<TextContent>().Text,
-                        FromAgent = name,
-                        GenerationId = Id
-                    }
-                    : new ImageMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        ImageData = BinaryData.FromString(item.Get<ImageContent>().Url.Url),
-                        FromAgent = name,
-                        GenerationId = Id
-                    };
-            }
-
-            var messages = content.Select(item =>
-                item.Is<TextContent>()
-                    ? new TextMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        Text = item.Get<TextContent>().Text,
-                        FromAgent = name,
-                        GenerationId = Id
-                    } as IMessage
-                    : new ImageMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        ImageData = BinaryData.FromString(item.Get<ImageContent>().Url.Url),
-                        FromAgent = name,
-                        GenerationId = Id
-                    }
-            ).ToArray();
-
-            return new CompositeMessage
-            {
-                Role = ToRole(role!.Value),
-                Contents = messages.Select(m => 
-                    m is TextMessage tm ? new Union<string, BinaryData, ToolCallResult>(tm.Text) :
-                    m is ImageMessage im ? new Union<string, BinaryData, ToolCallResult>(im.ImageData) :
-                    throw new InvalidOperationException("Unexpected message type")
-                ).ToImmutableList(),
-                FromAgent = name,
-                GenerationId = Id
-            };
-        }
-
-        throw new InvalidOperationException("Invalid content type");
+    // Keeping original non-streaming method as a wrapper for backward compatibility
+    public IEnumerable<IMessage> ToMessages(string? name, RoleEnum? role = null)
+    {
+        return ToMessages(name, role, isStreaming: false);
     }
 
     public static Role ToRole(RoleEnum role)

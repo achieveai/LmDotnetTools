@@ -7,7 +7,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Agents;
 
 public interface IAgent
 {
-    public Task<IMessage> GenerateReplyAsync(
+    public Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default);

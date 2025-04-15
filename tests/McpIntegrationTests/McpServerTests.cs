@@ -40,7 +40,7 @@ public class McpServerTests
             // Create middleware with the mock client
             var clients = new Dictionary<string, IMcpClient>
             {
-                ["test-client"] = client,
+                ["test_client"] = client,
                 ["GreetingTool"] = client
             };
 
@@ -65,7 +65,9 @@ public class McpServerTests
 
             // Assert
             Assert.NotNull(response);
-            var responseText = response.GetText();
+            var firstMessage = response.FirstOrDefault();
+            Assert.NotNull(firstMessage);
+            var responseText = firstMessage.GetText();
             Assert.NotNull(responseText);
 
             // The response should contain a greeting from the MockMcpClient

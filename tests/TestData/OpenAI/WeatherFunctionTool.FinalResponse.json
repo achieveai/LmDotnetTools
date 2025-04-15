@@ -1,0 +1,38 @@
+[
+  {
+    "$type": "tools_call",
+    "role": "assistant",
+    "metadata": {
+      "completion_id": "gen-1744581919-S54K9MN9V572bTQjOj0e",
+      "usage": {
+        "ModelId": "openai/gpt-4o",
+        "CompletionTokens": 17,
+        "PromptTokens": 58,
+        "TotalCost": null,
+        "IsCached": false
+      }
+    },
+    "tool_calls": [
+      {
+        "function_name": "getWeather",
+        "function_args": "{\n  \u0022location\u0022: \u0022San Francisco\u0022\n}",
+        "tool_call_id": "call_GN9Qr50SPjCBAJXTrPBe6P6X"
+      }
+    ]
+  },
+  {
+    "$type": "text",
+    "text": "",
+    "role": "assistant",
+    "metadata": {
+      "completion_id": "gen-1744581919-S54K9MN9V572bTQjOj0e",
+      "usage": {
+        "ModelId": "openai/gpt-4o",
+        "CompletionTokens": 17,
+        "PromptTokens": 58,
+        "TotalCost": null,
+        "IsCached": false
+      }
+    }
+  }
+]

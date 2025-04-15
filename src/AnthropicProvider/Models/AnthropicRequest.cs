@@ -167,7 +167,9 @@ public record AnthropicRequest
     
     foreach (var function in functions)
     {
-      var parameters = new JsonObject();
+      var properties = new JsonObject();
+      var required = new JsonArray();
+      
       if (function.Parameters != null)
       {
         foreach (var param in function.Parameters)
@@ -180,35 +182,52 @@ public record AnthropicRequest
             ["description"] = param.Description ?? string.Empty
           };
           
-          parameters[param.Name] = paramSchema;
+          properties[param.Name] = paramSchema;
+          
+          // Add to required array if parameter is required
+          if (param.IsRequired)
+          {
+            required.Add(param.Name);
+          }
         }
+      }
+      
+      // Create input_schema object following JSON Schema format
+      var inputSchema = new JsonObject
+      {
+        ["type"] = "object",
+        ["properties"] = properties,
+        ["additionalProperties"] = true,
+        ["description"] = $"Parameters for {function.Name}"
+      };
+      
+      // Only add required array if it has items
+      if (required.Count > 0)
+      {
+        inputSchema["required"] = required;
       }
 
       tools.Add(new AnthropicTool
       {
-        Type = "function",
-        Function = new AnthropicFunction
-        {
-          Name = function.Name,
-          Description = function.Description,
-          Parameters = parameters
-        }
+        Name = function.Name,
+        Description = function.Description,
+        InputSchema = inputSchema
       });
     }
     
     return tools;
   }
 
-  private static string GetJsonType(Type? type)
+  private static string GetJsonType(JsonSchemaObject schemaObject)
   {
-    if (type == null) return "string";
+    if (schemaObject == null) return "string";
     
-    return type.Name.ToLower() switch
+    return schemaObject.Type.ToLower() switch
     {
       "string" => "string",
-      "int32" or "int64" or "int" or "long" => "integer",
-      "double" or "float" or "decimal" => "number",
-      "boolean" or "bool" => "boolean",
+      "integer" => "integer",
+      "number" => "number",
+      "boolean" => "boolean",
       "object" => "object",
       "array" => "array",
       _ => "string"

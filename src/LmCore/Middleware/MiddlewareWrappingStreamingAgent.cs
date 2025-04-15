@@ -16,7 +16,7 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         _middleware = middleware;
     }
 
-    public Task<IMessage> GenerateReplyAsync(
+    public Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -9,14 +10,22 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// </summary>
 public record CompositeMessage : IMessage, ICanGetText, ICanGetBinary
 {
+    [JsonPropertyName("from_agent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; init; } = null;
 
+    [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
     
+    [JsonPropertyName("metadata")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonObject? Metadata { get; init; } = null;
 
+    [JsonPropertyName("generation_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId { get; init; } = null;
 
+    [JsonPropertyName("contents")]
     public ImmutableList<Union<string, BinaryData, ToolCallResult>> Contents { get; init; } = 
         ImmutableList<Union<string, BinaryData, ToolCallResult>>.Empty;
 

@@ -6,6 +6,8 @@ using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpSampleServer;
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -37,7 +39,7 @@ public class FunctionCallMiddlewareTests
                 Parameters = [
                     new FunctionParameterContract {
                         Name = "location",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         Description = "City name",
                         IsRequired = true
                     }
@@ -138,9 +140,10 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<ToolsCallResultMessage>(result);
+        Assert.Single(result);
+        Assert.IsType<ToolsCallResultMessage>(result.First());
 
-        var resultMessage = (ToolsCallResultMessage)result;
+        var resultMessage = (ToolsCallResultMessage)result.First();
         Assert.NotEmpty(resultMessage.ToolCallResults);
 
         // Check that the tool call result contains the expected content
@@ -175,9 +178,10 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<ToolsCallResultMessage>(result);
+        Assert.Single(result);
+        Assert.IsType<ToolsCallResultMessage>(result.First());
 
-        var resultMessage = (ToolsCallResultMessage)result;
+        var resultMessage = (ToolsCallResultMessage)result.First();
         Assert.NotEmpty(resultMessage.ToolCallResults);
 
         // Check that the tool call result contains the expected error message
@@ -215,7 +219,7 @@ public class FunctionCallMiddlewareTests
             It.IsAny<CancellationToken>()))
           .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
             (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new TextMessage { Text = "Mock response", Role = Role.Assistant });
+          .ReturnsAsync(new[] { new TextMessage { Text = "Mock response", Role = Role.Assistant } });
 
         // Act
         await middleware.InvokeAsync(context, mockAgent.Object);
@@ -256,9 +260,10 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<ToolsCallResultMessage>(result);
+        Assert.Single(result);
+        Assert.IsType<ToolsCallResultMessage>(result.First());
 
-        var resultMessage = (ToolsCallResultMessage)result;
+        var resultMessage = (ToolsCallResultMessage)result.First();
         Assert.NotEmpty(resultMessage.ToolCallResults);
 
         // Check that the tool call result contains the expected content
@@ -339,14 +344,14 @@ public class FunctionCallMiddlewareTests
           new FunctionParameterContract
           {
             Name = "location",
-            ParameterType = typeof(string),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
             Description = "City name",
             IsRequired = true
           },
           new FunctionParameterContract
           {
             Name = "unit",
-            ParameterType = typeof(string),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
             Description = "Temperature unit (celsius or fahrenheit)",
             IsRequired = false
           }
@@ -361,14 +366,14 @@ public class FunctionCallMiddlewareTests
           new FunctionParameterContract
           {
             Name = "location",
-            ParameterType = typeof(string),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
             Description = "City name",
             IsRequired = true
           },
           new FunctionParameterContract
           {
             Name = "days",
-            ParameterType = typeof(int),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(int)),
             Description = "Number of days of history",
             IsRequired = true
           }
@@ -383,14 +388,14 @@ public class FunctionCallMiddlewareTests
           new FunctionParameterContract
           {
             Name = "a",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "First number",
             IsRequired = true
           },
           new FunctionParameterContract
           {
             Name = "b",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "Second number",
             IsRequired = true
           }
@@ -405,14 +410,14 @@ public class FunctionCallMiddlewareTests
           new FunctionParameterContract
           {
             Name = "a",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "First number",
             IsRequired = true
           },
           new FunctionParameterContract
           {
             Name = "b",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "Second number",
             IsRequired = true
           }
@@ -427,14 +432,14 @@ public class FunctionCallMiddlewareTests
           new FunctionParameterContract
           {
             Name = "a",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "First number",
             IsRequired = true
           },
           new FunctionParameterContract
           {
             Name = "b",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "Second number",
             IsRequired = true
           }
@@ -449,14 +454,14 @@ public class FunctionCallMiddlewareTests
           new FunctionParameterContract
           {
             Name = "a",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "First number",
             IsRequired = true
           },
           new FunctionParameterContract
           {
             Name = "b",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             Description = "Second number",
             IsRequired = true
           }
@@ -686,14 +691,14 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "location",
                         Description = "City name",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         Description = "Temperature unit (celsius or fahrenheit)",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false
                     }
                 }
@@ -769,7 +774,7 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "code",
                         Description = "",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     }
                 }
@@ -784,7 +789,7 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "relative_path",
                         Description = "",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false
                     }
                 }
@@ -799,7 +804,7 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "relative_path",
                         Description = "",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     }
                 }
@@ -814,14 +819,14 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "relative_path",
                         Description = "",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     },
                     new FunctionParameterContract
                     {
                         Name = "content",
                         Description = "",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     }
                 }
@@ -836,7 +841,7 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "relative_path",
                         Description = "",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     }
                 }
@@ -851,7 +856,7 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "relative_path",
                         Description = "",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false
                     }
                 }
@@ -947,7 +952,7 @@ public class FunctionCallMiddlewareTests
         // Create a tool call message with the calculator add function and our large numbers
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(new ToolCall("CalculatorTool.Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
+            ToolCalls = ImmutableList.Create(new ToolCall("CalculatorTool-Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
             {
                 ToolCallId = toolCallId
             }),
@@ -966,9 +971,10 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<ToolsCallResultMessage>(result);
+        Assert.Single(result);
+        Assert.IsType<ToolsCallResultMessage>(result.First());
 
-        var toolsCallResultMessage = (ToolsCallResultMessage)result;
+        var toolsCallResultMessage = (ToolsCallResultMessage)result.First();
         Assert.Single(toolsCallResultMessage.ToolCallResults);
         var resultJson = toolsCallResultMessage.ToolCallResults
                 .FirstOrDefault(tr => tr.ToolCallId == toolCallId)

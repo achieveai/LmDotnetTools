@@ -7,6 +7,7 @@ using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Xunit;
+using System.Linq;
 
 public class BasicConversationTests
 {
@@ -42,7 +43,8 @@ public class BasicConversationTests
     
     // Act
     TestLogger.Log("About to call GenerateReplyAsync");
-    var response = await agent.GenerateReplyAsync(messages, options);
+    var responses = await agent.GenerateReplyAsync(messages, options);
+    var response = responses.FirstOrDefault();
     TestLogger.Log("After GenerateReplyAsync call");
     // Safe way to get text from IMessage regardless of the actual implementation
     string? responseText = null;
@@ -50,7 +52,7 @@ public class BasicConversationTests
     {
         responseText = textMsg.Text;
     }
-    TestLogger.Log($"Response: Role={response.Role}, Text={responseText ?? "null"}");
+    TestLogger.Log($"Response: Role={response?.Role}, Text={responseText ?? "null"}");
     
     // Log what was captured
     TestLogger.Log($"CapturedRequest is {(captureClient.CapturedRequest != null ? "not null" : "null")}");
@@ -115,12 +117,14 @@ public class BasicConversationTests
     };
     
     // Act
-    var response = await agent.GenerateReplyAsync(
+    var responses = await agent.GenerateReplyAsync(
       messages,
       new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" }
     );
     
     // Assert
+    Assert.NotNull(responses);
+    var response = responses.FirstOrDefault();
     Assert.NotNull(response);
     Assert.IsType<TextMessage>(response);
     var textResponse = (TextMessage)response;

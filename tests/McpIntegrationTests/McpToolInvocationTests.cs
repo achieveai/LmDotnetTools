@@ -24,7 +24,7 @@ public class McpToolInvocationTests
     // Act & Assert - Test with different names
     
     // Test regular name
-    var regularResult = await functionMap["GreetingTool.SayHello"]("{\"name\":\"John\"}");
+    var regularResult = await functionMap["GreetingTool-SayHello"]("{\"name\":\"John\"}");
     var regularTrimmedResult = regularResult.Trim('\"');
     Console.WriteLine($"Regular test - Actual result: {regularTrimmedResult}");
     // Use a more flexible assertion
@@ -32,7 +32,7 @@ public class McpToolInvocationTests
     Assert.Contains("John", regularTrimmedResult);
     
     // Test with special characters
-    var specialCharsResult = await functionMap["GreetingTool.SayHello"]("{\"name\":\"Maria O'Connor-Smith\"}");
+    var specialCharsResult = await functionMap["GreetingTool-SayHello"]("{\"name\":\"Maria O'Connor-Smith\"}");
     var trimmedResult = specialCharsResult.Trim('\"');
     // Output the actual result for debugging
     Console.WriteLine($"Special chars test - Actual result: {trimmedResult}");
@@ -41,7 +41,7 @@ public class McpToolInvocationTests
     Assert.Contains("Maria", trimmedResult);
     
     // Test with emoji
-    var emojiResult = await functionMap["GreetingTool.SayHello"]("{\"name\":\"User 😀\"}");
+    var emojiResult = await functionMap["GreetingTool-SayHello"]("{\"name\":\"User 😀\"}");
     var emojiTrimmedResult = emojiResult.Trim('\"');
     Console.WriteLine($"Emoji test - Actual result: {emojiTrimmedResult}");
     // Use a more flexible assertion that checks for basic greeting pattern
@@ -50,7 +50,7 @@ public class McpToolInvocationTests
     
     // Test with a long name
     var longName = "Very" + new string('y', 50) + " Long Name";
-    var longNameResult = await functionMap["GreetingTool.SayHello"]($"{{\"name\":\"{longName}\"}}");
+    var longNameResult = await functionMap["GreetingTool-SayHello"]($"{{\"name\":\"{longName}\"}}");
     Assert.Contains($"Hello, {longName}", longNameResult.Trim('\"'));
   }
   
@@ -61,7 +61,7 @@ public class McpToolInvocationTests
     var (_, functionMap) = SetupToolsForTesting();
     
     // Act
-    var result = await functionMap["GreetingTool.SayGoodbye"]("{\"name\":\"John\"}");
+    var result = await functionMap["GreetingTool-SayGoodbye"]("{\"name\":\"John\"}");
     
     // Assert
     var cleanResult = result.Trim('\"');
@@ -78,27 +78,27 @@ public class McpToolInvocationTests
     // Act & Assert - Test different number combinations
     
     // Test positive integers
-    var positiveResult = await functionMap["CalculatorTool.Add"]("{\"a\":5,\"b\":3}");
+    var positiveResult = await functionMap["CalculatorTool-Add"]("{\"a\":5,\"b\":3}");
     double positiveValue = double.Parse(positiveResult.Trim('\"'));
     Assert.Equal(8, positiveValue);
     
     // Test negative numbers
-    var negativeResult = await functionMap["CalculatorTool.Add"]("{\"a\":-10,\"b\":-5}");
+    var negativeResult = await functionMap["CalculatorTool-Add"]("{\"a\":-10,\"b\":-5}");
     double negativeValue = double.Parse(negativeResult.Trim('\"'));
     Assert.Equal(-15, negativeValue);
     
     // Test mixed numbers
-    var mixedResult = await functionMap["CalculatorTool.Add"]("{\"a\":7.5,\"b\":-2.5}");
+    var mixedResult = await functionMap["CalculatorTool-Add"]("{\"a\":7.5,\"b\":-2.5}");
     double mixedValue = double.Parse(mixedResult.Trim('\"'));
     Assert.Equal(5, mixedValue);
     
     // Test large numbers
-    var largeResult = await functionMap["CalculatorTool.Add"]("{\"a\":1000000,\"b\":234567}");
+    var largeResult = await functionMap["CalculatorTool-Add"]("{\"a\":1000000,\"b\":234567}");
     double largeValue = double.Parse(largeResult.Trim('\"'));
     Assert.Equal(1234567, largeValue);
     
     // Test decimal precision
-    var decimalResult = await functionMap["CalculatorTool.Add"]("{\"a\":0.1,\"b\":0.2}");
+    var decimalResult = await functionMap["CalculatorTool-Add"]("{\"a\":0.1,\"b\":0.2}");
     double decimalValue = double.Parse(decimalResult.Trim('\"'));
     Assert.Equal(0.3, decimalValue, 10); // Using precision to handle floating point errors
   }
@@ -112,27 +112,27 @@ public class McpToolInvocationTests
     // Act & Assert for various operations
     
     // Test multiplication
-    var multiplyResult = await functionMap["CalculatorTool.Multiply"]("{\"a\":4,\"b\":5}");
+    var multiplyResult = await functionMap["CalculatorTool-Multiply"]("{\"a\":4,\"b\":5}");
     double multiplyValue = double.Parse(multiplyResult.Trim('\"'));
     Assert.Equal(20, multiplyValue);
     
     // Test subtraction
-    var subtractResult = await functionMap["CalculatorTool.Subtract"]("{\"a\":10,\"b\":3}");
+    var subtractResult = await functionMap["CalculatorTool-Subtract"]("{\"a\":10,\"b\":3}");
     double subtractValue = double.Parse(subtractResult.Trim('\"'));
     Assert.Equal(7, subtractValue);
     
     // Test division
-    var divideResult = await functionMap["CalculatorTool.Divide"]("{\"a\":10,\"b\":2}");
+    var divideResult = await functionMap["CalculatorTool-Divide"]("{\"a\":10,\"b\":2}");
     double divideValue = double.Parse(divideResult.Trim('\"'));
     Assert.Equal(5, divideValue);
     
     // Test square root
-    var sqrtResult = await functionMap["CalculatorTool.Sqrt"]("{\"x\":16}");
+    var sqrtResult = await functionMap["CalculatorTool-Sqrt"]("{\"x\":16}");
     double sqrtValue = double.Parse(sqrtResult.Trim('\"'));
     Assert.Equal(4, sqrtValue);
     
     // Test power
-    var powerResult = await functionMap["CalculatorTool.Power"]("{\"x\":2,\"y\":3}");
+    var powerResult = await functionMap["CalculatorTool-Power"]("{\"x\":2,\"y\":3}");
     double powerValue = double.Parse(powerResult.Trim('\"'));
     Assert.Equal(8, powerValue);
   }
@@ -146,12 +146,12 @@ public class McpToolInvocationTests
     // Act & Assert for error cases
     
     // Test division by zero
-    var divideByZeroResult = await functionMap["CalculatorTool.Divide"]("{\"a\":10,\"b\":0}");
+    var divideByZeroResult = await functionMap["CalculatorTool-Divide"]("{\"a\":10,\"b\":0}");
     // Check that the result contains error information - simpler assertion that doesn't rely on exact format
     Assert.Contains("error", divideByZeroResult);
     
     // Test square root of negative number
-    var sqrtNegativeResult = await functionMap["CalculatorTool.Sqrt"]("{\"x\":-1}");
+    var sqrtNegativeResult = await functionMap["CalculatorTool-Sqrt"]("{\"x\":-1}");
     // Check that the result contains error information - simpler assertion that doesn't rely on exact format
     Assert.Contains("error", sqrtNegativeResult);
   }

@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Xunit;
 
 public class ThinkingModeTests
@@ -116,7 +117,7 @@ public class ThinkingModeTests
         {
           Name = "code",
           Description = "Python code to execute",
-          ParameterType = typeof(string),
+          ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
           IsRequired = true
         }
       }
@@ -154,7 +155,6 @@ public class ThinkingModeTests
     // Check tool configuration
     Assert.NotNull(captureClient.CapturedRequest.Tools);
     Assert.Single(captureClient.CapturedRequest.Tools!);
-    Assert.Equal("function", captureClient.CapturedRequest.Tools![0].Type);
-    Assert.Equal("python_mcp-execute_python_in_container", captureClient.CapturedRequest.Tools![0].Function!.Name);
+    Assert.Equal("python_mcp-execute_python_in_container", captureClient.CapturedRequest.Tools![0].Name);
   }
 } 

@@ -31,7 +31,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     /// <summary>
     /// Invokes the middleware for synchronous scenarios.
     /// </summary>
-    public async Task<IMessage> InvokeAsync(
+    public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
         CancellationToken cancellationToken = default)

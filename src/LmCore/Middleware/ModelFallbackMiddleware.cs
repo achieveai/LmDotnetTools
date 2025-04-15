@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -46,7 +47,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
   /// <summary>
   /// Invokes the middleware, attempting agents based on the model name in the options.
   /// </summary>
-  public async Task<IMessage> InvokeAsync(
+  public async Task<IEnumerable<IMessage>> InvokeAsync(
     MiddlewareContext context,
     IAgent agent,
     CancellationToken cancellationToken = default)
@@ -138,9 +139,9 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
           else
           {
             // If the agent doesn't support streaming, fall back to non-streaming
-            // and convert to an async enumerable with a single item
+            // and convert to an async enumerable
             var result = await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
-            return new SingleItemAsyncEnumerable<IMessage>(result);
+            return ToAsyncEnumerableInternal(result, cancellationToken);
           }
         }
         catch (Exception ex)
@@ -151,20 +152,20 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
       }
 
       // If we should try the default agent as a last resort
-      if (_tryDefaultLast)
+      if (_tryDefaultLast && _defaultAgent != null)
       {
         try
         {
-          if (_defaultAgent is IStreamingAgent defaultAgent)
+          if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
           {
-            return await defaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+            return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
           }
           else
           {
-            // If the default agent doesn't support streaming, fall back to non-streaming
-            // and convert to an async enumerable with a single item
+            // If the agent doesn't support streaming, fall back to non-streaming
+            // and convert to an async enumerable
             var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
-            return new SingleItemAsyncEnumerable<IMessage>(result);
+            return ToAsyncEnumerableInternal(result, cancellationToken);
           }
         }
         catch (Exception) when (lastException != null)
@@ -182,19 +183,40 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     }
 
     // If no mapping was found for the model, use the default agent
-    if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
+    if (_defaultAgent != null)
     {
-      return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+      if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
+      {
+        return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+      }
+      else
+      {
+        // If the agent doesn't support streaming, fall back to non-streaming
+        // and convert to an async enumerable
+        var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+        return ToAsyncEnumerableInternal(result, cancellationToken);
+      }
     }
-    else
+
+    // Fall back to using the provided agent if all else fails
+    return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+  }
+
+  /// <summary>
+  /// Helper method to convert IEnumerable to IAsyncEnumerable
+  /// </summary>
+  private static async IAsyncEnumerable<IMessage> ToAsyncEnumerableInternal(
+    IEnumerable<IMessage> messages,
+    [EnumeratorCancellation] CancellationToken cancellationToken = default)
+  {
+    foreach (var message in messages)
     {
-      // If the default agent doesn't support streaming, fall back to non-streaming
-      // and convert to an async enumerable with a single item
-      var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
-      return new SingleItemAsyncEnumerable<IMessage>(result);
+      cancellationToken.ThrowIfCancellationRequested();
+      await Task.Yield(); // Make this truly async
+      yield return message;
     }
   }
-  
+
   /// <summary>
   /// Helper class to create an IAsyncEnumerable from a single item.
   /// </summary>

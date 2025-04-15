@@ -6,6 +6,8 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.TestUtils;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -52,8 +54,8 @@ public class OpenAiAgentTests
         Assert.NotNull(response);
 
         // Verify it's a text message with content
-        Assert.IsAssignableFrom<ICanGetText>(response);
-        var textMessage = (ICanGetText)response!;
+        Assert.IsAssignableFrom<ICanGetText>(response.First());
+        var textMessage = (ICanGetText)response!.First();
         Assert.True(textMessage.CanGetText());
         Assert.NotNull(textMessage.GetText());
         Assert.NotEmpty(textMessage!.GetText()!);
@@ -87,7 +89,7 @@ public class OpenAiAgentTests
         var response = await agent.GenerateReplyAsync(
           messages,
           options);
-        var json = JsonNode.Parse(((ICanGetText)response)!.GetText()!);
+        var json = JsonNode.Parse(((ICanGetText)response.First())!.GetText()!);
         Assert.NotNull(json);
         Assert.NotNull(json["response"]);
     }
@@ -117,14 +119,14 @@ public class OpenAiAgentTests
                     {
                         Name = "location",
                         Description = "City name",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         Description = "Temperature unit (celsius or fahrenheit)",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false
                     }
                 }
@@ -138,9 +140,9 @@ public class OpenAiAgentTests
           EnvTestPath,
           false);
         var agent = new OpenClientAgent("TestAgent", client);
-        var response = await agent.GenerateReplyAsync(
+        var response = (await agent.GenerateReplyAsync(
           messages,
-          options);
+          options)).First();
 
         // Assert
         Assert.NotNull(response);
@@ -190,14 +192,14 @@ public class OpenAiAgentTests
                     {
                         Name = "location",
                         Description = "City name",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         Description = "Temperature unit (celsius or fahrenheit)",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false
                     }
                 }
@@ -282,14 +284,14 @@ public class OpenAiAgentTests
                     {
                         Name = "location",
                         Description = "City name",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         Description = "Temperature unit (celsius or fahrenheit)",
-                        ParameterType = typeof(string),
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false
                     }
                 }

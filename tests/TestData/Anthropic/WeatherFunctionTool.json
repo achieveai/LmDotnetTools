@@ -1,0 +1,70 @@
+{
+  "Interactions": [
+    {
+      "SerializedRequest": {
+        "model": "claude-3-7-sonnet-20250219",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "What's the weather in San Francisco?"
+              }
+            ]
+          }
+        ],
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "stream": false,
+        "tools": [
+          {
+            "name": "getWeather",
+            "description": "Get current weather for a location",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "location": {
+                  "type": "string",
+                  "description": "City name"
+                }
+              },
+              "additionalProperties": true,
+              "description": "Parameters for getWeather",
+              "required": [
+                "location"
+              ]
+            }
+          }
+        ]
+      },
+      "SerializedResponse": {
+        "id": "msg_019M9DLEsS12iCmgJJSNNdfG",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "I can check the current weather in San Francisco for you."
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_01LsYL3omyrZWtmLWhq41Bqn",
+            "name": "getWeather",
+            "input": {
+              "location": "San Francisco"
+            }
+          }
+        ],
+        "model": "claude-3-7-sonnet-20250219",
+        "stop_reason": "tool_use",
+        "usage": {
+          "input_tokens": 406,
+          "output_tokens": 67
+        }
+      },
+      "SerializedResponseFragments": [],
+      "IsStreaming": false
+    }
+  ]
+}

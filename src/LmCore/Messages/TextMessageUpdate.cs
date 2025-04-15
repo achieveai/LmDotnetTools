@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -11,6 +12,7 @@ public record TextUpdateMessage : IMessage, ICanGetText
     /// <summary>
     /// The current accumulated text content of the message.
     /// </summary>
+    [JsonPropertyName("text")]
     public required string Text { get; init; }
 
     /// <summary>
@@ -22,26 +24,31 @@ public record TextUpdateMessage : IMessage, ICanGetText
     /// <summary>
     /// The role of the message sender (typically Assistant for LM responses).
     /// </summary>
+    [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
 
     /// <summary>
     /// The name or identifier of the agent that generated this message.
     /// </summary>
+    [JsonPropertyName("fromAgent")]
     public string? FromAgent { get; init; }
 
     /// <summary>
     /// Additional metadata associated with the message.
     /// </summary>
+    [JsonPropertyName("metadata")]
     public JsonObject? Metadata { get; init; }
 
     /// <summary>
     /// A unique identifier for the generation this update is part of.
     /// </summary>
+    [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
 
     /// <summary>
     /// Indicates this is a streaming update rather than a complete message.
     /// </summary>
+    [JsonPropertyName("isUpdate")]
     public bool IsUpdate { get; init; } = true;
 
     /// <summary>

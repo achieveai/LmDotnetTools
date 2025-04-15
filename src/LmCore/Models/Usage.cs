@@ -9,15 +9,19 @@ namespace AchieveAi.LmDotnetTools.LmCore.Core;
 public record Usage
 {
     [JsonPropertyName("prompt_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int PromptTokens { get; init; }
 
     [JsonPropertyName("completion_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int CompletionTokens { get; init; }
 
     [JsonPropertyName("total_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int TotalTokens { get; init; }
 
     [JsonPropertyName("completion_token_details")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CompletionTokenDetails? CompletionTokenDetails { get; init; }
 
     [JsonIgnore]
@@ -82,5 +86,6 @@ public record Usage
 public class CompletionTokenDetails
 {
     [JsonPropertyName("reasoning_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int ReasoningTokens { get; set; }
 }

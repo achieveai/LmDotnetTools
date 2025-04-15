@@ -27,10 +27,10 @@ public class McpTransportIntegrationTests
     public Dictionary<string, object>? ModelParameters => null;
     public IList<IMessage> History => new List<IMessage>();
 
-    public Task<IMessage> GenerateReplyAsync(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null, CancellationToken cancellationToken = default)
+    public Task<IEnumerable<IMessage>> GenerateReplyAsync(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null, CancellationToken cancellationToken = default)
     {
       // Just return a text message for testing
-      return Task.FromResult<IMessage>(new TextMessage { Text = "This is a test response" });
+      return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = "This is a test response" } });
     }
   }
 
@@ -71,7 +71,7 @@ public class McpTransportIntegrationTests
       var agent = new SimpleTestAgent();
       
       // Act - Create and process a tool call
-      var toolCall = new LmCore.Messages.ToolCall("GreetingTool.SayHello", JsonSerializer.Serialize(new { name = "User" }));
+      var toolCall = new LmCore.Messages.ToolCall("GreetingTool-SayHello", JsonSerializer.Serialize(new { name = "User" }));
       var message = new ToolsCallMessage { ToolCalls = [toolCall] };
       var context = new MiddlewareContext([message]);
       
@@ -79,7 +79,9 @@ public class McpTransportIntegrationTests
       
       // Assert
       Assert.NotNull(response);
-      var responseText = response.GetText();
+      var firstMessage = response.FirstOrDefault();
+      Assert.NotNull(firstMessage);
+      var responseText = firstMessage.GetText();
       Assert.NotNull(responseText);
     }
     finally
@@ -126,7 +128,7 @@ public class McpTransportIntegrationTests
       var agent = new SimpleTestAgent();
       
       // Act - Create and process a tool call
-      var toolCall = new LmCore.Messages.ToolCall("CalculatorTool.Add", JsonSerializer.Serialize(new { a = 5.0, b = 3.0 }));
+      var toolCall = new LmCore.Messages.ToolCall("CalculatorTool-Add", JsonSerializer.Serialize(new { a = 5.0, b = 3.0 }));
       var message = new ToolsCallMessage { ToolCalls = [toolCall] };
       var context = new MiddlewareContext([message]);
       
@@ -134,7 +136,9 @@ public class McpTransportIntegrationTests
       
       // Assert
       Assert.NotNull(response);
-      var responseText = response.GetText();
+      var firstMessage = response.FirstOrDefault();
+      Assert.NotNull(firstMessage);
+      var responseText = firstMessage.GetText();
       Assert.NotNull(responseText);
     }
     finally

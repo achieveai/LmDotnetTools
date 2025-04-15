@@ -60,7 +60,7 @@ public class OptionsOverridingMiddlewareTests
         It.IsAny<CancellationToken>()))
       .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
         (msgs, options, token) => capturedOptions = options)
-      .ReturnsAsync(new TextMessage { Text = "Response", Role = Role.Assistant });
+      .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
     
     // Act
     await middleware.InvokeAsync(context, mockAgent.Object);
@@ -105,7 +105,7 @@ public class OptionsOverridingMiddlewareTests
         It.IsAny<CancellationToken>()))
       .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
         (msgs, options, token) => capturedOptions = options)
-      .ReturnsAsync(new TextMessage { Text = "Response", Role = Role.Assistant });
+      .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
     
     // Act
     await middleware.InvokeAsync(context, mockAgent.Object);
@@ -173,7 +173,7 @@ public class OptionsOverridingMiddlewareTests
         It.IsAny<CancellationToken>()))
       .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
         (msgs, options, token) => capturedOptions = options)
-      .ReturnsAsync(new TextMessage { Text = "Response", Role = Role.Assistant });
+      .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
     
     // Act
     await middleware.InvokeAsync(context, mockAgent.Object);
@@ -287,7 +287,7 @@ public class OptionsOverridingMiddlewareTests
         It.IsAny<CancellationToken>()))
       .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
         (msgs, options, token) => capturedOptions = options)
-      .ReturnsAsync(new TextMessage { Text = "Response", Role = Role.Assistant });
+      .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
     
     // Act
     await middleware.InvokeAsync(context, mockAgent.Object);
@@ -362,7 +362,7 @@ public class OptionsOverridingMiddlewareTests
         It.IsAny<CancellationToken>()))
       .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
         (msgs, options, token) => capturedOptions = options)
-      .ReturnsAsync(new TextMessage { Text = "Response", Role = Role.Assistant });
+      .ReturnsAsync(new[] { new TextMessage { Text = "Response", Role = Role.Assistant } });
     
     // Act
     await middleware.InvokeAsync(context, mockAgent.Object);

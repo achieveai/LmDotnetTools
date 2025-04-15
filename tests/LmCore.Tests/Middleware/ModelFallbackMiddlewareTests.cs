@@ -46,7 +46,7 @@ public class ModelFallbackMiddlewareTests
     var result = await middleware.InvokeAsync(context, new MockAgent(new TextMessage { Text = "Placeholder", Role = Role.Assistant }), CancellationToken.None);
 
     // Assert
-    Assert.Equal("Response from model1", ((TextMessage)result).Text);
+    Assert.Equal("Response from model1", ((TextMessage)result.First()).Text);
   }
 
   [Fact]
@@ -79,7 +79,7 @@ public class ModelFallbackMiddlewareTests
     var result = await middleware.InvokeAsync(context, new MockAgent(new TextMessage { Text = "Placeholder", Role = Role.Assistant }), CancellationToken.None);
 
     // Assert
-    Assert.Equal("Response from default", ((TextMessage)result).Text);
+    Assert.Equal("Response from default", ((TextMessage)result.First()).Text);
   }
 
   [Fact]
@@ -115,10 +115,14 @@ public class ModelFallbackMiddlewareTests
     var context = new MiddlewareContext(new[] { testMessage }, options);
 
     // Act - the middleware should try the failing agent first, then fall back to the success agent
-    var result = await middleware.InvokeAsync(context, new MockAgent(new TextMessage { Text = "Placeholder", Role = Role.Assistant }), CancellationToken.None);
+    var result = await middleware.InvokeAsync(
+        context,
+        new MockAgent(new TextMessage { Text = "Placeholder", Role = Role.Assistant }),
+        CancellationToken.None);
 
     // Assert
-    Assert.Equal("Success response", ((TextMessage)result).Text);
+    Assert.Single(result);
+    Assert.Equal("Success response", ((TextMessage)result.First()).Text);
   }
 
   [Fact]
@@ -164,7 +168,7 @@ public class ModelFallbackMiddlewareTests
     var result = await middleware.InvokeAsync(context, new MockAgent(new TextMessage { Text = "Placeholder", Role = Role.Assistant }), CancellationToken.None);
 
     // Assert
-    Assert.Equal("Default response", ((TextMessage)result).Text);
+    Assert.Equal("Default response", ((TextMessage)result.First()).Text);
   }
 
   [Fact]

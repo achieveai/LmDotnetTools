@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
 using AchieveAi.LmDotnetTools.TestUtils;
+using AchieveAi.LmDotnetTools.TestUtils.MockTools;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Xunit;
@@ -26,22 +27,10 @@ public class FunctionToolTests
     };
     TestLogger.Log($"Created {messages.Length} messages");
 
-    // Create function definition
-    var weatherFunction = new FunctionContract
-    {
-      Name = "getWeather",
-      Description = "Get current weather for a location",
-      Parameters = new List<FunctionParameterContract>
-      {
-        new FunctionParameterContract
-        {
-          Name = "location",
-          Description = "City name",
-          ParameterType = typeof(string),
-          IsRequired = true
-        }
-      }
-    };
+    // Get weather function from MockWeatherTool
+    var weatherFunction = MockToolCallHelper.CreateMockToolCalls(
+        new[] { typeof(MockWeatherTool) }
+    ).Item1.First();
     
     var options = new GenerateReplyOptions
     {
@@ -63,7 +52,7 @@ public class FunctionToolTests
       TestLogger.Log($"Tools count: {captureClient.CapturedRequest.Tools.Count}");
       foreach (var t in captureClient.CapturedRequest.Tools)
       {
-        TestLogger.Log($"Tool - Type: {t.Type}, Function: {(t.Function != null ? $"{t.Function.Name}" : "null")}");
+        TestLogger.Log($"Tool - Name: {t.Name}, Description: {(t.Description ?? "null")}");
       }
     }
     else
@@ -80,9 +69,9 @@ public class FunctionToolTests
     
     // Check the first tool's properties with safe null checks
     var tool = captureClient.CapturedRequest.Tools[0];
-    Assert.Equal("function", tool.Type);
-    Assert.NotNull(tool.Function);
-    Assert.Equal("getWeather", tool.Function.Name);
+    Assert.Equal("getWeather", tool.Name);
+    Assert.NotNull(tool.InputSchema);
+    Assert.NotNull(tool.Description);
   }
   
   [Fact]
@@ -102,60 +91,41 @@ public class FunctionToolTests
     };
     TestLogger.Log($"Created messages array with {messages.Length} messages");
 
+    // Get mock functions from MockPythonExecutionTool
+    var mockFunctions = MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockPythonExecutionTool) }).Item1;
+    
     // Create multiple function definitions based on example_requests.json
+    // But extract parameter information from the mock tools
+    var listDirectoryTemplate = mockFunctions.First(f => f.Name == "list_directory");
     var listDirectoryFunction = new FunctionContract
     {
       Name = "python_mcp-list_directory",
       Description = "List the contents of a directory within the code directory",
-      Parameters = new List<FunctionParameterContract>
-      {
-        new FunctionParameterContract
-        {
-          Name = "relative_path",
-          Description = "Relative path within the code directory",
-          ParameterType = typeof(string),
-          IsRequired = false
-        }
-      }
+      Parameters = listDirectoryTemplate.Parameters
     };
     
+    var deleteFileTemplate = mockFunctions.First(f => f.Name == "delete_file");
     var deleteFileFunction = new FunctionContract
     {
       Name = "python_mcp-delete_file",
       Description = "Delete a file from the code directory",
-      Parameters = new List<FunctionParameterContract>
-      {
-        new FunctionParameterContract
-        {
-          Name = "relative_path",
-          Description = "Relative path to the file within the code directory",
-          ParameterType = typeof(string),
-          IsRequired = true
-        }
-      }
+      Parameters = deleteFileTemplate.Parameters
     };
     
+    var getDirTreeTemplate = mockFunctions.First(f => f.Name == "get_directory_tree");
     var getDirTreeFunction = new FunctionContract
     {
       Name = "python_mcp-get_directory_tree",
       Description = "Get an ASCII tree representation of a directory structure",
-      Parameters = new List<FunctionParameterContract>
-      {
-        new FunctionParameterContract
-        {
-          Name = "relative_path",
-          Description = "Relative path within the code directory",
-          ParameterType = typeof(string),
-          IsRequired = false
-        }
-      }
+      Parameters = getDirTreeTemplate.Parameters
     };
     
+    var cleanupTemplate = mockFunctions.First(f => f.Name == "cleanup_code_directory");
     var cleanupFunction = new FunctionContract
     {
       Name = "python_mcp-cleanup_code_directory",
       Description = "Clean up the code directory by removing all files and subdirectories",
-      Parameters = new List<FunctionParameterContract>()
+      Parameters = cleanupTemplate.Parameters
     };
     
     var options = new GenerateReplyOptions
@@ -184,8 +154,7 @@ public class FunctionToolTests
     
     // Verify that all tools were properly configured
     var toolNames = captureClient.CapturedRequest.Tools!
-      .Where(t => t.Function != null)
-      .Select(t => t.Function!.Name)
+      .Select(t => t.Name)
       .ToList();
       
     Assert.Contains("python_mcp-list_directory", toolNames);
@@ -209,21 +178,17 @@ public class FunctionToolTests
       new TextMessage { Role = Role.User, Text = "List files in the root directory" }
     };
     
-    // Add a list_directory function to options
+    // Extract list_directory function from MockPythonExecutionTool
+    var listDirTemplate = MockToolCallHelper.CreateMockToolCalls(
+        new[] { typeof(MockPythonExecutionTool) }
+    ).Item1.First(f => f.Name == "list_directory");
+    
+    // Create function definition following the original test pattern
     var listDirFunction = new FunctionContract
     {
       Name = "python_mcp-list_directory",
       Description = "List directory contents",
-      Parameters = new List<FunctionParameterContract>
-      {
-        new FunctionParameterContract
-        {
-          Name = "relative_path",
-          Description = "Path to list",
-          ParameterType = typeof(string),
-          IsRequired = false
-        }
-      }
+      Parameters = listDirTemplate.Parameters
     };
     
     var options = new GenerateReplyOptions
@@ -239,15 +204,15 @@ public class FunctionToolTests
     
     // Verify we got a proper response with text
     Assert.NotNull(response);
-    Assert.IsType<TextMessage>(response);
+    Assert.IsType<TextMessage>(response.First());
     
-    var textResponse = (TextMessage)response;
+    var textResponse = (TextMessage)response.First();
     Assert.Contains("I'll help you list the files", textResponse.Text);
     
     // Check that the mock client received the right request
     Assert.NotNull(mockClient.LastRequest);
     Assert.NotNull(mockClient.LastRequest.Tools);
     Assert.Single(mockClient.LastRequest.Tools!);
-    Assert.Equal("python_mcp-list_directory", mockClient.LastRequest.Tools![0].Function!.Name);
+    Assert.Equal("python_mcp-list_directory", mockClient.LastRequest.Tools![0].Name);
   }
 } 

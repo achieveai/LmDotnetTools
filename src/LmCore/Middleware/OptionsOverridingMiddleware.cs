@@ -31,7 +31,7 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
     /// <summary>
     /// Invokes the middleware, overriding options in the context and forwarding to the next agent.
     /// </summary>
-    public async Task<IMessage> InvokeAsync(
+    public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
         CancellationToken cancellationToken = default)

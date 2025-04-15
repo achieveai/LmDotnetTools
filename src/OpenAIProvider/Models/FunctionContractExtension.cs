@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -49,63 +50,18 @@ public static class FunctionContractExtension
     /// <summary>
     /// Creates a JsonSchemaProperty based on the .NET type
     /// </summary>
-    private static JsonSchemaProperty CreatePropertyForType(Type type, string? description)
+    private static JsonSchemaProperty CreatePropertyForType(JsonSchemaObject schemaObject, string? description)
     {
-        // Handle primitive types
-        if (type == typeof(string))
+        // Handle based on JsonSchemaObject type
+        return schemaObject.Type.ToLowerInvariant() switch
         {
-            return JsonSchemaProperty.String(description);
-        }
-        else if (type == typeof(int) || type == typeof(long) || type == typeof(short) || type == typeof(byte))
-        {
-            return JsonSchemaProperty.Integer(description);
-        }
-        else if (type == typeof(float) || type == typeof(double) || type == typeof(decimal))
-        {
-            return JsonSchemaProperty.Number(description);
-        }
-        else if (type == typeof(bool))
-        {
-            return JsonSchemaProperty.Boolean(description);
-        }
-        // Handle arrays and collections
-        else if (type.IsArray || (type.IsGenericType && 
-                (typeof(IEnumerable<>).IsAssignableFrom(type.GetGenericTypeDefinition()) ||
-                 typeof(ICollection<>).IsAssignableFrom(type.GetGenericTypeDefinition()) ||
-                 typeof(IList<>).IsAssignableFrom(type.GetGenericTypeDefinition()))))
-        {
-            Type elementType;
-            if (type.IsArray)
-            {
-                elementType = type.GetElementType()!;
-            }
-            else
-            {
-                elementType = type.GetGenericArguments()[0];
-            }
-
-            var itemsProperty = CreatePropertyForType(elementType, null);
-            
-            // Create schema for array items
-            var itemsSchema = new JsonSchemaObject
-            {
-                Type = itemsProperty.Type,
-                Description = itemsProperty.Description
-                // Add other properties as needed
-            };
-
-            return JsonSchemaProperty.Array(itemsSchema, description);
-        }
-        // For objects and other complex types, use a generic object schema
-        else
-        {
-            // For complex objects, we'd ideally extract the properties via reflection
-            // But for simplicity, we'll just use a generic object type
-            return new JsonSchemaProperty
-            {
-                Type = "object",
-                Description = description
-            };
-        }
+            "string" => JsonSchemaProperty.String(description),
+            "integer" => JsonSchemaProperty.Integer(description),
+            "number" => JsonSchemaProperty.Number(description),
+            "boolean" => JsonSchemaProperty.Boolean(description),
+            "array" when schemaObject.Items != null => JsonSchemaProperty.Array(schemaObject.Items, description),
+            "object" => new JsonSchemaProperty { Type = "object", Description = description },
+            _ => new JsonSchemaProperty { Type = "string", Description = description }
+        };
     }
 }

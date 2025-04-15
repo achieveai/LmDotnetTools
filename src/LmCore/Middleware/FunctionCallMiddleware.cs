@@ -28,7 +28,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             if (functionMap != null)
             {
                 var missingFunctions = functions
-                    .Select(f => string.IsNullOrEmpty(f.ClassName) ? f.Name :  $"{f.ClassName}.{f.Name}")
+                    .Select(f => string.IsNullOrEmpty(f.ClassName) ? f.Name :  $"{f.ClassName}-{f.Name}")
                     .Where(f => !functionMap.ContainsKey(f))
                     .ToList();
 
@@ -51,33 +51,47 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
     public string? Name { get; }
 
-    public async Task<IMessage> InvokeAsync(MiddlewareContext context, IAgent agent, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<IMessage>> InvokeAsync(MiddlewareContext context, IAgent agent, CancellationToken cancellationToken = default)
     {
         // Process any existing tool calls in the last message
         var (hasPendingToolCalls, toolCalls, options) = PrepareInvocation(context);
         if (hasPendingToolCalls)
         {
-            return await ExecuteToolCallsAsync(toolCalls!, agent);
+            var result = await ExecuteToolCallsAsync(toolCalls!, agent);
+            return new[] { result };
         }
 
         // Generate reply with the configured options
-        var reply = await agent.GenerateReplyAsync(
+        var replies = await agent.GenerateReplyAsync(
             context.Messages,
             options,
             cancellationToken);
 
-        // Process any tool calls in the response
-        var responseToolCall = reply as ICanGetToolCalls;
-        var responseToolCalls = responseToolCall?.GetToolCalls();
-        if (responseToolCalls != null && responseToolCalls.Any())
+        var processedReplies = new List<IMessage>();
+        
+        // Process each message in the reply
+        foreach (var reply in replies)
         {
-            var result = await ExecuteToolCallsAsync(responseToolCalls, agent);
-            return new ToolsCallAggregateMessage(
-                responseToolCall!,
-                result);
+            // Check if this message has tool calls
+            var responseToolCall = reply as ICanGetToolCalls;
+            var responseToolCalls = responseToolCall?.GetToolCalls();
+            
+            if (responseToolCalls != null && responseToolCalls.Any())
+            {
+                // Process the tool calls for this message
+                var result = await ExecuteToolCallsAsync(responseToolCalls, agent);
+                processedReplies.Add(new ToolsCallAggregateMessage(
+                    responseToolCall!,
+                    result));
+            }
+            else
+            {
+                // Pass through messages without tool calls
+                processedReplies.Add(reply);
+            }
         }
 
-        return reply;
+        return processedReplies;
     }
 
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(

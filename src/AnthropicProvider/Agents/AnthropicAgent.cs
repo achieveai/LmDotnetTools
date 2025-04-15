@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -31,7 +32,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
   }
 
   /// <inheritdoc/>
-  public async Task<IMessage> GenerateReplyAsync(
+  public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
     IEnumerable<IMessage> messages,
     GenerateReplyOptions? options = null,
     CancellationToken cancellationToken = default)
@@ -42,28 +43,8 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
       request,
       cancellationToken);
 
-    // Extract text content from the response
-    string textContent = string.Empty;
-    foreach (var content in response.Content)
-    {
-      if (content.Type == "text" && content.Text != null)
-      {
-        textContent += content.Text;
-      }
-    }
-
-    // Create a text message with the content
-    var message = new TextMessage
-    {
-      Text = textContent,
-      Role = Role.Assistant,
-      FromAgent = Name
-    };
-    
-    // Note: In a full implementation, we would add usage information
-    // to the message, but we're simplifying for now
-
-    return message;
+    // Convert to messages
+    return response.ToMessages(Name);
   }
 
   /// <inheritdoc/>

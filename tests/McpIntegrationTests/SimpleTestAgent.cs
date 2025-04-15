@@ -45,12 +45,19 @@ public class SimpleTestAgent : IAgent
     _injectedMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
   }
 
-  public Task<IMessage> GenerateReplyAsync(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null, CancellationToken cancellationToken = default)
+  public Task<IEnumerable<IMessage>> GenerateReplyAsync(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null, CancellationToken cancellationToken = default)
   {
     // Store the received messages for later inspection
     _receivedMessages.AddRange(messages);
     
-    // Return the injected message if available, otherwise a default text message
-    return Task.FromResult(_injectedMessage ?? new TextMessage { Text = "This is a test response" });
+    // Return the injected message, or a default if none was provided
+    if (_injectedMessage != null)
+    {
+      return Task.FromResult<IEnumerable<IMessage>>(new[] { _injectedMessage });
+    }
+    else
+    {
+      return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = "Default response", Role = Role.Assistant } });
+    }
   }
 }

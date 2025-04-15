@@ -14,85 +14,87 @@ public record OpenMessage
 
     public OpenUsage? Usage { get; init; }
 
-    public IMessage ToMessage()
+    public IEnumerable<IMessage> ToMessages()
     {
-        var baseMessage = ChatMessage.ToMessage(ChatMessage.Name);
-        
-        // Create metadata with OpenMessage-specific properties
-        var metadata = baseMessage.Metadata?.DeepClone() as JsonObject ?? new JsonObject();
-        metadata["completion_id"] = CompletionId;
-        if (Usage != null)
+        foreach (var baseMessage in ChatMessage.ToMessages(ChatMessage.Name))
         {
-            metadata["usage"] = JsonSerializer.SerializeToNode(Usage);
-        }
-        
-        // Update the message with the metadata containing OpenMessage properties
-        if (baseMessage is TextMessage textMessage)
-        {
-            return textMessage with { Metadata = metadata };
-        }
-        else if (baseMessage is ToolsCallMessage toolCallMessage)
-        {
-            return toolCallMessage with { Metadata = metadata };
-        }
-        else if (baseMessage is ImageMessage imageMessage)
-        {
-            // Create a new instance since ImageMessage is not a record type
-            return new ImageMessage
+            // Create metadata with OpenMessage-specific properties
+            var metadata = baseMessage.Metadata?.DeepClone() as JsonObject ?? new JsonObject();
+            metadata["completion_id"] = CompletionId;
+            if (Usage != null)
             {
-                FromAgent = imageMessage.FromAgent,
-                Role = imageMessage.Role,
-                Metadata = metadata,
-                GenerationId = imageMessage.GenerationId,
-                ImageData = imageMessage.ImageData
-            };
-        }
-        else if (baseMessage is CompositeMessage compositeMessage)
-        {
-            return compositeMessage with { Metadata = metadata };
-        }
+                metadata["usage"] = JsonSerializer.SerializeToNode(Usage);
+            }
         
-        return baseMessage;
+            // Update the message with the metadata containing OpenMessage properties
+            if (baseMessage is TextMessage textMessage)
+            {
+                yield return textMessage with { Metadata = metadata };
+            }
+            else if (baseMessage is ToolsCallMessage toolCallMessage)
+            {
+                yield return toolCallMessage with { Metadata = metadata };
+            }
+            else if (baseMessage is ImageMessage imageMessage)
+            {
+                // Create a new instance since ImageMessage is not a record type
+                yield return new ImageMessage
+                {
+                    FromAgent = imageMessage.FromAgent,
+                    Role = imageMessage.Role,
+                    Metadata = metadata,
+                    GenerationId = imageMessage.GenerationId,
+                    ImageData = imageMessage.ImageData
+                };
+            }
+            else
+            {
+                yield return baseMessage;
+            }
+        }
     }
 
-    public IMessage ToStreamingMessage()
+    public IEnumerable<IMessage> ToStreamingMessage()
     {
-        var baseMessage = ChatMessage.ToStreamingMessage(ChatMessage.Name);
-
-        // Fill in the OpenMessage specific fields
-        if (baseMessage is ToolsCallMessage toolCallMessage)
+        foreach (var baseMessage in ChatMessage.ToStreamingMessages(ChatMessage.Name))
         {
-            return toolCallMessage with {
-                GenerationId = CompletionId,
-                FromAgent = ChatMessage.Name,
-                Role = toolCallMessage.Role,
-                Metadata = new JsonObject
-                {
-                    ["is_streaming"] = true,
-                    ["completion_id"] = CompletionId,
-                    ["usage"] = Usage != null ? JsonSerializer.SerializeToNode(Usage) : null,
-                }
-            };
-        }
-        else if (baseMessage is TextMessage textMessage)
-        {
-            // For streaming text, return a TextUpdateMessage
-            return new TextUpdateMessage
+            // Fill in the OpenMessage specific fields
+            if (baseMessage is ToolsCallMessage toolCallMessage)
             {
-                Text = textMessage.Text,
-                Role = textMessage.Role,
-                FromAgent = ChatMessage.Name,
-                GenerationId = CompletionId,
-                Metadata = new JsonObject
+                yield return toolCallMessage with {
+                    GenerationId = CompletionId,
+                    FromAgent = ChatMessage.Name,
+                    Role = toolCallMessage.Role,
+                    Metadata = new JsonObject
+                    {
+                        ["is_streaming"] = true,
+                        ["completion_id"] = CompletionId,
+                        ["usage"] = Usage != null ? JsonSerializer.SerializeToNode(Usage) : null,
+                    }
+                };
+            }
+            else if (baseMessage is TextMessage textMessage)
+            {
+                // For streaming text, return a TextUpdateMessage
+                yield return new TextUpdateMessage
                 {
-                    ["completion_id"] = CompletionId,
-                    ["is_streaming"] = true,
-                    ["usage"] = Usage != null ? JsonSerializer.SerializeToNode(Usage) : null
-                }
-            };
+                    Text = textMessage.Text,
+                    Role = textMessage.Role,
+                    FromAgent = ChatMessage.Name,
+                    GenerationId = CompletionId,
+                    Metadata = new JsonObject
+                    {
+                        ["completion_id"] = CompletionId,
+                        ["is_streaming"] = true,
+                        ["usage"] = Usage != null ? JsonSerializer.SerializeToNode(Usage) : null
+                    }
+                };
+            }
+            else
+            {
+                yield return baseMessage;
+            }
         }
-
-        return baseMessage;
     }
 }
 

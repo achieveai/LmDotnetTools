@@ -2,6 +2,9 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using System.Text.Json;
+using System.Collections.Generic;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -26,7 +29,7 @@ public class McpFunctionCallExtensionsBasicTests
           {
             Name = "text",
             Description = "Text to echo",
-            ParameterType = typeof(string),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
             IsRequired = true
           }
         }
@@ -41,14 +44,14 @@ public class McpFunctionCallExtensionsBasicTests
           {
             Name = "a",
             Description = "First number",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             IsRequired = true
           },
           new FunctionParameterContract
           {
             Name = "b",
             Description = "Second number",
-            ParameterType = typeof(double),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
             IsRequired = true
           }
         }
@@ -112,7 +115,7 @@ public class McpFunctionCallExtensionsBasicTests
           {
             Name = "text",
             Description = "Text to echo",
-            ParameterType = typeof(string),
+            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
             IsRequired = true
           }
         }

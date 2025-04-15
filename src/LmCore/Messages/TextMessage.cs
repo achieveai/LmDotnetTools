@@ -1,21 +1,27 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
 public record TextMessage : IMessage, ICanGetText
 {
+    [JsonPropertyName("text")]
     public required string Text { get; init; }
 
     public string? GetText() => Text;
 
+    [JsonPropertyName("fromAgent")]
     public string? FromAgent { get; init; }
 
+    [JsonPropertyName("role")]
     public Role Role { get; init; }
     
+    [JsonPropertyName("metadata")]
     public JsonObject? Metadata { get; init; }
     
+    [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
     
     public BinaryData? GetBinary() => null;

@@ -1,0 +1,19 @@
+[
+  {
+    "$type": "text",
+    "text": "I\u0027ll help you list the files in the root and \u0022code\u0022 directories. Let me retrieve that information for you.",
+    "fromAgent": "TestAgent",
+    "role": "assistant"
+  },
+  {
+    "$type": "tools_call",
+    "from_agent": "TestAgent",
+    "role": "assistant",
+    "tool_calls": [
+      {
+        "function_name": "python_mcp-list_directory",
+        "function_args": "{\u0022relative_path\u0022:\u0022.\u0022}"
+      }
+    ]
+  }
+]

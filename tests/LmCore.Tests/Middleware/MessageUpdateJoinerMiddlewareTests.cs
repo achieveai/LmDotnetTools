@@ -22,7 +22,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         mockAgent
           .Setup(a => a.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-          .ReturnsAsync(message);
+          .ReturnsAsync(new[] { message });
 
         // Create context with empty messages
         var context = new MiddlewareContext(
@@ -34,7 +34,9 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)result).GetText());
+        var firstMessage = result.FirstOrDefault();
+        Assert.NotNull(firstMessage);
+        Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)firstMessage).GetText());
 
         // Verify the agent was called exactly once
         mockAgent.Verify(a => a.GenerateReplyAsync(

@@ -15,7 +15,8 @@ public static class MockToolTypes
     {
         typeof(MockGreetingTool),
         typeof(MockCalculatorTool),
-        typeof(MockPythonExecutionTool)
+        typeof(MockPythonExecutionTool),
+        typeof(MockWeatherTool)
     };
     
     /// <summary>
@@ -33,5 +34,13 @@ public static class MockToolTypes
     public static readonly IReadOnlyList<Type> PythonSample = new[]
     {
         typeof(MockPythonExecutionTool)
+    };
+    
+    /// <summary>
+    /// Weather tool types
+    /// </summary>
+    public static readonly IReadOnlyList<Type> Weather = new[]
+    {
+        typeof(MockWeatherTool)
     };
 } 

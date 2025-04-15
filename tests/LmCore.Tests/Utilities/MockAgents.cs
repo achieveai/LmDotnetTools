@@ -21,12 +21,12 @@ public class MockAgent : IAgent
     _response = response;
   }
 
-  public Task<IMessage> GenerateReplyAsync(
+  public Task<IEnumerable<IMessage>> GenerateReplyAsync(
     IEnumerable<IMessage> messages,
     GenerateReplyOptions? options = null,
     CancellationToken cancellationToken = default)
   {
-    return Task.FromResult(_response);
+    return Task.FromResult<IEnumerable<IMessage>>(new[] { _response });
   }
 }
 
@@ -42,13 +42,13 @@ public class MockStreamingAgent : IStreamingAgent
     _responseStream = responseStream;
   }
 
-  public Task<IMessage> GenerateReplyAsync(
+  public Task<IEnumerable<IMessage>> GenerateReplyAsync(
     IEnumerable<IMessage> messages,
     GenerateReplyOptions? options = null,
     CancellationToken cancellationToken = default)
   {
-    // For non-streaming, just return the first or last message from the stream
-    return Task.FromResult(_responseStream.LastOrDefault() ?? new TextMessage { Text = string.Empty });
+    // For non-streaming, just return the stream as a collection
+    return Task.FromResult(_responseStream.Any() ? _responseStream : new[] { new TextMessage { Text = string.Empty } });
   }
 
   public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -78,14 +78,14 @@ public class MockStreamingAgent : IStreamingAgent
 /// </summary>
 public class ToolCallStreamingAgent : IStreamingAgent
 {
-  public Task<IMessage> GenerateReplyAsync(
+  public Task<IEnumerable<IMessage>> GenerateReplyAsync(
     IEnumerable<IMessage> messages,
     GenerateReplyOptions? options = null,
     CancellationToken cancellationToken = default)
   {
     // For non-streaming just return a complete tool call
     var finalToolCall = CreateFinalToolCall();
-    return Task.FromResult<IMessage>(finalToolCall);
+    return Task.FromResult<IEnumerable<IMessage>>(new[] { finalToolCall });
   }
 
   public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -191,13 +191,13 @@ public class TextStreamingAgent : IStreamingAgent
     _fullText = fullText;
   }
   
-  public Task<IMessage> GenerateReplyAsync(
+  public Task<IEnumerable<IMessage>> GenerateReplyAsync(
     IEnumerable<IMessage> messages,
     GenerateReplyOptions? options = null,
     CancellationToken cancellationToken = default)
   {
     // For non-streaming just return the full text
-    return Task.FromResult<IMessage>(new TextMessage { Text = _fullText });
+    return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = _fullText } });
   }
 
   public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(

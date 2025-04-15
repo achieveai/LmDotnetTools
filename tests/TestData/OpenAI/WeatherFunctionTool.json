@@ -1,0 +1,84 @@
+{
+  "Interactions": [
+    {
+      "SerializedRequest": {
+        "model": "gpt-4o",
+        "temperature": 0,
+        "max_tokens": 4096,
+        "n": 1,
+        "stop": [],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "getWeather",
+              "description": "Get current weather for a location",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "string",
+                    "description": "City name"
+                  }
+                },
+                "required": [
+                  "location"
+                ],
+                "additionalProperties": true,
+                "description": "Parameters for getWeather"
+              }
+            }
+          }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "index": 0,
+            "content": "What's the weather in San Francisco?"
+          }
+        ]
+      },
+      "SerializedResponse": {
+        "id": "gen-1744581919-S54K9MN9V572bTQjOj0e",
+        "object": "chat.completion",
+        "created": 1744581919,
+        "model": "openai/gpt-4o",
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "index": 0,
+              "tool_calls": [
+                {
+                  "id": "call_GN9Qr50SPjCBAJXTrPBe6P6X",
+                  "index": 0,
+                  "type": "function",
+                  "function": {
+                    "name": "getWeather",
+                    "arguments": "{\n  \"location\": \"San Francisco\"\n}"
+                  }
+                }
+              ],
+              "content": ""
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 58,
+          "completion_tokens": 17,
+          "total_tokens": 75,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        }
+      },
+      "SerializedResponseFragments": [],
+      "IsStreaming": false
+    }
+  ]
+}

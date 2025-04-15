@@ -1,8 +1,9 @@
 using System.Diagnostics;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.TestUtils;
 using Xunit;
 
@@ -24,7 +25,7 @@ public class DataDrivenFunctionToolTests
         Debug.WriteLine($"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions");
         
         // Use the DatabasedClientWrapper to record or replay the API interaction
-        using var client = OpenClientFactory.CreateDatabasedClient(testName, EnvTestPath, false);
+        using var client = OpenClientFactory.CreateDatabasedClient(Path.Combine("OpenAI", testName), EnvTestPath, false);
         var agent = new OpenClientAgent("TestAgent", client);
         Debug.WriteLine("Created agent with client wrapper");
         
@@ -33,14 +34,35 @@ public class DataDrivenFunctionToolTests
         Debug.WriteLine($"Generated response: {response?.GetType().Name}");
         
         // Assert - Compare with expected response
-        var expectedResponse = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
+        var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
         
         Assert.NotNull(response);
-        Assert.IsType<TextMessage>(response);
-        
-        var textResponse = (TextMessage)response;
-        Assert.Equal(expectedResponse.Text, textResponse.Text);
-        Assert.Equal(expectedResponse.Role, textResponse.Role);
+        Assert.Equal(response.Count(), expectedResponses.Count());
+        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(response))
+        {
+            if (expectedResponse is TextMessage expectedTextResponse)
+            {
+                Assert.IsType<TextMessage>(responseItem);
+                Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
+                Assert.Equal(expectedTextResponse.Role, responseItem.Role);
+            }
+            else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
+            {
+                Assert.IsType<ToolsCallAggregateMessage>(responseItem);
+                var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
+                Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
+                Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
+                Assert.Equal(
+                    expectedToolsCallAggregateMessage.ToolCallMessage!.GetToolCalls()!.Count(),
+                    toolsCallAggregateMessage.ToolCallMessage!.GetToolCalls()!.Count());
+                foreach (var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage.ToolCallMessage!
+                    .GetToolCalls()!.Zip(toolsCallAggregateMessage.ToolCallMessage!.GetToolCalls()!))
+                {
+                    Assert.Equal(expectedToolCall.FunctionName, toolCall.FunctionName);
+                    Assert.Equal(expectedToolCall.FunctionArgs, toolCall.FunctionArgs);
+                }
+            }
+        }
         
         Debug.WriteLine($"Test {testName} completed successfully");
     }
@@ -88,7 +110,7 @@ public class DataDrivenFunctionToolTests
                 {
                     Name = "location",
                     Description = "City name",
-                    ParameterType = typeof(string),
+                    ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = true
                 }
             }
@@ -151,7 +173,7 @@ public class DataDrivenFunctionToolTests
                 {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
-                    ParameterType = typeof(string),
+                    ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false
                 }
             }
@@ -167,7 +189,7 @@ public class DataDrivenFunctionToolTests
                 {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
-                    ParameterType = typeof(string),
+                    ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false
                 }
             }
