@@ -1,5 +1,7 @@
+using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -7,6 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// Represents a streaming text update from a language model.
 /// Contains the current accumulated text at a point in time during streaming.
 /// </summary>
+[JsonConverter(typeof(TextUpdateMessageJsonConverter))]
 public record TextUpdateMessage : IMessage, ICanGetText
 {
     /// <summary>
@@ -36,8 +39,8 @@ public record TextUpdateMessage : IMessage, ICanGetText
     /// <summary>
     /// Additional metadata associated with the message.
     /// </summary>
-    [JsonPropertyName("metadata")]
-    public JsonObject? Metadata { get; init; }
+    [JsonIgnore]
+    public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     /// <summary>
     /// A unique identifier for the generation this update is part of.
@@ -80,5 +83,20 @@ public record TextUpdateMessage : IMessage, ICanGetText
             Metadata = Metadata,
             GenerationId = GenerationId
         };
+    }
+}
+
+/// <summary>
+/// JSON converter for TextUpdateMessage that supports the shadow properties pattern.
+/// </summary>
+public class TextUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<TextUpdateMessage>
+{
+    /// <summary>
+    /// Creates a new instance of TextUpdateMessage during deserialization.
+    /// </summary>
+    /// <returns>A minimal TextUpdateMessage instance.</returns>
+    protected override TextUpdateMessage CreateInstance()
+    {
+        return new TextUpdateMessage { Text = string.Empty };
     }
 } 

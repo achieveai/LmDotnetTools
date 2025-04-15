@@ -2,7 +2,11 @@ using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
+namespace AchieveAi.LmDotnetTools.LmCore.Messages;
+
+[JsonConverter(typeof(ToolsCallMessageJsonConverter))]
 public record ToolsCallMessage : IMessage, ICanGetToolCalls
 {
     [JsonPropertyName("from_agent")]
@@ -12,9 +16,8 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
     
-    [JsonPropertyName("metadata")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonObject? Metadata { get; init; } = null;
+    [JsonIgnore]
+    public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
 
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -22,10 +25,8 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
 
     [JsonPropertyName("tool_calls")]
     public ImmutableList<ToolCall> ToolCalls { get; init; } = ImmutableList<ToolCall>.Empty;
-
-    public ToolCall? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls[0] : null;
     
-    IEnumerable<ToolCall>? ICanGetToolCalls.GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
+    public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
     
     public string? GetText() => null;
     
@@ -34,6 +35,15 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
+public class ToolsCallMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallMessage>
+{
+    protected override ToolsCallMessage CreateInstance()
+    {
+        return new ToolsCallMessage();
+    }
+}
+
+[JsonConverter(typeof(ToolsCallMessageJsonConverter))]
 public record ToolsCallUpdateMessage : IMessage
 {
     [JsonPropertyName("from_agent")]
@@ -43,9 +53,8 @@ public record ToolsCallUpdateMessage : IMessage
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
     
-    [JsonPropertyName("metadata")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonObject? Metadata { get; init; } = null;
+    [JsonIgnore]
+    public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
 
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -55,13 +64,21 @@ public record ToolsCallUpdateMessage : IMessage
     public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = ImmutableList<ToolCallUpdate>.Empty;
 }
 
+public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>
+{
+    protected override ToolsCallUpdateMessage CreateInstance()
+    {
+        return new ToolsCallUpdateMessage();
+    }
+}
+
 public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCallUpdateMessage>
 {
     public string? FromAgent { get; init; } = null;
 
     public Role Role { get; init; } = Role.Assistant;
     
-    public JsonObject? Metadata { get; private set; } = null;
+    public ImmutableDictionary<string, object>? Metadata { get; private set; } = null;
 
     public string? GenerationId { get; init; } = null;
 
@@ -134,14 +151,14 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         {
             if (Metadata == null)
             {
-                Metadata = streamingMessageUpdate.Metadata.DeepClone() as JsonObject;
+                Metadata = streamingMessageUpdate.Metadata;
             }
             else
             {
                 // Merge metadata, with update's metadata taking precedence
                 foreach (var prop in streamingMessageUpdate.Metadata)
                 {
-                    Metadata[prop.Key] = prop.Value?.DeepClone();
+                    Metadata = Metadata.Add(prop.Key, prop.Value);
                 }
             }
         }
@@ -171,11 +188,6 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             _currentToolCallId = null;
             _currentIndex = null;
         }
-    }
-    
-    private void TryCompletePartialUpdate()
-    {
-        CompleteCurrentToolCall();
     }
     
     public ToolsCallMessage Build()

@@ -120,11 +120,8 @@ public class MessageUpdateJoinerMiddlewareTests
         updateMessages[updateMessages.Count - 1] = new TextUpdateMessage
         {
             Text = "",
-            Metadata = JsonSerializer.SerializeToNode(
-                new Dictionary<string, object>
-                {
-                    ["Usage"] = usage,
-                }) as JsonObject
+            Metadata = ImmutableDictionary<string, object>.Empty
+                .Add("usage", usage)
         };
 
         // Set up mock streaming agent to return our updates as an async enumerable
@@ -160,9 +157,9 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Equal(testString, ((LmCore.Messages.ICanGetText)finalMessage).GetText());
 
         Assert.NotNull(finalMessage.Metadata);
-        Assert.Null(finalMessage.Metadata["usage"]);
-        Assert.NotNull(finalMessage.Metadata["Usage"]);
-        Assert.Equal(usage, JsonSerializer.Deserialize<Usage>(finalMessage.Metadata!["Usage"]!.AsObject()));
+        Assert.DoesNotContain(finalMessage.Metadata, kvp => kvp.Key == "Usage");
+        Assert.NotNull(finalMessage.Metadata["usage"]);
+        Assert.Equal(usage, finalMessage.Metadata!["usage"]! as Usage);
 
         // Verify the streaming agent was called exactly once
         mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(

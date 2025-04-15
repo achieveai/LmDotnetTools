@@ -2,9 +2,14 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
+using System.Collections.Immutable;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
+[JsonConverter(typeof(TextMessageJsonConverter))]
 public record TextMessage : IMessage, ICanGetText
 {
     [JsonPropertyName("text")]
@@ -18,8 +23,8 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("role")]
     public Role Role { get; init; }
     
-    [JsonPropertyName("metadata")]
-    public JsonObject? Metadata { get; init; }
+    [JsonIgnore]
+    public ImmutableDictionary<string, object>? Metadata { get; init; }
     
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
@@ -31,6 +36,14 @@ public record TextMessage : IMessage, ICanGetText
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
+public class TextMessageJsonConverter : ShadowPropertiesJsonConverter<TextMessage>
+{
+    protected override TextMessage CreateInstance()
+    {
+        return new TextMessage { Text = string.Empty };
+    }
+}
+
 public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage>
 {
     private readonly StringBuilder _textBuilder = new StringBuilder();
@@ -39,7 +52,7 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
 
     public Role Role { get; set; }
     
-    public JsonObject? Metadata { get; private set; }
+    public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
     public string? GenerationId { get; set; }
 
@@ -57,14 +70,14 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
         {
             if (Metadata == null)
             {
-                Metadata = streamingMessageUpdate.Metadata.DeepClone() as JsonObject;
+                Metadata = streamingMessageUpdate.Metadata;
             }
             else
             {
                 // Merge metadata, with message's metadata taking precedence
                 foreach (var prop in streamingMessageUpdate.Metadata)
                 {
-                    Metadata[prop.Key] = prop.Value?.DeepClone();
+                    Metadata = Metadata.Add(prop.Key, prop.Value);
                 }
             }
         }

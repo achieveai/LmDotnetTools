@@ -47,10 +47,10 @@ public class DataDrivenFunctionToolTests
                 Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
                 Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
                 Assert.Equal(
-                    expectedToolsCallAggregateMessage.ToolCallMessage!.GetToolCalls()!.Count(),
-                    toolsCallAggregateMessage.ToolCallMessage!.GetToolCalls()!.Count());
-                foreach (var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage.ToolCallMessage!
-                    .GetToolCalls()!.Zip(toolsCallAggregateMessage.ToolCallMessage!.GetToolCalls()!))
+                    expectedToolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count(),
+                    toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count());
+                foreach (var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage.ToolsCallMessage!
+                    .GetToolCalls()!.Zip(toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!))
                 {
                     Assert.Equal(expectedToolCall.FunctionName, toolCall.FunctionName);
                     Assert.Equal(expectedToolCall.FunctionArgs, toolCall.FunctionArgs);

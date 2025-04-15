@@ -143,20 +143,6 @@ public record ChatCompletionRequest
                         [new Union<TextContent, ImageContent>(
                             new ImageContent(imageMessage.ImageData.ToDataUrl()!))])
                 }];
-            case CompositeMessage mmMessage:
-                return [new ChatMessage {
-                    Role = ChatMessage.ToRoleEnum(mmMessage.Role),
-                    Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                        mmMessage.GetMessages()!.Select(c =>
-                            c switch
-                            {
-                                ICanGetBinary im => new Union<TextContent, ImageContent>(
-                                    new ImageContent(im.GetBinary().ToDataUrl()!)),
-                                ICanGetText tm => new Union<TextContent, ImageContent>(
-                                    new TextContent(tm.GetText()!)),
-                                _ => throw new ArgumentException("Unsupported message type")
-                            }).ToArray())
-                }];
             case ToolsCallResultMessage toolCallResultMessage:
                 return toolCallResultMessage.ToolCallResults
                     .Where(tc => tc.Result != null)
@@ -170,8 +156,8 @@ public record ChatCompletionRequest
                             };
                     });
             case ToolsCallAggregateMessage toolCallAggregateMessage:
-                return FromMessage(toolCallAggregateMessage.ToolCallMessage)
-                    .Concat(FromMessage(toolCallAggregateMessage.ToolCallResult));
+                return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
+                    .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
                 return [new ChatMessage {
                     Role = ChatMessage.ToRoleEnum(textMessage.Role),
@@ -186,8 +172,8 @@ public record ChatCompletionRequest
                         new FunctionContent(
                             tc.ToolCallId ?? "call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
                             new FunctionContent.FunctionCall(
-                                tc.FunctionName,
-                                tc.FunctionArgs
+                                tc.FunctionName!,
+                                tc.FunctionArgs!
                             ))
                         ).ToList()
                 }];

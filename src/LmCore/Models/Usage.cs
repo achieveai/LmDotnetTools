@@ -5,7 +5,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Core;
 
-[JsonConverter(typeof(UsageJsonConverter))]
+[JsonConverter(typeof(UsageShadowPropertiesJsonConverter))]
 public record Usage
 {
     [JsonPropertyName("prompt_tokens")]
@@ -83,7 +83,7 @@ public record Usage
     }
 }
 
-public class CompletionTokenDetails
+public record CompletionTokenDetails
 {
     [JsonPropertyName("reasoning_tokens")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]

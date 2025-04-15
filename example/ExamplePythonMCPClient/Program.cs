@@ -107,7 +107,7 @@ class Program
       else if (reply is ToolsCallAggregateMessage toolsCallMessage)
       {
         Console.WriteLine("\nAgent is making tool calls:\n");
-        foreach (var (toolCall, result) in toolsCallMessage.ToolCallMessage.GetToolCalls()!.Zip(toolsCallMessage.ToolCallResult.ToolCallResults))
+        foreach (var (toolCall, result) in toolsCallMessage.ToolsCallMessage.GetToolCalls()!.Zip(toolsCallMessage.ToolsCallResult.ToolCallResults))
         {
           Console.WriteLine($"Tool: {toolCall.FunctionName}");
           Console.WriteLine($"Arguments: {toolCall.FunctionArgs}");

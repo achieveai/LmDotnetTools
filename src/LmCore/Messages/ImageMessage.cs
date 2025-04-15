@@ -1,9 +1,12 @@
 using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
+[JsonConverter(typeof(ImageMessageJsonConverter))]
 public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
 {
     [JsonPropertyName("from_agent")]
@@ -13,9 +16,8 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
     [JsonPropertyName("role")]
     public Role Role { get; set; }
     
-    [JsonPropertyName("metadata")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonObject? Metadata { get; set; }
+    [JsonIgnore]
+    public ImmutableDictionary<string, object>? Metadata { get; set; }
     
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -33,13 +35,21 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
+public class ImageMessageJsonConverter : ShadowPropertiesJsonConverter<ImageMessage>
+{
+    protected override ImageMessage CreateInstance()
+    {
+        return new ImageMessage { ImageData = BinaryData.FromString("") };
+    }
+}
+
 public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
 {
     public string? FromAgent { get; init; }
 
     public Role Role { get; init; }
     
-    public JsonObject? Metadata { get; private set; }
+    public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
     public string? GenerationId { get; init; }
 
@@ -59,14 +69,14 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
         {
             if (Metadata == null)
             {
-                Metadata = streamingMessageUpdate.Metadata.DeepClone() as JsonObject;
+                Metadata = streamingMessageUpdate.Metadata;
             }
             else
             {
                 // Merge metadata, with update's metadata taking precedence
                 foreach (var prop in streamingMessageUpdate.Metadata)
                 {
-                    Metadata[prop.Key] = prop.Value?.DeepClone();
+                    Metadata = Metadata.Add(prop.Key, prop.Value);
                 }
             }
         }

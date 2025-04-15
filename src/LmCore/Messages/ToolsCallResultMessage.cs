@@ -2,9 +2,11 @@ using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
+[JsonConverter(typeof(ToolsCallResultMessageJsonConverter))]
 public record ToolsCallResultMessage : IMessage
 {
     [JsonPropertyName("from_agent")]
@@ -14,9 +16,8 @@ public record ToolsCallResultMessage : IMessage
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.User;
     
-    [JsonPropertyName("metadata")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonObject? Metadata { get; init; } = null;
+    [JsonIgnore]
+    public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
 
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -34,7 +35,13 @@ public record ToolsCallResultMessage : IMessage
     public IEnumerable<IMessage>? GetMessages() => null;
 
     // Factory method for creating a ToolsCallResultMessage with a single result
-    public static ToolsCallResultMessage Create(ToolCall toolCall, string? result, Role role = Role.User, string? fromAgent = null, JsonObject? metadata = null, string? generationId = null)
+    public static ToolsCallResultMessage Create(
+        ToolCall toolCall,
+        string? result,
+        Role role = Role.User,
+        string? fromAgent = null,
+        ImmutableDictionary<string, object>? metadata = null,
+        string? generationId = null)
     {
         return new ToolsCallResultMessage
         {
@@ -47,7 +54,12 @@ public record ToolsCallResultMessage : IMessage
     }
 
     // Factory method for creating a ToolsCallResultMessage with multiple results
-    public static ToolsCallResultMessage Create(IEnumerable<(ToolCall toolCall, string? result)> results, Role role = Role.User, string? fromAgent = null, JsonObject? metadata = null, string? generationId = null)
+    public static ToolsCallResultMessage Create(
+        IEnumerable<(ToolCall toolCall, string? result)> results,
+        Role role = Role.User,
+        string? fromAgent = null,
+        ImmutableDictionary<string, object>? metadata = null,
+        string? generationId = null)
     {
         return new ToolsCallResultMessage
         {
@@ -57,5 +69,13 @@ public record ToolsCallResultMessage : IMessage
             GenerationId = generationId,
             ToolCallResults = results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)).ToImmutableList()
         };
+    }
+}
+
+public class ToolsCallResultMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallResultMessage>
+{
+    protected override ToolsCallResultMessage CreateInstance()
+    {
+        return new ToolsCallResultMessage();
     }
 }

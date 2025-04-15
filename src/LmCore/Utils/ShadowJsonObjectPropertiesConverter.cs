@@ -1,22 +1,21 @@
 using System;
-using System.Collections.Immutable;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
-using System.Text.Json.Serialization.Metadata;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
 /// A base JsonConverter for types that use shadow properties pattern, where extra properties
-/// are stored in an ExtraProperties dictionary but serialized inline with the main properties.
+/// are stored in a JsonObject property (like Metadata) but serialized inline with the main properties.
 /// </summary>
-public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where T : class
+public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> where T : class
 {
     private readonly PropertyInfo[]? _jsonProperties;
-    private readonly PropertyInfo? _extraPropertiesProperty;
+    private readonly PropertyInfo? _metadataProperty;
 
-    protected ShadowPropertiesJsonConverter()
+    protected ShadowJsonObjectPropertiesConverter()
     {
         var type = typeof(T);
         // Get all properties with JsonPropertyName attribute
@@ -24,12 +23,11 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
             .Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null)
             .ToArray();
 
-        // Find ImmutableDictionary property marked as extra properties storage
-        _extraPropertiesProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        // Find JsonObject property marked as metadata storage
+        _metadataProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .FirstOrDefault(p => 
-                p.PropertyType.IsGenericType && 
-                (p.Name == "ExtraProperties" || p.Name == "Metadata") &&
-                p.PropertyType.GetGenericTypeDefinition() == typeof(ImmutableDictionary<,>) &&
+                p.PropertyType == typeof(JsonObject) &&
+                p.Name == "Metadata" &&
                 p.GetCustomAttribute<JsonIgnoreAttribute>() != null);
     }
 
@@ -40,14 +38,14 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
             throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
         }
 
-        var extraProperties = ImmutableDictionary.CreateBuilder<string, object?>();
+        var metadata = new JsonObject();
         var instance = CreateInstance();
 
         while (reader.Read())
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
-                return SetExtraProperties(instance, extraProperties.ToImmutable());
+                return SetMetadata(instance, metadata);
             }
 
             if (reader.TokenType != JsonTokenType.PropertyName)
@@ -75,19 +73,14 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
                 if (property != null)
                 {
                     var value = JsonSerializer.Deserialize(ref reader, property.PropertyType, options);
-                    if (property.SetMethod != null)
-                    {
-                        // Readonly properties can't be set via reflection
-                        property.SetValue(instance, value);
-                    }
-
+                    property.SetValue(instance, value);
                     continue;
                 }
             }
 
-            // If not handled, treat as extra property
-            var extraValue = ReadValue(ref reader, options);
-            extraProperties.Add(propertyName, extraValue);
+            // If not handled, treat as metadata property
+            var jsonNode = JsonNode.Parse(ref reader);
+            metadata[propertyName] = jsonNode;
         }
 
         throw new JsonException("Expected end of object but reached end of data");
@@ -120,14 +113,14 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
             }
         }
 
-        // Write extra properties inline
-        var extraProperties = GetExtraProperties(value);
-        if (extraProperties != null)
+        // Write metadata properties inline
+        var metadata = GetMetadata(value);
+        if (metadata != null)
         {
-            foreach (var kvp in extraProperties)
+            foreach (var property in metadata)
             {
-                writer.WritePropertyName(kvp.Key);
-                JsonSerializer.Serialize(writer, kvp.Value, options);
+                writer.WritePropertyName(property.Key);
+                property.Value?.WriteTo(writer, options);
             }
         }
 
@@ -140,28 +133,27 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
     protected abstract T CreateInstance();
 
     /// <summary>
-    /// Gets the extra properties dictionary from the instance.
+    /// Gets the metadata JsonObject from the instance.
     /// Can be overridden if the property can't be found via reflection.
     /// </summary>
-    protected virtual ImmutableDictionary<string, object?> GetExtraProperties(T value)
+    protected virtual JsonObject? GetMetadata(T value)
     {
-        if (_extraPropertiesProperty != null)
+        if (_metadataProperty != null)
         {
-            return (ImmutableDictionary<string, object?>?)_extraPropertiesProperty.GetValue(value) 
-                ?? ImmutableDictionary<string, object?>.Empty;
+            return (JsonObject?)_metadataProperty.GetValue(value);
         }
-        return ImmutableDictionary<string, object?>.Empty;
+        return null;
     }
 
     /// <summary>
-    /// Sets the extra properties dictionary on the instance.
+    /// Sets the metadata JsonObject on the instance.
     /// Can be overridden if the property can't be found via reflection.
     /// </summary>
-    protected virtual T SetExtraProperties(T instance, ImmutableDictionary<string, object?> extraProperties)
+    protected virtual T SetMetadata(T instance, JsonObject metadata)
     {
-        if (_extraPropertiesProperty != null)
+        if (_metadataProperty != null)
         {
-            _extraPropertiesProperty.SetValue(instance, extraProperties);
+            _metadataProperty.SetValue(instance, metadata);
         }
         return instance;
     }
@@ -170,7 +162,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
     /// Reads a known property from the JSON reader. Override this to handle properties that can't be handled via reflection.
     /// </summary>
     /// <returns>A tuple containing: 
-    /// - bool: True if the property was handled, false if it should be handled by reflection or treated as an extra property
+    /// - bool: True if the property was handled, false if it should be handled by reflection or treated as a metadata property
     /// - T: The potentially updated instance (for record types)</returns>
     protected virtual (bool handled, T instance) ReadProperty(ref Utf8JsonReader reader, T instance, string propertyName, JsonSerializerOptions options)
     {
@@ -183,45 +175,4 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
     protected virtual void WriteProperties(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
     }
-
-    private static object? ReadValue(ref Utf8JsonReader reader, JsonSerializerOptions options)
-    {
-        switch (reader.TokenType)
-        {
-            case JsonTokenType.Null:
-                return null;
-            case JsonTokenType.False:
-                return false;
-            case JsonTokenType.True:
-                return true;
-            case JsonTokenType.String:
-                return reader.GetString();
-            case JsonTokenType.Number:
-                if (reader.TryGetInt32(out int intValue))
-                {
-                    return intValue;
-                }
-                if (reader.TryGetInt64(out long longValue))
-                {
-                    return longValue;
-                }
-                if (reader.TryGetDouble(out double doubleValue))
-                {
-                    return doubleValue;
-                }
-                return reader.GetDecimal();
-            case JsonTokenType.StartObject:
-                using (var document = JsonDocument.ParseValue(ref reader))
-                {
-                    return document.RootElement.Clone();
-                }
-            case JsonTokenType.StartArray:
-                using (var document = JsonDocument.ParseValue(ref reader))
-                {
-                    return document.RootElement.Clone();
-                }
-            default:
-                throw new JsonException($"Unexpected token type: {reader.TokenType}");
-        }
-    }
-}
+} 

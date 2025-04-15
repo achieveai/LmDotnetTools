@@ -40,7 +40,7 @@ public class ProviderTestDataManager
             new JsonPropertyNameEnumConverter<ToolChoiceEnum>(),
             new ImmutableDictionaryJsonConverterFactory(),
             new ExtraPropertiesConverter(),
-            new UsageJsonConverter()
+            new UsageShadowPropertiesJsonConverter()
         }
     };
     
@@ -168,7 +168,7 @@ public class ProviderTestDataManager
         }
         
         return Directory.GetFiles(directoryPath, "*.LmCoreRequest.json")
-            .Select(Path.GetFileName)
+            .Select(Path.GetFileName!)
             .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
             .Distinct();
     }

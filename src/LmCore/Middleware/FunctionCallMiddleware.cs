@@ -73,8 +73,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         foreach (var reply in replies)
         {
             // Check if this message has tool calls
-            var responseToolCall = reply as ICanGetToolCalls;
-            var responseToolCalls = responseToolCall?.GetToolCalls();
+            var responseToolCall = reply as ToolsCallMessage;
+            var responseToolCalls = responseToolCall?.ToolCalls;
             
             if (responseToolCalls != null && responseToolCalls.Any())
             {
@@ -160,8 +160,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// </summary>
     private async Task<ToolCallResult> ExecuteToolCallAsync(ToolCall toolCall)
     {
-        var functionName = toolCall.FunctionName;
-        var functionArgs = toolCall.FunctionArgs;
+        var functionName = toolCall.FunctionName!;
+        var functionArgs = toolCall.FunctionArgs!;
         
         if (_functionMap.TryGetValue(functionName, out var func))
         {
@@ -241,11 +241,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 if (usage != null && rv is ToolsCallAggregateMessage aggregateMessage)
                 {
                     // Clone the usage node instead of reusing it directly
-                    var usageClone = JsonNode.Parse(usage.ToJsonString());
-                    rv = aggregateMessage with { Metadata = new JsonObject
-                        {
-                            ["usage"] = usageClone,
-                        }
+                    rv = aggregateMessage with {
+                        Metadata = ImmutableDictionary<string, object>.Empty
+                            .Add("usage", usage)
                     };
 
                     yield return rv;
@@ -273,10 +271,10 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 toolsCallBuilder = ProcessToolCallUpdate(updateMessage, toolsCallBuilder);
             }
             // Handle complete ToolsCallMessage (no builder needed)
-            else if (message is ICanGetToolCalls toolsCallMessage)
+            else if (message is ToolsCallMessage toolsCallMessage)
             {
                 // If it has tool calls, execute them directly
-                if (toolsCallMessage.GetToolCalls() != null && toolsCallMessage.GetToolCalls()!.Any())
+                if (toolsCallMessage.ToolCalls != null && toolsCallMessage.ToolCalls.Any())
                 {
                     yield return await ProcessCompleteToolCallMessage(toolsCallMessage);
                 }
@@ -350,10 +348,10 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// <summary>
     /// Process a complete tool call message by executing all tool calls
     /// </summary>
-    private async Task<IMessage> ProcessCompleteToolCallMessage(ICanGetToolCalls toolCallMessage)
+    private async Task<IMessage> ProcessCompleteToolCallMessage(ToolsCallMessage toolCallMessage)
     {
         // Process the tool calls if needed
-        var toolCalls = toolCallMessage.GetToolCalls();
+        var toolCalls = toolCallMessage.ToolCalls;
         if (toolCalls != null && toolCalls.Any() && _functionMap != null)
         {
             var toolCallResults = new List<ToolCallResult>();

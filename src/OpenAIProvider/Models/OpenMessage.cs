@@ -1,7 +1,4 @@
-using System.Collections.Generic;
-using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using System.Text.Json;
 using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
@@ -19,11 +16,11 @@ public record OpenMessage
         foreach (var baseMessage in ChatMessage.ToMessages(ChatMessage.Name))
         {
             // Create metadata with OpenMessage-specific properties
-            var metadata = baseMessage.Metadata?.DeepClone() as JsonObject ?? new JsonObject();
-            metadata["completion_id"] = CompletionId;
+            var metadata = baseMessage.Metadata ?? ImmutableDictionary<string, object>.Empty;
+            metadata = metadata.Add("completion_id", CompletionId);
             if (Usage != null)
             {
-                metadata["usage"] = JsonSerializer.SerializeToNode(Usage);
+                metadata = metadata.Add("usage", Usage);
             }
         
             // Update the message with the metadata containing OpenMessage properties
@@ -58,6 +55,15 @@ public record OpenMessage
     {
         foreach (var baseMessage in ChatMessage.ToStreamingMessages(ChatMessage.Name))
         {
+            var metadata = ImmutableDictionary<string, object>.Empty
+                .Add("completion_id", CompletionId)
+                .Add("is_streaming", true);
+
+            if (Usage != null)
+            {
+                metadata = metadata.Add("usage", Usage);
+            }
+
             // Fill in the OpenMessage specific fields
             if (baseMessage is ToolsCallMessage toolCallMessage)
             {
@@ -65,29 +71,17 @@ public record OpenMessage
                     GenerationId = CompletionId,
                     FromAgent = ChatMessage.Name,
                     Role = toolCallMessage.Role,
-                    Metadata = new JsonObject
-                    {
-                        ["is_streaming"] = true,
-                        ["completion_id"] = CompletionId,
-                        ["usage"] = Usage != null ? JsonSerializer.SerializeToNode(Usage) : null,
-                    }
+                    Metadata = metadata
                 };
             }
             else if (baseMessage is TextMessage textMessage)
             {
-                // For streaming text, return a TextUpdateMessage
-                yield return new TextUpdateMessage
-                {
+                yield return new TextUpdateMessage {
                     Text = textMessage.Text,
                     Role = textMessage.Role,
                     FromAgent = ChatMessage.Name,
                     GenerationId = CompletionId,
-                    Metadata = new JsonObject
-                    {
-                        ["completion_id"] = CompletionId,
-                        ["is_streaming"] = true,
-                        ["usage"] = Usage != null ? JsonSerializer.SerializeToNode(Usage) : null
-                    }
+                    Metadata = metadata
                 };
             }
             else
@@ -121,98 +115,4 @@ public record OpenUsage
             IsCached = a.IsCached
         };
     }
-}
-
-public interface ICanGetUsage
-{
-    string CompletionId { get; }
-
-    OpenUsage? Usage { get; }
-}
-
-public class OpenTextMessage : IMessage, ICanGetText, ICanGetUsage
-{
-    public bool IsStreaming { get; set; } = false;
-
-    public required string Text { get; set; }
-
-    public Role Role { get; set; }
-
-    public string? FromAgent { get; set; }
-
-    public JsonObject? Metadata { get; set; }
-
-    public string? GenerationId { get; set; }
-
-    public string CompletionId { get; set; } = string.Empty;
-
-    public OpenUsage? Usage { get; set; }
-
-    public string? GetText() => Text;
-
-    public BinaryData? GetBinary() => null;
-
-    public ToolCall? GetToolCalls() => null;
-
-    public IEnumerable<IMessage>? GetMessages() => null;
-
-    public TextMessage ToTextMessage()
-    {
-        return new TextMessage
-        {
-            Text = Text,
-            Role = Role,
-            FromAgent = FromAgent,
-            Metadata = Metadata,
-            GenerationId = GenerationId
-        };
-    }
-}
-
-public class OpenToolMessage : IMessage, ICanGetToolCalls, ICanGetUsage
-{
-    public List<ToolCall> ToolCalls { get; set; } = new List<ToolCall>();
-
-    public string CompletionId { get; set; } = string.Empty;
-
-    public string? FromAgent { get; set; }
-
-    public Role Role { get; set; }
-
-    public JsonObject? Metadata { get; set; }
-
-    public string? GenerationId { get; set; }
-
-    public OpenUsage? Usage { get; set; }
-
-    public string? GetText() => null;
-
-    public BinaryData? GetBinary() => null;
-
-    public ToolCall? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls[0] : null;
-
-    IEnumerable<ToolCall>? ICanGetToolCalls.GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
-
-    public IEnumerable<IMessage>? GetMessages() => null;
-}
-
-public record OpenToolCallAggregateMessage : ToolsCallAggregateMessage, ICanGetUsage
-{
-    public OpenToolCallAggregateMessage(
-        string completionId,
-        ICanGetToolCalls toolCallMsg,
-        ToolsCallResultMessage toolCallResult,
-        string? fromAgent = null,
-        OpenUsage? usage = null)
-        : base(
-            toolCallMsg,
-            toolCallResult, fromAgent)
-    {
-        CompletionId = completionId;
-        Usage = usage;
-    }
-
-    public string CompletionId { get; set; }
-
-    public OpenUsage? Usage { get; set; }
 }

@@ -1,23 +1,26 @@
 using System.Collections.Immutable;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
-[JsonDerivedType(typeof(TextMessage), "text")]
-[JsonDerivedType(typeof(ImageMessage), "image")]
-[JsonDerivedType(typeof(ToolsCallMessage), "tools_call")]
-[JsonDerivedType(typeof(ToolsCallAggregateMessage), "tools_call_aggregate")]
-
+[JsonConverter(typeof(IMessageJsonConverter))]
+// Use registrations inside the IMessageJsonConverter
+// [JsonDerivedType(typeof(ToolsCallMessage), "tools_call_message")]
+// [JsonDerivedType(typeof(TextUpdateMessage), "text_update_message")]
+// [JsonDerivedType(typeof(ToolsCallResultMessage), "tools_call_result_message")]
+// [JsonDerivedType(typeof(ToolsCallUpdateMessage), "tools_call_update_message")]
+// [JsonDerivedType(typeof(ToolsCallAggregateMessage), "tools_call_aggregate_message")]
 public interface IMessage
 {
-    public string? FromAgent { get; }
-
     public Role Role { get; }
 
-    public JsonObject? Metadata { get; }
-    
+    public string? FromAgent { get; }
+
     public string? GenerationId { get; }
 
+    public ImmutableDictionary<string, object>? Metadata { get; }
+    
     public ImmutableDictionary<string, object?>? GetMetaTools() => null;
 }

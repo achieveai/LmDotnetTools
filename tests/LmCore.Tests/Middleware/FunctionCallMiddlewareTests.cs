@@ -754,8 +754,8 @@ public class FunctionCallMiddlewareTests
         Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
 
         var aggregate = (ToolsCallAggregateMessage)lastMessage;
-        Assert.NotEmpty(aggregate.ToolCallMessage.GetToolCalls()!);
-        Assert.Contains(aggregate.ToolCallMessage.GetToolCalls()!, call => call.FunctionName == "getWeather");
+        Assert.NotEmpty(aggregate.ToolsCallMessage.GetToolCalls()!);
+        Assert.Contains(aggregate.ToolsCallMessage.GetToolCalls()!, call => call.FunctionName == "getWeather");
     }
 
     [Fact]
@@ -921,7 +921,7 @@ public class FunctionCallMiddlewareTests
         Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
 
         var aggregate = (ToolsCallAggregateMessage)lastMessage;
-        var toolCalls = aggregate.ToolCallMessage.GetToolCalls();
+        var toolCalls = aggregate.ToolsCallMessage.GetToolCalls();
         Assert.NotNull(toolCalls);
         Assert.True(toolCalls!.Count() >= 2, "Should contain at least two tool calls");
         Assert.Contains(toolCalls, call => call.FunctionName == "python-mcp.list_directory");
