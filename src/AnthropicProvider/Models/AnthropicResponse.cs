@@ -104,7 +104,17 @@ public record AnthropicStreamEvent
   /// The type of the event.
   /// </summary>
   [JsonPropertyName("type")]
-  public string Type { get; init; } = string.Empty;
+  public string Type => this switch {
+    AnthropicMessageStartEvent _ => "message_start",
+    AnthropicContentBlockStartEvent _ => "content_block_start",
+    AnthropicContentBlockDeltaEvent _ => "content_block_delta",
+    AnthropicContentBlockStopEvent _ => "content_block_stop",
+    AnthropicMessageDeltaEvent _ => "message_delta",
+    AnthropicMessageStopEvent _ => "message_stop",
+    AnthropicPingEvent _ => "ping",
+    AnthropicErrorEvent _ => "error",
+    _ => throw new InvalidOperationException("Invalid event type")
+  };
 }
 
 /// <summary>
@@ -262,7 +272,14 @@ public record AnthropicDelta
   /// The type of the delta.
   /// </summary>
   [JsonPropertyName("type")]
-  public string Type { get; init; } = string.Empty;
+  public string Type => this switch {
+    AnthropicTextDelta _ => "text_delta",
+    AnthropicInputJsonDelta _ => "input_json_delta",
+    AnthropicThinkingDelta _ => "thinking_delta",
+    AnthropicSignatureDelta _ => "signature_delta",
+    AnthropicToolCallsDelta _ => "tool_calls_delta",
+    _ => throw new InvalidOperationException("Invalid delta type")
+  };
 }
 
 /// <summary>

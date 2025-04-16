@@ -119,7 +119,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             }
             
             // If update contains a function name, it's the start of a new tool call
-            if (isNewToolCall || update.FunctionName != null)
+            if (isNewToolCall || (update.FunctionName != null && _currentFunctionName == null))
             {
                 // Start a new tool call
                 _currentFunctionName = update.FunctionName;
@@ -194,6 +194,8 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     {
         // Rule 2: When build is called, complete any final partial update
         CompleteCurrentToolCall();
+        var toolCalls = _completedToolCalls;
+        _completedToolCalls = [];
         
         return new ToolsCallMessage
         {
@@ -201,7 +203,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             Role = Role,
             Metadata = Metadata,
             GenerationId = GenerationId,
-            ToolCalls = _completedToolCalls
+            ToolCalls = toolCalls
         };
     }
 }

@@ -53,7 +53,6 @@ internal class MockAnthropicClient : IAnthropicClient
     // Message start event
     yield return new AnthropicMessageStartEvent
     {
-      Type = "message_start",
       Message = new AnthropicResponse
       {
         Id = "resp_mockdummyid123456789",
@@ -66,7 +65,6 @@ internal class MockAnthropicClient : IAnthropicClient
     // Content block start event
     yield return new AnthropicContentBlockStartEvent
     {
-      Type = "content_block_start",
       Index = 0,
       ContentBlock = new AnthropicResponseTextContent
       {
@@ -78,11 +76,9 @@ internal class MockAnthropicClient : IAnthropicClient
     // Content block delta event
     yield return new AnthropicContentBlockDeltaEvent
     {
-      Type = "content_block_delta",
       Index = 0,
       Delta = new AnthropicTextDelta
       {
-        Type = "text_delta",
         Text = "Hello! I'm Claude, an AI assistant created by Anthropic."
       }
     };
@@ -92,14 +88,12 @@ internal class MockAnthropicClient : IAnthropicClient
     // Content block stop event
     yield return new AnthropicContentBlockStopEvent
     {
-      Type = "content_block_stop",
       Index = 0
     };
     
     // Message delta event with usage
     yield return new AnthropicMessageDeltaEvent
     {
-      Type = "message_delta",
       Delta = new AnthropicMessageDelta
       {
         StopReason = "end_turn"
@@ -114,7 +108,6 @@ internal class MockAnthropicClient : IAnthropicClient
     // Message stop event
     yield return new AnthropicMessageStopEvent
     {
-      Type = "message_stop"
     };
   }
   

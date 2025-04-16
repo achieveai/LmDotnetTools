@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -142,22 +143,27 @@ public class AnthropicStreamParser
             Input = contentBlock["input"]?.AsObject()
         };
 
-        // For tool_use blocks, we can immediately create a ToolsCallMessage
-        if (blockType == "tool_use" && !string.IsNullOrEmpty(_contentBlocks[index].Name))
+        // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
+        if (blockType == "tool_use" && !string.IsNullOrEmpty(_contentBlocks[index].Id))
         {
-            var toolMessage = new ToolsCallMessage
+            var input = contentBlock["input"]?.AsObject();
+            var toolUpdate = new ToolsCallUpdateMessage
             {
                 Role = ParseRole(_role),
-                FromAgent = _messageId,
+                FromAgent = _messageId, 
                 GenerationId = _messageId,
-                ToolCalls = ImmutableList.Create(new ToolCall(
-                    _contentBlocks[index].Name!,
-                    _contentBlocks[index].Input?.ToJsonString() ?? "{}"
-                ) { ToolCallId = _contentBlocks[index].Id ?? string.Empty })
+                ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
+                {
+                    ToolCallId = _contentBlocks[index].Id!,
+                    Index = index,
+                    // Only include FunctionName if it's available
+                    FunctionName = !string.IsNullOrEmpty(_contentBlocks[index].Name) ? _contentBlocks[index].Name : null,
+                    // Only include FunctionArgs if Input is available
+                    FunctionArgs = input != null && input.Count > 0 ? input.ToJsonString() : null
+                })
             };
-
-            _messages.Add(toolMessage);
-            return new List<IMessage> { toolMessage };
+            
+            return new List<IMessage> { toolUpdate };
         }
 
         return new List<IMessage>();
@@ -202,47 +208,25 @@ public class AnthropicStreamParser
 
             case "thinking_delta":
                 {
-                    if (delta["partial_json"] != null)
+                    var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
+                    block.Text = thinkingText; // Replace with latest thinking
+
+                    // Return a TextUpdateMessage for the thinking update
+                    var thinkingUpdate = new TextUpdateMessage
                     {
-                        var partialJson = delta["partial_json"]?.GetValue<string>() ?? string.Empty;
-                        try
-                        {
-                            var jsonDoc = JsonDocument.Parse(partialJson);
-                            if (jsonDoc.RootElement.TryGetProperty("thinking", out var thinking))
-                            {
-                                var thinkingText = thinking.GetString() ?? string.Empty;
-                                block.Text = thinkingText; // Replace with latest thinking
+                        Text = thinkingText,
+                        Role = ParseRole(_role),
+                        FromAgent = _messageId,
+                        GenerationId = _messageId,
+                        IsThinking = true
+                    };
 
-                                // Return a TextUpdateMessage for the thinking update
-                                var thinkingUpdate = new TextUpdateMessage
-                                {
-                                    Text = thinkingText,
-                                    Role = ParseRole(_role),
-                                    FromAgent = _messageId,
-                                    GenerationId = _messageId,
-                                    IsThinking = true
-                                };
-
-                                return new List<IMessage> { thinkingUpdate };
-                            }
-                        }
-                        catch
-                        {
-                            // Ignore parsing errors in partial JSON
-                        }
-                    }
-                    break;
+                    return new List<IMessage> { thinkingUpdate };
                 }
 
             case "input_json_delta":
                 {
-                    // Handle tool input updates
-                    if (block.Type == "tool_use" && !string.IsNullOrEmpty(block.Id) && !string.IsNullOrEmpty(block.Name))
-                    {
-                        // For now, we don't handle incremental updates to tool input
-                        // We'll just use the complete input when the block is complete
-                    }
-                    break;
+                    return HandleJsonDelta(block, delta["partial_json"]?.GetValue<string>() ?? string.Empty);
                 }
         }
 
@@ -256,6 +240,12 @@ public class AnthropicStreamParser
         // Check if we have a content block for this index
         if (!_contentBlocks.TryGetValue(index, out var block))
             return new List<IMessage>();
+
+        // Handle tool use blocks
+        if (block.Type == "tool_use")
+        {
+            return FinalizeToolUseBlock(block);
+        }
 
         // For text blocks, create a final TextMessage
         if (block.Type == "text" && !string.IsNullOrEmpty(block.Text))
@@ -274,13 +264,7 @@ public class AnthropicStreamParser
             {
                 textMessage = textMessage with
                 {
-                    Metadata = ImmutableDictionary<string, object>.Empty
-                        .Add("usage", new
-                        {
-                            InputTokens = _usage.InputTokens,
-                            OutputTokens = _usage.OutputTokens,
-                            TotalTokens = _usage.InputTokens + _usage.OutputTokens
-                        })
+                    Metadata = CreateUsageMetadata()
                 };
             }
 
@@ -328,13 +312,7 @@ public class AnthropicStreamParser
             {
                 Text = string.Empty,
                 Role = ParseRole(_role),
-                Metadata = ImmutableDictionary<string, object>.Empty
-                    .Add("usage", new
-                    {
-                        InputTokens = _usage.InputTokens,
-                        OutputTokens = _usage.OutputTokens,
-                        TotalTokens = _usage.InputTokens + _usage.OutputTokens
-                    })
+                Metadata = CreateUsageMetadata()
             };
             
             return new List<IMessage> { usageUpdate };
@@ -369,6 +347,165 @@ public class AnthropicStreamParser
         };
     }
 
+    // Shared helper methods
+
+    /// <summary>
+    /// Creates usage metadata for consistent structure across message types
+    /// </summary>
+    private ImmutableDictionary<string, object> CreateUsageMetadata()
+    {
+        if (_usage == null)
+            return ImmutableDictionary<string, object>.Empty;
+            
+        return ImmutableDictionary<string, object>.Empty
+            .Add("usage", new
+            {
+                InputTokens = _usage.InputTokens,
+                OutputTokens = _usage.OutputTokens,
+                TotalTokens = _usage.InputTokens + _usage.OutputTokens
+            });
+    }
+
+    /// <summary>
+    /// Handles JSON delta updates, common code for both typed and untyped handlers
+    /// </summary>
+    private List<IMessage> HandleJsonDelta(StreamingContentBlock block, string partialJson)
+    {
+        // Skip empty delta
+        if (string.IsNullOrEmpty(partialJson))
+            return new List<IMessage>();
+        
+        // Accumulate the partial JSON
+        block.JsonAccumulator.AddDelta(partialJson);
+        
+        // If we have a tool_use block, generate an update message
+        if (block.Type == "tool_use" && !string.IsNullOrEmpty(block.Id))
+        {
+            // Try to update the block's Input when JSON is complete
+            if (block.JsonAccumulator.IsComplete && block.Input == null)
+            {
+                block.Input = block.JsonAccumulator.GetParsedInput();
+            }
+            
+            // Create a tool call update with the current partial JSON
+            var toolUpdate = new ToolsCallUpdateMessage
+            {
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = _messageId,
+                ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
+                {
+                    ToolCallId = block.Id!,
+                    Index = block.Index,
+                    // Only include FunctionName if it's available and not null
+                    FunctionName = !string.IsNullOrEmpty(block.Name) ? block.Name : null,
+                    // Include the raw JSON as it's being built
+                    FunctionArgs = partialJson
+                })
+            };
+            
+            return new List<IMessage> { toolUpdate };
+        }
+        
+        return new List<IMessage>();
+    }
+
+    /// <summary>
+    /// Finalizes a tool use block, shared between typed and untyped handlers
+    /// </summary>
+    private List<IMessage> FinalizeToolUseBlock(StreamingContentBlock block)
+    {
+        if (string.IsNullOrEmpty(block.Id))
+            return new List<IMessage>();
+            
+        // Final attempt to parse any accumulated JSON
+        if (block.Input == null && block.JsonAccumulator.IsComplete)
+        {
+            block.Input = block.JsonAccumulator.GetParsedInput();
+        }
+        
+        // Create a final ToolsCallMessage - note that we now allow null Input
+        // for tools/functions that don't require arguments
+        var toolMessage = CreateToolsCallMessage(block);
+        _messages.Add(toolMessage);
+        return new List<IMessage> { toolMessage };
+    }
+
+    /// <summary>
+    /// Creates a ToolsCallMessage from a streaming content block
+    /// </summary>
+    private ToolsCallMessage CreateToolsCallMessage(StreamingContentBlock block)
+    {
+        // Handle missing function name - default to empty string if not available
+        var functionName = block.Name ?? string.Empty;
+        
+        // Handle missing or empty arguments - use empty object instead of empty string
+        var functionArgs = "{}";
+        if (block.Input != null)
+        {
+            functionArgs = block.Input.ToJsonString();
+        }
+        else if (block.JsonAccumulator.IsComplete)
+        {
+            functionArgs = block.JsonAccumulator.GetRawJson();
+            // Ensure we have valid JSON, not an empty string
+            if (string.IsNullOrEmpty(functionArgs))
+            {
+                functionArgs = "{}";
+            }
+        }
+
+        var message = new ToolsCallMessage
+        {
+            Role = ParseRole(_role),
+            FromAgent = _messageId,
+            GenerationId = _messageId,
+            ToolCalls = ImmutableList.Create(new ToolCall(
+                functionName,
+                functionArgs
+            ) { ToolCallId = block.Id ?? string.Empty })
+        };
+
+        // Apply usage metadata if available
+        if (_usage != null)
+        {
+            message = message with { Metadata = CreateUsageMetadata() };
+        }
+
+        return message;
+    }
+
+    /// <summary>
+    /// Helper class for accumulating partial JSON strings during streaming
+    /// </summary>
+    private class InputJsonAccumulator
+    {
+        private readonly StringBuilder _jsonBuffer = new();
+        private JsonNode? _parsedInput;
+        
+        public void AddDelta(string partialJson)
+        {
+            _jsonBuffer.Append(partialJson);
+            
+            try 
+            {
+                // Try to parse the accumulated JSON with each new delta
+                _parsedInput = JsonNode.Parse(_jsonBuffer.ToString());
+            }
+            catch 
+            {
+                // Parsing will fail until we have complete, valid JSON
+                // That's expected and we continue accumulation
+            }
+        }
+        
+        public bool IsComplete => _parsedInput != null;
+        
+        public JsonNode? GetParsedInput() => _parsedInput;
+        
+        public string GetRawJson() => _jsonBuffer.ToString();
+    }
+
     /// <summary>
     /// Helper class to track the state of a content block during streaming
     /// </summary>
@@ -380,7 +517,12 @@ public class AnthropicStreamParser
         public string? Id { get; set; }
         public string? Name { get; set; }
         public JsonNode? Input { get; set; }
+        
+        // For accumulating partial JSON during streaming
+        public InputJsonAccumulator JsonAccumulator { get; } = new();
     }
+
+    // Typed event handlers
 
     private List<IMessage> HandleTypedMessageStart(AnthropicMessageStartEvent messageStartEvent)
     {
@@ -407,33 +549,52 @@ public class AnthropicStreamParser
         if (contentBlock == null)
             return new List<IMessage>();
 
+        string? id = null;
+        string? name = null;
+        JsonNode? input = null;
+
+        // Extract properties if it's a tool use block
+        if (contentBlock is AnthropicResponseToolUseContent toolUseContent)
+        {
+            id = toolUseContent.Id;
+            name = toolUseContent.Name;
+            input = toolUseContent.Input.ValueKind != JsonValueKind.Undefined ? 
+                    JsonNode.Parse(toolUseContent.Input.ToString()) : null;
+        }
+
         // Create and store the content block
         _contentBlocks[index] = new StreamingContentBlock
         {
             Index = index,
             Type = contentBlock.Type,
-            Id = contentBlock is AnthropicResponseToolUseContent toolUse ? toolUse.Id : null,
-            Name = contentBlock is AnthropicResponseToolUseContent toolUseContent ? toolUseContent.Name : null,
-            Input = contentBlock is AnthropicResponseToolUseContent toolUseInput ? 
-                    JsonNode.Parse(toolUseInput.Input.ToString()) : null
+            Id = id,
+            Name = name,
+            Input = input
         };
 
-        // For tool_use blocks, we can immediately create a ToolsCallMessage
-        if (contentBlock is AnthropicResponseToolUseContent toolUseBlock)
+        // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
+        if (contentBlock is AnthropicResponseToolUseContent toolUseTool && 
+            !string.IsNullOrEmpty(toolUseTool.Id))
         {
-            var toolMessage = new ToolsCallMessage
+            var toolUpdate = new ToolsCallUpdateMessage
             {
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                ToolCalls = ImmutableList.Create(new ToolCall(
-                    toolUseBlock.Name,
-                    toolUseBlock.Input.ToString()
-                ) { ToolCallId = toolUseBlock.Id })
+                ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
+                {
+                    ToolCallId = toolUseTool.Id,
+                    Index = index,
+                    // Only include FunctionName if it's available
+                    FunctionName = !string.IsNullOrEmpty(toolUseTool.Name) ? toolUseTool.Name : null,
+                    // Only include FunctionArgs if available
+                    FunctionArgs = toolUseTool.Input.ValueKind != JsonValueKind.Undefined && toolUseTool.Input.GetPropertyCount() > 0 ? 
+                                  toolUseTool.Input.ToString() : 
+                                  "" // Use empty object for no args instead of empty string
+                })
             };
-
-            _messages.Add(toolMessage);
-            return new List<IMessage> { toolMessage };
+            
+            return new List<IMessage> { toolUpdate };
         }
 
         return new List<IMessage>();
@@ -502,9 +663,7 @@ public class AnthropicStreamParser
 
     private List<IMessage> HandleInputJsonDelta(StreamingContentBlock block, AnthropicInputJsonDelta inputJsonDelta)
     {
-        // For now, we don't handle incremental updates to tool input
-        // We'll just use the complete input when the block is complete
-        return new List<IMessage>();
+        return HandleJsonDelta(block, inputJsonDelta.PartialJson);
     }
 
     private List<IMessage> HandleSignatureDelta(StreamingContentBlock block, AnthropicSignatureDelta signatureDelta)
@@ -527,9 +686,13 @@ public class AnthropicStreamParser
             ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
             {
                 ToolCallId = toolCall.Id,
-                FunctionName = toolCall.Name,
-                FunctionArgs = toolCall.Input.ToString(),
-                Index = toolCall.Index
+                Index = toolCall.Index,
+                // Only include FunctionName if it's non-empty
+                FunctionName = !string.IsNullOrEmpty(toolCall.Name) ? toolCall.Name : null,
+                // Ensure we always provide a valid JSON object, even when args are empty
+                FunctionArgs = toolCall.Input.ValueKind != JsonValueKind.Undefined && toolCall.Input.GetPropertyCount() > 0 ? 
+                              toolCall.Input.ToString() : 
+                              ""
             })
         };
 
@@ -543,6 +706,12 @@ public class AnthropicStreamParser
         // Check if we have a content block for this index
         if (!_contentBlocks.TryGetValue(index, out var block))
             return new List<IMessage>();
+
+        // Handle tool use blocks
+        if (block.Type == "tool_use")
+        {
+            return FinalizeToolUseBlock(block);
+        }
 
         // For text blocks, create a final TextMessage
         if (block.Type == "text" && !string.IsNullOrEmpty(block.Text))
@@ -590,15 +759,7 @@ public class AnthropicStreamParser
             if (_messages.Count > 0)
             {
                 var lastMessage = _messages[_messages.Count - 1];
-                
-                // Add usage metadata to the message
-                var usageMetadata = ImmutableDictionary<string, object>.Empty
-                    .Add("usage", new
-                    {
-                        InputTokens = _usage.InputTokens,
-                        OutputTokens = _usage.OutputTokens,
-                        TotalTokens = _usage.InputTokens + _usage.OutputTokens
-                    });
+                var usageMetadata = CreateUsageMetadata();
 
                 // Update the last message with metadata
                 if (lastMessage is TextMessage textMessage)
@@ -622,13 +783,7 @@ public class AnthropicStreamParser
                     Role = ParseRole(_role),
                     FromAgent = _messageId,
                     GenerationId = _messageId,
-                    Metadata = ImmutableDictionary<string, object>.Empty
-                        .Add("usage", new
-                        {
-                            InputTokens = _usage.InputTokens,
-                            OutputTokens = _usage.OutputTokens,
-                            TotalTokens = _usage.InputTokens + _usage.OutputTokens
-                        })
+                    Metadata = CreateUsageMetadata()
                 }
             };
         }

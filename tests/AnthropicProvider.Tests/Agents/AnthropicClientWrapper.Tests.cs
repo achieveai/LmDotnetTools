@@ -160,7 +160,6 @@ public class AnthropicClientWrapperTests
             // First event - content block start
             yield return new AnthropicContentBlockStartEvent
             {
-                Type = "content_block_start",
                 Index = 0,
                 ContentBlock = new AnthropicResponseTextContent 
                 { 
@@ -174,11 +173,9 @@ public class AnthropicClientWrapperTests
             // Second event - content delta
             yield return new AnthropicContentBlockDeltaEvent
             {
-                Type = "content_block_delta",
                 Index = 0,
                 Delta = new AnthropicTextDelta
                 {
-                    Type = "text_delta",
                     Text = "Once upon a time..."
                 }
             };
@@ -188,7 +185,6 @@ public class AnthropicClientWrapperTests
             // Third event - content block stop
             yield return new AnthropicContentBlockStopEvent
             {
-                Type = "content_block_stop",
                 Index = 0
             };
         }

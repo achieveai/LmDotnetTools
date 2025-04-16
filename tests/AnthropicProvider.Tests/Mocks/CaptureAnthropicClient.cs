@@ -129,7 +129,6 @@ internal class CaptureAnthropicClient : IAnthropicClient
     // Simple stream with just start/stop events
     yield return new AnthropicMessageStartEvent
     {
-      Type = "message_start",
       Message = new AnthropicResponse
       {
         Id = "resp_test123",
@@ -142,7 +141,6 @@ internal class CaptureAnthropicClient : IAnthropicClient
     
     yield return new AnthropicMessageDeltaEvent
     {
-      Type = "message_delta",
       Delta = new AnthropicMessageDelta
       {
         StopReason = "end_turn"
@@ -156,7 +154,6 @@ internal class CaptureAnthropicClient : IAnthropicClient
     
     yield return new AnthropicMessageStopEvent
     {
-      Type = "message_stop"
     };
   }
   

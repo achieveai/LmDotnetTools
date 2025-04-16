@@ -56,28 +56,33 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         IAsyncEnumerable<IMessage> sourceStream,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        // Dictionary to track message builders by their type
-        var builders = new Dictionary<Type, IMessageBuilder>();
+        // Track a single active builder instead of a dictionary
+        IMessageBuilder? activeBuilder = null;
+        Type? activeBuilderType = null;
         Type? lastMessageType = null;
         
         await foreach (var message in sourceStream.WithCancellation(cancellationToken))
         {
-            // Check if we're switching message types and need to complete any pending builders
-            if (lastMessageType != null && lastMessageType != message.GetType() && builders.ContainsKey(lastMessageType))
+            // Check if we're switching message types and need to complete current builder
+            if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
             {
                 // Complete the previous builder before processing the new message
-                yield return await CompletePendingBuilder(lastMessageType, builders);
+                var builtMessage = activeBuilder.Build();
+                activeBuilder = null;
+                activeBuilderType = null;
+                yield return builtMessage;
             }
             
             // Update last message type
             lastMessageType = message.GetType();
             
             // Process the current message
-            var processedMessage = await ProcessStreamingMessage(
+            var processedMessage = ProcessStreamingMessage(
                 message,
-                builders);
+                ref activeBuilder,
+                ref activeBuilderType);
             
-            // Only emit the message if it's not an update message or if we're preserving update messages
+            // Only emit the message if it's not an update message
             bool isUpdateMessage = message.GetType().Name.Contains("Update");
             if (!isUpdateMessage)
             {
@@ -85,71 +90,40 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             }
         }
         
-        // Process any final built messages at the end of the stream
-        foreach (var finalMessage in ProcessFinalBuiltMessages(builders))
+        // Process final built message at the end of the stream
+        if (activeBuilder != null)
         {
-            yield return finalMessage;
+            yield return activeBuilder.Build();
         }
     }
 
-    private Task<IMessage> CompletePendingBuilder(Type messageType, Dictionary<Type, IMessageBuilder> builders)
-    {
-        if (messageType.Name.Contains("Update"))
-        {
-            // Find the corresponding builder for this update type
-            foreach (var kvp in builders)
-            {
-                // Use the existing IMessageBuilder interface with a safer approach that doesn't rely on reflection
-                // for the Build method
-                if (kvp.Value is IMessageBuilder<IMessage, IMessage> builder)
-                {
-                    // Check if this builder is appropriate for the message type
-                    if (builder.GetType().GetInterfaces()
-                           .Any(i => i.IsGenericType && 
-                                i.GetGenericArguments().Any(arg => arg.Name == messageType.Name)))
-                    {
-                        var builtMessage = builder.Build();
-                        // Remove the builder since we're done with it
-                        builders.Remove(kvp.Key);
-                        return Task.FromResult(builtMessage);
-                    }
-                }
-            }
-        }
-        
-        // No pending builder to complete or couldn't build message
-        return Task.FromResult<IMessage>(new TextMessage { Text = string.Empty, Role = Role.System });
-    }
-
-    private Task<IMessage> ProcessStreamingMessage(
+    private IMessage ProcessStreamingMessage(
         IMessage message,
-        Dictionary<Type, IMessageBuilder> builders)
+        ref IMessageBuilder? activeBuilder,
+        ref Type? activeBuilderType)
     {
         // Handle tool call updates (ToolsCallUpdateMessage)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
         {
-            return ProcessToolCallUpdate(toolCallUpdate, builders);
+            return ProcessToolCallUpdate(toolCallUpdate, ref activeBuilder, ref activeBuilderType);
         }
-        
-        // For text update messages - assume there's a TextUpdateMessage similar to ToolsCallUpdateMessage
-        if (message.GetType().Name.Contains("TextUpdate"))
+        // For text update messages
+        else if (message is TextUpdateMessage textUpdate)
         {
-            return ProcessTextUpdate(
-                message,
-                builders);
+            return ProcessTextUpdate(textUpdate, ref activeBuilder, ref activeBuilderType);
         }
-        
-        // For all other message types, pass through as-is
-        return Task.FromResult(message);
+
+        return message;
     }
 
-    private Task<IMessage> ProcessToolCallUpdate(
+    private IMessage ProcessToolCallUpdate(
         ToolsCallUpdateMessage toolCallUpdate, 
-        Dictionary<Type, IMessageBuilder> builders)
+        ref IMessageBuilder? activeBuilder,
+        ref Type? activeBuilderType)
     {
-        Type builderKey = typeof(ToolsCallMessage);
+        Type builderType = typeof(ToolsCallMessage);
         
-        if (!builders.TryGetValue(builderKey, out var builderObj))
+        if (activeBuilder == null || activeBuilderType != builderType)
         {
             // Create a new builder for the first update
             var builder = new ToolsCallMessageBuilder
@@ -157,73 +131,56 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 FromAgent = toolCallUpdate.FromAgent,
                 Role = toolCallUpdate.Role
             };
-            builders[builderKey] = builder;
+            activeBuilder = builder;
+            activeBuilderType = builderType;
             builder.Add(toolCallUpdate);
             // Return the original update for the first time
-            return Task.FromResult<IMessage>(toolCallUpdate);
+            return toolCallUpdate;
         }
         else
         {
             // Add to existing builder
-            var builder = (ToolsCallMessageBuilder)builderObj;
+            var builder = (ToolsCallMessageBuilder)activeBuilder;
             builder.Add(toolCallUpdate);
-            // Return the current accumulated state
-            return Task.FromResult<IMessage>(builder.Build());
+            return toolCallUpdate;
         }
     }
 
-    private static Task<IMessage> ProcessTextUpdate(
-        IMessage textUpdate,
-        Dictionary<Type, IMessageBuilder> builders)
+    private static IMessage ProcessTextUpdate(
+        TextUpdateMessage textUpdateMessage,
+        ref IMessageBuilder? activeBuilder,
+        ref Type? activeBuilderType)
     {
-        if (textUpdate is TextUpdateMessage textUpdateMessage)
-        {
-            Type builderKey = typeof(TextMessage);
-            
-            if (!builders.TryGetValue(builderKey, out var builderObj))
-            {
-                // Create a new builder for the first update
-                var builder = new TextMessageBuilder
-                {
-                    FromAgent = textUpdateMessage.FromAgent,
-                    Role = textUpdateMessage.Role,
-                    GenerationId = textUpdateMessage.GenerationId
-                };
-                builders[builderKey] = builder;
-                
-                // Convert the update to a TextMessage for the builder
-                builder.Add(textUpdateMessage);
-                
-                // Return the original update for the first time
-                return Task.FromResult<IMessage>(textUpdateMessage);
-            }
-            else
-            {
-                // Add to existing builder
-                var builder = (TextMessageBuilder)builderObj;
-                
-                // Convert the update to a TextMessage for the builder
-                builder.Add(textUpdateMessage);
-                
-                // Return the current accumulated state
-                return Task.FromResult<IMessage>(builder.Build());
-            }
-        }
+        Type builderType = typeof(TextMessage);
         
-        // If it's not a TextUpdateMessage, just return it as-is
-        return Task.FromResult(textUpdate);
-    }
-
-    private IEnumerable<IMessage> ProcessFinalBuiltMessages(Dictionary<Type, IMessageBuilder> builders)
-    {
-        // Process all accumulated builders and emit final complete messages
-        foreach (var builder in builders)
+        if (activeBuilder == null || activeBuilderType != builderType)
         {
-            var builtMessage = builder.Value.Build();
-            if (builtMessage != null)
+            // Create a new builder for the first update
+            var builder = new TextMessageBuilder
             {
-                yield return builtMessage;
-            }
+                FromAgent = textUpdateMessage.FromAgent,
+                Role = textUpdateMessage.Role,
+                GenerationId = textUpdateMessage.GenerationId
+            };
+            activeBuilder = builder;
+            activeBuilderType = builderType;
+            
+            // Convert the update to a TextMessage for the builder
+            builder.Add(textUpdateMessage);
+            
+            // Return the original update for the first time
+            return textUpdateMessage;
+        }
+        else
+        {
+            // Add to existing builder
+            var builder = (TextMessageBuilder)activeBuilder;
+            
+            // Convert the update to a TextMessage for the builder
+            builder.Add(textUpdateMessage);
+            
+            // Return the current accumulated state
+            return builder.Build();
         }
     }
 }
