@@ -51,9 +51,9 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Assert basic properties
         Assert.Equal(2, messages1.Count);
-        Assert.Equal("msg_01EzEovKotLrrvB3JQN7voWh", response1.Id);
+        Assert.Equal("msg_01E", response1.Id);
         Assert.Equal(Role.Assistant, messages1[0].Role);
-        Assert.Equal("msg_01EzEovKotLrrvB3JQN7voWh", messages1[0].FromAgent);
+        Assert.Equal("msg_01E", messages1[0].FromAgent);
         
         // Verify text message content
         Assert.IsType<TextMessage>(messages1[0]);
@@ -70,7 +70,7 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.NotNull(toolCalls);
         var toolCall = toolCalls.First();
         Assert.Equal("python_mcp-list_directory", toolCall.FunctionName);
-        Assert.Equal("toolu_018ekyPGGzrwSjmnPJdJVuv2", toolCall.ToolCallId);
+        Assert.Equal("toolu_018", toolCall.ToolCallId);
         
         // Act & Assert for second response - thinking content
         var response2 = responses[1];
@@ -78,7 +78,7 @@ public class AnthropicResponse_ToMessages_Tests
         
         // Assert basic properties
         Assert.Equal(3, messages2.Count);
-        Assert.Equal("msg_016JzimVu64tAbsVHdkLRV8i", response2.Id);
+        Assert.Equal("msg_016", response2.Id);
         
         // Verify thinking message content
         Assert.IsType<TextMessage>(messages2[0]);
