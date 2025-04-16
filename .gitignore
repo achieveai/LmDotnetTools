@@ -2,7 +2,7 @@
 **/obj/
 **/TestResults/
 .env
-.env.test
+**/.env.test
 *.pyc
 *.pyo
 *.pyd
