@@ -52,54 +52,22 @@ public static class AnthropicExtensions
   /// <returns>A collection of messages.</returns>
   public static IEnumerable<IMessage> ToMessages(this AnthropicResponse response, string agentName)
   {
-    var messages = new List<IMessage>();
-    bool hasToolCalls = false;
+    // First get messages using AnthropicStreamParser for consistent conversion
+    var messages = response.ToMessages().ToList();
     
-    // Check if we have any tool_use content
-    foreach (var content in response.Content)
+    // Then set the agent name for all messages
+    for (int i = 0; i < messages.Count; i++)
     {
-      if (content.Type == "tool_use")
+      var message = messages[i];
+      
+      if (message is TextMessage textMessage)
       {
-        hasToolCalls = true;
-        break;
+        messages[i] = textMessage with { FromAgent = agentName };
       }
-    }
-    
-    // If we only have text content, combine it into a single message for compatibility with tests
-    if (!hasToolCalls && response.Content.All(c => c.Type == "text"))
-    {
-      string combinedText = string.Join("", response.Content
-        .Where(c => c.Type == "text")
-        .OfType<AnthropicResponseTextContent>()
-        .Select(c => c.Text));
-        
-      return new[] { new TextMessage
+      else if (message is ToolsCallMessage toolsCallMessage)
       {
-        Text = combinedText,
-        Role = Role.Assistant,
-        FromAgent = agentName
-      }};
-    }
-    
-    // For tool calls or mixed content, convert each content item to a message
-    foreach (var content in response.Content)
-    {
-      var message = ContentToMessage(content, agentName);
-      if (message != null)
-      {
-        messages.Add(message);
+        messages[i] = toolsCallMessage with { FromAgent = agentName };
       }
-    }
-    
-    // If no content was processed successfully, return a default message
-    if (messages.Count == 0)
-    {
-      messages.Add(new TextMessage
-      {
-        Text = string.Empty,
-        Role = Role.Assistant,
-        FromAgent = agentName
-      });
     }
     
     return messages;

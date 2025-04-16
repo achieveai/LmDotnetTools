@@ -158,20 +158,25 @@ public class AnthropicClientWrapperTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             // First event - content block start
-            yield return new AnthropicStreamEvent
+            yield return new AnthropicContentBlockStartEvent
             {
                 Type = "content_block_start",
-                Index = 0
+                Index = 0,
+                ContentBlock = new AnthropicResponseTextContent 
+                { 
+                    Type = "text",
+                    Text = ""
+                }
             };
 
             await Task.Delay(1, cancellationToken);
 
             // Second event - content delta
-            yield return new AnthropicStreamEvent
+            yield return new AnthropicContentBlockDeltaEvent
             {
                 Type = "content_block_delta",
                 Index = 0,
-                Delta = new AnthropicDelta
+                Delta = new AnthropicTextDelta
                 {
                     Type = "text_delta",
                     Text = "Once upon a time..."
@@ -181,7 +186,7 @@ public class AnthropicClientWrapperTests
             await Task.Delay(1, cancellationToken);
 
             // Third event - content block stop
-            yield return new AnthropicStreamEvent
+            yield return new AnthropicContentBlockStopEvent
             {
                 Type = "content_block_stop",
                 Index = 0

@@ -94,11 +94,31 @@ public class AnthropicClient : IAnthropicClient
         continue;
       }
       
-      // Parse the event data
+      // Parse the event data based on the event type
       AnthropicStreamEvent? eventData = null;
       try
       {
-        eventData = JsonSerializer.Deserialize<AnthropicStreamEvent>(sseItem.Data, _jsonOptions);
+        // First try to deserialize as the base AnthropicStreamEvent to get the type
+        var baseEvent = JsonSerializer.Deserialize<AnthropicStreamEvent>(sseItem.Data, _jsonOptions);
+        
+        if (baseEvent == null)
+        {
+          continue;
+        }
+        
+        // Then deserialize to the appropriate specialized type based on the event type
+        eventData = baseEvent.Type switch
+        {
+          "message_start" => JsonSerializer.Deserialize<AnthropicMessageStartEvent>(sseItem.Data, _jsonOptions),
+          "content_block_start" => JsonSerializer.Deserialize<AnthropicContentBlockStartEvent>(sseItem.Data, _jsonOptions),
+          "content_block_delta" => JsonSerializer.Deserialize<AnthropicContentBlockDeltaEvent>(sseItem.Data, _jsonOptions),
+          "content_block_stop" => JsonSerializer.Deserialize<AnthropicContentBlockStopEvent>(sseItem.Data, _jsonOptions),
+          "message_delta" => JsonSerializer.Deserialize<AnthropicMessageDeltaEvent>(sseItem.Data, _jsonOptions),
+          "message_stop" => JsonSerializer.Deserialize<AnthropicMessageStopEvent>(sseItem.Data, _jsonOptions),
+          "ping" => JsonSerializer.Deserialize<AnthropicPingEvent>(sseItem.Data, _jsonOptions),
+          "error" => JsonSerializer.Deserialize<AnthropicErrorEvent>(sseItem.Data, _jsonOptions),
+          _ => baseEvent // Use the base event if type is unknown
+        };
       }
       catch (JsonException ex)
       {

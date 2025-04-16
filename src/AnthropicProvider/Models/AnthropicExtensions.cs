@@ -103,92 +103,62 @@ public static class AnthropicExtensions
     /// <returns>An IMessage representing the streaming update.</returns>
     public static IMessage ToUpdateMessage(this AnthropicStreamEvent streamEvent)
     {
-        // Handle message_delta event with usage information
-        if (streamEvent.Type == "message_delta" && streamEvent.Delta != null)
+        return streamEvent switch
         {
-            if (streamEvent.Delta.StopReason != null && streamEvent.Usage != null)
-            {
-                // This is the final message with usage statistics
-                return new TextUpdateMessage
+            // Handle message delta event with usage information
+            AnthropicMessageDeltaEvent messageDeltaEvent when messageDeltaEvent.Delta?.StopReason != null && messageDeltaEvent.Usage != null =>
+                new TextUpdateMessage
                 {
                     Text = string.Empty,
                     Role = Role.Assistant,
                     Metadata = ImmutableDictionary<string, object>.Empty
                         .Add("usage", new
                         {
-                            InputTokens = streamEvent.Usage.InputTokens,
-                            OutputTokens = streamEvent.Usage.OutputTokens,
-                            TotalTokens = streamEvent.Usage.InputTokens + streamEvent.Usage.OutputTokens
+                            InputTokens = messageDeltaEvent.Usage.InputTokens,
+                            OutputTokens = messageDeltaEvent.Usage.OutputTokens,
+                            TotalTokens = messageDeltaEvent.Usage.InputTokens + messageDeltaEvent.Usage.OutputTokens
                         })
-                };
-            }
-        }
-        
-        // Handle content_block_delta event for text content
-        if (streamEvent.Type == "content_block_delta" && 
-            streamEvent.Delta?.Type == "text_delta" && 
-            !string.IsNullOrEmpty(streamEvent.Delta.Text))
-        {
-            return new TextUpdateMessage
-            {
-                Text = streamEvent.Delta.Text ?? string.Empty,
-                Role = Role.Assistant,
-                IsThinking = false
-            };
-        }
-        
-        // Handle content_block_delta event for thinking content
-        if (streamEvent.Type == "content_block_delta" && 
-            streamEvent.Delta?.PartialJson != null &&
-            streamEvent.Delta.Type == "thinking_delta")
-        {
-            // Extract thinking text if possible
-            var thinkingText = string.Empty;
-            try
-            {
-                var jsonDoc = JsonDocument.Parse(streamEvent.Delta.PartialJson);
-                if (jsonDoc.RootElement.TryGetProperty("thinking", out var thinking))
-                {
-                    thinkingText = thinking.GetString() ?? string.Empty;
-                }
-            }
-            catch
-            {
-                // In case of parsing issues, use empty string
-            }
+                },
             
-            return new TextUpdateMessage
-            {
-                Text = thinkingText,
-                Role = Role.Assistant,
-                IsThinking = true
-            };
-        }
-        
-        // Handle tool calls in streaming content
-        if (streamEvent.Type == "content_block_delta" && 
-            streamEvent.Delta?.ToolCalls != null &&
-            streamEvent.Delta.ToolCalls.Count > 0)
-        {
-            var toolCall = streamEvent.Delta.ToolCalls[0];
-            return new ToolsCallUpdateMessage
-            {
-                Role = Role.Assistant,
-                ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate 
+            // Handle content block delta event for text content
+            AnthropicContentBlockDeltaEvent contentBlockDeltaEvent when contentBlockDeltaEvent.Delta is AnthropicTextDelta textDelta =>
+                new TextUpdateMessage
                 {
-                    ToolCallId = toolCall.Id,
-                    FunctionName = toolCall.Name,
-                    FunctionArgs = toolCall.Input.ToString(),
-                    Index = toolCall.Index
-                })
-            };
-        }
-        
-        // Default empty update message for unhandled event types
-        return new TextUpdateMessage
-        {
-            Text = string.Empty,
-            Role = Role.Assistant
+                    Text = textDelta.Text,
+                    Role = Role.Assistant,
+                    IsThinking = false
+                },
+            
+            // Handle content block delta event for thinking content
+            AnthropicContentBlockDeltaEvent contentBlockDeltaEvent when contentBlockDeltaEvent.Delta is AnthropicThinkingDelta thinkingDelta =>
+                new TextUpdateMessage
+                {
+                    Text = thinkingDelta.Thinking,
+                    Role = Role.Assistant,
+                    IsThinking = true
+                },
+                
+            // Handle content block delta event for tool calls
+            AnthropicContentBlockDeltaEvent contentBlockDeltaEvent when contentBlockDeltaEvent.Delta is AnthropicToolCallsDelta toolCallsDelta 
+                && toolCallsDelta.ToolCalls.Count > 0 =>
+                new ToolsCallUpdateMessage
+                {
+                    Role = Role.Assistant,
+                    ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate 
+                    {
+                        ToolCallId = toolCallsDelta.ToolCalls[0].Id,
+                        FunctionName = toolCallsDelta.ToolCalls[0].Name,
+                        FunctionArgs = toolCallsDelta.ToolCalls[0].Input.ToString(),
+                        Index = toolCallsDelta.ToolCalls[0].Index
+                    })
+                },
+            
+            // Default empty update message for unhandled event types
+            _ => new TextUpdateMessage
+            {
+                Text = string.Empty,
+                Role = Role.Assistant
+            }
         };
     }
     

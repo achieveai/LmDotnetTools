@@ -51,7 +51,7 @@ internal class MockAnthropicClient : IAnthropicClient
   private async IAsyncEnumerable<AnthropicStreamEvent> GetMockStreamEvents(AnthropicRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
   {
     // Message start event
-    yield return new AnthropicStreamEvent
+    yield return new AnthropicMessageStartEvent
     {
       Type = "message_start",
       Message = new AnthropicResponse
@@ -63,20 +63,24 @@ internal class MockAnthropicClient : IAnthropicClient
       }
     };
     
-    // Normal text response events
-    yield return new AnthropicStreamEvent
+    // Content block start event
+    yield return new AnthropicContentBlockStartEvent
     {
       Type = "content_block_start",
       Index = 0,
-      Delta = new AnthropicDelta { Type = "text" }
+      ContentBlock = new AnthropicResponseTextContent
+      {
+        Type = "text",
+        Text = ""
+      }
     };
     
-    // Just return a simple message for testing
-    yield return new AnthropicStreamEvent
+    // Content block delta event
+    yield return new AnthropicContentBlockDeltaEvent
     {
       Type = "content_block_delta",
       Index = 0,
-      Delta = new AnthropicDelta
+      Delta = new AnthropicTextDelta
       {
         Type = "text_delta",
         Text = "Hello! I'm Claude, an AI assistant created by Anthropic."
@@ -85,15 +89,32 @@ internal class MockAnthropicClient : IAnthropicClient
     
     await Task.Delay(10, cancellationToken); // Simulate streaming delay
     
-    // Message complete event - only include once
-    yield return new AnthropicStreamEvent
+    // Content block stop event
+    yield return new AnthropicContentBlockStopEvent
     {
-      Type = "message_stop",
+      Type = "content_block_stop",
+      Index = 0
+    };
+    
+    // Message delta event with usage
+    yield return new AnthropicMessageDeltaEvent
+    {
+      Type = "message_delta",
+      Delta = new AnthropicMessageDelta
+      {
+        StopReason = "end_turn"
+      },
       Usage = new AnthropicUsage
       {
         InputTokens = 50,
         OutputTokens = 25
       }
+    };
+    
+    // Message stop event
+    yield return new AnthropicMessageStopEvent
+    {
+      Type = "message_stop"
     };
   }
   

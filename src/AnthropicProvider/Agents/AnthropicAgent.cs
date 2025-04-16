@@ -64,69 +64,32 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
     AnthropicRequest request,
     [EnumeratorCancellation] CancellationToken cancellationToken)
   {
-    string fullText = string.Empty;
-    string messageId = string.Empty;
-    string modelId = string.Empty;
-    int inputTokens = 0;
-    int outputTokens = 0;
-
+    // Create a parser to track state across events
+    var parser = new AnthropicStreamParser();
+    
     await foreach (var streamEvent in _client.StreamingChatCompletionsAsync(request, cancellationToken))
     {
-      // Handle different event types
-      switch (streamEvent.Type)
+      // Process the event directly without serialization/deserialization
+      var messages = parser.ProcessStreamEvent(streamEvent);
+      foreach (var message in messages)
       {
-        case "message_start":
-          if (streamEvent.Message != null)
-          {
-            messageId = streamEvent.Message.Id;
-            modelId = streamEvent.Message.Model;
-          }
-          break;
-
-        case "content_block_start":
-          // Content block started, nothing to do yet
-          break;
-
-        case "content_block_delta":
-          if (streamEvent.Delta?.Type == "text_delta" && streamEvent.Delta.Text != null)
-          {
-            fullText += streamEvent.Delta.Text;
-            
-            // Create a streaming update
-            var message = new TextMessage
-            {
-              Text = fullText,
-              Role = Role.Assistant,
-              FromAgent = Name
-            };
-            
-            // Note: In a full implementation, we would add usage information
-            // to the message, but we're simplifying for now
-            
-            yield return message;
-          }
-          break;
-
-        case "message_stop":
-          if (streamEvent.Usage != null)
-          {
-            inputTokens = streamEvent.Usage.InputTokens;
-            outputTokens = streamEvent.Usage.OutputTokens;
-            
-            // Final message with complete content
-            var finalMessage = new TextMessage
-            {
-              Text = fullText,
-              Role = Role.Assistant,
-              FromAgent = Name
-            };
-            
-            // Note: In a full implementation, we would add usage information
-            // to the message, but we're simplifying for now
-            
-            yield return finalMessage;
-          }
-          break;
+        // Set the agent name for all messages
+        if (message is TextMessage textMessage)
+        {
+          yield return textMessage with { FromAgent = Name };
+        }
+        else if (message is TextUpdateMessage textUpdateMessage)
+        {
+          yield return textUpdateMessage with { FromAgent = Name };
+        }
+        else if (message is ToolsCallMessage toolsCallMessage)
+        {
+          yield return toolsCallMessage with { FromAgent = Name };
+        }
+        else
+        {
+          yield return message;
+        }
       }
     }
   }

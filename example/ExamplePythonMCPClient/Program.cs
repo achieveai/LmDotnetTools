@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -18,8 +19,8 @@ class Program
     // Load environment variables from .env file
     LoadEnvironmentVariables();
     
-    string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
-    string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
+    string API_KEY = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")!;
+    string API_URL = Environment.GetEnvironmentVariable("ANTHROPIC_API_BASE_URL")!;
     Console.WriteLine("Example Python MCP Client Demo");
     
     // Create the MCP client to connect to the Python server
@@ -48,8 +49,11 @@ class Program
       }
       
       // Create an OpenAI client
-      var openClient = new OpenClient(API_KEY, API_URL);
-      var llmAgent = new OpenClientAgent("meta-llama/llama-4-maverick", openClient);
+      // var openClient = new OpenClient(API_KEY, API_URL);
+      // var llmAgent = new OpenClientAgent("meta-llama/llama-4-maverick", openClient);
+
+      var anthropicClient = new AnthropicClient(API_KEY);
+      var llmAgent = new AnthropicAgent("meta-llama/llama-4-maverick", anthropicClient);
       
       // Create the agent pipeline with MCP middleware
       var mcpClientDictionary = new Dictionary<string, ModelContextProtocol.Client.IMcpClient>
@@ -82,7 +86,7 @@ class Program
       
       var options = new GenerateReplyOptions
       {
-        ModelId = "meta-llama/llama-4-maverick",
+        ModelId = "claude-3-7-sonnet-20250219",
         Temperature = 0.7f,
         MaxToken = 2000,
         ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty

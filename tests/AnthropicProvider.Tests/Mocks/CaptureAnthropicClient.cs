@@ -127,7 +127,7 @@ internal class CaptureAnthropicClient : IAnthropicClient
     [EnumeratorCancellation] CancellationToken cancellationToken = default)
   {
     // Simple stream with just start/stop events
-    yield return new AnthropicStreamEvent
+    yield return new AnthropicMessageStartEvent
     {
       Type = "message_start",
       Message = new AnthropicResponse
@@ -140,14 +140,23 @@ internal class CaptureAnthropicClient : IAnthropicClient
     
     await Task.Delay(1, cancellationToken);
     
-    yield return new AnthropicStreamEvent
+    yield return new AnthropicMessageDeltaEvent
     {
-      Type = "message_stop",
+      Type = "message_delta",
+      Delta = new AnthropicMessageDelta
+      {
+        StopReason = "end_turn"
+      },
       Usage = new AnthropicUsage
       {
         InputTokens = 10,
         OutputTokens = 5
       }
+    };
+    
+    yield return new AnthropicMessageStopEvent
+    {
+      Type = "message_stop"
     };
   }
   
