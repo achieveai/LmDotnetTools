@@ -1,11 +1,9 @@
 using System.Diagnostics;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -36,8 +34,8 @@ public class DataDrivenFunctionToolTests
         // Assert - Compare with expected response
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
         
-        Debug.WriteLine($"Response count: {response.Count()}, Expected count: {expectedResponses.Count}");
-        Debug.WriteLine($"Response types: {string.Join(", ", response.Select(r => r.GetType().Name))}");
+        Debug.WriteLine($"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses.Count}");
+        Debug.WriteLine($"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}");
         Debug.WriteLine($"Expected types: {string.Join(", ", expectedResponses.Select(r => r.GetType().Name))}");
         
         Assert.NotNull(response);

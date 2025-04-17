@@ -1,7 +1,3 @@
-using System.Text.Json;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using Xunit;
-
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
 public class AnthropicResponseToolUseTests
@@ -73,7 +69,6 @@ public class AnthropicResponseToolUseTests
         var typedToolContent = (AnthropicResponseToolUseContent)toolContent;
         Assert.Equal("toolu_01LhLY6M7AhrzHAjo9FBzXH6", typedToolContent.Id);
         Assert.Equal("python_mcp-list_directory", typedToolContent.Name);
-        Assert.NotNull(typedToolContent.Input);
         
         // Verify the relative_path in input
         var relativePath = typedToolContent.Input.GetProperty("relative_path").GetString();

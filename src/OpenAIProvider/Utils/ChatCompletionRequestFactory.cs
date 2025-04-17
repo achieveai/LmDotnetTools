@@ -1,14 +1,8 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using Json.Schema;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 
@@ -156,7 +150,9 @@ public static class ChatCompletionRequestFactory
                 foreach (var tc in toolsCallMessage.ToolCalls)
                 {
                     var toolId = tc.ToolCallId ?? Guid.NewGuid().ToString();
-                    var functionCall = new FunctionContent.FunctionCall(tc.FunctionName, tc.FunctionArgs);
+                    var functionName = tc.FunctionName ?? string.Empty;
+                    var functionArgs = tc.FunctionArgs ?? string.Empty;
+                    var functionCall = new FunctionContent.FunctionCall(functionName, functionArgs);
                     chatMessage.ToolCalls.Add(new FunctionContent(toolId, functionCall));
                 }
             }

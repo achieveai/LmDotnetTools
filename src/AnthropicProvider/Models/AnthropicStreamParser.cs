@@ -1,12 +1,7 @@
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.IO;
-using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -312,6 +307,10 @@ public class AnthropicStreamParser
             _usage = JsonSerializer.Deserialize<AnthropicUsage>(
                 usage.ToJsonString(),
                 _jsonOptions);
+                
+            // Don't proceed if deserialization failed
+            if (_usage == null) 
+                return new List<IMessage>();
             
             // Create a usage message directly instead of an empty TextUpdateMessage with metadata
             var usageMessage = new UsageMessage

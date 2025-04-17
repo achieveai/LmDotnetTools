@@ -1,14 +1,6 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using System.IO;
 using System.Reflection;
-using System.Collections.Immutable;
-using System.Linq;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
@@ -124,7 +116,10 @@ public class MessageUpdateJoinerMiddlewareTests
                 // Handle possible null FunctionArgs
                 if (expectedTool.ToolCalls[0].FunctionArgs != null && actualTool.ToolCalls[0].FunctionArgs != null)
                 {
-                    Assert.Contains(expectedTool.ToolCalls[0].FunctionArgs, actualTool.ToolCalls[0].FunctionArgs);
+                    // Use null-forgiving operator at assignment to indicate we've verified non-null
+                    var expectedArgs = expectedTool.ToolCalls[0].FunctionArgs!;
+                    var actualArgs = actualTool.ToolCalls[0].FunctionArgs!;
+                    Assert.Contains(expectedArgs, actualArgs);
                 }
             }
         }

@@ -1,13 +1,8 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.LmCore.Models;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using static AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice;
 using FinishReasonEnum = AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice.FinishReasonEnum;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
@@ -168,7 +163,7 @@ public class ProviderTestDataManager
         }
         
         return Directory.GetFiles(directoryPath, "*.LmCoreRequest.json")
-            .Select(Path.GetFileName!)
+            .Select(path => Path.GetFileName(path)!)
             .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
             .Distinct();
     }

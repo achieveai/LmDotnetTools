@@ -1,11 +1,7 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
-
-using System;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Models;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
+
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 
 /// <summary>
 /// Extension methods for the Anthropic API.
