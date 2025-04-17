@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using System.IO;
 using System.Reflection;
 using System.Collections.Immutable;
+using System.Linq;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
@@ -94,13 +95,19 @@ public class MessageUpdateJoinerMiddlewareTests
         
         // Assert
         Assert.NotEmpty(actualMessages);
-        Assert.Equal(expectedMessages.Count, actualMessages.Count);
+        Assert.Equal(expectedMessages.Count + 1, actualMessages.Count); // +1 for the additional UsageMessage
+        
+        // Make sure one of the messages is a UsageMessage
+        Assert.Contains(actualMessages, m => m is UsageMessage);
+        
+        // Remove the UsageMessage for comparison with expected
+        var actualMessagesWithoutUsage = actualMessages.Where(m => !(m is UsageMessage)).ToList();
         
         // Verify the content of the messages
         for (int i = 0; i < expectedMessages.Count; i++)
         {
             var expected = expectedMessages[i];
-            var actual = actualMessages[i];
+            var actual = actualMessagesWithoutUsage[i];
             
             Assert.Equal(expected.GetType(), actual.GetType());
             Assert.Equal(expected.Role, actual.Role);

@@ -80,7 +80,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 continue; // We'll add a consolidated usage message at the end
             }
             
-            // Check if the message has usage data in metadata
+            // Legacy support: Check if the message has usage data in metadata
             bool hasUsage = reply.Metadata != null && reply.Metadata.ContainsKey("usage");
             if (hasUsage)
             {

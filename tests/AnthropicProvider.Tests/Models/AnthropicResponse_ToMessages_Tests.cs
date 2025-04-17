@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 
@@ -40,13 +41,13 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Act & Assert for first response - text and tool_use
         var response1 = responses[0];
-        var messages1 = response1.ToMessages();
+        var messages1 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(response1, "test-agent");
 
-        // Assert basic properties
-        Assert.Equal(2, messages1.Count);
+        // Assert basic properties - we now have 3 messages because of the additional UsageMessage
+        Assert.Equal(3, messages1.Count);
         Assert.Equal("msg_01E", response1.Id);
         Assert.Equal(Role.Assistant, messages1[0].Role);
-        Assert.Equal("msg_01E", messages1[0].FromAgent);
+        Assert.Equal("test-agent", messages1[0].FromAgent);
         
         // Verify text message content
         Assert.IsType<TextMessage>(messages1[0]);
@@ -65,12 +66,18 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal("python_mcp-list_directory", toolCall.FunctionName);
         Assert.Equal("toolu_018", toolCall.ToolCallId);
         
+        // Verify usage message
+        Assert.IsType<UsageMessage>(messages1[2]);
+        var usageMessage = messages1[2] as UsageMessage;
+        Assert.NotNull(usageMessage);
+        Assert.NotNull(usageMessage.Usage);
+        
         // Act & Assert for second response - thinking content
         var response2 = responses[1];
-        var messages2 = response2.ToMessages();
+        var messages2 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(response2, "test-agent");
         
-        // Assert basic properties
-        Assert.Equal(3, messages2.Count);
+        // Assert basic properties - we now have 4 messages because of the additional UsageMessage
+        Assert.Equal(4, messages2.Count);
         Assert.Equal("msg_016", response2.Id);
         
         // Verify thinking message content
@@ -96,6 +103,12 @@ public class AnthropicResponse_ToMessages_Tests
         var toolCall2 = toolCalls2.First();
         Assert.Equal("python_mcp-execute_python_in_container", toolCall2.FunctionName);
         Assert.Contains("import os", toolCall2.FunctionArgs);
+        
+        // Verify usage message
+        Assert.IsType<UsageMessage>(messages2[3]);
+        var usageMessage2 = messages2[3] as UsageMessage;
+        Assert.NotNull(usageMessage2);
+        Assert.NotNull(usageMessage2.Usage);
     }
     
     [Fact]

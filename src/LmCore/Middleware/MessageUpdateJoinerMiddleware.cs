@@ -75,7 +75,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 continue; // Don't yield usage message yet
             }
             
-            // Check if the message has usage in metadata
+            // Check if the message has usage in metadata (legacy support)
             if (message.Metadata != null && message.Metadata.ContainsKey("usage"))
             {
                 usageAccumulator.AddUsageFromMessageMetadata(message);
@@ -99,13 +99,6 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 message,
                 ref activeBuilder,
                 ref activeBuilderType);
-            
-            // Check if ProcessStreamingMessage returned a UsageMessage (extracted from TextUpdateMessage)
-            if (processedMessage is UsageMessage extractedUsage)
-            {
-                usageAccumulator.AddUsageFromMessage(extractedUsage);
-                continue; // Don't yield usage message yet
-            }
             
             // Only emit the message if it's not an update message
             bool isUpdateMessage = message.GetType().Name.Contains("Update");
@@ -142,43 +135,6 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // For text update messages
         else if (message is TextUpdateMessage textUpdate)
         {
-            // Check if the text update contains usage information
-            if (textUpdate.Metadata != null && textUpdate.Metadata.ContainsKey("usage"))
-            {
-                var usage = textUpdate.Metadata["usage"];
-                
-                // If the text is empty and has usage, it's just a usage update
-                // Return a usage message and process the text message separately
-                if (string.IsNullOrEmpty(textUpdate.Text))
-                {
-                    if (usage is Core.Usage usageObj)
-                    {
-                        return new UsageMessage
-                        {
-                            Usage = usageObj,
-                            Role = textUpdate.Role,
-                            FromAgent = textUpdate.FromAgent,
-                            GenerationId = textUpdate.GenerationId
-                        };
-                    }
-                    else
-                    {
-                        // Usage isn't the right type, still create a usage message but we need to convert it
-                        return new UsageMessage
-                        {
-                            Usage = new Core.Usage(),
-                            Role = textUpdate.Role,
-                            FromAgent = textUpdate.FromAgent,
-                            GenerationId = textUpdate.GenerationId,
-                            Metadata = ImmutableDictionary<string, object>.Empty.Add("raw_usage", usage)
-                        };
-                    }
-                }
-                
-                // Process the text update normally, as we'll return a separate usage message
-                return ProcessTextUpdate(textUpdate with { Metadata = null }, ref activeBuilder, ref activeBuilderType);
-            }
-            
             return ProcessTextUpdate(textUpdate, ref activeBuilder, ref activeBuilderType);
         }
 

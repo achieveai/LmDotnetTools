@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
@@ -10,87 +12,40 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 public static class AnthropicExtensions
 {
     /// <summary>
-    /// Converts an Anthropic response to a list of IMessage objects.
+    /// Converts an Anthropic API response to LmCore messages.
     /// </summary>
     /// <param name="response">The Anthropic API response.</param>
+    /// <param name="agentName">The name of the agent.</param>
     /// <returns>A list of IMessage objects representing the response content.</returns>
-    public static List<IMessage> ToMessages(this AnthropicResponse response)
+    public static List<IMessage> ToMessages(this AnthropicResponse response, string agentName)
     {
         var messages = new List<IMessage>();
-        
+
+        // Process content blocks
         foreach (var content in response.Content)
         {
-            switch (content)
+            var message = ContentToMessage(content, response.Id, agentName);
+            if (message != null)
             {
-                case AnthropicResponseTextContent textContent:
-                    messages.Add(new TextMessage
-                    {
-                        Text = textContent.Text,
-                        Role = ParseRole(response.Role),
-                        FromAgent = response.Id,
-                        GenerationId = response.Id,
-                        IsThinking = false
-                    });
-                    break;
-                    
-                case AnthropicResponseThinkingContent thinkingContent:
-                    messages.Add(new TextMessage
-                    {
-                        Text = thinkingContent.Thinking,
-                        Role = ParseRole(response.Role),
-                        FromAgent = response.Id,
-                        GenerationId = response.Id,
-                        IsThinking = true
-                    });
-                    break;
-                    
-                case AnthropicResponseToolUseContent toolContent:
-                    messages.Add(new ToolsCallMessage
-                    {
-                        Role = ParseRole(response.Role),
-                        FromAgent = response.Id,
-                        GenerationId = response.Id,
-                        ToolCalls = ImmutableList.Create(new ToolCall(
-                            toolContent.Name,
-                            toolContent.Input.ToString()
-                        ) { ToolCallId = toolContent.Id })
-                    });
-                    break;
+                messages.Add(message);
             }
         }
-        
-        // Set usage on the last message if messages exist
-        if (messages.Count > 0 && response.Usage != null)
+
+        // Add usage information as a separate message if available
+        if (response.Usage != null)
         {
-            var lastMessage = messages[messages.Count - 1];
-            if (lastMessage is TextMessage textMessage)
+            messages.Add(new UsageMessage
             {
-                // Add usage data to metadata
-                var metadata = ImmutableDictionary<string, object>.Empty
-                    .Add("usage", new
-                    {
-                        InputTokens = response.Usage.InputTokens,
-                        OutputTokens = response.Usage.OutputTokens,
-                        TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
-                    });
-                
-                // Replace the message with updated metadata
-                messages[messages.Count - 1] = textMessage with { Metadata = metadata };
-            }
-            else if (lastMessage is ToolsCallMessage toolsCallMessage)
-            {
-                // Add usage data to metadata
-                var metadata = ImmutableDictionary<string, object>.Empty
-                    .Add("usage", new
-                    {
-                        InputTokens = response.Usage.InputTokens,
-                        OutputTokens = response.Usage.OutputTokens,
-                        TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
-                    });
-                
-                // Replace the message with updated metadata
-                messages[messages.Count - 1] = toolsCallMessage with { Metadata = metadata };
-            }
+                Usage = new Usage
+                {
+                    PromptTokens = response.Usage.InputTokens,
+                    CompletionTokens = response.Usage.OutputTokens,
+                    TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
+                },
+                Role = Role.Assistant,
+                FromAgent = agentName,
+                GenerationId = response.Id
+            });
         }
         
         return messages;
@@ -163,11 +118,11 @@ public static class AnthropicExtensions
     }
     
     /// <summary>
-    /// Parses an Anthropic role string to the appropriate Role enum value.
+    /// Maps an Anthropic role string to LmCore Role enum.
     /// </summary>
-    /// <param name="role">The role string from Anthropic API.</param>
-    /// <returns>The corresponding Role enum value.</returns>
-    private static Role ParseRole(string role)
+    /// <param name="role">The Anthropic role string.</param>
+    /// <returns>The corresponding LmCore Role.</returns>
+    public static Role ParseRole(string role)
     {
         return role.ToLower() switch
         {
@@ -176,6 +131,49 @@ public static class AnthropicExtensions
             "system" => Role.System,
             "tool" => Role.Tool,
             _ => Role.None
+        };
+    }
+
+    /// <summary>
+    /// Converts an AnthropicResponseContent to an appropriate IMessage.
+    /// </summary>
+    /// <param name="content">The content to convert.</param>
+    /// <param name="messageId">The message ID.</param>
+    /// <param name="agentName">The agent name.</param>
+    /// <returns>The converted message, or null if the content couldn't be converted.</returns>
+    private static IMessage? ContentToMessage(AnthropicResponseContent content, string messageId, string agentName)
+    {
+        return content switch
+        {
+            AnthropicResponseTextContent textContent => new TextMessage
+            {
+                Text = textContent.Text,
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId
+            },
+            
+            AnthropicResponseToolUseContent toolContent => new ToolsCallMessage
+            {
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+                ToolCalls = ImmutableList.Create(new ToolCall(
+                    toolContent.Name,
+                    toolContent.Input.ToString()
+                ) { ToolCallId = toolContent.Id })
+            },
+            
+            AnthropicResponseThinkingContent thinkingContent => new TextMessage
+            {
+                Text = thinkingContent.Thinking,
+                Role = ParseRole("assistant"),
+                FromAgent = agentName,
+                GenerationId = messageId,
+                IsThinking = true
+            },
+            
+            _ => null
         };
     }
 } 

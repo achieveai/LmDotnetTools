@@ -104,11 +104,9 @@ public class MessageUpdateJoinerMiddlewareTests
         var cancellationToken = CancellationToken.None;
 
         // Create updates from the test string
-        var updateMessages = CreateTextUpdateMessages(
-            new List<string> { "", "", "" }
-            .Concat(SplitStringPreservingSpaces(testString))
-            .Concat([""]));
-
+        var textUpdates = CreateTextUpdateMessages(SplitStringPreservingSpaces(testString));
+        
+        // Add a UsageMessage at the end
         var usage = new Usage
         {
             PromptTokens = 10,
@@ -117,12 +115,14 @@ public class MessageUpdateJoinerMiddlewareTests
             CompletionTokenDetails = null,
         };
 
-        updateMessages[updateMessages.Count - 1] = new TextUpdateMessage
+        var usageMessage = new UsageMessage
         {
-            Text = "",
-            Metadata = ImmutableDictionary<string, object>.Empty
-                .Add("usage", usage)
+            Usage = usage,
+            Role = Role.Assistant
         };
+        
+        var updateMessages = new List<IMessage>(textUpdates);
+        updateMessages.Add(usageMessage);
 
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
@@ -161,9 +161,9 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Null(textMessage.Metadata);
         
         // Check that the second message is a usage message
-        var usageMessage = results[1];
-        Assert.IsType<UsageMessage>(usageMessage);
-        var typedUsageMessage = (UsageMessage)usageMessage;
+        var usageMessageResult = results[1];
+        Assert.IsType<UsageMessage>(usageMessageResult);
+        var typedUsageMessage = (UsageMessage)usageMessageResult;
         
         // Verify the usage data is correct
         Assert.NotNull(typedUsageMessage.Usage);

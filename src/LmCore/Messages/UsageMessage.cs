@@ -8,6 +8,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 /// <summary>
 /// Represents a message containing usage information for a language model call.
 /// This message type separates usage data from content messages.
+/// Provider implementations should create this message directly rather than embedding usage in metadata.
 /// </summary>
 [JsonConverter(typeof(UsageMessageJsonConverter))]
 public record UsageMessage : IMessage, ICanGetUsage

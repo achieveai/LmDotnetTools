@@ -1,7 +1,13 @@
+using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
@@ -307,15 +313,21 @@ public class AnthropicStreamParser
                 usage.ToJsonString(),
                 _jsonOptions);
             
-            // Create a usage update message
-            var usageUpdate = new TextUpdateMessage
+            // Create a usage message directly instead of an empty TextUpdateMessage with metadata
+            var usageMessage = new UsageMessage
             {
-                Text = string.Empty,
+                Usage = new Usage
+                {
+                    PromptTokens = _usage.InputTokens,
+                    CompletionTokens = _usage.OutputTokens,
+                    TotalTokens = _usage.InputTokens + _usage.OutputTokens
+                },
                 Role = ParseRole(_role),
-                Metadata = CreateUsageMetadata()
+                FromAgent = _messageId,
+                GenerationId = _messageId
             };
             
-            return new List<IMessage> { usageUpdate };
+            return new List<IMessage> { usageMessage };
         }
 
         return new List<IMessage>();
@@ -364,6 +376,28 @@ public class AnthropicStreamParser
                 OutputTokens = _usage.OutputTokens,
                 TotalTokens = _usage.InputTokens + _usage.OutputTokens
             });
+    }
+
+    /// <summary>
+    /// Creates a usage message from the current usage data
+    /// </summary>
+    private UsageMessage CreateUsageMessage(string? generationId = null)
+    {
+        if (_usage == null)
+            throw new InvalidOperationException("Cannot create usage message without usage data");
+            
+        return new UsageMessage
+        {
+            Usage = new Usage
+            {
+                PromptTokens = _usage.InputTokens,
+                CompletionTokens = _usage.OutputTokens,
+                TotalTokens = _usage.InputTokens + _usage.OutputTokens
+            },
+            Role = ParseRole(_role),
+            FromAgent = _messageId,
+            GenerationId = generationId ?? _messageId
+        };
     }
 
     /// <summary>
@@ -755,37 +789,8 @@ public class AnthropicStreamParser
         {
             _usage = messageDeltaEvent.Usage;
             
-            // Update the last message with usage information if we have any messages
-            if (_messages.Count > 0)
-            {
-                var lastMessage = _messages[_messages.Count - 1];
-                var usageMetadata = CreateUsageMetadata();
-
-                // Update the last message with metadata
-                if (lastMessage is TextMessage textMessage)
-                {
-                    _messages[_messages.Count - 1] = textMessage with { Metadata = usageMetadata };
-                    return new List<IMessage> { textMessage with { Metadata = usageMetadata } };
-                }
-                else if (lastMessage is ToolsCallMessage toolsCallMessage)
-                {
-                    _messages[_messages.Count - 1] = toolsCallMessage with { Metadata = usageMetadata };
-                    return new List<IMessage> { toolsCallMessage with { Metadata = usageMetadata } };
-                }
-            }
-            
-            // If no messages yet, return an empty update with usage information
-            return new List<IMessage>
-            {
-                new TextUpdateMessage
-                {
-                    Text = string.Empty,
-                    Role = ParseRole(_role),
-                    FromAgent = _messageId,
-                    GenerationId = _messageId,
-                    Metadata = CreateUsageMetadata()
-                }
-            };
+            // Create a usage message directly
+            return new List<IMessage> { CreateUsageMessage() };
         }
         
         return new List<IMessage>();

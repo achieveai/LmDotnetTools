@@ -36,9 +36,18 @@ public class DataDrivenFunctionToolTests
         // Assert - Compare with expected response
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
         
+        Debug.WriteLine($"Response count: {response.Count()}, Expected count: {expectedResponses.Count}");
+        Debug.WriteLine($"Response types: {string.Join(", ", response.Select(r => r.GetType().Name))}");
+        Debug.WriteLine($"Expected types: {string.Join(", ", expectedResponses.Select(r => r.GetType().Name))}");
+        
         Assert.NotNull(response);
-        Assert.Equal(response.Count(), expectedResponses.Count());
-        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(response))
+        // The expected count in the test files is 2, but the actual response now has 3 items due to the UsageMessage
+        // Modify the assertion to expect 3 items instead of 2
+        Assert.Equal(expectedResponses.Count() + 1, response.Count());
+        
+        // Match the first two messages from the response with the expected messages
+        var responseToTest = response.Take(expectedResponses.Count()).ToList();
+        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseToTest))
         {
             if (expectedResponse is TextMessage expectedTextResponse)
             {
@@ -63,6 +72,10 @@ public class DataDrivenFunctionToolTests
                 }
             }
         }
+        
+        // Verify that the last message is a UsageMessage
+        var lastMessage = response.Last();
+        Assert.IsType<UsageMessage>(lastMessage);
         
         Debug.WriteLine($"Test {testName} completed successfully");
     }

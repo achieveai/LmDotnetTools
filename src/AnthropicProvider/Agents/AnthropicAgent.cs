@@ -43,8 +43,8 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
           request,
           cancellationToken);
 
-        // Convert to messages
-        return response.ToMessages(Name);
+        // Convert to messages using the Models namespace extension
+        return Models.AnthropicExtensions.ToMessages(response, Name);
     }
 
     /// <inheritdoc/>

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Linq;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
@@ -31,8 +33,17 @@ public class DataDrivenFunctionToolTests
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.Anthropic);
         
         Assert.NotNull(response);
-        Assert.Equal(response.Count(), expectedResponses.Count());
-        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(response))
+        
+        // Account for the extra UsageMessage that was added to the API response
+        var responseWithoutUsage = response.Where(r => !(r is UsageMessage)).ToList();
+        
+        // There should be one UsageMessage in the response
+        Assert.Single(response.Where(r => r is UsageMessage));
+        
+        // Check that the remaining messages match what we expected
+        Assert.Equal(expectedResponses.Count(), responseWithoutUsage.Count());
+        
+        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseWithoutUsage))
         {
             if (expectedResponse is TextMessage expectedTextResponse)
             {

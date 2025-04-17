@@ -48,25 +48,21 @@ public static class AnthropicExtensions
   /// Converts an Anthropic response to a collection of LmCore messages.
   /// </summary>
   /// <param name="response">The response to convert.</param>
-  /// <param name="agentName">The name of the agent that generated the response.</param>
   /// <returns>A collection of messages.</returns>
-  public static IEnumerable<IMessage> ToMessages(this AnthropicResponse response, string agentName)
+  [Obsolete("Use Models.AnthropicExtensions.ToMessages instead")]
+  public static IEnumerable<IMessage> ToMessagesLegacy(this AnthropicResponse response)
   {
     // First get messages using AnthropicStreamParser for consistent conversion
-    var messages = response.ToMessages().ToList();
+    var parser = new Models.AnthropicStreamParser();
+    var messages = new List<IMessage>();
     
-    // Then set the agent name for all messages
-    for (int i = 0; i < messages.Count; i++)
+    // Process each content item
+    foreach (var content in response.Content)
     {
-      var message = messages[i];
-      
-      if (message is TextMessage textMessage)
+      var message = ContentToMessage(content, response.Id);
+      if (message != null)
       {
-        messages[i] = textMessage with { FromAgent = agentName };
-      }
-      else if (message is ToolsCallMessage toolsCallMessage)
-      {
-        messages[i] = toolsCallMessage with { FromAgent = agentName };
+        messages.Add(message);
       }
     }
     
@@ -77,22 +73,22 @@ public static class AnthropicExtensions
   /// Converts an Anthropic content item to an appropriate message.
   /// </summary>
   /// <param name="content">The content to convert.</param>
-  /// <param name="agentName">The name of the agent that generated the content.</param>
+  /// <param name="responseId">The ID of the response.</param>
   /// <returns>A message representing the content, or null if the content type is unsupported.</returns>
-  private static IMessage? ContentToMessage(AnthropicResponseContent content, string agentName)
+  private static IMessage? ContentToMessage(AnthropicResponseContent content, string responseId)
   {
     // Handle text content
-    if (content is AnthropicResponseTextContent textContent)
+    if (content is Models.AnthropicResponseTextContent textContent)
     {
       return new TextMessage
       {
         Text = textContent.Text,
         Role = Role.Assistant,
-        FromAgent = agentName
+        GenerationId = responseId
       };
     }
     // Handle tool use content
-    else if (content is AnthropicResponseToolUseContent toolUseContent)
+    else if (content is Models.AnthropicResponseToolUseContent toolUseContent)
     {
       var functionName = toolUseContent.Name;
       var arguments = toolUseContent.Input.ToString();
@@ -100,9 +96,9 @@ public static class AnthropicExtensions
       return new ToolsCallMessage
       {
         ToolCalls = System.Collections.Immutable.ImmutableList.Create(
-          new ToolCall(functionName, arguments)),
+          new ToolCall(functionName, arguments) { ToolCallId = toolUseContent.Id }),
         Role = Role.Assistant,
-        FromAgent = agentName
+        GenerationId = responseId
       };
     }
     
