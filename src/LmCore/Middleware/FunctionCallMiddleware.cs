@@ -68,10 +68,32 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             cancellationToken);
 
         var processedReplies = new List<IMessage>();
+        var usageAccumulator = new UsageAccumulator();
         
         // Process each message in the reply
         foreach (var reply in replies)
         {
+            // Check if this is a usage message
+            if (reply is UsageMessage usageMessage)
+            {
+                usageAccumulator.AddUsageFromMessage(usageMessage);
+                continue; // We'll add a consolidated usage message at the end
+            }
+            
+            // Check if the message has usage data in metadata
+            bool hasUsage = reply.Metadata != null && reply.Metadata.ContainsKey("usage");
+            if (hasUsage)
+            {
+                usageAccumulator.AddUsageFromMessageMetadata(reply);
+                
+                // If this is an empty text message just for usage, don't add it to results
+                var textMessage = reply as TextMessage;
+                if (textMessage != null && string.IsNullOrEmpty(textMessage.Text))
+                {
+                    continue;
+                }
+            }
+            
             // Check if this message has tool calls
             var responseToolCall = reply as ToolsCallMessage;
             var responseToolCalls = responseToolCall?.ToolCalls;
@@ -86,9 +108,39 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             }
             else
             {
-                // Pass through messages without tool calls
-                processedReplies.Add(reply);
+                // Pass through messages without tool calls, but strip usage from metadata
+                if (hasUsage)
+                {
+                    // Clone the message without usage metadata
+                    var metadataWithoutUsage = reply.Metadata!.Remove("usage");
+                    
+                    if (reply is TextMessage textMsg)
+                    {
+                        processedReplies.Add(textMsg with { Metadata = metadataWithoutUsage.Count > 0 ? metadataWithoutUsage : null });
+                    }
+                    else if (reply is ToolsCallMessage toolCallMsg)
+                    {
+                        processedReplies.Add(toolCallMsg with { Metadata = metadataWithoutUsage.Count > 0 ? metadataWithoutUsage : null });
+                    }
+                    else
+                    {
+                        // For other message types, just add the original
+                        processedReplies.Add(reply);
+                    }
+                }
+                else
+                {
+                    // Pass through messages without usage metadata
+                    processedReplies.Add(reply);
+                }
             }
+        }
+        
+        // Add accumulated usage message at the end if we extracted usage data
+        var finalUsageMessage = usageAccumulator.CreateUsageMessage();
+        if (finalUsageMessage != null)
+        {
+            processedReplies.Add(finalUsageMessage);
         }
 
         return processedReplies;
@@ -219,45 +271,50 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Single builder for tool call messages
         ToolsCallMessageBuilder? toolsCallBuilder = null;
         bool wasProcessingToolCallUpdate = false;
+        
+        // Use the usage accumulator to track usage data
+        var usageAccumulator = new UsageAccumulator();
 
         await foreach (var message in sourceStream.WithCancellation(cancellationToken))
         {
+            // If it's a usage message, add to accumulator and pass through
+            if (message is UsageMessage usageMessage)
+            {
+                usageAccumulator.AddUsageFromMessage(usageMessage);
+                yield return usageMessage;
+                continue;
+            }
+            
             // Check if we're switching message types and need to complete any pending builder
             var toolUpdateMessage = message as ToolsCallUpdateMessage;
             var textUpdateMessage = message as TextUpdateMessage;
-            var hasUsage = textUpdateMessage != null && textUpdateMessage.Metadata != null && textUpdateMessage.Metadata.ContainsKey("usage");
+            bool hasUsage = message.Metadata != null && message.Metadata.ContainsKey("usage");
+
+            // Extract any usage data from message metadata
+            if (hasUsage)
+            {
+                usageAccumulator.AddUsageFromMessageMetadata(message);
+            }
 
             if (wasProcessingToolCallUpdate && toolUpdateMessage == null && toolsCallBuilder != null)
             {
-                // Check if text update message is present and contains usage. In which case we are at the last message.
-                var usage = hasUsage
-                    ? textUpdateMessage!.Metadata!["usage"]
-                    : null;
-
                 // Complete the previous builder before processing the new message
                 var rv = await ProcessFinalToolCallMessage(toolsCallBuilder);
                 toolsCallBuilder = null;
-
-                if (usage != null && rv is ToolsCallAggregateMessage aggregateMessage)
-                {
-                    // Clone the usage node instead of reusing it directly
-                    rv = aggregateMessage with {
-                        Metadata = ImmutableDictionary<string, object>.Empty
-                            .Add("usage", usage)
-                    };
-
-                    yield return rv;
-                    continue;
-                }
-                else
-                {
-                    yield return rv;
-                }
+                
+                yield return rv;
+                continue;
             }
             
             // Update tracking state
             wasProcessingToolCallUpdate = toolUpdateMessage != null;
 
+            // Skip empty text updates that are just for usage
+            if (textUpdateMessage != null && string.IsNullOrEmpty(textUpdateMessage.Text) && hasUsage)
+            {
+                continue;
+            }
+            
             // Skip empty text updates
             if (textUpdateMessage != null && string.IsNullOrEmpty(textUpdateMessage.Text) && !hasUsage)
             {
@@ -295,6 +352,13 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         if (toolsCallBuilder != null)
         {
             yield return await ProcessFinalToolCallMessage(toolsCallBuilder);
+        }
+        
+        // Emit accumulated usage as a separate message at the end
+        var finalUsageMessage = usageAccumulator.CreateUsageMessage();
+        if (finalUsageMessage != null)
+        {
+            yield return finalUsageMessage;
         }
     }
 

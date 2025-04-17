@@ -185,6 +185,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         if (type == typeof(ToolsCallResultMessage)) return "tools_call_result";
         if (type == typeof(ToolsCallUpdateMessage)) return "tools_call_update";
         if (type == typeof(ToolsCallAggregateMessage)) return "tools_call_aggregate";
+        if (type == typeof(UsageMessage)) return "usage";
         
         // If not a known type, fallback to name conversion
         string typeName = type.Name;
@@ -204,7 +205,12 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
     private Type InferTypeFromProperties(JsonElement element)
     {
         // Try to infer the message type based on the properties
-        if (element.TryGetProperty("text", out _))
+        if (element.TryGetProperty("usage", out _) && !element.TryGetProperty("text", out _) 
+            && !element.TryGetProperty("tool_calls", out _))
+        {
+            return typeof(UsageMessage);
+        }
+        else if (element.TryGetProperty("text", out _))
         {
             // Check if this is a TextUpdateMessage or a regular TextMessage
             if (element.TryGetProperty("isUpdate", out var isUpdateProp) && 
@@ -275,6 +281,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "tools_call_result" => typeof(ToolsCallResultMessage),
             "tools_call_update" => typeof(ToolsCallUpdateMessage),
             "tools_call_aggregate" => typeof(ToolsCallAggregateMessage),
+            "usage" => typeof(UsageMessage),
             _ => null
         };
     }

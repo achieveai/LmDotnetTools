@@ -177,6 +177,8 @@ public record ChatCompletionRequest
                             ))
                         ).ToList()
                 }];
+            case UsageMessage _:
+                return [];
             default:
                 throw new ArgumentException("Unsupported message type");
         }

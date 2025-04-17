@@ -148,18 +148,28 @@ public class MessageUpdateJoinerMiddlewareTests
             results.Add(message);
         }
 
-        // Assert - With preserveUpdateMessages:true, we should get all the update messages
-        Assert.Single(results);
+        // Assert - Now we expect two messages: the text message and a separate usage message
+        Assert.Equal(2, results.Count);
 
-        // Check that the final message contains the complete text
-        var finalMessage = results[results.Count - 1];
-        Assert.NotNull(finalMessage);
-        Assert.Equal(testString, ((LmCore.Messages.ICanGetText)finalMessage).GetText());
+        // Check that the first message is the text message with the complete text
+        var textMessage = results[0];
+        Assert.IsType<TextMessage>(textMessage);
+        Assert.NotNull(textMessage);
+        Assert.Equal(testString, ((LmCore.Messages.ICanGetText)textMessage).GetText());
 
-        Assert.NotNull(finalMessage.Metadata);
-        Assert.DoesNotContain(finalMessage.Metadata, kvp => kvp.Key == "Usage");
-        Assert.NotNull(finalMessage.Metadata["usage"]);
-        Assert.Equal(usage, finalMessage.Metadata!["usage"]! as Usage);
+        // Verify that the text message doesn't have usage metadata
+        Assert.Null(textMessage.Metadata);
+        
+        // Check that the second message is a usage message
+        var usageMessage = results[1];
+        Assert.IsType<UsageMessage>(usageMessage);
+        var typedUsageMessage = (UsageMessage)usageMessage;
+        
+        // Verify the usage data is correct
+        Assert.NotNull(typedUsageMessage.Usage);
+        Assert.Equal(10, typedUsageMessage.Usage.PromptTokens);
+        Assert.Equal(10, typedUsageMessage.Usage.CompletionTokens);
+        Assert.Equal(20, typedUsageMessage.Usage.TotalTokens);
 
         // Verify the streaming agent was called exactly once
         mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -82,4 +83,28 @@ public static class MessageExtensions
     /// </summary>
     public static bool CanGetToolCalls(this IMessage message) => 
         message is ICanGetToolCalls && ((ICanGetToolCalls)message).GetToolCalls() != null;
+
+    /// <summary>
+    /// Gets all usage data from a collection of messages that support usage data
+    /// </summary>
+    public static IEnumerable<Usage> GetAllUsage(this IEnumerable<IMessage> messages)
+    {
+        foreach (var message in messages)
+        {
+            if (message is ICanGetUsage usageMessage)
+            {
+                var usage = usageMessage.GetUsage();
+                if (usage != null)
+                {
+                    yield return usage;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Checks if a message can provide usage information
+    /// </summary>
+    public static bool CanGetUsage(this IMessage message) => 
+        message is ICanGetUsage && ((ICanGetUsage)message).GetUsage() != null;
 } 

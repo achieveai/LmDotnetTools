@@ -12,6 +12,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 // [JsonDerivedType(typeof(ToolsCallResultMessage), "tools_call_result_message")]
 // [JsonDerivedType(typeof(ToolsCallUpdateMessage), "tools_call_update_message")]
 // [JsonDerivedType(typeof(ToolsCallAggregateMessage), "tools_call_aggregate_message")]
+// [JsonDerivedType(typeof(UsageMessage), "usage_message")]
 public interface IMessage
 {
     public Role Role { get; }
