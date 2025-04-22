@@ -1,8 +1,4 @@
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using AchieveAi.LmDotnetTools.TestUtils;
 using System.Runtime.CompilerServices;
-using System.Text.Json.Nodes;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -98,7 +94,8 @@ public class AnthropicClientWrapperTests
 
             // Act
             var events = new List<AnthropicStreamEvent>();
-            await foreach (var streamEvent in wrapper.StreamingChatCompletionsAsync(request))
+            var streamEvents = await wrapper.StreamingChatCompletionsAsync(request);
+            await foreach (var streamEvent in streamEvents)
             {
                 events.Add(streamEvent);
             }
@@ -153,7 +150,15 @@ public class AnthropicClientWrapperTests
             return Task.FromResult(response);
         }
 
-        public async IAsyncEnumerable<AnthropicStreamEvent> StreamingChatCompletionsAsync(
+        public Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
+            AnthropicRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IAsyncEnumerable<AnthropicStreamEvent>>(
+                GetStreamEvents(request, cancellationToken));
+        }
+
+        private async IAsyncEnumerable<AnthropicStreamEvent> GetStreamEvents(
             AnthropicRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {

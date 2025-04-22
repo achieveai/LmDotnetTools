@@ -1,6 +1,4 @@
-using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -62,9 +60,9 @@ public class AnthropicClient : IAnthropicClient
   }
 
   /// <inheritdoc/>
-  public async IAsyncEnumerable<AnthropicStreamEvent> StreamingChatCompletionsAsync(
+  public async Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
     AnthropicRequest request,
-    [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    CancellationToken cancellationToken = default)
   {
     // Set the streaming flag
     request = request with { Stream = true };
@@ -83,8 +81,15 @@ public class AnthropicClient : IAnthropicClient
       cancellationToken);
     
     response.EnsureSuccessStatusCode();
-    
-    using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+
+    return StreamData(response.Content, cancellationToken);
+  }
+
+  private async IAsyncEnumerable<AnthropicStreamEvent> StreamData(
+    HttpContent content,
+    [EnumeratorCancellation] CancellationToken cancellationToken)
+  {
+    using var stream = await content.ReadAsStreamAsync(cancellationToken);
     
     await foreach (var sseItem in SseParser.Create(stream).EnumerateAsync(cancellationToken))
     {

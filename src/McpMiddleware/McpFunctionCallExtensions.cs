@@ -2,9 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using ModelContextProtocol.Server;
-using ModelContextProtocol.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;

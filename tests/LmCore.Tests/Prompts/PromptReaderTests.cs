@@ -1,6 +1,6 @@
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
-using Xunit;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Prompts;
 
@@ -79,12 +79,12 @@ public class PromptReaderTests
     // Assert
     Assert.Equal(promptName, promptChain.Name);
     Assert.Equal(3, promptChain.Messages.Count);
-    Assert.Equal("system", promptChain.Messages[0].Role);
-    Assert.Equal("You are a helpful assistant.", promptChain.Messages[0].Content);
-    Assert.Equal("user", promptChain.Messages[1].Role);
-    Assert.Equal("What can you tell me about programming?", promptChain.Messages[1].Content);
-    Assert.Equal("assistant", promptChain.Messages[2].Role);
-    Assert.Equal("Programming is the process of creating a set of instructions for computers.", promptChain.Messages[2].Content);
+    Assert.Equal("system", promptChain.Messages[0].Role.ToString().ToLower());
+    Assert.Equal("You are a helpful assistant.", ((ICanGetText)promptChain.Messages[0]).GetText());
+    Assert.Equal("user", promptChain.Messages[1].Role.ToString().ToLower());
+    Assert.Equal("What can you tell me about programming?", ((ICanGetText)promptChain.Messages[1]).GetText());
+    Assert.Equal("assistant", promptChain.Messages[2].Role.ToString().ToLower());
+    Assert.Equal("Programming is the process of creating a set of instructions for computers.", ((ICanGetText)promptChain.Messages[2]).GetText());
   }
 
   [Fact]

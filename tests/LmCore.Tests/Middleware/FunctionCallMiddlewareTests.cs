@@ -6,8 +6,6 @@ using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpSampleServer;
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Models;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 

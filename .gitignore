@@ -11,3 +11,4 @@ __pycache__
 .vs/
 .suo
 .csproj.user
+.code_workspace/

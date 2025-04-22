@@ -1,6 +1,5 @@
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Prompts;
 

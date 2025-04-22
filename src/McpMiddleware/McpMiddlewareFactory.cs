@@ -1,9 +1,6 @@
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol.Types;
 using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;

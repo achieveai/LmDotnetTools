@@ -1,12 +1,9 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
 
 using System;
-using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using Xunit;
 using Xunit.Abstractions;
 

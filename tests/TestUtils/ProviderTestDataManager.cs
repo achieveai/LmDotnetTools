@@ -91,7 +91,7 @@ public class ProviderTestDataManager
     /// <summary>
     /// Loads LmCore request data from a file.
     /// </summary>
-    public (TextMessage[] Messages, GenerateReplyOptions Options) LoadLmCoreRequest(string testName, ProviderType providerType)
+    public (IMessage[] Messages, GenerateReplyOptions Options) LoadLmCoreRequest(string testName, ProviderType providerType)
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         if (!File.Exists(filePath))
@@ -102,13 +102,13 @@ public class ProviderTestDataManager
         var json = File.ReadAllText(filePath);
         var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, JsonOptions);
         
-        return (data?.Messages ?? Array.Empty<TextMessage>(), data?.Options ?? new GenerateReplyOptions());
+        return (data?.Messages ?? Array.Empty<IMessage>(), data?.Options ?? new GenerateReplyOptions());
     }
     
     /// <summary>
     /// Saves a final response to a file.
     /// </summary>
-    public void SaveFinalResponse(string testName, ProviderType providerType, TextMessage response)
+    public void SaveFinalResponse(string testName, ProviderType providerType, IEnumerable<IMessage> response)
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         EnsureDirectoryExists(filePath);
@@ -118,12 +118,12 @@ public class ProviderTestDataManager
     /// <summary>
     /// Loads a final response from a file.
     /// </summary>
-    public List<IMessage> LoadFinalResponse(string testName, ProviderType providerType)
+    public List<IMessage>? LoadFinalResponse(string testName, ProviderType providerType)
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         if (!File.Exists(filePath))
         {
-            throw new FileNotFoundException($"Test data file not found: {filePath}");
+            return null;
         }
         
         var json = File.ReadAllText(filePath);
@@ -211,6 +211,6 @@ public enum ProviderType
 /// </summary>
 internal class LmCoreRequestData
 {
-    public TextMessage[]? Messages { get; set; }
+    public IMessage[]? Messages { get; set; }
     public GenerateReplyOptions? Options { get; set; }
 } 

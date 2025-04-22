@@ -5,8 +5,6 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.TestUtils;
 using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;

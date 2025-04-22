@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
-using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -405,7 +404,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
 
         // Start executing the tool call immediately and store the task
-        _pendingToolCallResults[call.ToolCallId] = ExecuteToolCallAsync(call);
+        var task = ExecuteToolCallAsync(call);
+        _pendingToolCallResults[call.ToolCallId] = task;
     }
 
 

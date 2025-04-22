@@ -1,13 +1,9 @@
-using System.Collections.Immutable;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Server;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 

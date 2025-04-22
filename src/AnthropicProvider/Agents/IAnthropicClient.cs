@@ -25,7 +25,7 @@ public interface IAnthropicClient : IDisposable
   /// <param name="request">The request to send to the API.</param>
   /// <param name="cancellationToken">A token to cancel the operation.</param>
   /// <returns>An asynchronous stream of events from the API.</returns>
-  IAsyncEnumerable<AnthropicStreamEvent> StreamingChatCompletionsAsync(
+  Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
     AnthropicRequest request,
     CancellationToken cancellationToken = default);
 }

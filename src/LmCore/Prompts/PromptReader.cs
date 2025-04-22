@@ -1,4 +1,5 @@
 using System.Reflection;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Scriban;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -102,7 +103,7 @@ public class PromptReader : IPromptReader
     /// </summary>
     /// <param name="chainData">The list of dictionaries representing the chain data.</param>
     /// <returns>A list of Message objects.</returns>
-    private List<Message> ParsePromptChain(List<Dictionary<string, string>> chainData)
+    private List<IMessage> ParsePromptChain(List<Dictionary<string, string>> chainData)
     {
         var allowedRoles = new HashSet<string> { "system", "user", "assistant" };
 
@@ -116,7 +117,15 @@ public class PromptReader : IPromptReader
                 throw new ArgumentException($"Invalid role '{role}' in prompt chain. Allowed roles are: {string.Join(", ", allowedRoles)}");
             }
 
-            return new Message(role, content);
+            return new TextMessage {
+                Role = role switch
+                {
+                    "system" => Role.System,
+                    "user" => Role.User,
+                    "assistant" => Role.Assistant
+                },
+                Text = content
+            } as IMessage;
         }).ToList();
     }
 
@@ -207,7 +216,7 @@ public record Prompt(string Name, string Version, string Value)
 /// <summary>
 /// Represents a chain of prompts with a name, version, and a list of messages.
 /// </summary>
-public record PromptChain(string Name, string Version, List<Message> Messages) : Prompt(Name, Version, string.Empty)
+public record PromptChain(string Name, string Version, List<IMessage> Messages) : Prompt(Name, Version, string.Empty)
 {
     /// <summary>
     /// Overrides the PromptText method to throw an exception, as it's not applicable for PromptChain.
@@ -222,14 +231,18 @@ public record PromptChain(string Name, string Version, List<Message> Messages) :
     /// </summary>
     /// <param name="variables">Optional dictionary of variables to apply to the message content.</param>
     /// <returns>A list of messages with variables applied if provided, otherwise the original messages.</returns>
-    public List<Message> PromptMessages(Dictionary<string, object>? variables = null)
+    public List<IMessage> PromptMessages(Dictionary<string, object>? variables = null)
     {
         if (variables == null)
         {
             return Messages;
         }
 
-        return Messages.Select(m => new Message(m.Role, ApplyVariables(m.Content, variables))).ToList();
+        return Messages.Select<IMessage, IMessage>(
+            m => new TextMessage {
+                Role = m.Role,
+                Text = ApplyVariables(((ICanGetText)m).GetText()!, variables)
+            }).ToList();
     }
 
     /// <summary>
@@ -244,11 +257,6 @@ public record PromptChain(string Name, string Version, List<Message> Messages) :
         return template.Render(variables);
     }
 }
-
-/// <summary>
-/// Represents a single message in a prompt chain.
-/// </summary>
-public record Message(string Role, string Content);
 
 /// <summary>
 /// Defines the interface for a prompt reader.

@@ -1,7 +1,5 @@
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -68,7 +66,8 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         // Create a parser to track state across events
         var parser = new AnthropicStreamParser();
 
-        await foreach (var streamEvent in _client.StreamingChatCompletionsAsync(request, cancellationToken))
+        var streamEvents = await _client.StreamingChatCompletionsAsync(request, cancellationToken);
+        await foreach (var streamEvent in streamEvents)
         {
             // Process the event directly without serialization/deserialization
             var messages = parser.ProcessStreamEvent(streamEvent);

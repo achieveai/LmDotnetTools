@@ -1,6 +1,9 @@
+using System.Numerics;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using ModelContextProtocol;
@@ -19,7 +22,11 @@ class Program
     string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
     string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
     string ANTHRPIC_API_KEY = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")!;
-    string ANTHRPIC_API_URL = Environment.GetEnvironmentVariable("ANTHROPIC_API_BASE_URL")!;
+    string PROMPTS_PATH = Path.Combine(
+        GetWorkspaceRootPath(),
+        "example",
+        "ExamplePythonMCPClient",
+        "prompts.yaml");
     Console.WriteLine("Example Python MCP Client Demo");
     
     // Create the MCP client to connect to the Python server
@@ -30,7 +37,7 @@ class Program
       TransportType = TransportTypes.StdIo,
       TransportOptions = new Dictionary<string, string>
       {
-        ["command"] = $"uvx {GetWorkspaceRootPath()}/McpServers/PythonMCPServer --image pyexec"
+        ["command"] = $"uvx {GetWorkspaceRootPath()}/McpServers/PythonMCPServer --image pyexec --code-dir {GetWorkspaceRootPath()}/.code_workspace"
       }
     };
     
@@ -38,8 +45,6 @@ class Program
     
     try
     {
-      // List available tools from the MCP server
-      Console.WriteLine("\nListing available tools from the MCP server...");
       var tools = await mcpClient.ListToolsAsync();
       
       foreach (var tool in tools)
@@ -49,10 +54,12 @@ class Program
       
       // Create an OpenAI client
       var openClient = new OpenClient(API_KEY, API_URL);
-      var llmAgent = new OpenClientAgent("meta-llama/llama-4-maverick", openClient);
+      var openAgent = new OpenClientAgent("meta-llama/llama-4-maverick", openClient);
 
-      // var anthropicClient = new AnthropicClient(API_KEY);
-      // var llmAgent = new AnthropicAgent("meta-llama/llama-4-maverick", anthropicClient);
+      var anthropicClient = new AnthropicClient(ANTHRPIC_API_KEY);
+      var anthropicAgent = new AnthropicAgent("meta-llama/llama-4-maverick", anthropicClient);
+
+      var llmAgent = anthropicAgent;
       
       // Create the agent pipeline with MCP middleware
       var mcpClientDictionary = new Dictionary<string, ModelContextProtocol.Client.IMcpClient>
@@ -62,83 +69,151 @@ class Program
       
       // Create the middleware using the factory
       var mcpMiddlewareFactory = new McpMiddlewareFactory();
-      var mcpMiddleware = await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary);
-      var agentWithMcp = llmAgent.WithMiddleware(mcpMiddleware);
-      
-      // Example messages for the agent
-      var messages = new List<IMessage>
-      {
-        new TextMessage
-        {
-          Role = Role.System,
-          Text = "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool."
-        },
-        new TextMessage
-        {
-          Role = Role.User,
-          Text = "Write a Python function to calculate the Fibonacci sequence up to n terms and then call it for n=10."
-        }
-      };
-      
-      // Generate a response with the agent using MCP middleware for tool calls
-      Console.WriteLine("\nGenerating a response with the agent...");
+
+      var codeExecutionAgent = llmAgent
+        .WithMiddleware(await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary))
+        .WithMiddleware(new MessageUpdateJoinerMiddleware());
+
+      var normalAgent = llmAgent.WithMiddleware(new MessageUpdateJoinerMiddleware());
       
       var options = new GenerateReplyOptions
       {
-        // ModelId = "claude-3-7-sonnet-20250219",
-        ModelId = "meta-llama/llama-4-maverick",
+        ModelId = "claude-3-7-sonnet-20250219",
+        // ModelId = "meta-llama/llama-4-maverick",
         Temperature = 0.7f,
-        MaxToken = 2000,
+        MaxToken = 4096,
         ExtraProperties = System.Collections.Immutable.ImmutableDictionary<string, object?>.Empty
       };
-      
-      // Get the first message from the async enumerable using await foreach
-      IMessage? reply = null;
-      var replies = new List<IMessage>();
-      await foreach (var message in await agentWithMcp.GenerateReplyStreamingAsync(messages, options))
-      {
-        replies.Add(message);
-      }
 
-      reply = replies.OfType<ToolsCallAggregateMessage>()
-                .LastOrDefault();
-      
-      // Display the response
-      if (reply is TextMessage textReply)
-      {
-        Console.WriteLine("\nAgent Response:\n");
-        Console.WriteLine(textReply.Text);
-      }
-      else if (reply is ToolsCallAggregateMessage toolsCallMessage)
-      {
-        Console.WriteLine("\nAgent is making tool calls:\n");
-        foreach (var (toolCall, result) in toolsCallMessage.ToolsCallMessage.GetToolCalls()!.Zip(toolsCallMessage.ToolsCallResult.ToolCallResults))
-        {
-          Console.WriteLine($"Tool: {toolCall.FunctionName}");
-          Console.WriteLine($"Arguments: {toolCall.FunctionArgs}");
-          
-          Console.WriteLine("\nTool Response:\n");
-          Console.WriteLine(result);
+      Console.WriteLine("Enter a task to complete:");
+      // string task = Console.ReadLine()!;
+      var task = @"There is a file `data.xlsx` in the /code directory. Read the
+      file, analyze schema, data it contains, and then write a summary of what
+      data can be used and few insights based on this data.";
+      string? previousPlan = null;
+      string? progress = null;
+
+      while(!string.IsNullOrEmpty(task)) {
+        var promptReader = new PromptReader(PROMPTS_PATH);
+
+        var dict = new Dictionary<string, object>() {
+          ["task"] = task!,
+        };
+
+        if(previousPlan != null) {
+          dict["previous_plan"] = previousPlan;
+        }
+
+        if(progress != null) {
+          dict["progress"] = progress;
+        }
+
+        var plannerPrompt = promptReader
+          .GetPromptChain("Planner")
+          .PromptMessages(dict);
+
+        var repliesStream = await normalAgent.GenerateReplyStreamingAsync(plannerPrompt, options);
+
+        string? plan = null;
+        await foreach(var reply in repliesStream) {
+          if (reply is TextMessage textMessage) {
+            plan = textMessage.Text;
+            Console.WriteLine(textMessage.Text);
+          }
+        }
+
+        dict["tool_goal"] = plan!;
+
+        string? toolProgress = null;
+        string? insights = null;
+        do {
+          var toolPrompt = promptReader.GetPromptChain("ToolExecutor").PromptMessages(dict);
+          if (insights != null) {
+            dict["insights"] = insights;
+          }
+
+          var toolRepliesStream = await codeExecutionAgent.GenerateReplyStreamingAsync(toolPrompt, options);
+
+          ToolsCallAggregateMessage? toolCallAggregateMessage = null;
+          await foreach(var reply in toolRepliesStream) {
+            if(reply is TextMessage textMessage) {
+              toolProgress = textMessage.Text;
+              Console.WriteLine(textMessage.Text);
+            }
+
+            if(reply is ToolsCallAggregateMessage toolsCallAggregateMessage) {
+              toolCallAggregateMessage = toolsCallAggregateMessage;
+
+              var toolCallResults = toolsCallAggregateMessage.ToolsCallResult.ToolCallResults;
+              var toolCalls = toolsCallAggregateMessage.ToolsCallMessage.ToolCalls;
+              foreach(var (toolCall, toolCallResult) in toolCalls.Zip(toolCallResults)) {
+                Console.WriteLine($"Tool Call: {toolCall.FunctionName}");
+                Console.WriteLine($"Tool Call Arguments: {toolCall.FunctionArgs}");
+                Console.WriteLine("----");
+                Console.WriteLine($"Tool Call Result: {toolCallResult.Result}");
+                Console.WriteLine("----");
+              }
+            }
+          }
+
+          if(toolCallAggregateMessage == null) {
+            break;
+          }
+
+          var toolSummarizerPrompt = promptReader.GetPromptChain("ToolSummarizer").PromptMessages(dict);
+          toolSummarizerPrompt.Add(toolCallAggregateMessage!);
+
+          var toolSummarizerRepliesStream = await normalAgent.GenerateReplyStreamingAsync(
+              toolSummarizerPrompt,
+              options);
+
+          await foreach(var reply in toolSummarizerRepliesStream) {
+            if(reply is TextMessage textMessage) {
+              insights = insights == null
+                ? textMessage.Text
+                : $"{insights}\n\n{textMessage.Text}";
+
+              Console.WriteLine(textMessage.Text);
+            }
+          }
+
+        } while(!toolProgress?.Contains("Final Summary:") ?? false);
+
+        dict["progress"] = toolProgress!;
+        var progressReporterPrompt = promptReader.GetPromptChain("ProgressReporter")
+          .PromptMessages(dict);
+
+        var progressReporterRepliesStream = await normalAgent.GenerateReplyStreamingAsync(progressReporterPrompt, options);
+
+        string? finalSummary = null;
+        await foreach(var reply in progressReporterRepliesStream) {
+          if(reply is TextMessage textMessage) {
+            finalSummary = textMessage.Text;
+            Console.WriteLine(textMessage.Text);
+          }
+        }
+
+        previousPlan = progress;
+        progress = finalSummary;
+
+        dict["summary"] = finalSummary!;
+        var continueLoopPrompt = promptReader.GetPromptChain("ContinueLoop")
+          .PromptMessages(dict);
+
+        var continueLoopRepliesStream = await normalAgent.GenerateReplyStreamingAsync(continueLoopPrompt, options);
+
+        string? continueLoop = null;
+        await foreach(var reply in continueLoopRepliesStream) {
+          if(reply is TextMessage textMessage) {
+            continueLoop = textMessage.Text;
+            Console.WriteLine(textMessage.Text);
+          }
+        }
+
+        if(continueLoop == "DONE") {
+          break;
         }
       }
-      else if (reply == null)
-      {
-        Console.WriteLine("\nNo response received from the agent.");
-      }
-
-      // Add reply to messages only if it's not null
-      if (reply != null)
-      {
-        messages.Add(reply);
-      }
-
-      var reply2 = await agentWithMcp.GenerateReplyAsync(messages, options);
-      Console.WriteLine("\nAgent Response:\n");
-      Console.WriteLine(reply2 switch {
-        ICanGetText txtReply => txtReply.GetText(),
-        ToolsCallResultMessage toolsCallMessage => string.Join("\n", toolsCallMessage.ToolCallResults.Select(tc => tc.Result)),
-        _ => reply?.ToString() ?? "[No response]"
-      });
     }
     catch (Exception ex)
     {
@@ -148,7 +223,6 @@ class Program
     
     await mcpClient.DisposeAsync();
     Console.WriteLine("\nPress any key to exit...");
-    _ = Console.Read();
   }
 
   public static string GetWorkspaceRootPath()

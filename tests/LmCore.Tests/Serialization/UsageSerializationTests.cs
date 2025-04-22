@@ -1,6 +1,5 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Serialization;

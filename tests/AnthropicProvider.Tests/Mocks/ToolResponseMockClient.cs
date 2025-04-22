@@ -55,7 +55,7 @@ internal class ToolResponseMockClient : IAnthropicClient
     return Task.FromResult(response);
   }
   
-  public IAsyncEnumerable<AnthropicStreamEvent> StreamingChatCompletionsAsync(
+  public Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
     AnthropicRequest request,
     CancellationToken cancellationToken = default)
   {

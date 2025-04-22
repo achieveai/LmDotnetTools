@@ -1,6 +1,5 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Models;
 

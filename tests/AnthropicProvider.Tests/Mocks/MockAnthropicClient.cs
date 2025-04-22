@@ -1,6 +1,5 @@
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
 
-using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -41,11 +40,11 @@ internal class MockAnthropicClient : IAnthropicClient
     return Task.FromResult(response);
   }
   
-  public IAsyncEnumerable<AnthropicStreamEvent> StreamingChatCompletionsAsync(
+  public Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
     AnthropicRequest request,
     CancellationToken cancellationToken = default)
   {
-    return GetMockStreamEvents(request, cancellationToken);
+    return Task.FromResult<IAsyncEnumerable<AnthropicStreamEvent>>(GetMockStreamEvents(request, cancellationToken));
   }
   
   private async IAsyncEnumerable<AnthropicStreamEvent> GetMockStreamEvents(AnthropicRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)

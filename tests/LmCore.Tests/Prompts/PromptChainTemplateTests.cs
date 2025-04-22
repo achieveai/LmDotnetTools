@@ -1,6 +1,6 @@
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
-using Xunit;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Prompts;
 
@@ -33,15 +33,15 @@ public class PromptChainTemplateTests
 
     // Assert
     Assert.Equal(3, renderedMessages.Count);
-    Assert.Equal("system", renderedMessages[0].Role);
-    Assert.Contains("You are a helpful assistant for", renderedMessages[0].Content);
-    Assert.Contains("AchieveAI", renderedMessages[0].Content);
-    Assert.Equal("user", renderedMessages[1].Role);
-    Assert.Contains("Hello, I'm John", renderedMessages[1].Content);
-    Assert.Contains("What can you tell me about machine learning?", renderedMessages[1].Content);
-    Assert.Equal("assistant", renderedMessages[2].Role);
-    Assert.Contains("Hello John", renderedMessages[2].Content);
-    Assert.Contains("here's what I know about machine learning", renderedMessages[2].Content);
+    Assert.Equal("system", renderedMessages[0].Role.ToString().ToLower());
+    Assert.Contains("You are a helpful assistant for", ((ICanGetText)renderedMessages[0]).GetText());
+    Assert.Contains("AchieveAI", ((ICanGetText)renderedMessages[0]).GetText());
+    Assert.Equal("user", renderedMessages[1].Role.ToString().ToLower());
+    Assert.Contains("Hello, I'm John", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("What can you tell me about machine learning?", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Equal("assistant", renderedMessages[2].Role.ToString().ToLower());
+    Assert.Contains("Hello John", ((ICanGetText)renderedMessages[2]).GetText());
+    Assert.Contains("here's what I know about machine learning", ((ICanGetText)renderedMessages[2]).GetText());
   }
 
   [Fact]
@@ -62,20 +62,20 @@ public class PromptChainTemplateTests
     Assert.Equal(3, renderedMessages.Count);
     
     // Check system message
-    Assert.Equal("system", renderedMessages[0].Role);
-    Assert.Equal("You are a helpful assistant.", renderedMessages[0].Content);
+    Assert.Equal("system", renderedMessages[0].Role.ToString().ToLower());
+    Assert.Equal("You are a helpful assistant.", ((ICanGetText)renderedMessages[0]).GetText());
     
     // Check user message with rendered list
-    Assert.Equal("user", renderedMessages[1].Role);
-    Assert.Contains("Here are my interests:", renderedMessages[1].Content);
-    Assert.Contains("- AI", renderedMessages[1].Content);
-    Assert.Contains("- Programming", renderedMessages[1].Content);
-    Assert.Contains("- Science", renderedMessages[1].Content);
-    Assert.Contains("Can you recommend something based on these?", renderedMessages[1].Content);
+    Assert.Equal("user", renderedMessages[1].Role.ToString().ToLower());
+    Assert.Contains("Here are my interests:", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("- AI", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("- Programming", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("- Science", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("Can you recommend something based on these?", ((ICanGetText)renderedMessages[1]).GetText());
     
     // Check assistant message with joined interests
-    Assert.Equal("assistant", renderedMessages[2].Role);
-    Assert.Contains("Based on your interests in AI, Programming, Science", renderedMessages[2].Content);
+    Assert.Equal("assistant", renderedMessages[2].Role.ToString().ToLower());
+    Assert.Contains("Based on your interests in AI, Programming, Science", ((ICanGetText)renderedMessages[2]).GetText());
   }
 
   [Fact]
@@ -105,22 +105,22 @@ public class PromptChainTemplateTests
     Assert.Equal(3, renderedMessages.Count);
     
     // Check system message
-    Assert.Equal("system", renderedMessages[0].Role);
-    Assert.Contains("You are a helpful assistant for", renderedMessages[0].Content);
-    Assert.Contains("AchieveAI", renderedMessages[0].Content);
+    Assert.Equal("system", renderedMessages[0].Role.ToString().ToLower());
+    Assert.Contains("You are a helpful assistant for", ((ICanGetText)renderedMessages[0]).GetText());
+    Assert.Contains("AchieveAI", ((ICanGetText)renderedMessages[0]).GetText());
     
     // Check user message with rendered dictionary
-    Assert.Equal("user", renderedMessages[1].Role);
-    Assert.Contains("Here is my profile:", renderedMessages[1].Content);
-    Assert.Contains("- Name: Jane Smith", renderedMessages[1].Content);
-    Assert.Contains("- Age: 28", renderedMessages[1].Content);
-    Assert.Contains("- Interests: Technology", renderedMessages[1].Content);
-    Assert.Contains("What can you suggest for me?", renderedMessages[1].Content);
+    Assert.Equal("user", renderedMessages[1].Role.ToString().ToLower());
+    Assert.Contains("Here is my profile:", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("- Name: Jane Smith", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("- Age: 28", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("- Interests: Technology", ((ICanGetText)renderedMessages[1]).GetText());
+    Assert.Contains("What can you suggest for me?", ((ICanGetText)renderedMessages[1]).GetText());
     
     // Check assistant message
-    Assert.Equal("assistant", renderedMessages[2].Role);
-    Assert.Contains("Based on your profile", renderedMessages[2].Content);
-    Assert.Contains("I suggest", renderedMessages[2].Content);
+    Assert.Equal("assistant", renderedMessages[2].Role.ToString().ToLower());
+    Assert.Contains("Based on your profile", ((ICanGetText)renderedMessages[2]).GetText());
+    Assert.Contains("I suggest", ((ICanGetText)renderedMessages[2]).GetText());
   }
 
   [Fact]
@@ -135,14 +135,14 @@ public class PromptChainTemplateTests
 
     // Assert
     Assert.Equal(3, messages.Count);
-    Assert.Equal("system", messages[0].Role);
-    Assert.Contains("You are a helpful assistant for {{company}}", messages[0].Content);
-    Assert.Equal("user", messages[1].Role);
-    Assert.Contains("Hello, I'm {{name}}", messages[1].Content);
-    Assert.Contains("What can you tell me about {{topic}}?", messages[1].Content);
-    Assert.Equal("assistant", messages[2].Role);
-    Assert.Contains("Hello {{name}}", messages[2].Content);
-    Assert.Contains("here's what I know about {{topic}}", messages[2].Content);
+    Assert.Equal("system", messages[0].Role.ToString().ToLower());
+    Assert.Contains("You are a helpful assistant for {{company}}", ((ICanGetText)messages[0]).GetText());
+    Assert.Equal("user", messages[1].Role.ToString().ToLower());
+    Assert.Contains("Hello, I'm {{name}}", ((ICanGetText)messages[1]).GetText());
+    Assert.Contains("What can you tell me about {{topic}}?", ((ICanGetText)messages[1]).GetText());
+    Assert.Equal("assistant", messages[2].Role.ToString().ToLower());
+    Assert.Contains("Hello {{name}}", ((ICanGetText)messages[2]).GetText());
+    Assert.Contains("here's what I know about {{topic}}", ((ICanGetText)messages[2]).GetText());
   }
 
   [Fact]

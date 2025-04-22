@@ -1,10 +1,7 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.McpMiddleware;
 using System.Text.Json;
-using System.Collections.Generic;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 

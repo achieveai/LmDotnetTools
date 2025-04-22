@@ -106,7 +106,7 @@ async def execute_python_in_container(code: str) -> str:
     script_dir = None
     try:
         # Create a unique subdirectory for this execution
-        script_dir = os.path.join(code_dir, f"exec-{tempfile.mktemp(dir='').split('/')[-1]}")
+        script_dir = code_dir
         os.makedirs(script_dir, exist_ok=True)
         
         script_path = os.path.join(script_dir, "script.py")
@@ -148,9 +148,9 @@ async def execute_python_in_container(code: str) -> str:
                 print(f"Error deleting script file: {str(e)}")
         
         # Remove the directory after file deletion
-        if os.path.exists(script_dir):
-            shutil.rmtree(script_dir, ignore_errors=True)
-            print(f"Deleted script directory: {script_dir}")
+        # if os.path.exists(script_dir):
+        #     shutil.rmtree(script_dir, ignore_errors=True)
+        #     print(f"Deleted script directory: {script_dir}")
         
         return result.decode('utf-8')
     except Exception as e:
@@ -163,13 +163,13 @@ async def execute_python_in_container(code: str) -> str:
                 print(f"Error deleting script file after main error: {str(clean_error)}")
         
         # Remove the directory after file deletion
-        if script_dir and os.path.exists(script_dir):
-            shutil.rmtree(script_dir, ignore_errors=True)
-            print(f"Deleted script directory after error: {script_dir}")
+        # if script_dir and os.path.exists(script_dir):
+        #     shutil.rmtree(script_dir, ignore_errors=True)
+        #     print(f"Deleted script directory after error: {script_dir}")
             
         return f"Error executing code: {str(e)}"
 
-@mcp.tool()
+# @mcp.tool()
 async def list_directory(relative_path: str = "") -> str:
     """
     List the contents of a directory within the code directory where python code is executed
@@ -232,7 +232,7 @@ def _format_size(size_bytes):
         size_bytes /= 1024.0
     return f"{size_bytes:.1f} TB"
 
-@mcp.tool()
+# @mcp.tool()
 async def read_file(relative_path: str) -> str:
     """
     Read a file from the code directory where python code is executed
@@ -261,7 +261,7 @@ async def read_file(relative_path: str) -> str:
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
-@mcp.tool()
+# @mcp.tool()
 async def write_file(relative_path: str, content: str) -> str:
     """
     Write content to a file in the code directory where python code is executed
@@ -290,7 +290,7 @@ async def write_file(relative_path: str, content: str) -> str:
     except Exception as e:
         return f"Error writing file: {str(e)}"
 
-@mcp.tool()
+# @mcp.tool()
 async def delete_file(relative_path: str) -> str:
     """
     Delete a file from the code directory where python code is executed
@@ -318,7 +318,7 @@ async def delete_file(relative_path: str) -> str:
     except Exception as e:
         return f"Error deleting file: {str(e)}"
 
-@mcp.tool()
+# @mcp.tool()
 async def get_directory_tree(relative_path: str = "") -> str:
     """
     Get an ASCII tree representation of a directory structure where python code is executed
@@ -383,7 +383,7 @@ def _generate_tree(path, base_path, prefix=""):
     
     return result
 
-@mcp.tool()
+# @mcp.tool()
 async def cleanup_code_directory() -> str:
     """
     Clean up the code directory by removing all files and subdirectories

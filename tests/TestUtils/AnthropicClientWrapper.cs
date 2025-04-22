@@ -3,9 +3,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
@@ -173,9 +170,9 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
     /// <param name="request">The request to process.</param>
     /// <param name="cancellationToken">A cancellation token.</param>
     /// <returns>An async enumerable of stream events.</returns>
-    public async IAsyncEnumerable<AnthropicStreamEvent> StreamingChatCompletionsAsync(
+    public Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
         AnthropicRequest request,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default)
     {
         // Serialize the request to JsonObject
         var serializedRequest = JsonSerializer.SerializeToNode(request, _jsonOptions)?.AsObject()
@@ -194,11 +191,7 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
                 if (_allowAdditionalRequests)
                 {
                     Console.WriteLine($"WARNING: Exceeded predefined interactions. Adding new streaming interaction at index {currentIndex}.");
-                    await foreach (var response in ProcessNewStreamingInteractionAsync(request, serializedRequest, cancellationToken))
-                    {
-                        yield return response;
-                    }
-                    yield break;
+                    return ProcessNewStreamingInteractionAsync(request, serializedRequest, cancellationToken);
                 }
 
                 // Otherwise throw an exception as before
@@ -223,62 +216,129 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
             _recordedInteractions.Add(expectedInteraction);
             _currentInteractionIndex++;
 
-            // Return each fragment with a small delay between them
-            foreach (var fragmentJson in expectedInteraction.SerializedResponseFragments)
+            // Return stored fragments as an async enumerable
+            return Task.FromResult(GetStoredFragmentsAsAsyncEnumerable(expectedInteraction.SerializedResponseFragments, cancellationToken));
+        }
+
+        return ProcessNewStreamingInteractionAsync(request, serializedRequest, cancellationToken);
+    }
+
+    private IAsyncEnumerable<AnthropicStreamEvent> GetStoredFragmentsAsAsyncEnumerable(
+        List<JsonObject> fragments, 
+        CancellationToken cancellationToken)
+    {
+        return new StoredFragmentsAsyncEnumerable(fragments, _jsonOptions, cancellationToken);
+    }
+
+    private class StoredFragmentsAsyncEnumerable : IAsyncEnumerable<AnthropicStreamEvent>
+    {
+        private readonly List<JsonObject> _fragments;
+        private readonly JsonSerializerOptions _jsonOptions;
+        private readonly CancellationToken _cancellationToken;
+
+        public StoredFragmentsAsyncEnumerable(
+            List<JsonObject> fragments, 
+            JsonSerializerOptions jsonOptions, 
+            CancellationToken cancellationToken)
+        {
+            _fragments = fragments;
+            _jsonOptions = jsonOptions;
+            _cancellationToken = cancellationToken;
+        }
+
+        public async IAsyncEnumerator<AnthropicStreamEvent> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+        {
+            cancellationToken = _cancellationToken.IsCancellationRequested ? _cancellationToken : cancellationToken;
+            
+            foreach (var fragmentJson in _fragments)
             {
                 // Add a small delay between fragments to simulate streaming
                 await Task.Delay(1, cancellationToken);
                 yield return JsonSerializer.Deserialize<AnthropicStreamEvent>(fragmentJson.ToJsonString(), _jsonOptions)!;
             }
-
-            yield break;
-        }
-
-        await foreach (var response in ProcessNewStreamingInteractionAsync(request, serializedRequest, cancellationToken))
-        {
-            yield return response;
         }
     }
 
     /// <summary>
     /// Processes a new streaming interaction when no test data exists or when adding additional interactions.
     /// </summary>
-    private async IAsyncEnumerable<AnthropicStreamEvent> ProcessNewStreamingInteractionAsync(
+    private Task<IAsyncEnumerable<AnthropicStreamEvent>> ProcessNewStreamingInteractionAsync(
         AnthropicRequest request,
         JsonObject serializedRequest,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+        CancellationToken cancellationToken)
     {
-        // Get responses from inner client
-        var responseFragments = new List<JsonObject>();
+        return Task.FromResult<IAsyncEnumerable<AnthropicStreamEvent>>(
+            new LiveStreamingAsyncEnumerable(_innerClient, request, serializedRequest, _jsonOptions, 
+                _testDataFilePath, _recordedInteractions, _currentInteractionIndex, cancellationToken));
+    }
 
-        await foreach (AnthropicStreamEvent streamEvent in _innerClient.StreamingChatCompletionsAsync(
-            request, cancellationToken))
+    private class LiveStreamingAsyncEnumerable : IAsyncEnumerable<AnthropicStreamEvent>
+    {
+        private readonly IAnthropicClient _innerClient;
+        private readonly AnthropicRequest _request;
+        private readonly JsonObject _serializedRequest;
+        private readonly JsonSerializerOptions _jsonOptions;
+        private readonly string _testDataFilePath;
+        private readonly List<InteractionData> _recordedInteractions;
+        private int _currentInteractionIndex;
+        private readonly CancellationToken _cancellationToken;
+
+        public LiveStreamingAsyncEnumerable(
+            IAnthropicClient innerClient,
+            AnthropicRequest request,
+            JsonObject serializedRequest,
+            JsonSerializerOptions jsonOptions,
+            string testDataFilePath,
+            List<InteractionData> recordedInteractions,
+            int currentInteractionIndex,
+            CancellationToken cancellationToken)
         {
-            // Save the fragment
-            var serializedFragment = JsonSerializer.SerializeToNode(streamEvent, _jsonOptions)?.AsObject()
-                ?? throw new InvalidOperationException("Failed to serialize stream event to JsonObject");
-            responseFragments.Add(serializedFragment);
-            
-            // Return the event to the caller
-            yield return streamEvent;
+            _innerClient = innerClient;
+            _request = request;
+            _serializedRequest = serializedRequest;
+            _jsonOptions = jsonOptions;
+            _testDataFilePath = testDataFilePath;
+            _recordedInteractions = recordedInteractions;
+            _currentInteractionIndex = currentInteractionIndex;
+            _cancellationToken = cancellationToken;
         }
 
-        // Create and store the interaction
-        var interaction = new InteractionData
+        public async IAsyncEnumerator<AnthropicStreamEvent> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
-            SerializedRequest = serializedRequest,
-            SerializedResponseFragments = responseFragments,
-            IsStreaming = true
-        };
+            cancellationToken = _cancellationToken.IsCancellationRequested ? _cancellationToken : cancellationToken;
+            
+            // Get responses from inner client
+            var responseFragments = new List<JsonObject>();
+            
+            var streamEvents = await _innerClient.StreamingChatCompletionsAsync(_request, cancellationToken);
+            await foreach (AnthropicStreamEvent streamEvent in streamEvents.WithCancellation(cancellationToken))
+            {
+                // Save the fragment
+                var serializedFragment = JsonSerializer.SerializeToNode(streamEvent, _jsonOptions)?.AsObject()
+                    ?? throw new InvalidOperationException("Failed to serialize stream event to JsonObject");
+                responseFragments.Add(serializedFragment);
+                
+                // Return the event to the caller
+                yield return streamEvent;
+            }
 
-        _recordedInteractions.Add(interaction);
-        _currentInteractionIndex++;
+            // Create and store the interaction
+            var interaction = new InteractionData
+            {
+                SerializedRequest = _serializedRequest,
+                SerializedResponseFragments = responseFragments,
+                IsStreaming = true
+            };
 
-        // Save all recorded interactions to the file
-        SaveTestData(_testDataFilePath, new TestData
-        {
-            Interactions = _recordedInteractions.ToList()
-        });
+            _recordedInteractions.Add(interaction);
+            Interlocked.Increment(ref _currentInteractionIndex);
+
+            // Save all recorded interactions to the file
+            SaveTestData(_testDataFilePath, new TestData
+            {
+                Interactions = _recordedInteractions.ToList()
+            });
+        }
     }
 
     /// <summary>

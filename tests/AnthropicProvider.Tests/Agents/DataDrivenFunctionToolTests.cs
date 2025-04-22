@@ -10,6 +10,7 @@ public class DataDrivenFunctionToolTests
     
     [Theory]
     [MemberData(nameof(GetFunctionToolTestCases))]
+    [Xunit.InlineData("ToolCallResultTool")]
     public async Task FunctionTool_RequestAndResponseTransformation(string testName)
     {
         Debug.WriteLine($"Starting test for {testName}");
@@ -29,6 +30,10 @@ public class DataDrivenFunctionToolTests
         
         // Assert - Compare with expected response
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.Anthropic);
+        if (expectedResponses == null)
+        {
+            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response);
+        }
         
         Assert.NotNull(response);
         
@@ -136,10 +141,7 @@ public class DataDrivenFunctionToolTests
         var response = await agent.GenerateReplyAsync(messages, options);
         
         // 4. Save final response
-        if (response != null && response is TextMessage textResponse)
-        {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, textResponse);
-        }
+        _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response);
     }
     
     /// <summary>
@@ -217,9 +219,6 @@ public class DataDrivenFunctionToolTests
         var response = await agent.GenerateReplyAsync(messages, options);
         
         // 4. Save final response
-        if (response != null && response is TextMessage textResponse)
-        {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, textResponse);
-        }
+        _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response);
     }
 } 

@@ -90,7 +90,7 @@ internal class CaptureAnthropicClient : IAnthropicClient
     }
   }
   
-  public IAsyncEnumerable<AnthropicStreamEvent> StreamingChatCompletionsAsync(
+  public Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
     AnthropicRequest request,
     CancellationToken cancellationToken = default)
   {
@@ -113,7 +113,7 @@ internal class CaptureAnthropicClient : IAnthropicClient
       Console.WriteLine($" - _model: {_model ?? "null"}");
       Console.WriteLine($" - _messages: {(_messages != null ? $"{_messages.Count} items" : "null")}");
       
-      return EmptyStreamAsync(cancellationToken);
+      return Task.FromResult<IAsyncEnumerable<AnthropicStreamEvent>>(EmptyStreamAsync(cancellationToken));
     }
     catch (Exception ex)
     {

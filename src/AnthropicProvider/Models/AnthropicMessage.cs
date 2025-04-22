@@ -101,6 +101,24 @@ public record AnthropicContent
   /// </summary>
   [JsonPropertyName("input")]
   public JsonElement? Input { get; init; }
+  
+  /// <summary>
+  /// The tool result information when Type is "tool_result".
+  /// </summary>
+  [JsonPropertyName("tool_result")]
+  public AnthropicToolResult? ToolResult { get; init; }
+  
+  /// <summary>
+  /// The ID of the tool use that this result is for, when Type is "tool_result".
+  /// </summary>
+  [JsonPropertyName("tool_use_id")]
+  public string? ToolUseId { get; init; }
+  
+  /// <summary>
+  /// The content of the tool result, when Type is "tool_result".
+  /// </summary>
+  [JsonPropertyName("content")]
+  public string? Content { get; init; }
 }
 
 /// <summary>
@@ -155,4 +173,22 @@ public record AnthropicToolUse
   /// </summary>
   [JsonPropertyName("input")]
   public string Input { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// Represents a tool result in an Anthropic content item.
+/// </summary>
+public record AnthropicToolResult
+{
+  /// <summary>
+  /// The ID of the tool use that this result is for.
+  /// </summary>
+  [JsonPropertyName("tool_use_id")]
+  public string ToolUseId { get; init; } = string.Empty;
+  
+  /// <summary>
+  /// The content of the tool result.
+  /// </summary>
+  [JsonPropertyName("content")]
+  public JsonElement Content { get; init; }
 }

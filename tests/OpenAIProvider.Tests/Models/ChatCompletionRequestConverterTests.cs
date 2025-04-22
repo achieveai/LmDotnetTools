@@ -1,15 +1,8 @@
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Linq;
-using System.Text.Json.Nodes;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
 {

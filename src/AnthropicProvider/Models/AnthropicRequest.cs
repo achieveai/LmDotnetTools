@@ -1,12 +1,12 @@
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 using System.Collections.Generic;
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using System.Text.Json;
 
 /// <summary>
 /// Represents a request to the Anthropic API for message completion.
@@ -103,12 +103,73 @@ public record AnthropicRequest
         continue;
       }
 
+      // Special handling for ToolsCallAggregateMessage - separate into two messages
+      if (message is ToolsCallAggregateMessage aggregateMsg)
+      {
+        // First create an assistant message with the tool calls
+        if (aggregateMsg.ToolsCallMessage.ToolCalls?.Any() == true)
+        {
+          var assistantMessage = new AnthropicMessage { Role = "assistant" };
+          
+          foreach (var toolCall in aggregateMsg.ToolsCallMessage.ToolCalls)
+          {
+            assistantMessage.Content.Add(new AnthropicContent
+            {
+              Type = "tool_use",
+              Id = toolCall.ToolCallId,
+              Name = toolCall.FunctionName,
+              Input = JsonSerializer.Deserialize<JsonElement>(toolCall.FunctionArgs ?? "{}")
+            });
+          }
+          
+          if (assistantMessage.Content.Count > 0)
+          {
+            anthropicMessages.Add(assistantMessage);
+          }
+        }
+        
+        // Then create a user message with the tool results
+        if (aggregateMsg.ToolsCallResult.ToolCallResults?.Any() == true)
+        {
+          var userMessage = new AnthropicMessage { Role = "user" };
+          
+          // First add a text content if there is any preceding text
+          if (aggregateMsg.ToolsCallResult is ICanGetText textContent && !string.IsNullOrEmpty(textContent.GetText()))
+          {
+            userMessage.Content.Add(new AnthropicContent
+            {
+              Type = "text",
+              Text = textContent.GetText() ?? string.Empty
+            });
+          }
+
+          // Then add tool results
+          foreach (var result in aggregateMsg.ToolsCallResult.ToolCallResults)
+          {
+            userMessage.Content.Add(new AnthropicContent
+            {
+              Type = "tool_result",
+              ToolUseId = result.ToolCallId,
+              Content = result.Result
+            });
+          }
+          
+          if (userMessage.Content.Count > 0)
+          {
+            anthropicMessages.Add(userMessage);
+          }
+        }
+        
+        continue; // Skip the rest of the loop since we've handled this message
+      }
+
+      // Regular message handling for other message types
       // Convert to Anthropic message format
       var role = message.Role switch
       {
         Role.User => "user",
         Role.Assistant => "assistant",
-        Role.Tool => "assistant", // Tools are handled separately in Anthropic API
+        Role.Tool => "assistant", // Tool messages are mapped to assistant role
         _ => "user" // Default to user if unknown
       };
 
@@ -122,6 +183,44 @@ public record AnthropicRequest
           Type = "text",
           Text = txtMsg.Text
         });
+      }
+      else if (message is ToolsCallMessage toolsCallMsg && toolsCallMsg.ToolCalls?.Any() == true)
+      {
+        // Handle tool calls in assistant messages
+        foreach (var toolCall in toolsCallMsg.ToolCalls)
+        {
+          anthropicMessage.Content.Add(new AnthropicContent
+          {
+            Type = "tool_use",
+            Id = toolCall.ToolCallId,
+            Name = toolCall.FunctionName,
+            Input = JsonSerializer.Deserialize<JsonElement>(toolCall.FunctionArgs ?? "{}")
+          });
+        }
+      }
+      else if (message is ToolsCallResultMessage toolResultMsg && toolResultMsg.ToolCallResults?.Any() == true)
+      {
+        // Handle tool results in user messages
+        // First add a text content if there is any preceding text
+        if (message is ICanGetText textContent && !string.IsNullOrEmpty(textContent.GetText()))
+        {
+          anthropicMessage.Content.Add(new AnthropicContent
+          {
+            Type = "text",
+            Text = textContent.GetText() ?? string.Empty
+          });
+        }
+
+        // Then add tool results
+        foreach (var result in toolResultMsg.ToolCallResults)
+        {
+          anthropicMessage.Content.Add(new AnthropicContent
+          {
+            Type = "tool_result",
+            ToolUseId = result.ToolCallId,
+            Content = result.Result
+          });
+        }
       }
       // Add support for other message types as needed
 

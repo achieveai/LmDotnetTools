@@ -144,10 +144,7 @@ public class DataDrivenFunctionToolTests
         var response = await agent.GenerateReplyAsync(messages, options);
         
         // 4. Save final response
-        if (response != null && response is TextMessage textResponse)
-        {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.OpenAI, textResponse);
-        }
+        _testDataManager.SaveFinalResponse(testName, ProviderType.OpenAI, response);
     }
     
     /// <summary>
@@ -225,9 +222,6 @@ public class DataDrivenFunctionToolTests
         var response = await agent.GenerateReplyAsync(messages, options);
         
         // 4. Save final response
-        if (response != null && response is TextMessage textResponse)
-        {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.OpenAI, textResponse);
-        }
+        _testDataManager.SaveFinalResponse(testName, ProviderType.OpenAI, response);
     }
 } 
