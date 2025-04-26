@@ -45,25 +45,100 @@ public static class FunctionContractMarkdownExtensions
                 // Add the parameter name and description
                 markdown.AppendLine($"- {parameter.Name} ({requiredStatus}): {parameter.Description}");
                 
-                // If parameter has a complex schema (not a simple type), include the schema
-                if (parameter.ParameterType != null && 
-                    (parameter.ParameterType.Properties != null || 
-                     parameter.ParameterType.Items != null ||
-                     !string.IsNullOrEmpty(parameter.ParameterType.Description)))
+                // If parameter has a complex schema, include detailed information
+                if (parameter.ParameterType != null)
                 {
-                    markdown.AppendLine("  Schema:");
-                    markdown.AppendLine("  ```json");
+                    markdown.AppendLine("  Schema Details:");
+                    markdown.AppendLine($"  - Type: {parameter.ParameterType.Type}");
                     
-                    // Serialize the schema to JSON
-                    var schemaJson = JsonSerializer.Serialize(parameter.ParameterType, new JsonSerializerOptions
+                    // Add description from schema if available
+                    if (!string.IsNullOrEmpty(parameter.ParameterType.Description))
                     {
-                        WriteIndented = true
-                    });
+                        markdown.AppendLine($"  - Description: {parameter.ParameterType.Description}");
+                    }
                     
-                    // Add the indented schema JSON
-                    markdown.AppendLine("  " + schemaJson.Replace("\n", "\n  "));
+                    // Add enum values if present
+                    if (parameter.ParameterType.Enum != null && parameter.ParameterType.Enum.Count > 0)
+                    {
+                        markdown.AppendLine($"  - Allowed Values (Enum): {string.Join(", ", parameter.ParameterType.Enum)}");
+                    }
                     
-                    markdown.AppendLine("  ```");
+                    // Add range constraints for numbers
+                    if (parameter.ParameterType.Minimum.HasValue)
+                    {
+                        markdown.AppendLine($"  - Minimum: {parameter.ParameterType.Minimum.Value}");
+                    }
+                    if (parameter.ParameterType.Maximum.HasValue)
+                    {
+                        markdown.AppendLine($"  - Maximum: {parameter.ParameterType.Maximum.Value}");
+                    }
+                    
+                    // Add array constraints
+                    if (parameter.ParameterType.Type.ToLower() == "array")
+                    {
+                        if (parameter.ParameterType.MinItems.HasValue)
+                        {
+                            markdown.AppendLine($"  - Minimum Items: {parameter.ParameterType.MinItems.Value}");
+                        }
+                        if (parameter.ParameterType.MaxItems.HasValue)
+                        {
+                            markdown.AppendLine($"  - Maximum Items: {parameter.ParameterType.MaxItems.Value}");
+                        }
+                        if (parameter.ParameterType.UniqueItems)
+                        {
+                            markdown.AppendLine("  - Unique Items: Yes");
+                        }
+                        // Add information about array item type if available
+                        if (parameter.ParameterType.Items != null)
+                        {
+                            markdown.AppendLine($"  - Item Type: {parameter.ParameterType.Items.Type}");
+                            if (!string.IsNullOrEmpty(parameter.ParameterType.Items.Description))
+                            {
+                                markdown.AppendLine($"    - Item Description: {parameter.ParameterType.Items.Description}");
+                            }
+                        }
+                    }
+                    
+                    // If it's an object with properties, list them
+                    if (parameter.ParameterType.Properties != null && parameter.ParameterType.Properties.Count > 0)
+                    {
+                        markdown.AppendLine("  - Properties:");
+                        foreach (var prop in parameter.ParameterType.Properties)
+                        {
+                            markdown.AppendLine($"    - {prop.Key}: Type={prop.Value.Type}");
+                            if (!string.IsNullOrEmpty(prop.Value.Description))
+                            {
+                                markdown.AppendLine($"      - Description: {prop.Value.Description}");
+                            }
+                            if (prop.Value.Enum != null && prop.Value.Enum.Count > 0)
+                            {
+                                markdown.AppendLine($"      - Allowed Values (Enum): {string.Join(", ", prop.Value.Enum)}");
+                            }
+                            if (prop.Value.Minimum.HasValue)
+                            {
+                                markdown.AppendLine($"      - Minimum: {prop.Value.Minimum.Value}");
+                            }
+                            if (prop.Value.Maximum.HasValue)
+                            {
+                                markdown.AppendLine($"      - Maximum: {prop.Value.Maximum.Value}");
+                            }
+                            if (prop.Value.Type.ToLower() == "array")
+                            {
+                                if (prop.Value.MinItems.HasValue)
+                                {
+                                    markdown.AppendLine($"      - Minimum Items: {prop.Value.MinItems.Value}");
+                                }
+                                if (prop.Value.MaxItems.HasValue)
+                                {
+                                    markdown.AppendLine($"      - Maximum Items: {prop.Value.MaxItems.Value}");
+                                }
+                                if (prop.Value.UniqueItems)
+                                {
+                                    markdown.AppendLine("      - Unique Items: Yes");
+                                }
+                            }
+                        }
+                    }
                 }
             }
             
@@ -140,17 +215,35 @@ public static class FunctionContractMarkdownExtensions
         switch (schema.Type.ToLower())
         {
             case "string":
+                if (schema.Enum != null && schema.Enum.Count > 0)
+                {
+                    return schema.Enum[0]; // Return first enum value as example
+                }
                 return "value";
             case "integer":
             case "number":
+                if (schema.Minimum.HasValue)
+                {
+                    return schema.Minimum.Value;
+                }
                 return 42;
             case "boolean":
                 return true;
             case "array":
-                // Create an array with one sample item if we have an item schema
+                // Create an array with items respecting MinItems if possible
                 if (schema.Items != null)
                 {
-                    return new[] { CreateExampleValueFromSchema(schema.Items) };
+                    int itemCount = schema.MinItems.HasValue ? Math.Max(1, schema.MinItems.Value) : 1;
+                    if (schema.MaxItems.HasValue && itemCount > schema.MaxItems.Value)
+                    {
+                        itemCount = schema.MaxItems.Value;
+                    }
+                    var items = new List<object>();
+                    for (int i = 0; i < itemCount; i++)
+                    {
+                        items.Add(CreateExampleValueFromSchema(schema.Items));
+                    }
+                    return items.ToArray();
                 }
                 return new object[] { };
             case "object":
@@ -197,10 +290,20 @@ public static class FunctionContractMarkdownExtensions
             case "boolean":
                 return true;
             case "array":
-                // Create an array with one sample item if we have an item schema
+                // Create an array with items respecting MinItems if possible
                 if (property.Items != null)
                 {
-                    return new[] { CreateExampleValueFromSchema(property.Items) };
+                    int itemCount = property.MinItems.HasValue ? Math.Max(1, property.MinItems.Value) : 1;
+                    if (property.MaxItems.HasValue && itemCount > property.MaxItems.Value)
+                    {
+                        itemCount = property.MaxItems.Value;
+                    }
+                    var items = new List<object>();
+                    for (int i = 0; i < itemCount; i++)
+                    {
+                        items.Add(CreateExampleValueFromSchema(property.Items));
+                    }
+                    return items.ToArray();
                 }
                 return new object[] { };
             default:
