@@ -8,7 +8,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 /// <summary>
 /// Validates JSON data against a schema.
 /// </summary>
-public class JsonSchemaValidator
+public class JsonSchemaValidator : IJsonSchemaValidator
 {
     /// <summary>
     /// Validates the provided JSON string against the specified schema.

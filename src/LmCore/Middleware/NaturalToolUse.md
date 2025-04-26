@@ -106,6 +106,109 @@ Responsibilities:
 
 ---
 
+## Examples of Natural Tool Use
+
+### Weather Query Tool
+
+Tool Name: `GetWeather`
+
+**Schema Definition:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "location": {
+      "type": "string",
+      "description": "The city and state, e.g. San Francisco, CA"
+    },
+    "unit": {
+      "type": "string",
+      "enum": ["celsius", "fahrenheit"],
+      "description": "The temperature unit to use"
+    }
+  },
+  "required": ["location"]
+}
+```
+
+**Example User Input:**
+```
+What's the weather like in San Francisco today?
+```
+
+**Expected Tool Call Output (JSON):**
+
+I'll get the weather for San Francisco today in Fahrenheit.
+
+<GetWeather>
+```json
+{
+  "location": "San Francisco, CA",
+  "unit": "fahrenheit"
+}
+```
+</GetWeather>
+
+**Explanation:**
+The language model interprets the user's natural language query and extracts the relevant information into a structured JSON format based on the provided schema. The middleware then processes this JSON to invoke the appropriate tool or API to fetch the weather data for San Francisco in Fahrenheit.
+
+### Restaurant Booking Tool
+
+ToolName: `BookRestaurant`
+
+**Schema Definition:**
+```json
+{
+  "type": "object",
+  "properties": {
+    "restaurantName": {
+      "type": "string",
+      "description": "Name of the restaurant"
+    },
+    "date": {
+      "type": "string",
+      "description": "Date of booking in YYYY-MM-DD format"
+    },
+    "time": {
+      "type": "string",
+      "description": "Time of booking in HH:MM format"
+    },
+    "numberOfPeople": {
+      "type": "integer",
+      "description": "Number of people for the reservation"
+    }
+  },
+  "required": ["restaurantName", "date", "time", "numberOfPeople"]
+}
+```
+
+**Example User Input:**
+```
+Book a table at Chez Paul for 4 people on 2025-05-15 at 7 PM.
+```
+
+**Expected Tool Call Output (JSON):**
+
+I'll book a restaurant reservation for Chez Paul for 4 people on 2025-05-15 at 7 PM.
+
+<BookRestaurant>
+```json
+{
+  "restaurantName": "Chez Paul",
+  "date": "2025-05-15",
+  "time": "19:00",
+  "numberOfPeople": 4
+}
+```
+</BookRestaurant>
+
+**Explanation:**
+The model parses the user's request and fills in the structured JSON according to the schema. This JSON data is then used by the middleware to call the appropriate booking tool or API with the exact parameters needed for the reservation.
+
+These examples demonstrate how natural language input from users can be converted into structured data that tools can use, leveraging JSON schemas to define the expected structure of tool call data. This approach allows for flexible and powerful tool interactions driven by natural language.
+
+---
+
 ## Special Cases & Fallback
 
 - **LLM never emits JSON**: use a small LLM (`fallbackParser`) to "rewrite" its reply purely as a function call JSON.  
@@ -161,4 +264,3 @@ var result = await natural.InvokeAsync(context, agent, cancellationToken);
 // For streaming
 var streamingAgent = new YourStreamingAgent();
 var streamingResult = await natural.InvokeStreamingAsync(context, streamingAgent, cancellationToken);
-```

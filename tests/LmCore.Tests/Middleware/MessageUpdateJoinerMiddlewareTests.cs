@@ -197,7 +197,7 @@ public class MessageUpdateJoinerMiddlewareTests
     }
 
     // Create a series of text update messages
-    private List<IMessage> CreateTextUpdateMessages(IEnumerable<string> parts)
+    public static List<IMessage> CreateTextUpdateMessages(IEnumerable<string> parts)
     {
         var messages = new List<IMessage>();
 
@@ -212,52 +212,5 @@ public class MessageUpdateJoinerMiddlewareTests
 
         return messages;
     }
-
-    // Create tool call update messages that build incrementally
-    private List<IMessage> CreateToolCallUpdateSequence()
-    {
-        return new List<IMessage>
-    {
-      // First update: Just the function name
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
-        {
-          FunctionName = "get_weather"
-        })
-      },
-      
-      // Second update: Function name and partial args
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
-        {
-          FunctionName = "get_weather",
-          FunctionArgs = "{\"location\":\"San"
-        })
-      },
-      
-      // Third update: Function name and more complete args
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
-        {
-          FunctionName = "get_weather",
-          FunctionArgs = "{\"location\":\"San Francisco\""
-        })
-      },
-      
-      // Final update: Complete function call
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
-        {
-          FunctionName = "get_weather",
-          FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}"
-        })
-      }
-    };
-    }
-
     #endregion
 }

@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Runtime.CompilerServices; // Add this line
+using System.Runtime.CompilerServices; 
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -14,19 +14,19 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public class NaturalToolUseParserMiddleware : IStreamingMiddleware
 {
     private readonly IEnumerable<FunctionContract> _functions;
-    private readonly JsonSchemaValidator _schemaValidator;
+    private readonly IJsonSchemaValidator? _schemaValidator;
     private readonly IAgent? _fallbackParser;
     private readonly string? _name;
     private bool _isFirstInvocation = true;
 
     public NaturalToolUseParserMiddleware(
         IEnumerable<FunctionContract> functions,
-        JsonSchemaValidator schemaValidator,
+        IJsonSchemaValidator? schemaValidator = null,
         IAgent? fallbackParser = null,
         string? name = null)
     {
         _functions = functions ?? throw new ArgumentNullException(nameof(functions));
-        _schemaValidator = schemaValidator ?? throw new ArgumentNullException(nameof(schemaValidator));
+        _schemaValidator = schemaValidator;
         _fallbackParser = fallbackParser;
         _name = name ?? nameof(NaturalToolUseParserMiddleware);
     }
@@ -58,7 +58,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
             modifiedContext.Options,
             cancellationToken);
 
-        return ProcessStreamingRepliesAsync(streamingReplies, cancellationToken);
+        return await ProcessStreamingRepliesAsync(streamingReplies, cancellationToken);
     }
 
     private MiddlewareContext PrepareContext(MiddlewareContext context)
@@ -111,121 +111,136 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         return processedReplies;
     }
 
-    private async IAsyncEnumerable<IMessage> ProcessStreamingRepliesAsync(IAsyncEnumerable<IMessage> streamingReplies, [EnumeratorCancellation] CancellationToken cancellationToken)
+    private async Task<IAsyncEnumerable<IMessage>> ProcessStreamingRepliesAsync(IAsyncEnumerable<IMessage> streamingReplies, CancellationToken cancellationToken)
     {
-        var buffer = new StringBuilder();
-        bool isBufferingToolCall = false;
-        string? currentToolName = null;
-        string prefixText = "";
-
+        List<IMessage> accumulatedMessages = new List<IMessage>();
         await foreach (var reply in streamingReplies.WithCancellation(cancellationToken))
         {
-            if (reply is TextMessage textMessage)
+            accumulatedMessages.Add(reply);
+        }
+        
+        List<IMessage> processedMessages = new List<IMessage>();
+        foreach (var msg in accumulatedMessages)
+        {
+            if (msg is TextMessage textMsg)
             {
-                var text = textMessage.Text;
-                buffer.Append(text);
-
-                if (!isBufferingToolCall)
-                {
-                    var startMatch = Regex.Match(buffer.ToString(), @"<([a-zA-Z0-9_]+)>");
-                    if (startMatch.Success)
-                    {
-                        isBufferingToolCall = true;
-                        currentToolName = startMatch.Groups[1].Value;
-                        var startIndex = buffer.ToString().IndexOf(startMatch.Value);
-                        prefixText = buffer.ToString().Substring(0, startIndex);
-                        if (!string.IsNullOrEmpty(prefixText))
-                        {
-                            yield return new TextMessage { Text = prefixText, Role = textMessage.Role };
-                        }
-                        buffer.Clear();
-                        buffer.Append(buffer.ToString().Substring(startIndex));
-                    }
-                    else
-                    {
-                        yield return textMessage;
-                        buffer.Clear();
-                    }
-                }
-                else
-                {
-                    var endTag = $"</{currentToolName}>";
-                    if (buffer.ToString().Contains(endTag))
-                    {
-                        var toolCallText = buffer.ToString();
-                        var messages = await ExtractToolCallsAsync(toolCallText, currentToolName!, prefixText, textMessage.FromAgent, cancellationToken);
-                        foreach (var msg in messages)
-                        {
-                            yield return msg;
-                        }
-                        buffer.Clear();
-                        isBufferingToolCall = false;
-                        currentToolName = null;
-                        prefixText = "";
-                    }
-                }
+                var processed = await ProcessTextMessageAsync(textMsg, cancellationToken);
+                processedMessages.AddRange(processed);
             }
             else
             {
-                yield return reply;
+                processedMessages.Add(msg);
             }
         }
-
-        if (buffer.Length > 0 && isBufferingToolCall && currentToolName != null)
-        {
-            var messages = await ExtractToolCallsAsync(buffer.ToString(), currentToolName, prefixText, null, cancellationToken);
-            foreach (var msg in messages)
-            {
-                yield return msg;
-            }
-        }
-        else if (buffer.Length > 0)
-        {
-            yield return new TextMessage { Text = buffer.ToString(), Role = Role.Assistant };
-        }
+        
+        return new AsyncEnumerableWrapper<IMessage>(processedMessages);
     }
 
     private async Task<IEnumerable<IMessage>> ProcessTextMessageAsync(TextMessage textMessage, CancellationToken cancellationToken)
     {
         var text = textMessage.Text;
-        var matches = Regex.Matches(text, @"<([a-zA-Z0-9_]+)>[\s\S]*?</\1>");
+        var messages = new List<IMessage>();
+
+        // Check if there are tool calls in the format <toolName>...
+        var toolCallPattern = new Regex(@"<([a-zA-Z0-9_]+)>(.*?)</\1>", RegexOptions.Singleline);
+        var matches = toolCallPattern.Matches(text).Cast<Match>().ToList();
+
         if (matches.Count == 0)
         {
-            return new[] { textMessage };
+            messages.Add(textMessage);
+            return messages;
         }
 
-        var result = new List<IMessage>();
-        int lastIndex = 0;
+        int currentPosition = 0;
 
-        foreach (Match match in matches)
+        foreach (var match in matches)
         {
-            if (match.Index > lastIndex)
+            var startIndex = match.Index;
+            var endIndex = startIndex + match.Length;
+            var toolName = match.Groups[1].Value;
+            var content = match.Groups[2].Value.Trim();
+
+            if (startIndex > currentPosition)
             {
-                var prefix = text.Substring(lastIndex, match.Index - lastIndex);
-                if (!string.IsNullOrEmpty(prefix))
+                var prefixText = text.Substring(currentPosition, startIndex - currentPosition).Trim();
+                if (!string.IsNullOrEmpty(prefixText))
                 {
-                    result.Add(new TextMessage { Text = prefix, Role = textMessage.Role });
+                    messages.Add(new TextMessage { Text = prefixText, Role = textMessage.Role });
                 }
             }
 
-            var toolName = match.Groups[1].Value;
-            var toolCallText = match.Value;
-            var extractedMessages = await ExtractToolCallsAsync(toolCallText, toolName, "", textMessage.FromAgent, cancellationToken);
-            result.AddRange(extractedMessages);
+            try
+            {
+                // Extract JSON from content, looking for code blocks
+                var jsonMatch = Regex.Match(content, @"```(?:json)?\s*([\s\S]*?)\s*```", RegexOptions.Singleline);
+                if (jsonMatch.Success)
+                {
+                    var jsonText = jsonMatch.Groups[1].Value.Trim();
+                    var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+                    if (contract != null && _schemaValidator != null)
+                    {
+                        // Using ToString() as a workaround - ideally should use the schema property directly
+                        string schemaString = contract.Parameters.ToString() ?? string.Empty;
+                        if (_schemaValidator.Validate(jsonText, schemaString))
+                        {
+                            messages.Add(new TextMessage { Text = $"Tool Call: {toolName} with args {jsonText}", Role = Role.Assistant });
+                        }
+                        else if (_fallbackParser != null)
+                        {
+                            var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
+                            messages.AddRange(fallbackMessages);
+                        }
+                        else
+                        {
+                            throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
+                        }
+                    }
+                    else if (_fallbackParser != null)
+                    {
+                        var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
+                        messages.AddRange(fallbackMessages);
+                    }
+                    else
+                    {
+                        throw new ToolUseParsingException($"Tool {toolName} not found or no schema validator provided");
+                    }
+                }
+                else if (_fallbackParser != null)
+                {
+                    var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
+                    messages.AddRange(fallbackMessages);
+                }
+                else
+                {
+                    throw new ToolUseParsingException($"No JSON content found for tool call {toolName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                if (_fallbackParser != null)
+                {
+                    var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
+                    messages.AddRange(fallbackMessages);
+                }
+                else
+                {
+                    throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
+                }
+            }
 
-            lastIndex = match.Index + match.Length;
+            currentPosition = endIndex;
         }
 
-        if (lastIndex < text.Length)
+        if (currentPosition < text.Length)
         {
-            var suffix = text.Substring(lastIndex);
-            if (!string.IsNullOrEmpty(suffix))
+            var suffixText = text.Substring(currentPosition).Trim();
+            if (!string.IsNullOrEmpty(suffixText))
             {
-                result.Add(new TextMessage { Text = suffix, Role = textMessage.Role });
+                messages.Add(new TextMessage { Text = suffixText, Role = textMessage.Role });
             }
         }
 
-        return result;
+        return messages;
     }
 
     private async Task<IEnumerable<IMessage>> ExtractToolCallsAsync(string text, string toolName, string prefixText, string? fromAgent, CancellationToken cancellationToken)
@@ -238,10 +253,10 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
         try
         {
-            var jsonMatch = Regex.Match(text, @"```json[\s\S]*?```");
+            var jsonMatch = Regex.Match(text, @"```json[\s\S]*?```", RegexOptions.Singleline);
             if (!jsonMatch.Success)
             {
-                jsonMatch = Regex.Match(text, @"```[\s\S]*?```");
+                jsonMatch = Regex.Match(text, @"```[\s\S]*?```", RegexOptions.Singleline);
             }
 
             if (jsonMatch.Success)
@@ -250,7 +265,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
                 if (contract != null && _schemaValidator != null)
                 {
-                    result.Add(new TextMessage { Text = $"Tool Call: {toolName} with args {jsonText}", Role = Role.Assistant });
+                    result.Add(new TextMessage { Text = jsonText, Role = Role.Assistant });
                 }
                 else if (_fallbackParser != null)
                 {
@@ -311,7 +326,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
                 if (contract != null && _schemaValidator != null)
                 {
-                    return new IMessage[] { new TextMessage { Text = $"Tool Call: {toolName} with args {jsonText}", Role = Role.Assistant } };
+                    return new IMessage[] { new TextMessage { Text = jsonText, Role = Role.Assistant } };
                 }
             }
             catch
@@ -325,10 +340,10 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     private string ExtractJsonFromText(string text)
     {
-        var jsonMatch = Regex.Match(text, @"```json[\s\S]*?```");
+        var jsonMatch = Regex.Match(text, @"```json[\s\S]*?```", RegexOptions.Singleline);
         if (!jsonMatch.Success)
         {
-            jsonMatch = Regex.Match(text, @"```[\s\S]*?```");
+            jsonMatch = Regex.Match(text, @"```[\s\S]*?```", RegexOptions.Singleline);
         }
 
         if (jsonMatch.Success)
@@ -347,4 +362,48 @@ public class ToolUseParsingException : Exception
 {
     public ToolUseParsingException(string message) : base(message) { }
     public ToolUseParsingException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// Wrapper class to convert a list to an async enumerable.
+/// </summary>
+public class AsyncEnumerableWrapper<T> : IAsyncEnumerable<T>
+{
+    private readonly IEnumerable<T> _source;
+
+    public AsyncEnumerableWrapper(IEnumerable<T> source)
+    {
+        _source = source;
+    }
+
+    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+    {
+        return new AsyncEnumeratorWrapper<T>(_source.GetEnumerator());
+    }
+}
+
+/// <summary>
+/// Wrapper class to convert an enumerator to an async enumerator.
+/// </summary>
+public class AsyncEnumeratorWrapper<T> : IAsyncEnumerator<T>
+{
+    private readonly IEnumerator<T> _source;
+
+    public AsyncEnumeratorWrapper(IEnumerator<T> source)
+    {
+        _source = source;
+    }
+
+    public T Current => _source.Current;
+
+    public ValueTask DisposeAsync()
+    {
+        _source.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<bool> MoveNextAsync()
+    {
+        return ValueTask.FromResult(_source.MoveNext());
+    }
 }
