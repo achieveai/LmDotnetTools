@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Collections.Generic;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
@@ -120,6 +121,48 @@ public sealed record JsonSchemaObject
     public JsonSchemaObject? Items { get; init; }
 
     /// <summary>
+    /// Enum values for string type schemas
+    /// </summary>
+    [JsonPropertyName("enum")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Enum { get; init; }
+
+    /// <summary>
+    /// Minimum value for number/integer type schemas
+    /// </summary>
+    [JsonPropertyName("minimum")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Minimum { get; init; }
+
+    /// <summary>
+    /// Maximum value for number/integer type schemas
+    /// </summary>
+    [JsonPropertyName("maximum")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Maximum { get; init; }
+
+    /// <summary>
+    /// Minimum number of items for array type schemas
+    /// </summary>
+    [JsonPropertyName("minItems")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MinItems { get; init; }
+
+    /// <summary>
+    /// Maximum number of items for array type schemas
+    /// </summary>
+    [JsonPropertyName("maxItems")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxItems { get; init; }
+
+    /// <summary>
+    /// Whether items in array must be unique
+    /// </summary>
+    [JsonPropertyName("uniqueItems")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UniqueItems { get; init; }
+
+    /// <summary>
     /// Creates a builder for constructing a JSON Schema object more fluently
     /// </summary>
     public static JsonSchemaObjectBuilder Create(string type = "object") => 
@@ -143,15 +186,15 @@ public sealed record JsonSchemaObject
 }
 
 /// <summary>
-/// Represents a property in a JSON Schema definition
+/// Represents a property definition within a JSON Schema object
 /// </summary>
 public sealed record JsonSchemaProperty
 {
     /// <summary>
-    /// The type of the property (e.g., "string", "number", "boolean", etc.)
+    /// The type of the property (e.g., "string", "number", etc.)
     /// </summary>
     [JsonPropertyName("type")]
-    public string Type { get; init; } = string.Empty;
+    public string Type { get; init; } = "string";
 
     /// <summary>
     /// Description of the property
@@ -161,56 +204,63 @@ public sealed record JsonSchemaProperty
     public string? Description { get; init; }
 
     /// <summary>
-    /// For string types, specifies the format (e.g., "date-time", "email", etc.)
-    /// </summary>
-    [JsonPropertyName("format")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Format { get; init; }
-
-    /// <summary>
-    /// For string types, specifies the enum values
-    /// </summary>
-    [JsonPropertyName("enum")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyList<string>? Enum { get; init; }
-
-    /// <summary>
-    /// For number types, specifies the minimum value
-    /// </summary>
-    [JsonPropertyName("minimum")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public double? Minimum { get; init; }
-
-    /// <summary>
-    /// For number types, specifies the maximum value
-    /// </summary>
-    [JsonPropertyName("maximum")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public double? Maximum { get; init; }
-
-    /// <summary>
-    /// For array types, specifies the items schema
+    /// Schema for the array items if the property is an array
     /// </summary>
     [JsonPropertyName("items")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonSchemaObject? Items { get; init; }
 
     /// <summary>
-    /// For array types, specifies the minimum number of items
+    /// Property definitions if the property is an object
+    /// </summary>
+    [JsonPropertyName("properties")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, JsonSchemaProperty>? Properties { get; init; }
+
+    /// <summary>
+    /// List of required property names if the property is an object
+    /// </summary>
+    [JsonPropertyName("required")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Required { get; init; }
+
+    /// <summary>
+    /// Enum values for string type properties
+    /// </summary>
+    [JsonPropertyName("enum")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Enum { get; init; }
+
+    /// <summary>
+    /// Minimum value for number/integer type properties
+    /// </summary>
+    [JsonPropertyName("minimum")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Minimum { get; init; }
+
+    /// <summary>
+    /// Maximum value for number/integer type properties
+    /// </summary>
+    [JsonPropertyName("maximum")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Maximum { get; init; }
+
+    /// <summary>
+    /// Minimum number of items for array type properties
     /// </summary>
     [JsonPropertyName("minItems")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MinItems { get; init; }
 
     /// <summary>
-    /// For array types, specifies the maximum number of items
+    /// Maximum number of items for array type properties
     /// </summary>
     [JsonPropertyName("maxItems")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MaxItems { get; init; }
 
     /// <summary>
-    /// For array types, specifies whether items must be unique
+    /// Whether items in array must be unique
     /// </summary>
     [JsonPropertyName("uniqueItems")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -244,26 +294,15 @@ public sealed record JsonSchemaProperty
     /// Creates a new array property with the given item schema and description
     /// </summary>
     /// <param name="items">Schema for the array items</param>
-    /// <param name="description">Optional description of the array</param>
-    /// <param name="minItems">Optional minimum number of items</param>
-    /// <param name="maxItems">Optional maximum number of items</param>
-    /// <param name="uniqueItems">Whether array items must be unique</param>
-    /// <returns>A schema property of type array</returns>
-    public static JsonSchemaProperty Array(
-        JsonSchemaObject items, 
-        string? description = null,
-        int? minItems = null,
-        int? maxItems = null,
-        bool uniqueItems = false)
+    /// <param name="description">Description of the array property</param>
+    /// <returns>A new array property</returns>
+    public static JsonSchemaProperty Array(JsonSchemaObject items, string? description = null)
     {
-        return new JsonSchemaProperty 
-        { 
-            Type = "array", 
+        return new JsonSchemaProperty
+        {
+            Type = "array",
             Description = description,
-            Items = items,
-            MinItems = minItems,
-            MaxItems = maxItems,
-            UniqueItems = uniqueItems
+            Items = items
         };
     }
 
