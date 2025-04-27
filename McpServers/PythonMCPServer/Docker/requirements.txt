@@ -28,6 +28,9 @@ csvkit==1.3.0  # Command-line tools for CSV processing
 polars==0.20.5  # Fast DataFrame library with CSV/Excel support
 
 # Data storage and serialization
+pymongo==4.6.1  # MongoDB driver for Python
+elasticsearch==8.12.0  # Elasticsearch Python client
+psycopg2-binary==2.9.9  # PostgreSQL database adapter for Python
 pyarrow==14.0.2  # Efficient data storage
 fastparquet==2023.10.1  # Parquet file format
 

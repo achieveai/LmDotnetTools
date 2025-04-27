@@ -1,1 +1,1 @@
-docker build -t python-executor:v1.0 .
+docker build -t pyexec:latest .

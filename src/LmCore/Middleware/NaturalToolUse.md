@@ -230,6 +230,69 @@ This schema ensures that function contracts are clearly documented in the system
 
 ---
 
+## ToolCallAggregateMessage Decomposition
+
+When a `ToolCallAggregateMessage` is received as part of the `InvokeAsync` or `InvokeStreamingAsync` method, the middleware decomposes it into a sequence of messages representing both the original tool call and its result. This allows the complete interaction to be captured in a natural conversation flow.
+
+### Example Decomposition Process
+
+**Original `ToolCallAggregateMessage`:**
+
+A `ToolCallAggregateMessage` contains two key components:
+1. `ToolsCallMessage`: The original tool call with function name and arguments
+2. `ToolsCallResult`: The result returned from that tool call
+
+```csharp
+var toolCallMessage = new ToolsCallMessage
+{
+  FunctionName = "GetWeather",
+  Arguments = "{\"location\": \"San Francisco, CA\", \"unit\": \"celsius\"}"
+};
+
+var toolCallResult = new ToolsCallResultMessage
+{
+  Result = "{\"temperature\": 18, \"conditions\": \"Partly cloudy\", \"forecast\": \"Expect mild temperatures throughout the day.\"}"
+};
+
+var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolCallResult);
+```
+
+**Decomposed Messages:**
+
+When processed by the middleware, this aggregate message decomposes into the following sequence:
+
+1. **Text before the tool call** (if any) becomes a `TextMessage` with the Assistant role
+
+2. **The tool call itself** becomes formatted as a natural tool call within text:
+   ```
+   <GetWeather>
+   ```json
+   {
+     "location": "San Francisco, CA",
+     "unit": "celsius"
+   }
+   ```
+   </GetWeather>
+   ```
+
+3. **The tool result** becomes a separate `TextMessage` with the User role:
+   ```json
+   {
+     "temperature": 18, 
+     "conditions": "Partly cloudy", 
+     "forecast": "Expect mild temperatures throughout the day."
+   }
+   ```
+
+This approach preserves the entire interaction flow, allowing the LLM to see both its tool call and the result, while maintaining a natural conversation structure. The decomposition process ensures that:
+
+- Tool calls maintain proper syntax with opening/closing tags
+- Results are presented in the correct order matching the original tool calls
+- Text content surrounding tool calls is preserved
+- The role attribution (Assistant/User) properly models the conversation flow
+
+---
+
 ## Testing
 
 - **Unit**:  
