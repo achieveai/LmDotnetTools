@@ -40,8 +40,9 @@ public NaturalToolUseMiddleware(
 
 Responsibilities:
 1. Creates both `NaturalToolUseParserMiddleware` and `FunctionCallMiddleware`.
-2. Combines both of them into a single middleware.
-3. Internally use combined middleware for both `InvokeAsync` and `InvokeStreamingAsync`.
+2. Modifies the Context's Agent to be wrapped with `NaturalToolUseParserMiddleware` and then `FunctionCallMiddleware`.
+   Note: Take a look at `MiddlewareExtensions`.
+3. Internally use wrapped Agent for both `InvokeAsync` and `InvokeStreamingAsync`.
 ---
 
 ### NaturalToolUseParserMiddleware
@@ -52,7 +53,7 @@ Constructor:
 ```csharp
 public NaturalToolUseParserMiddleware(
     IEnumerable<FunctionContract> functions,
-    JsonSchemaValidator schemaValidator,
+    IJsonSchemaValidator schemaValidator,
     IAgent fallbackParser)
 ```
 

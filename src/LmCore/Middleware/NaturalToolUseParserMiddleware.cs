@@ -177,7 +177,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 {
                     var jsonText = jsonMatch.Groups[1].Value.Trim();
                     var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
-                    if (contract != null && _schemaValidator != null)
+                    if (contract != null && contract.Parameters != null && _schemaValidator != null)
                     {
                         // Using ToString() as a workaround - ideally should use the schema property directly
                         string schemaString = contract.Parameters.ToString() ?? string.Empty;
