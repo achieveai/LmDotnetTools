@@ -13,7 +13,6 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 public class AnthropicClient : IAnthropicClient
 {
   private readonly HttpClient _httpClient;
-  private readonly string _apiKey;
   private const string BaseUrl = "https://api.anthropic.com/v1";
   private readonly JsonSerializerOptions _jsonOptions;
   private bool _disposed = false;
@@ -25,7 +24,6 @@ public class AnthropicClient : IAnthropicClient
   /// <param name="httpClient">Optional custom HTTP client to use.</param>
   public AnthropicClient(string apiKey, HttpClient? httpClient = null)
   {
-    _apiKey = apiKey;
     _httpClient = httpClient ?? new HttpClient();
     _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     _httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
