@@ -33,17 +33,16 @@ class Program
 
         // Create the MCP client to connect to the Python server
         List<McpServerConfig> clientsConfigs = [
-          new McpServerConfig
-      {
-        Id = "python-mcp",
-        Name = "Python MCP Server",
-        Arguments = [
-          "--image pyexec",
-          $"--code-dir {GetWorkspaceRootPath()}/.code_workspace"
-        ],
-        Location = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
-        TransportType = TransportTypes.StdIo,
-      }
+          new McpServerConfig {
+                Id = "python-mcp",
+                Name = "Python MCP Server",
+                Arguments = [
+                "--image pyexec",
+                $"--code-dir {GetWorkspaceRootPath()}/.code_workspace"
+                ],
+                Location = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
+                TransportType = TransportTypes.StdIo,
+            }
         ];
 
 
@@ -58,7 +57,7 @@ class Program
                 Console.WriteLine($"- {tool.Name}: {tool.Description}");
             }
 
-            var kvStore = new SqliteKvStore(KV_STORE_PATH);
+            var kvStore = new SqliteKvStore(KV_STORE_PATH, CachingMiddleware.S_jsonSerializerOptions);
             var cachingMiddleware = new CachingMiddleware(kvStore);
 
             // Create an OpenAI client
@@ -94,8 +93,8 @@ class Program
             Console.WriteLine("Enter a task to complete:");
             // string task = Console.ReadLine()!;
             var task = @"There is a file `data.xlsx` in the /code directory. Read the
-      file, analyze schema, data it contains, and then write a summary of what
-      data can be used and few insights based on this data.";
+file, analyze schema, data it contains, and then write a summary of what
+data can be used and few insights based on this data.";
             string? previousPlan = null;
             string? progress = null;
 
