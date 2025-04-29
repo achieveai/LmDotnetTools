@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
     <PackageReference Include="Scriban" Version="6.0.0" />
     <PackageReference Include="System.Memory.Data" Version="9.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.WebUtilities" Version="9.0.0" />
