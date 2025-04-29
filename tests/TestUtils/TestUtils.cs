@@ -39,7 +39,7 @@ public static class TestUtils
         // If we can't find the workspace root, return the current directory
         return AppDomain.CurrentDomain.BaseDirectory;
     }
-    
+
     /// <summary>
     /// Extracts text content from various message types
     /// </summary>
@@ -48,13 +48,13 @@ public static class TestUtils
     public static string? GetText(IMessage? message)
     {
         if (message == null) return null;
-        
+
         return message switch
         {
             TextMessage textMessage => textMessage.Text,
-            ToolsCallResultMessage toolCallResult => string.Join(Environment.NewLine, 
+            ToolsCallResultMessage toolCallResult => string.Join(Environment.NewLine,
                 toolCallResult.ToolCallResults.Select(tcr => tcr.Result)),
-            ToolsCallAggregateMessage toolCallAggregate => string.Join(Environment.NewLine, 
+            ToolsCallAggregateMessage toolCallAggregate => string.Join(Environment.NewLine,
                 toolCallAggregate.ToolsCallResult.ToolCallResults.Select(tcr => tcr.Result)),
             _ => message.ToString()
         };

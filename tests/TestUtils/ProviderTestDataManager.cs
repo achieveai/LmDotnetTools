@@ -17,7 +17,7 @@ public class ProviderTestDataManager
     private const string OpenAIDirectory = "OpenAI";
     private const string AnthropicDirectory = "Anthropic";
     private const string CommonDirectory = "Common";
-    
+
     public static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
     {
         WriteIndented = true,
@@ -38,13 +38,13 @@ public class ProviderTestDataManager
             new UsageShadowPropertiesJsonConverter()
         }
     };
-    
+
     public ProviderTestDataManager()
     {
         string workspaceRoot = TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
         _dataDirectory = Path.Combine(workspaceRoot, "tests", "TestData");
     }
-    
+
     /// <summary>
     /// Gets a path to test data files using a standardized naming convention.
     /// </summary>
@@ -61,17 +61,17 @@ public class ProviderTestDataManager
             ProviderType.Common => CommonDirectory,
             _ => throw new ArgumentOutOfRangeException(nameof(providerType))
         };
-        
+
         string dataTypeStr = dataType switch
         {
             DataType.LmCoreRequest => "LmCoreRequest",
             DataType.FinalResponse => "FinalResponse",
             _ => throw new ArgumentOutOfRangeException(nameof(dataType))
         };
-        
+
         return Path.Combine(_dataDirectory, providerDir, $"{testName}.{dataTypeStr}.json");
     }
-    
+
     /// <summary>
     /// Saves LmCore request data to a file.
     /// </summary>
@@ -82,12 +82,12 @@ public class ProviderTestDataManager
             Messages = messages,
             Options = options
         };
-        
+
         string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         EnsureDirectoryExists(filePath);
         File.WriteAllText(filePath, JsonSerializer.Serialize(data, JsonOptions));
     }
-    
+
     /// <summary>
     /// Loads LmCore request data from a file.
     /// </summary>
@@ -98,13 +98,13 @@ public class ProviderTestDataManager
         {
             throw new FileNotFoundException($"Test data file not found: {filePath}");
         }
-        
+
         var json = File.ReadAllText(filePath);
         var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, JsonOptions);
-        
+
         return (data?.Messages ?? Array.Empty<IMessage>(), data?.Options ?? new GenerateReplyOptions());
     }
-    
+
     /// <summary>
     /// Saves a final response to a file.
     /// </summary>
@@ -114,7 +114,7 @@ public class ProviderTestDataManager
         EnsureDirectoryExists(filePath);
         File.WriteAllText(filePath, JsonSerializer.Serialize(response, JsonOptions));
     }
-    
+
     /// <summary>
     /// Loads a final response from a file.
     /// </summary>
@@ -125,12 +125,12 @@ public class ProviderTestDataManager
         {
             return null;
         }
-        
+
         var json = File.ReadAllText(filePath);
         return JsonSerializer.Deserialize<List<IMessage>>(json, JsonOptions)
             ?? throw new InvalidOperationException($"Failed to deserialize final response from {filePath}");
     }
-    
+
     /// <summary>
     /// Ensures the directory exists for the given file path.
     /// </summary>
@@ -142,7 +142,7 @@ public class ProviderTestDataManager
             Directory.CreateDirectory(directory);
         }
     }
-    
+
     /// <summary>
     /// Gets all test cases from test data files in a provider's directory.
     /// </summary>
@@ -155,13 +155,13 @@ public class ProviderTestDataManager
             ProviderType.Common => CommonDirectory,
             _ => throw new ArgumentOutOfRangeException(nameof(providerType))
         };
-        
+
         string directoryPath = Path.Combine(_dataDirectory, providerDir);
         if (!Directory.Exists(directoryPath))
         {
             return Enumerable.Empty<string>();
         }
-        
+
         return Directory.GetFiles(directoryPath, "*.LmCoreRequest.json")
             .Select(path => Path.GetFileName(path)!)
             .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
@@ -178,7 +178,7 @@ public enum DataType
     /// The original LmCore request with messages and options.
     /// </summary>
     LmCoreRequest,
-    
+
     /// <summary>
     /// The final processed response.
     /// </summary>
@@ -194,12 +194,12 @@ public enum ProviderType
     /// OpenAI provider.
     /// </summary>
     OpenAI,
-    
+
     /// <summary>
     /// Anthropic provider.
     /// </summary>
     Anthropic,
-    
+
     /// <summary>
     /// Common data shared between providers.
     /// </summary>
@@ -213,4 +213,4 @@ internal class LmCoreRequestData
 {
     public IMessage[]? Messages { get; set; }
     public GenerateReplyOptions? Options { get; set; }
-} 
+}

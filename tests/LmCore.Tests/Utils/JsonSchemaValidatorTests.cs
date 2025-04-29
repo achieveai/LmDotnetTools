@@ -107,15 +107,15 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "enumParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "enumParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "string",
                         Enum = new List<string> { "value1", "value2" }
-                    } 
+                    }
                 }
             }
         };
@@ -132,15 +132,15 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "enumParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "enumParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "string",
                         Enum = new List<string> { "value1", "value2" }
-                    } 
+                    }
                 }
             }
         };
@@ -157,16 +157,16 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "rangeParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "rangeParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "number",
                         Minimum = 10,
                         Maximum = 20
-                    } 
+                    }
                 }
             }
         };
@@ -183,16 +183,16 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "rangeParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "rangeParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "number",
                         Minimum = 10,
                         Maximum = 20
-                    } 
+                    }
                 }
             }
         };
@@ -209,15 +209,15 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "arrayParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "arrayParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" }
-                    } 
+                    }
                 }
             }
         };
@@ -234,16 +234,16 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "arrayParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "arrayParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" },
                         MinItems = 3
-                    } 
+                    }
                 }
             }
         };
@@ -260,16 +260,16 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "arrayParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "arrayParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" },
                         MaxItems = 1
-                    } 
+                    }
                 }
             }
         };
@@ -286,16 +286,16 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "arrayParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "arrayParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" },
                         UniqueItems = true
-                    } 
+                    }
                 }
             }
         };
@@ -312,18 +312,18 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "arrayParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "arrayParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "array",
                         Items = new JsonSchemaObject { Type = "string" },
                         MinItems = 2,
                         MaxItems = 3,
                         UniqueItems = true
-                    } 
+                    }
                 }
             }
         };
@@ -340,18 +340,18 @@ public class JsonSchemaValidatorTests
             Name = "testFunction",
             Parameters = new List<FunctionParameterContract>
             {
-                new() 
-                { 
-                    Name = "objectParam", 
-                    IsRequired = true, 
-                    ParameterType = new JsonSchemaObject 
-                    { 
+                new()
+                {
+                    Name = "objectParam",
+                    IsRequired = true,
+                    ParameterType = new JsonSchemaObject
+                    {
                         Type = "object",
                         Properties = new Dictionary<string, JsonSchemaProperty>
                         {
                             { "nested", new JsonSchemaProperty { Type = "string" } }
                         }
-                    } 
+                    }
                 }
             }
         };

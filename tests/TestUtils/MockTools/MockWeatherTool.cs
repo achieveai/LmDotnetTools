@@ -14,10 +14,10 @@ public static class MockWeatherTool
     /// </summary>
     /// <param name="location">City name</param>
     /// <returns>Weather information as a string</returns>
-    [McpServerTool(Name = "getWeather"), 
+    [McpServerTool(Name = "getWeather"),
      Description("Get current weather for a location")]
     public static string GetWeather(string location)
     {
         throw new NotImplementedException("Mock tool call - implement using callback override");
     }
-} 
+}

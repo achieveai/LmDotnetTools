@@ -151,7 +151,7 @@ public class AnthropicStreamParser
             var toolUpdate = new ToolsCallUpdateMessage
             {
                 Role = ParseRole(_role),
-                FromAgent = _messageId, 
+                FromAgent = _messageId,
                 GenerationId = _messageId,
                 ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
                 {
@@ -163,7 +163,7 @@ public class AnthropicStreamParser
                     FunctionArgs = input != null && input.Count > 0 ? input.ToJsonString() : null
                 })
             };
-            
+
             return new List<IMessage> { toolUpdate };
         }
 
@@ -301,17 +301,17 @@ public class AnthropicStreamParser
         // Check for stop_reason and usage
         var stopReason = delta["stop_reason"]?.GetValue<string>();
         var usage = json["usage"];
-        
+
         if (usage != null)
         {
             _usage = JsonSerializer.Deserialize<AnthropicUsage>(
                 usage.ToJsonString(),
                 _jsonOptions);
-                
+
             // Don't proceed if deserialization failed
-            if (_usage == null) 
+            if (_usage == null)
                 return new List<IMessage>();
-            
+
             // Create a usage message directly instead of an empty TextUpdateMessage with metadata
             var usageMessage = new UsageMessage
             {
@@ -325,7 +325,7 @@ public class AnthropicStreamParser
                 FromAgent = _messageId,
                 GenerationId = _messageId
             };
-            
+
             return new List<IMessage> { usageMessage };
         }
 
@@ -367,7 +367,7 @@ public class AnthropicStreamParser
     {
         if (_usage == null)
             return ImmutableDictionary<string, object>.Empty;
-            
+
         return ImmutableDictionary<string, object>.Empty
             .Add("usage", new
             {
@@ -384,7 +384,7 @@ public class AnthropicStreamParser
     {
         if (_usage == null)
             throw new InvalidOperationException("Cannot create usage message without usage data");
-            
+
         return new UsageMessage
         {
             Usage = new Usage
@@ -407,10 +407,10 @@ public class AnthropicStreamParser
         // Skip empty delta
         if (string.IsNullOrEmpty(partialJson))
             return new List<IMessage>();
-        
+
         // Accumulate the partial JSON
         block.JsonAccumulator.AddDelta(partialJson);
-        
+
         // If we have a tool_use block, generate an update message
         if (block.Type == "tool_use" && !string.IsNullOrEmpty(block.Id))
         {
@@ -419,7 +419,7 @@ public class AnthropicStreamParser
             {
                 block.Input = block.JsonAccumulator.GetParsedInput();
             }
-            
+
             // Create a tool call update with the current partial JSON
             var toolUpdate = new ToolsCallUpdateMessage
             {
@@ -436,10 +436,10 @@ public class AnthropicStreamParser
                     FunctionArgs = partialJson
                 })
             };
-            
+
             return new List<IMessage> { toolUpdate };
         }
-        
+
         return new List<IMessage>();
     }
 
@@ -450,13 +450,13 @@ public class AnthropicStreamParser
     {
         if (string.IsNullOrEmpty(block.Id))
             return new List<IMessage>();
-            
+
         // Final attempt to parse any accumulated JSON
         if (block.Input == null && block.JsonAccumulator.IsComplete)
         {
             block.Input = block.JsonAccumulator.GetParsedInput();
         }
-        
+
         // Create a final ToolsCallMessage - note that we now allow null Input
         // for tools/functions that don't require arguments
         var toolMessage = CreateToolsCallMessage(block);
@@ -471,7 +471,7 @@ public class AnthropicStreamParser
     {
         // Handle missing function name - default to empty string if not available
         var functionName = block.Name ?? string.Empty;
-        
+
         // Handle missing or empty arguments - use empty object instead of empty string
         var functionArgs = "{}";
         if (block.Input != null)
@@ -496,7 +496,8 @@ public class AnthropicStreamParser
             ToolCalls = ImmutableList.Create(new ToolCall(
                 functionName,
                 functionArgs
-            ) { ToolCallId = block.Id ?? string.Empty })
+            )
+            { ToolCallId = block.Id ?? string.Empty })
         };
 
         // Apply usage metadata if available
@@ -515,27 +516,27 @@ public class AnthropicStreamParser
     {
         private readonly StringBuilder _jsonBuffer = new();
         private JsonNode? _parsedInput;
-        
+
         public void AddDelta(string partialJson)
         {
             _jsonBuffer.Append(partialJson);
-            
-            try 
+
+            try
             {
                 // Try to parse the accumulated JSON with each new delta
                 _parsedInput = JsonNode.Parse(_jsonBuffer.ToString());
             }
-            catch 
+            catch
             {
                 // Parsing will fail until we have complete, valid JSON
                 // That's expected and we continue accumulation
             }
         }
-        
+
         public bool IsComplete => _parsedInput != null;
-        
+
         public JsonNode? GetParsedInput() => _parsedInput;
-        
+
         public string GetRawJson() => _jsonBuffer.ToString();
     }
 
@@ -550,7 +551,7 @@ public class AnthropicStreamParser
         public string? Id { get; set; }
         public string? Name { get; set; }
         public JsonNode? Input { get; set; }
-        
+
         // For accumulating partial JSON during streaming
         public InputJsonAccumulator JsonAccumulator { get; } = new();
     }
@@ -578,7 +579,7 @@ public class AnthropicStreamParser
     {
         var index = contentBlockStartEvent.Index;
         var contentBlock = contentBlockStartEvent.ContentBlock;
-        
+
         if (contentBlock == null)
             return new List<IMessage>();
 
@@ -591,7 +592,7 @@ public class AnthropicStreamParser
         {
             id = toolUseContent.Id;
             name = toolUseContent.Name;
-            input = toolUseContent.Input.ValueKind != JsonValueKind.Undefined ? 
+            input = toolUseContent.Input.ValueKind != JsonValueKind.Undefined ?
                     JsonNode.Parse(toolUseContent.Input.ToString()) : null;
         }
 
@@ -606,7 +607,7 @@ public class AnthropicStreamParser
         };
 
         // For tool_use blocks, create a ToolsCallUpdateMessage instead of immediately finalizing
-        if (contentBlock is AnthropicResponseToolUseContent toolUseTool && 
+        if (contentBlock is AnthropicResponseToolUseContent toolUseTool &&
             !string.IsNullOrEmpty(toolUseTool.Id))
         {
             var toolUpdate = new ToolsCallUpdateMessage
@@ -621,12 +622,12 @@ public class AnthropicStreamParser
                     // Only include FunctionName if it's available
                     FunctionName = !string.IsNullOrEmpty(toolUseTool.Name) ? toolUseTool.Name : null,
                     // Only include FunctionArgs if available
-                    FunctionArgs = toolUseTool.Input.ValueKind != JsonValueKind.Undefined && toolUseTool.Input.GetPropertyCount() > 0 ? 
-                                  toolUseTool.Input.ToString() : 
+                    FunctionArgs = toolUseTool.Input.ValueKind != JsonValueKind.Undefined && toolUseTool.Input.GetPropertyCount() > 0 ?
+                                  toolUseTool.Input.ToString() :
                                   "" // Use empty object for no args instead of empty string
                 })
             };
-            
+
             return new List<IMessage> { toolUpdate };
         }
 
@@ -637,7 +638,7 @@ public class AnthropicStreamParser
     {
         var index = contentBlockDeltaEvent.Index;
         var delta = contentBlockDeltaEvent.Delta;
-        
+
         if (delta == null)
             return new List<IMessage>();
 
@@ -723,8 +724,8 @@ public class AnthropicStreamParser
                 // Only include FunctionName if it's non-empty
                 FunctionName = !string.IsNullOrEmpty(toolCall.Name) ? toolCall.Name : null,
                 // Ensure we always provide a valid JSON object, even when args are empty
-                FunctionArgs = toolCall.Input.ValueKind != JsonValueKind.Undefined && toolCall.Input.GetPropertyCount() > 0 ? 
-                              toolCall.Input.ToString() : 
+                FunctionArgs = toolCall.Input.ValueKind != JsonValueKind.Undefined && toolCall.Input.GetPropertyCount() > 0 ?
+                              toolCall.Input.ToString() :
                               ""
             })
         };
@@ -787,11 +788,11 @@ public class AnthropicStreamParser
         if (messageDeltaEvent.Delta?.StopReason != null && messageDeltaEvent.Usage != null)
         {
             _usage = messageDeltaEvent.Usage;
-            
+
             // Create a usage message directly
             return new List<IMessage> { CreateUsageMessage() };
         }
-        
+
         return new List<IMessage>();
     }
 
@@ -810,4 +811,4 @@ public class AnthropicStreamParser
         }
         return new List<IMessage>();
     }
-} 
+}

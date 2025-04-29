@@ -117,11 +117,11 @@ public class UsageSerializationTests
         Assert.Contains("\"prompt_tokens\":100", json);
         Assert.Contains("\"completion_tokens\":200", json);
         Assert.Contains("\"total_tokens\":300", json);
-        
+
         // With ShadowPropertiesJsonConverter, the empty CompletionTokenDetails object is included
         Assert.Contains("\"completion_token_details\"", json);
-        
+
         // The CompletionTokenDetails will contain an empty object or the reasoning_tokens with value 0
         Assert.Contains("\"completion_token_details\":{}", json);
     }
-} 
+}

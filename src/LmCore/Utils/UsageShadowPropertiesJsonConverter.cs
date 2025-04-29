@@ -8,4 +8,4 @@ public class UsageShadowPropertiesJsonConverter : ShadowPropertiesJsonConverter<
     {
         return new Usage();
     }
-} 
+}

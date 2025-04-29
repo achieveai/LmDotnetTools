@@ -57,20 +57,20 @@ public class McpMiddleware : IStreamingMiddleware
     {
         // Use default name if not provided
         name ??= nameof(McpMiddleware);
-        
+
         // Create function delegates map
         var functionMap = await CreateFunctionMapAsync(mcpClients, cancellationToken);
-        
+
         // If functions weren't provided, extract them from the MCP clients
         if (functions == null)
         {
             functions = await ExtractFunctionContractsAsync(mcpClients, cancellationToken);
         }
-        
+
         // Create and return the middleware instance
         return new McpMiddleware(mcpClients, functions, functionMap, name);
     }
-    
+
     /// <summary>
     /// Creates function delegates for the MCP clients asynchronously
     /// </summary>
@@ -82,37 +82,37 @@ public class McpMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default)
     {
         var functionMap = new Dictionary<string, Func<string, Task<string>>>();
-        
+
         foreach (var kvp in mcpClients)
         {
             var clientId = kvp.Key;
             var client = kvp.Value;
-            
+
             // Get available tools from this client asynchronously
             var tools = await client.ListToolsAsync(cancellationToken);
-            
+
             foreach (var tool in tools)
             {
                 // Create a delegate that calls the appropriate MCP client
-                functionMap[$"{kvp.Key}-{tool.Name}"] = async (argsJson) => 
+                functionMap[$"{kvp.Key}-{tool.Name}"] = async (argsJson) =>
                 {
-                    try 
+                    try
                     {
                         // Parse arguments from JSON
-                        var args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) 
+                        var args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson)
                             ?? new Dictionary<string, object?>();
-                        
+
                         // Call the MCP tool
                         var response = await client.CallToolAsync(tool.Name, args);
-                        
+
                         // Extract and format text response
-                        string result = string.Join(Environment.NewLine, 
+                        string result = string.Join(Environment.NewLine,
                             response.Content != null
                                 ? response.Content
                                     .Where(c => c?.Type == "text")
                                     .Select(c => c?.Text ?? string.Empty)
                                 : Array.Empty<string>());
-                        
+
                         return result;
                     }
                     catch (Exception ex)
@@ -122,7 +122,7 @@ public class McpMiddleware : IStreamingMiddleware
                 };
             }
         }
-        
+
         return functionMap;
     }
 
@@ -137,17 +137,17 @@ public class McpMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default)
     {
         var functionContracts = new List<FunctionContract>();
-        
+
         foreach (var kvp in mcpClients)
         {
             var tools = await kvp.Value.ListToolsAsync(cancellationToken);
-            
+
             foreach (var tool in tools)
             {
                 functionContracts.Add(ConvertToFunctionContract(kvp.Key, tool));
             }
         }
-        
+
         return functionContracts;
     }
 
@@ -186,7 +186,7 @@ public class McpMiddleware : IStreamingMiddleware
         {
             // Convert the schema to JSON element
             var schemaElement = JsonSerializer.SerializeToElement(inputSchema);
-            
+
             // Check if it's a proper JSON schema with properties
             if (schemaElement.ValueKind == JsonValueKind.Object &&
                 schemaElement.TryGetProperty("properties", out var propertiesElement) &&
@@ -220,7 +220,7 @@ public class McpMiddleware : IStreamingMiddleware
                         requiredElement.ValueKind == JsonValueKind.Array)
                     {
                         isRequired = requiredElement.EnumerateArray()
-                            .Any(item => item.ValueKind == JsonValueKind.String && 
+                            .Any(item => item.ValueKind == JsonValueKind.String &&
                                        item.GetString() == paramName);
                     }
 

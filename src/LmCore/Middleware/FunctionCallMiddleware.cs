@@ -27,7 +27,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             if (functionMap != null)
             {
                 var missingFunctions = functions
-                    .Select(f => string.IsNullOrEmpty(f.ClassName) ? f.Name :  $"{f.ClassName}-{f.Name}")
+                    .Select(f => string.IsNullOrEmpty(f.ClassName) ? f.Name : $"{f.ClassName}-{f.Name}")
                     .Where(f => !functionMap.ContainsKey(f))
                     .ToList();
 
@@ -68,7 +68,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
         var processedReplies = new List<IMessage>();
         var usageAccumulator = new UsageAccumulator();
-        
+
         // Process each message in the reply
         foreach (var reply in replies)
         {
@@ -78,13 +78,13 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 usageAccumulator.AddUsageFromMessage(usageMessage);
                 continue; // We'll add a consolidated usage message at the end
             }
-            
+
             // Legacy support: Check if the message has usage data in metadata
             bool hasUsage = reply.Metadata != null && reply.Metadata.ContainsKey("usage");
             if (hasUsage)
             {
                 usageAccumulator.AddUsageFromMessageMetadata(reply);
-                
+
                 // If this is an empty text message just for usage, don't add it to results
                 var textMessage = reply as TextMessage;
                 if (textMessage != null && string.IsNullOrEmpty(textMessage.Text))
@@ -92,11 +92,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     continue;
                 }
             }
-            
+
             // Check if this message has tool calls
             var responseToolCall = reply as ToolsCallMessage;
             var responseToolCalls = responseToolCall?.ToolCalls;
-            
+
             if (responseToolCalls != null && responseToolCalls.Any())
             {
                 // Process the tool calls for this message
@@ -112,7 +112,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 {
                     // Clone the message without usage metadata
                     var metadataWithoutUsage = reply.Metadata!.Remove("usage");
-                    
+
                     if (reply is TextMessage textMsg)
                     {
                         processedReplies.Add(textMsg with { Metadata = metadataWithoutUsage.Count > 0 ? metadataWithoutUsage : null });
@@ -134,7 +134,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 }
             }
         }
-        
+
         // Add accumulated usage message at the end if we extracted usage data
         var finalUsageMessage = usageAccumulator.CreateUsageMessage();
         if (finalUsageMessage != null)
@@ -163,7 +163,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             context.Messages,
             options,
             cancellationToken);
-        
+
         // Return a transformed stream that applies the builder pattern
         return TransformStreamWithBuilder(streamingResponse, cancellationToken);
     }
@@ -174,17 +174,17 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         {
             return null;
         }
-        
+
         if (_functions == null)
         {
             return optionFunctions;
         }
-        
+
         if (optionFunctions == null)
         {
             return _functions;
         }
-        
+
         return _functions.Concat(optionFunctions);
     }
 
@@ -197,15 +197,15 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         var lastMessage = context.Messages.Last() as ICanGetToolCalls;
         var toolCalls = lastMessage?.GetToolCalls();
         var hasPendingToolCalls = toolCalls != null && toolCalls.Any();
-        
+
         // Clone options and add functions
         var options = context.Options ?? new GenerateReplyOptions();
         var combinedFunctions = CombineFunctions(options.Functions);
         options = options with { Functions = combinedFunctions?.ToArray() };
-        
+
         return (hasPendingToolCalls, toolCalls, options);
     }
-    
+
     /// <summary>
     /// Execute a single tool call and return the result
     /// </summary>
@@ -213,7 +213,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     {
         var functionName = toolCall.FunctionName!;
         var functionArgs = toolCall.FunctionArgs!;
-        
+
         if (_functionMap.TryGetValue(functionName, out var func))
         {
             try
@@ -235,20 +235,20 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             return new ToolCallResult(toolCall.ToolCallId, errorMessage);
         }
     }
-    
+
     /// <summary>
     /// Execute multiple tool calls and return a message with results
     /// </summary>
     private async Task<ToolsCallResultMessage> ExecuteToolCallsAsync(IEnumerable<ToolCall> toolCalls, IAgent agent)
     {
         var toolCallResults = new List<ToolCallResult>();
-        
+
         foreach (var toolCall in toolCalls)
         {
             var result = await ExecuteToolCallAsync(toolCall);
             toolCallResults.Add(result);
         }
-        
+
         // Return a ToolsCallResultMessage with all results
         return new ToolsCallResultMessage
         {
@@ -270,7 +270,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Single builder for tool call messages
         ToolsCallMessageBuilder? toolsCallBuilder = null;
         bool wasProcessingToolCallUpdate = false;
-        
+
         // Use the usage accumulator to track usage data
         var usageAccumulator = new UsageAccumulator();
 
@@ -283,7 +283,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 yield return usageMessage;
                 continue;
             }
-            
+
             // Check if we're switching message types and need to complete any pending builder
             var toolUpdateMessage = message as ToolsCallUpdateMessage;
             var textUpdateMessage = message as TextUpdateMessage;
@@ -300,11 +300,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 // Complete the previous builder before processing the new message
                 var rv = await ProcessFinalToolCallMessage(toolsCallBuilder);
                 toolsCallBuilder = null;
-                
+
                 yield return rv;
                 continue;
             }
-            
+
             // Update tracking state
             wasProcessingToolCallUpdate = toolUpdateMessage != null;
 
@@ -313,13 +313,13 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             {
                 continue;
             }
-            
+
             // Skip empty text updates
             if (textUpdateMessage != null && string.IsNullOrEmpty(textUpdateMessage.Text) && !hasUsage)
             {
                 continue;
             }
-            
+
             // Handle ToolsCallUpdateMessage (partial updates to be accumulated)
             if (message is ToolsCallUpdateMessage updateMessage)
             {
@@ -346,13 +346,13 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 yield return message;
             }
         }
-        
+
         // Process any final built message at the end of the stream
         if (toolsCallBuilder != null)
         {
             yield return await ProcessFinalToolCallMessage(toolsCallBuilder);
         }
-        
+
         // Emit accumulated usage as a separate message at the end
         var finalUsageMessage = usageAccumulator.CreateUsageMessage();
         if (finalUsageMessage != null)
@@ -375,7 +375,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     {
         // Get or create a ToolsCallMessageBuilder
         var builder = existingBuilder;
-        
+
         if (builder == null)
         {
             builder = new ToolsCallMessageBuilder
@@ -420,7 +420,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         {
             var toolCallResults = new List<ToolCallResult>();
             var pendingToolCallTasks = new List<Task<ToolCallResult>>();
-            
+
             foreach (var toolCall in toolCalls)
             {
                 // Check if we already started executing this tool call
@@ -448,7 +448,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     _pendingToolCallResults.Remove(toolCall.ToolCallId);
                 }
             }
-            
+
             if (toolCallResults.Any())
             {
                 return new ToolsCallAggregateMessage(
@@ -498,7 +498,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         {
             var results = await Task.WhenAll(pendingToolCallTasks);
             toolCallResults.AddRange(results);
-            
+
             // Clear completed tasks from the pending dictionary
             foreach (var toolCall in builtMessage.ToolCalls)
             {
@@ -508,7 +508,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 }
             }
         }
-        
+
         return new ToolsCallAggregateMessage(
             builtMessage,
             new ToolsCallResultMessage

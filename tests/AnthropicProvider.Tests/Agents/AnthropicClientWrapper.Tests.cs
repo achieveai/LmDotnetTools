@@ -44,10 +44,10 @@ public class AnthropicClientWrapperTests
             Assert.Equal("assistant", response.Role);
             Assert.Single(response.Content);
             Assert.Equal("text", response.Content[0].Type);
-            
+
             var typedContent = Assert.IsType<AnthropicResponseTextContent>(response.Content[0]);
             Assert.Equal("Hello from mock Anthropic client!", typedContent.Text);
-            
+
             // Verify test data file was created
             Assert.True(File.Exists(testDataPath));
         }
@@ -105,7 +105,7 @@ public class AnthropicClientWrapperTests
             Assert.Equal("content_block_start", events[0].Type);
             Assert.Equal("content_block_delta", events[1].Type);
             Assert.Equal("content_block_stop", events[2].Type);
-            
+
             // Verify test data file was created
             Assert.True(File.Exists(testDataPath));
         }
@@ -166,8 +166,8 @@ public class AnthropicClientWrapperTests
             yield return new AnthropicContentBlockStartEvent
             {
                 Index = 0,
-                ContentBlock = new AnthropicResponseTextContent 
-                { 
+                ContentBlock = new AnthropicResponseTextContent
+                {
                     Type = "text",
                     Text = ""
                 }
@@ -199,4 +199,4 @@ public class AnthropicClientWrapperTests
             // Nothing to dispose
         }
     }
-} 
+}

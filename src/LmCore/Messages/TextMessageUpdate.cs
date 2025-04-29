@@ -105,4 +105,4 @@ public class TextUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<Text
     {
         return new TextUpdateMessage { Text = string.Empty };
     }
-} 
+}

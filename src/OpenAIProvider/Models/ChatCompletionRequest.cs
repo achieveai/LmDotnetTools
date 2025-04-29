@@ -21,7 +21,7 @@ public record ChatCompletionRequest
         Messages = messages.ToList();
         Temperature = temperature;
         MaxTokens = maxTokens;
-        
+
         // Initialize the additional parameters
         if (additionalParameters != null)
         {
@@ -79,13 +79,14 @@ public record ChatCompletionRequest
 
     // Public property that exposes as ImmutableDictionary with caching
     [JsonExtensionData]
-    private Dictionary<string, object> AdditionalParametersInternal {
-        get { return AdditionalParameters.ToDictionary(); } 
+    private Dictionary<string, object> AdditionalParametersInternal
+    {
+        get { return AdditionalParameters.ToDictionary(); }
         init { AdditionalParameters = value.ToImmutableDictionary(); }
     }
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object> AdditionalParameters  { get; init; } = ImmutableDictionary<string, object>.Empty;
+    public ImmutableDictionary<string, object> AdditionalParameters { get; init; } = ImmutableDictionary<string, object>.Empty;
 
     [JsonPropertyName("messages")]
     public List<ChatMessage> Messages { get; private set; }
@@ -104,7 +105,8 @@ public record ChatCompletionRequest
                 options.Temperature ?? 0.0,
                 options.MaxToken ?? 4096,
                 CreateAdditionalParameters(options)
-            ) {
+            )
+            {
                 TopP = options.TopP,
                 Stream = options.ExtraProperties
                     .TryGetValue("stream", out var stream) && stream is bool ? (bool)stream : false,
@@ -133,6 +135,25 @@ public record ChatCompletionRequest
     {
         switch (message)
         {
+            case CompositeMessage compositeMsg:
+                if (compositeMsg.Messages.Any(m => m is ToolsCallAggregateMessage || m is ToolsCallMessage || m is ToolsCallResultMessage))
+                {
+                    return compositeMsg.Messages.SelectMany(m => FromMessage(m));
+                }
+                else
+                {
+                    return [new ChatMessage {
+                        Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
+                        Content = new Union<string, Union<TextContent, ImageContent>[]>(compositeMsg.Messages
+                            .Select(m => m switch {
+                                TextMessage textMessage => new Union<TextContent, ImageContent>(new TextContent(textMessage.Text)),
+                                ImageMessage imageMessage => new Union<TextContent, ImageContent>(new ImageContent(imageMessage.ImageData.ToDataUrl()!)),
+                                _ => throw new ArgumentException("Unsupported message type")
+                            })
+                            .ToArray()
+                        )
+                    }];
+                }
             case ImageMessage imageMessage:
                 return [new ChatMessage {
                     Role = ChatMessage.ToRoleEnum(imageMessage.Role),
@@ -143,10 +164,12 @@ public record ChatCompletionRequest
             case ToolsCallResultMessage toolCallResultMessage:
                 return toolCallResultMessage.ToolCallResults
                     .Where(tc => tc.Result != null)
-                    .Select(tc => {
+                    .Select(tc =>
+                    {
                         var toolCallId = tc.ToolCallId;
-                        return 
-                            new ChatMessage {
+                        return
+                            new ChatMessage
+                            {
                                 Role = RoleEnum.Tool,
                                 ToolCallId = toolCallId,
                                 Content = new Union<string, Union<TextContent, ImageContent>[]>(tc.Result!)
@@ -158,7 +181,7 @@ public record ChatCompletionRequest
             case ICanGetText textMessage:
                 return [new ChatMessage {
                     Role = ChatMessage.ToRoleEnum(textMessage.Role),
-                    Content = textMessage.GetText() != null 
+                    Content = textMessage.GetText() != null
                         ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
                         : null
                 }];
@@ -168,10 +191,12 @@ public record ChatCompletionRequest
                     ToolCalls = toolCallMessage.GetToolCalls()!.Select(tc =>
                         new FunctionContent(
                             tc.ToolCallId ?? "call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
-                            new FunctionContent.FunctionCall(
+                            new FunctionCall(
                                 tc.FunctionName!,
                                 tc.FunctionArgs!
-                            ))
+                            )) {
+                                Index = tc.Index
+                            }
                         ).ToList()
                 }];
             case UsageMessage _:
@@ -188,22 +213,23 @@ public record ChatCompletionRequest
         bool hasProviders = options.ExtraProperties.TryGetValue("providers", out var providers)
             && providers is IEnumerable<string> providerList
             && providerList.Any();
-    
+
         if (!hasProviders && !hasExtraProperties)
         {
             return null;
         }
-    
+
         var parameters = new JsonObject();
-    
+
         if (hasProviders)
         {
-            parameters["provider"] = new JsonObject {
+            parameters["provider"] = new JsonObject
+            {
                 ["order"] = new JsonArray(((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p)).ToArray()),
                 ["allow_fallbacks"] = false
             };
         }
-    
+
         if (hasExtraProperties)
         {
             foreach (var kvp in options.ExtraProperties)
@@ -211,9 +237,9 @@ public record ChatCompletionRequest
                 parameters[kvp.Key] = JsonValue.Create(kvp.Value);
             }
         }
-    
+
         return parameters
             .Select(kvp => new KeyValuePair<string, object>(kvp.Key, kvp.Value!))
             .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
     }
-} 
+}

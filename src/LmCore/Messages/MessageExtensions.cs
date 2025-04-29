@@ -67,19 +67,19 @@ public static class MessageExtensions
     /// <summary>
     /// Checks if a message can provide text content
     /// </summary>
-    public static bool CanGetText(this IMessage message) => 
+    public static bool CanGetText(this IMessage message) =>
         message is ICanGetText && ((ICanGetText)message).GetText() != null;
 
     /// <summary>
     /// Checks if a message can provide binary content
     /// </summary>
-    public static bool CanGetBinary(this IMessage message) => 
+    public static bool CanGetBinary(this IMessage message) =>
         message is ICanGetBinary && ((ICanGetBinary)message).GetBinary() != null;
 
     /// <summary>
     /// Checks if a message can provide tool calls
     /// </summary>
-    public static bool CanGetToolCalls(this IMessage message) => 
+    public static bool CanGetToolCalls(this IMessage message) =>
         message is ICanGetToolCalls && ((ICanGetToolCalls)message).GetToolCalls() != null;
 
     /// <summary>
@@ -103,6 +103,6 @@ public static class MessageExtensions
     /// <summary>
     /// Checks if a message can provide usage information
     /// </summary>
-    public static bool CanGetUsage(this IMessage message) => 
+    public static bool CanGetUsage(this IMessage message) =>
         message is ICanGetUsage && ((ICanGetUsage)message).GetUsage() != null;
-} 
+}

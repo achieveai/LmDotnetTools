@@ -117,7 +117,8 @@ public class PromptReader : IPromptReader
                 throw new ArgumentException($"Invalid role '{role}' in prompt chain. Allowed roles are: {string.Join(", ", allowedRoles)}");
             }
 
-            return new TextMessage {
+            return new TextMessage
+            {
                 Role = role switch
                 {
                     "system" => Role.System,
@@ -239,7 +240,8 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages) 
         }
 
         return Messages.Select<IMessage, IMessage>(
-            m => new TextMessage {
+            m => new TextMessage
+            {
                 Role = m.Role,
                 Text = ApplyVariables(((ICanGetText)m).GetText()!, variables)
             }).ToList();

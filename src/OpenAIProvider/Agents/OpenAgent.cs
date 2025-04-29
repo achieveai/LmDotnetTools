@@ -40,7 +40,8 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             && response.Usage.ExtraProperties != null
             && response.Usage.ExtraProperties.ContainsKey("estimated_cost"))
         {
-            totalCost = response.Usage.ExtraProperties["estimated_cost"] switch {
+            totalCost = response.Usage.ExtraProperties["estimated_cost"] switch
+            {
                 JsonElement element => element.GetDouble(),
                 double value => value,
                 _ => null
@@ -49,13 +50,15 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             response.Usage = response.Usage.SetExtraProperty("estimated_cost", totalCost);
         }
 
-        var openMessage = new OpenMessage {
+        var openMessage = new OpenMessage
+        {
             CompletionId = response.Id!,
             ChatMessage = response
                 .Choices!
                 .First()
                 .Message!,
-            Usage = new OpenUsage {
+            Usage = new OpenUsage
+            {
                 ModelId = response.Model,
                 PromptTokens = response.Usage?.PromptTokens ?? 0,
                 CompletionTokens = response.Usage?.CompletionTokens ?? 0,
@@ -72,8 +75,9 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         CancellationToken cancellationToken = default)
     {
         var request = ChatCompletionRequest.FromMessages(messages, options)
-            with { Stream = true };
-        
+            with
+        { Stream = true };
+
         // Return the streaming response as an IAsyncEnumerable
         return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
     }
@@ -94,15 +98,18 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             completionId = completionId.Length == 0
                 ? item.Id!
                 : completionId;
-            
-            var openMessage = new OpenMessage {
+
+            var openMessage = new OpenMessage
+            {
                 CompletionId = completionId,
                 ChatMessage = item.Choices != null && item.Choices.Count > 0
                     ? item.Choices!.First().Message ?? item.Choices!.First().Delta!
-                    : new ChatMessage() {
-                        Content = new (string.Empty)
+                    : new ChatMessage()
+                    {
+                        Content = new(string.Empty)
                     },
-                Usage = new OpenUsage {
+                Usage = new OpenUsage
+                {
                     ModelId = item.Model,
                     PromptTokens = item.Usage?.PromptTokens ?? 0,
                     CompletionTokens = item.Usage?.CompletionTokens ?? 0,
@@ -121,19 +128,20 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options)
     {
         string modelName = "Gpt-4o-mini";
-        if (options?.ExtraProperties != null && 
-            options.ExtraProperties.TryGetValue("model", out var modelObj) && 
+        if (options?.ExtraProperties != null &&
+            options.ExtraProperties.TryGetValue("model", out var modelObj) &&
             modelObj is string modelStr)
         {
             modelName = modelStr;
         }
-        
+
         var temperature = options?.Temperature ?? 0.7f;
         var maxTokens = options?.MaxToken ?? 4096;
         var functions = options?.Functions;
-        
+
         // Convert messages to ChatMessage objects
-        var chatMessages = messages.Select(message => {
+        var chatMessages = messages.Select(message =>
+        {
             // TODO: Implement proper message conversion logic
             // This is a simplified version - would need to handle different message types
             var role = message.Role == Role.User ? RoleEnum.User :
@@ -141,7 +149,8 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                        message.Role == Role.Tool ? RoleEnum.Tool :
                        RoleEnum.Assistant;
 
-            var chatMessage = new ChatMessage { 
+            var chatMessage = new ChatMessage
+            {
                 Role = role,
                 Name = message.FromAgent
             };
@@ -166,7 +175,8 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         if (functions != null && functions.Length > 0)
         {
             // Convert function contracts to OpenAI function definitions
-            request = request with {
+            request = request with
+            {
                 Tools = functions.Select(tool => new FunctionTool(tool.ToOpenFunctionDefinition())).ToList()
             };
         }
@@ -183,7 +193,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                     additionalParams[prop.Key] = prop.Value!;
                 }
             }
-            
+
             if (additionalParams.Count > 0)
             {
                 // Create a new request with additional parameters

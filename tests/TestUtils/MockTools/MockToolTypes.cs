@@ -15,7 +15,7 @@ public static class MockToolTypes
         typeof(MockPythonExecutionTool),
         typeof(MockWeatherTool)
     };
-    
+
     /// <summary>
     /// Mock tool types from C# Program.cs sample
     /// </summary>
@@ -24,7 +24,7 @@ public static class MockToolTypes
         typeof(MockGreetingTool),
         typeof(MockCalculatorTool)
     };
-    
+
     /// <summary>
     /// Mock tool types from Python server.py sample
     /// </summary>
@@ -32,7 +32,7 @@ public static class MockToolTypes
     {
         typeof(MockPythonExecutionTool)
     };
-    
+
     /// <summary>
     /// Weather tool types
     /// </summary>
@@ -40,4 +40,4 @@ public static class MockToolTypes
     {
         typeof(MockWeatherTool)
     };
-} 
+}

@@ -13,7 +13,7 @@ public record ToolsCallResultMessage : IMessage
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.User;
-    
+
     [JsonIgnore]
     public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
 

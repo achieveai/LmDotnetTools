@@ -113,13 +113,13 @@ public abstract class BaseClientWrapper : IDisposable
                 {
                     return false;
                 }
-                
+
                 // Let derived classes compare provider-specific properties
                 if (!CompareProviderSpecificProperties(json1, json2))
                 {
                     return false;
                 }
-                
+
                 // If we got here, the essential properties match
                 return true;
             }
@@ -350,4 +350,4 @@ public abstract class BaseClientWrapper : IDisposable
     /// Disposes of the resources.
     /// </summary>
     public abstract void Dispose();
-} 
+}

@@ -47,13 +47,13 @@ public sealed record FunctionDefinition
     /// <param name="parametersBuilder">A builder for constructing the parameters schema</param>
     /// <returns>A new function definition</returns>
     public static FunctionDefinition Create(
-        string name, 
-        string description, 
+        string name,
+        string description,
         Func<JsonSchemaObjectBuilder, JsonSchemaObjectBuilder> parametersBuilder)
     {
         var builder = JsonSchemaObject.Create();
         var schema = parametersBuilder(builder).Build();
-        
+
         return new FunctionDefinition(name, description, schema);
     }
 }

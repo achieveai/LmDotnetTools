@@ -30,12 +30,12 @@ public class McpMiddlewareFactory
     public async Task<IStreamingMiddleware> CreateFromConfigFileAsync(string configFilePath, CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation("Creating MCP middleware from config file asynchronously: {ConfigFilePath}", configFilePath);
-        
+
         // Read and parse the configuration file
         var configJson = await File.ReadAllTextAsync(configFilePath, cancellationToken);
-        var config = JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson) 
+        var config = JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson)
             ?? throw new InvalidOperationException($"Failed to deserialize config file: {configFilePath}");
-        
+
         return await CreateFromConfigAsync(config, cancellationToken);
     }
 
@@ -50,19 +50,19 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
-        
+
         // Create MCP clients from the configuration
         var mcpClients = new Dictionary<string, IMcpClient>();
-        
+
         foreach (var clientConfig in config.Clients)
         {
             try
             {
                 var clientId = clientConfig.Key;
                 var clientSettings = clientConfig.Value;
-                
+
                 _logger?.LogInformation("Creating MCP client: {ClientId}", clientId);
-                
+
                 // Create transport options
                 var transportOptions = new Dictionary<string, object?>();
                 if (clientSettings.TransportOptions != null)
@@ -72,12 +72,12 @@ public class McpMiddlewareFactory
                         transportOptions[option.Key] = option.Value;
                     }
                 }
-                
+
                 // Create the client
                 var client = await McpClientFactory.CreateAsync(clientConfig.Value);
-                
+
                 mcpClients[clientId] = client;
-                
+
                 _logger?.LogInformation("Successfully created MCP client: {ClientId}", clientId);
             }
             catch (Exception ex)
@@ -86,7 +86,7 @@ public class McpMiddlewareFactory
                 throw;
             }
         }
-        
+
         // Create the middleware using the async factory pattern
         return await McpMiddleware.CreateAsync(mcpClients, cancellationToken: cancellationToken);
     }
@@ -102,7 +102,7 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
-        
+
         // Use the async factory pattern from McpMiddleware
         // This will automatically extract function contracts from the clients
         return await McpMiddleware.CreateAsync(mcpClients, cancellationToken: cancellationToken);

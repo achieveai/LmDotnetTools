@@ -224,7 +224,7 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
     }
 
     private IAsyncEnumerable<AnthropicStreamEvent> GetStoredFragmentsAsAsyncEnumerable(
-        List<JsonObject> fragments, 
+        List<JsonObject> fragments,
         CancellationToken cancellationToken)
     {
         return new StoredFragmentsAsyncEnumerable(fragments, _jsonOptions, cancellationToken);
@@ -237,8 +237,8 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
         private readonly CancellationToken _cancellationToken;
 
         public StoredFragmentsAsyncEnumerable(
-            List<JsonObject> fragments, 
-            JsonSerializerOptions jsonOptions, 
+            List<JsonObject> fragments,
+            JsonSerializerOptions jsonOptions,
             CancellationToken cancellationToken)
         {
             _fragments = fragments;
@@ -249,7 +249,7 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
         public async IAsyncEnumerator<AnthropicStreamEvent> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
             cancellationToken = _cancellationToken.IsCancellationRequested ? _cancellationToken : cancellationToken;
-            
+
             foreach (var fragmentJson in _fragments)
             {
                 // Add a small delay between fragments to simulate streaming
@@ -268,7 +268,7 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
         CancellationToken cancellationToken)
     {
         return Task.FromResult<IAsyncEnumerable<AnthropicStreamEvent>>(
-            new LiveStreamingAsyncEnumerable(_innerClient, request, serializedRequest, _jsonOptions, 
+            new LiveStreamingAsyncEnumerable(_innerClient, request, serializedRequest, _jsonOptions,
                 _testDataFilePath, _recordedInteractions, _currentInteractionIndex, cancellationToken));
     }
 
@@ -306,10 +306,10 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
         public async IAsyncEnumerator<AnthropicStreamEvent> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
             cancellationToken = _cancellationToken.IsCancellationRequested ? _cancellationToken : cancellationToken;
-            
+
             // Get responses from inner client
             var responseFragments = new List<JsonObject>();
-            
+
             var streamEvents = await _innerClient.StreamingChatCompletionsAsync(_request, cancellationToken);
             await foreach (AnthropicStreamEvent streamEvent in streamEvents.WithCancellation(cancellationToken))
             {
@@ -317,7 +317,7 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
                 var serializedFragment = JsonSerializer.SerializeToNode(streamEvent, _jsonOptions)?.AsObject()
                     ?? throw new InvalidOperationException("Failed to serialize stream event to JsonObject");
                 responseFragments.Add(serializedFragment);
-                
+
                 // Return the event to the caller
                 yield return streamEvent;
             }
@@ -349,4 +349,4 @@ public class AnthropicClientWrapper : BaseClientWrapper, IAnthropicClient
         _innerClient?.Dispose();
         GC.SuppressFinalize(this);
     }
-} 
+}

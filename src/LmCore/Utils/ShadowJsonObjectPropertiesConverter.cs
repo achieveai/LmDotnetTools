@@ -24,7 +24,7 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
 
         // Find JsonObject property marked as metadata storage
         _metadataProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .FirstOrDefault(p => 
+            .FirstOrDefault(p =>
                 p.PropertyType == typeof(JsonObject) &&
                 p.Name == "Metadata" &&
                 p.GetCustomAttribute<JsonIgnoreAttribute>() != null);
@@ -66,9 +66,9 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
             // Try reflection-based handling
             if (_jsonProperties != null)
             {
-                var property = _jsonProperties.FirstOrDefault(p => 
+                var property = _jsonProperties.FirstOrDefault(p =>
                     p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name == propertyName);
-                
+
                 if (property != null)
                 {
                     var value = JsonSerializer.Deserialize(ref reader, property.PropertyType, options);
@@ -174,4 +174,4 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
     protected virtual void WriteProperties(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
     }
-} 
+}

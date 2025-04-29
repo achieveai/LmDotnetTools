@@ -9,7 +9,7 @@ using System.Text.Json;
 public static class TestLogger
 {
     public static void Log(string message) => Console.WriteLine($"[TEST_LOG] {message}");
-    
+
     public static void LogObject(string name, object? obj)
     {
         if (obj == null)
@@ -17,7 +17,7 @@ public static class TestLogger
             Log($"{name}: null");
             return;
         }
-        
+
         try
         {
             var json = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
@@ -28,4 +28,4 @@ public static class TestLogger
             Log($"{name}: Error serializing: {ex.Message}");
         }
     }
-} 
+}

@@ -12,9 +12,9 @@ public static class FunctionContractExtension
     /// <returns><see cref="FunctionDefinition"/></returns>
     public static FunctionDefinition ToOpenFunctionDefinition(this FunctionContract functionContract)
     {
-        var name = functionContract.Name 
+        var name = functionContract.Name
             ?? throw new Exception("Function name cannot be null");
-        var description = functionContract.Description 
+        var description = functionContract.Description
             ?? throw new Exception("Function description cannot be null");
 
         var schemaBuilder = JsonSchemaObject.Create()
@@ -36,13 +36,13 @@ public static class FunctionContractExtension
 
                 // Convert the parameter type to an appropriate JsonSchemaProperty
                 var property = CreatePropertyForType(param.ParameterType, param.Description);
-                
+
                 schemaBuilder = schemaBuilder.WithProperty(param.Name, property, param.IsRequired);
             }
         }
 
         var parameters = schemaBuilder.Build();
-        
+
         return new FunctionDefinition(name, description, parameters);
     }
 

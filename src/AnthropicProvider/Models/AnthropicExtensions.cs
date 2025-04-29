@@ -45,7 +45,7 @@ public static class AnthropicExtensions
                 GenerationId = response.Id
             });
         }
-        
+
         return messages;
     }
 
@@ -72,7 +72,7 @@ public static class AnthropicExtensions
                             TotalTokens = messageDeltaEvent.Usage.InputTokens + messageDeltaEvent.Usage.OutputTokens
                         })
                 },
-            
+
             // Handle content block delta event for text content
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent when contentBlockDeltaEvent.Delta is AnthropicTextDelta textDelta =>
                 new TextUpdateMessage
@@ -81,7 +81,7 @@ public static class AnthropicExtensions
                     Role = Role.Assistant,
                     IsThinking = false
                 },
-            
+
             // Handle content block delta event for thinking content
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent when contentBlockDeltaEvent.Delta is AnthropicThinkingDelta thinkingDelta =>
                 new TextUpdateMessage
@@ -90,14 +90,14 @@ public static class AnthropicExtensions
                     Role = Role.Assistant,
                     IsThinking = true
                 },
-                
+
             // Handle content block delta event for tool calls
-            AnthropicContentBlockDeltaEvent contentBlockDeltaEvent when contentBlockDeltaEvent.Delta is AnthropicToolCallsDelta toolCallsDelta 
+            AnthropicContentBlockDeltaEvent contentBlockDeltaEvent when contentBlockDeltaEvent.Delta is AnthropicToolCallsDelta toolCallsDelta
                 && toolCallsDelta.ToolCalls.Count > 0 =>
                 new ToolsCallUpdateMessage
                 {
                     Role = Role.Assistant,
-                    ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate 
+                    ToolCallUpdates = ImmutableList.Create(new ToolCallUpdate
                     {
                         ToolCallId = toolCallsDelta.ToolCalls[0].Id,
                         FunctionName = toolCallsDelta.ToolCalls[0].Name,
@@ -105,7 +105,7 @@ public static class AnthropicExtensions
                         Index = toolCallsDelta.ToolCalls[0].Index
                     })
                 },
-            
+
             // Default empty update message for unhandled event types
             _ => new TextUpdateMessage
             {
@@ -114,7 +114,7 @@ public static class AnthropicExtensions
             }
         };
     }
-    
+
     /// <summary>
     /// Maps an Anthropic role string to LmCore Role enum.
     /// </summary>
@@ -150,7 +150,7 @@ public static class AnthropicExtensions
                 FromAgent = agentName,
                 GenerationId = messageId
             },
-            
+
             AnthropicResponseToolUseContent toolContent => new ToolsCallMessage
             {
                 Role = ParseRole("assistant"),
@@ -159,9 +159,10 @@ public static class AnthropicExtensions
                 ToolCalls = ImmutableList.Create(new ToolCall(
                     toolContent.Name,
                     toolContent.Input.ToString()
-                ) { ToolCallId = toolContent.Id })
+                )
+                { ToolCallId = toolContent.Id })
             },
-            
+
             AnthropicResponseThinkingContent thinkingContent => new TextMessage
             {
                 Text = thinkingContent.Thinking,
@@ -170,8 +171,8 @@ public static class AnthropicExtensions
                 GenerationId = messageId,
                 IsThinking = true
             },
-            
+
             _ => null
         };
     }
-} 
+}

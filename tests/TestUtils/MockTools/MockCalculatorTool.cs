@@ -98,4 +98,4 @@ public static class MockCalculatorTool
     {
         throw new NotImplementedException("Mock tool call - implement using callback override");
     }
-} 
+}

@@ -12,11 +12,11 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 [JsonDerivedType(typeof(AnthropicResponseThinkingContent), typeDiscriminator: "thinking")]
 public abstract record AnthropicResponseContent
 {
-  /// <summary>
-  /// The type of content.
-  /// </summary>
-  [JsonPropertyName("type")]
-  public string Type { get; init; } = string.Empty;
+    /// <summary>
+    /// The type of content.
+    /// </summary>
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -24,19 +24,19 @@ public abstract record AnthropicResponseContent
 /// </summary>
 public record AnthropicResponseTextContent : AnthropicResponseContent
 {
-  /// <summary>
-  /// Constructor that explicitly sets the Type property to "text"
-  /// </summary>
-  public AnthropicResponseTextContent()
-  {
-    Type = "text";
-  }
+    /// <summary>
+    /// Constructor that explicitly sets the Type property to "text"
+    /// </summary>
+    public AnthropicResponseTextContent()
+    {
+        Type = "text";
+    }
 
-  /// <summary>
-  /// The text content.
-  /// </summary>
-  [JsonPropertyName("text")]
-  public string Text { get; init; } = string.Empty;
+    /// <summary>
+    /// The text content.
+    /// </summary>
+    [JsonPropertyName("text")]
+    public string Text { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -44,31 +44,31 @@ public record AnthropicResponseTextContent : AnthropicResponseContent
 /// </summary>
 public record AnthropicResponseToolUseContent : AnthropicResponseContent
 {
-  /// <summary>
-  /// Constructor that explicitly sets the Type property to "tool_use"
-  /// </summary>
-  public AnthropicResponseToolUseContent()
-  {
-    Type = "tool_use";
-  }
+    /// <summary>
+    /// Constructor that explicitly sets the Type property to "tool_use"
+    /// </summary>
+    public AnthropicResponseToolUseContent()
+    {
+        Type = "tool_use";
+    }
 
-  /// <summary>
-  /// The ID of the tool use.
-  /// </summary>
-  [JsonPropertyName("id")]
-  public string Id { get; init; } = string.Empty;
+    /// <summary>
+    /// The ID of the tool use.
+    /// </summary>
+    [JsonPropertyName("id")]
+    public string Id { get; init; } = string.Empty;
 
-  /// <summary>
-  /// The name of the tool.
-  /// </summary>
-  [JsonPropertyName("name")]
-  public string Name { get; init; } = string.Empty;
+    /// <summary>
+    /// The name of the tool.
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
 
-  /// <summary>
-  /// The input to the tool.
-  /// </summary>
-  [JsonPropertyName("input")]
-  public JsonElement Input { get; init; }
+    /// <summary>
+    /// The input to the tool.
+    /// </summary>
+    [JsonPropertyName("input")]
+    public JsonElement Input { get; init; }
 }
 
 /// <summary>
@@ -76,23 +76,23 @@ public record AnthropicResponseToolUseContent : AnthropicResponseContent
 /// </summary>
 public record AnthropicResponseThinkingContent : AnthropicResponseContent
 {
-  /// <summary>
-  /// Constructor that explicitly sets the Type property to "thinking"
-  /// </summary>
-  public AnthropicResponseThinkingContent()
-  {
-    Type = "thinking";
-  }
+    /// <summary>
+    /// Constructor that explicitly sets the Type property to "thinking"
+    /// </summary>
+    public AnthropicResponseThinkingContent()
+    {
+        Type = "thinking";
+    }
 
-  /// <summary>
-  /// The thinking content.
-  /// </summary>
-  [JsonPropertyName("thinking")]
-  public string Thinking { get; init; } = string.Empty;
+    /// <summary>
+    /// The thinking content.
+    /// </summary>
+    [JsonPropertyName("thinking")]
+    public string Thinking { get; init; } = string.Empty;
 
-  /// <summary>
-  /// The signature of the thinking content, if any.
-  /// </summary>
-  [JsonPropertyName("signature")]
-  public string? Signature { get; init; }
-} 
+    /// <summary>
+    /// The signature of the thinking content, if any.
+    /// </summary>
+    [JsonPropertyName("signature")]
+    public string? Signature { get; init; }
+}

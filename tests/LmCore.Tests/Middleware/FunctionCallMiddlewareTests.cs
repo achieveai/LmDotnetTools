@@ -45,7 +45,8 @@ public class FunctionCallMiddlewareTests
             }
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>> {
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        {
             ["add"] = args => Task.FromResult("10")
         };
 
@@ -103,7 +104,8 @@ public class FunctionCallMiddlewareTests
             }
         };
 
-        var functionMap = new Dictionary<string, Func<string, Task<string>>> {
+        var functionMap = new Dictionary<string, Func<string, Task<string>>>
+        {
             ["function1"] = args => Task.FromResult("result1"),
             ["function2"] = args => Task.FromResult("result2"),
         };

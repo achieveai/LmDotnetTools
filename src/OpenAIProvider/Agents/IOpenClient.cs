@@ -2,7 +2,7 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
-public interface IOpenClient: IDisposable
+public interface IOpenClient : IDisposable
 {
     Task<ChatCompletionResponse> CreateChatCompletionsAsync(
         ChatCompletionRequest chatCompletionRequest,

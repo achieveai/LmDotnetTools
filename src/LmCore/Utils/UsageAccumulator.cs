@@ -38,7 +38,7 @@ public class UsageAccumulator
             return false;
 
         var usage = message.Metadata["usage"];
-        
+
         // Store context for the usage message
         _fromAgent = message.FromAgent;
         _generationId = message.GenerationId;
@@ -50,8 +50,8 @@ public class UsageAccumulator
             var metadataWithoutUsage = message.Metadata.Remove("usage");
             if (metadataWithoutUsage.Count > 0)
             {
-                _extraMetadata = _extraMetadata == null 
-                    ? metadataWithoutUsage 
+                _extraMetadata = _extraMetadata == null
+                    ? metadataWithoutUsage
                     : _extraMetadata.AddRange(metadataWithoutUsage);
             }
         }
@@ -75,8 +75,8 @@ public class UsageAccumulator
         // Copy any metadata
         if (usageMessage.Metadata != null && usageMessage.Metadata.Count > 0)
         {
-            _extraMetadata = _extraMetadata == null 
-                ? usageMessage.Metadata 
+            _extraMetadata = _extraMetadata == null
+                ? usageMessage.Metadata
                 : _extraMetadata.AddRange(usageMessage.Metadata);
         }
 
@@ -114,8 +114,8 @@ public class UsageAccumulator
             }
 
             // Validate input tokens don't change
-            if (_accumulatedUsage.PromptTokens != 0 && 
-                coreUsage.PromptTokens != 0 && 
+            if (_accumulatedUsage.PromptTokens != 0 &&
+                coreUsage.PromptTokens != 0 &&
                 _accumulatedUsage.PromptTokens != coreUsage.PromptTokens)
             {
                 throw new InvalidOperationException(
@@ -126,12 +126,12 @@ public class UsageAccumulator
             // To fix the test, we need to determine if this is a duplicate usage report
             // or a continuation. In test cases, we should preserve existing values.
             // In most middleware scenarios, we should accumulate.
-            
+
             // Get the max completion tokens or preserve existing if new value is 0
-            var completionTokens = coreUsage.CompletionTokens == 0 
-                ? _accumulatedUsage.CompletionTokens 
-                : _accumulatedUsage.CompletionTokens == 0 
-                    ? coreUsage.CompletionTokens 
+            var completionTokens = coreUsage.CompletionTokens == 0
+                ? _accumulatedUsage.CompletionTokens
+                : _accumulatedUsage.CompletionTokens == 0
+                    ? coreUsage.CompletionTokens
                     : Math.Max(_accumulatedUsage.CompletionTokens, coreUsage.CompletionTokens);
 
             // Accumulate usage data
@@ -157,7 +157,7 @@ public class UsageAccumulator
             {
                 _accumulatedUsage = new Usage();
             }
-            
+
             // Only add raw_usage if we haven't added it before
             if (!_hasRawUsage)
             {
@@ -169,18 +169,18 @@ public class UsageAccumulator
     }
 
     private ImmutableDictionary<string, object?> MergeExtraProperties(
-        ImmutableDictionary<string, object?>? first, 
+        ImmutableDictionary<string, object?>? first,
         ImmutableDictionary<string, object?>? second)
     {
         if (first == null || first.IsEmpty)
             return second ?? ImmutableDictionary<string, object?>.Empty;
-            
+
         if (second == null || second.IsEmpty)
             return first;
-        
+
         // Create a mutable dictionary to merge properties
         var merged = first.ToBuilder();
-        
+
         // Add or skip properties from second
         foreach (var kvp in second)
         {
@@ -189,7 +189,7 @@ public class UsageAccumulator
                 merged[kvp.Key] = kvp.Value;
             }
         }
-        
+
         return merged.ToImmutable();
     }
-} 
+}

@@ -15,9 +15,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             {
                 new TextMessage { Role = Role.User, Text = "Hello" }
             };
-            
-            var options = new GenerateReplyOptions 
-            { 
+
+            var options = new GenerateReplyOptions
+            {
                 ModelId = "anthropic/claude-3-opus",
                 ExtraProperties = new Dictionary<string, object?>
                 {
@@ -41,9 +41,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             {
                 new TextMessage { Role = Role.User, Text = "Hello" }
             };
-            
-            var options = new GenerateReplyOptions 
-            { 
+
+            var options = new GenerateReplyOptions
+            {
                 ModelId = "openai/gpt-4", // OpenRouter style model ID
             };
 
@@ -63,15 +63,15 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             {
                 new TextMessage { Role = Role.User, Text = "Hello" }
             };
-            
-            var options = new GenerateReplyOptions 
-            { 
+
+            var options = new GenerateReplyOptions
+            {
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["models"] = new[] 
-                    { 
-                        "openai/gpt-4-turbo", 
-                        "anthropic/claude-3-opus" 
+                    ["models"] = new[]
+                    {
+                        "openai/gpt-4-turbo",
+                        "anthropic/claude-3-opus"
                     }
                 }.ToImmutableDictionary()
             };
@@ -92,9 +92,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             {
                 new TextMessage { Role = Role.User, Text = "Return a JSON object with name and age" }
             };
-            
-            var options = new GenerateReplyOptions 
-            { 
+
+            var options = new GenerateReplyOptions
+            {
                 ModelId = "openai/gpt-4",
                 ExtraProperties = new Dictionary<string, object?>
                 {
@@ -121,9 +121,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             {
                 new TextMessage { Role = Role.User, Text = "Hello" }
             };
-            
-            var options = new GenerateReplyOptions 
-            { 
+
+            var options = new GenerateReplyOptions
+            {
                 ModelId = "anthropic/claude-3-haiku",
                 ExtraProperties = new Dictionary<string, object?>
                 {
@@ -143,4 +143,4 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // We can only verify the request was created without errors
         }
     }
-} 
+}

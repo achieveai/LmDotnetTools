@@ -31,7 +31,7 @@ public static class SchemaHelper
         {
             return new JsonSchemaObject { Type = "boolean" };
         }
-        else if (type.IsArray || (type.IsGenericType && 
+        else if (type.IsArray || (type.IsGenericType &&
                 (typeof(IEnumerable).IsAssignableFrom(type))))
         {
             Type elementType;
@@ -57,4 +57,4 @@ public static class SchemaHelper
             return new JsonSchemaObject { Type = "object" };
         }
     }
-} 
+}

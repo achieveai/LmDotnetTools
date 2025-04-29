@@ -13,7 +13,7 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
-    
+
     [JsonIgnore]
     public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
 
@@ -23,13 +23,13 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
 
     [JsonPropertyName("tool_calls")]
     public ImmutableList<ToolCall> ToolCalls { get; init; } = ImmutableList<ToolCall>.Empty;
-    
+
     public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
-    
+
     public string? GetText() => null;
-    
+
     public BinaryData? GetBinary() => null;
-    
+
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
@@ -50,7 +50,7 @@ public record ToolsCallUpdateMessage : IMessage
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
-    
+
     [JsonIgnore]
     public ImmutableDictionary<string, object>? Metadata { get; init; } = null;
 
@@ -75,7 +75,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     public string? FromAgent { get; init; } = null;
 
     public Role Role { get; init; } = Role.Assistant;
-    
+
     public ImmutableDictionary<string, object>? Metadata { get; private set; } = null;
 
     public string? GenerationId { get; init; } = null;
@@ -83,7 +83,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     public Action<ToolCall> OnToolCall { get; init; } = _ => { };
 
     private ImmutableList<ToolCall> _completedToolCalls = ImmutableList<ToolCall>.Empty;
-    
+
     // Current partial tool call we're building
     private string? _currentFunctionName = null;
     private string _accumulatedArgs = "";
@@ -94,7 +94,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     {
         return this.Build();
     }
-    
+
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
         // Process each update
@@ -102,7 +102,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         {
             // Check if this update completes a current tool call based on Id or Index
             bool isNewToolCall = false;
-            
+
             // Rule 0: If we have both IDs (non-null) and they're different, it's a new tool call
             if (_currentToolCallId != null && update.ToolCallId != null && _currentToolCallId != update.ToolCallId)
             {
@@ -115,7 +115,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
                 CompleteCurrentToolCall();
                 isNewToolCall = true;
             }
-            
+
             // If update contains a function name, it's the start of a new tool call
             if (isNewToolCall || (update.FunctionName != null && _currentFunctionName == null))
             {
@@ -129,13 +129,13 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             else if (_currentFunctionName != null && update.FunctionArgs != null)
             {
                 _accumulatedArgs += update.FunctionArgs;
-                
+
                 // Update tool call ID if it's now provided
                 if (_currentToolCallId == null && update.ToolCallId != null)
                 {
                     _currentToolCallId = update.ToolCallId;
                 }
-                
+
                 // Update index if it's now provided
                 if (_currentIndex == null && update.Index != null)
                 {
@@ -143,7 +143,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
                 }
             }
         }
-        
+
         // Merge metadata from the update
         if (streamingMessageUpdate.Metadata != null)
         {
@@ -161,7 +161,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             }
         }
     }
-    
+
     private void CompleteCurrentToolCall()
     {
         if (_currentFunctionName != null)
@@ -173,13 +173,13 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
                 ToolCallId = _currentToolCallId,
                 Index = _currentIndex
             };
-            
+
             // Add to completed tool calls
             _completedToolCalls = _completedToolCalls.Add(toolCall);
-            
+
             // Invoke callback for completed tool call
             OnToolCall(toolCall);
-            
+
             // Reset the current tool call state
             _currentFunctionName = null;
             _accumulatedArgs = "";
@@ -187,14 +187,14 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             _currentIndex = null;
         }
     }
-    
+
     public ToolsCallMessage Build()
     {
         // Rule 2: When build is called, complete any final partial update
         CompleteCurrentToolCall();
         var toolCalls = _completedToolCalls;
         _completedToolCalls = [];
-        
+
         return new ToolsCallMessage
         {
             FromAgent = FromAgent,

@@ -14,14 +14,14 @@ public static class MockToolCallHelper
     /// <param name="mockToolCallTypes">Types of mock tool call classes</param>
     /// <param name="callbackOverrides">Optional dictionary of function name to callback override</param>
     /// <returns>Tuple of function contracts and function map</returns>
-    public static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) 
+    public static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>)
         CreateMockToolCalls(
             IEnumerable<Type> mockToolCallTypes,
             IDictionary<string, Func<string, Task<string>>>? callbackOverrides = null)
     {
         // Use McpFunctionCallExtensions to extract function contracts and maps
         var (functionContracts, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(mockToolCallTypes);
-        
+
         // Apply overrides if provided
         if (callbackOverrides != null)
         {
@@ -34,7 +34,7 @@ public static class MockToolCallHelper
                 }
             }
         }
-        
+
         return (functionContracts, functionMap);
     }
-} 
+}

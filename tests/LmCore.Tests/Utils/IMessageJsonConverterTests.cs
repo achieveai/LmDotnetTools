@@ -27,30 +27,30 @@ public class IMessageJsonConverterTests
     public void Serialize_TextMessage_AsIMessage_AddsTypeDiscriminator()
     {
         // Arrange
-        IMessage message = new TextMessage 
-        { 
+        IMessage message = new TextMessage
+        {
             Text = "Hello world",
             Role = Role.Assistant,
             FromAgent = "test-agent",
             GenerationId = "test-gen-id",
             Metadata = ImmutableDictionary<string, object>.Empty.Add("test", "value")
         };
-        
+
         var options = GetOptionsWithConverter();
-        
+
         // Act
         string json = JsonSerializer.Serialize(message, options);
         Console.WriteLine(json);
-        
+
         // Assert
         var jsonDocument = JsonDocument.Parse(json);
         var root = jsonDocument.RootElement;
-        
+
         Assert.True(root.TryGetProperty("$type", out var typeProperty));
         Assert.Equal("text", typeProperty.GetString());
         Assert.Equal("Hello world", root.GetProperty("text").GetString());
     }
-    
+
     [Fact]
     public void Deserialize_TextMessage_WithTypeDiscriminator_ReturnsCorrectType()
     {
@@ -62,23 +62,23 @@ public class IMessageJsonConverterTests
             ""fromAgent"": ""test-agent"",
             ""generationId"": ""test-gen-id""
         }";
-        
+
         var options = GetOptionsWithConverter();
-        
+
         // Act
         var message = JsonSerializer.Deserialize<IMessage>(json, options);
-        
+
         // Assert
         Assert.NotNull(message);
         Assert.IsType<TextMessage>(message);
-        
+
         var textMessage = (TextMessage)message;
         Assert.Equal("Hello world", textMessage.Text);
         Assert.Equal(Role.Assistant, textMessage.Role);
         Assert.Equal("test-agent", textMessage.FromAgent);
         Assert.Equal("test-gen-id", textMessage.GenerationId);
     }
-    
+
     [Fact]
     public void Deserialize_TextMessage_WithoutTypeDiscriminator_ReturnsCorrectType()
     {
@@ -89,23 +89,23 @@ public class IMessageJsonConverterTests
             ""fromAgent"": ""test-agent"",
             ""generationId"": ""test-gen-id""
         }";
-        
+
         var options = GetOptionsWithConverter();
-        
+
         // Act
         var message = JsonSerializer.Deserialize<IMessage>(json, options);
-        
+
         // Assert
         Assert.NotNull(message);
         Assert.IsType<TextMessage>(message);
-        
+
         var textMessage = (TextMessage)message;
         Assert.Equal("Hello world", textMessage.Text);
         Assert.Equal(Role.Assistant, textMessage.Role);
         Assert.Equal("test-agent", textMessage.FromAgent);
         Assert.Equal("test-gen-id", textMessage.GenerationId);
     }
-    
+
     [Fact]
     public void RoundTrip_ToolsCallAggregateMessage_PreservesAllData()
     {
@@ -116,7 +116,7 @@ public class IMessageJsonConverterTests
         {
             ToolCallId = "tool-1"
         };
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall),
@@ -125,7 +125,7 @@ public class IMessageJsonConverterTests
             GenerationId = "gen-1",
             Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-call")
         };
-        
+
         var toolCallResult = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(new ToolCallResult("tool-1", "function result")),
@@ -133,38 +133,38 @@ public class IMessageJsonConverterTests
             FromAgent = "user-agent",
             Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-result")
         };
-        
+
         IMessage originalMessage = new ToolsCallAggregateMessage(toolCallMessage, toolCallResult, "combined-agent");
-        
+
         var options = GetOptionsWithConverter();
-        
+
         // Act
         string json = JsonSerializer.Serialize(originalMessage, options);
         Console.WriteLine(json);
-        
+
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
-        
+
         // Assert
         Assert.NotNull(deserializedMessage);
         Assert.IsType<ToolsCallAggregateMessage>(deserializedMessage);
-        
+
         var aggregateMessage = (ToolsCallAggregateMessage)deserializedMessage;
         Assert.Equal("combined-agent", aggregateMessage.FromAgent);
         Assert.Equal(Role.Assistant, aggregateMessage.Role);
         Assert.Equal("gen-1", aggregateMessage.GenerationId);
-        
+
         // Verify tool call message
         Assert.NotNull(aggregateMessage.ToolsCallMessage);
         var resultingToolCalls = ((ICanGetToolCalls)aggregateMessage.ToolsCallMessage).GetToolCalls();
         Assert.NotNull(resultingToolCalls);
-        
+
         // Verify tool call result
         Assert.NotNull(aggregateMessage.ToolsCallResult);
         Assert.NotEmpty(aggregateMessage.ToolsCallResult.ToolCallResults);
         Assert.Equal("tool-1", aggregateMessage.ToolsCallResult.ToolCallResults[0].ToolCallId);
         Assert.Equal("function result", aggregateMessage.ToolsCallResult.ToolCallResults[0].Result);
     }
-    
+
     [Theory]
     [InlineData("text", typeof(TextMessage))]
     [InlineData("image", typeof(ImageMessage))]
@@ -177,7 +177,7 @@ public class IMessageJsonConverterTests
             ""$type"": ""{typeDiscriminator}"",
             ""role"": ""assistant""
         }}";
-        
+
         if (expectedType == typeof(TextMessage))
         {
             json = $@"{{
@@ -194,16 +194,16 @@ public class IMessageJsonConverterTests
                 ""image_data"": ""ZmFrZS1pbWFnZS1kYXRh""
             }}";
         }
-        
+
         // Act - Use our custom converter explicitly
         var options = GetOptionsWithConverter();
         var message = JsonSerializer.Deserialize<IMessage>(json, options);
-        
+
         // Assert
         Assert.NotNull(message);
         Assert.IsType(expectedType, message);
     }
-    
+
     [Fact]
     public void RoundTrip_AllMessageTypes_PreservesTypeInformation()
     {
@@ -212,66 +212,66 @@ public class IMessageJsonConverterTests
         {
             new TextMessage { Text = "Hello", Role = Role.User },
             new ImageMessage { ImageData = BinaryData.FromString("fake-image-data"), Role = Role.Assistant },
-            new ToolsCallMessage 
-            { 
+            new ToolsCallMessage
+            {
                 ToolCalls = ImmutableList.Create(
                     new ToolCall("test_function", "{}"){ ToolCallId = "id1" }
                 ),
-                Role = Role.Assistant 
+                Role = Role.Assistant
             }
         };
-        
+
         var options = GetOptionsWithConverter();
-        
+
         foreach (var originalMessage in messages)
         {
             // Act
             string json = JsonSerializer.Serialize(originalMessage, options);
             Console.WriteLine($"Serialized {originalMessage.GetType().Name}: {json}");
-            
+
             var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
-            
+
             // Assert
             Assert.NotNull(deserializedMessage);
             Assert.Equal(originalMessage.GetType(), deserializedMessage.GetType());
         }
     }
-    
+
     [Fact]
     public void Serialize_DeserializeMessage_WithRespectToTypeSpecificConverter()
     {
         // Arrange
-        var originalMessage = new TextMessage 
-        { 
-            Text = "Test message with converter", 
+        var originalMessage = new TextMessage
+        {
+            Text = "Test message with converter",
             Role = Role.User,
             Metadata = ImmutableDictionary<string, object>.Empty.Add("custom", "value")
         };
-        
+
         var options = GetOptionsWithConverter();
-        
+
         // Act - Verify the message goes through our converter
         string json = JsonSerializer.Serialize<IMessage>(originalMessage, options);
         Console.WriteLine(json);
-        
+
         // Verify the type discriminator was added
         var jsonDocument = JsonDocument.Parse(json);
         Assert.True(jsonDocument.RootElement.TryGetProperty("$type", out var typeProperty));
-        
+
         // Deserialize back to IMessage
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
-        
+
         // Assert
         Assert.NotNull(deserializedMessage);
         Assert.IsType<TextMessage>(deserializedMessage);
-        
+
         var textMessage = (TextMessage)deserializedMessage;
         Assert.Equal(originalMessage.Text, textMessage.Text);
         Assert.Equal(originalMessage.Role, textMessage.Role);
-        
+
         // Check if metadata was preserved
         Assert.NotNull(textMessage.Metadata);
         Assert.True(textMessage.Metadata.ContainsKey("custom"));
         Assert.Equal("value", textMessage.Metadata["custom"]);
     }
-} 
+}

@@ -103,7 +103,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Create updates from the test string
         var textUpdates = CreateTextUpdateMessages(SplitStringPreservingSpaces(testString));
-        
+
         // Add a UsageMessage at the end
         var usage = new Usage
         {
@@ -118,7 +118,7 @@ public class MessageUpdateJoinerMiddlewareTests
             Usage = usage,
             Role = Role.Assistant
         };
-        
+
         var updateMessages = new List<IMessage>(textUpdates);
         updateMessages.Add(usageMessage);
 
@@ -157,12 +157,12 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Verify that the text message doesn't have usage metadata
         Assert.Null(textMessage.Metadata);
-        
+
         // Check that the second message is a usage message
         var usageMessageResult = results[1];
         Assert.IsType<UsageMessage>(usageMessageResult);
         var typedUsageMessage = (UsageMessage)usageMessageResult;
-        
+
         // Verify the usage data is correct
         Assert.NotNull(typedUsageMessage.Usage);
         Assert.Equal(10, typedUsageMessage.Usage.PromptTokens);

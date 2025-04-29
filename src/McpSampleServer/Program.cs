@@ -42,7 +42,7 @@ public static class GreetingTool
     {
         return $"Hello, {name}! Nice to meet you.";
     }
-    
+
     /// <summary>
     /// Says goodbye to the provided name
     /// </summary>

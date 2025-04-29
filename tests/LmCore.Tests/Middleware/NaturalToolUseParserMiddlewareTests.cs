@@ -18,7 +18,7 @@ public class NaturalToolUseParserMiddlewareTests
     private readonly Mock<IJsonSchemaValidator> _mockSchemaValidator;
     private readonly Mock<IAgent> _mockFallbackParser;
     private readonly List<FunctionContract> _functionContracts;
-    
+
     // Common test context
     private readonly MiddlewareContext _defaultContext;
 
@@ -34,34 +34,34 @@ public class NaturalToolUseParserMiddlewareTests
                 Description = "A test tool",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract 
-                    { 
-                        Name = "location", 
-                        ParameterType = new JsonSchemaObject { Type = "string" }, 
-                        Description = "First parameter", 
-                        IsRequired = true 
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        ParameterType = new JsonSchemaObject { Type = "string" },
+                        Description = "First parameter",
+                        IsRequired = true
                     },
-                    new FunctionParameterContract 
-                    { 
-                        Name = "unit", 
-                        ParameterType = new JsonSchemaObject { Type = "string" }, 
-                        Description = "Second parameter", 
-                        IsRequired = true 
+                    new FunctionParameterContract
+                    {
+                        Name = "unit",
+                        ParameterType = new JsonSchemaObject { Type = "string" },
+                        Description = "Second parameter",
+                        IsRequired = true
                     }
                 }
             }
         };
-        
+
         // Initialize default context
         _defaultContext = new MiddlewareContext(new List<IMessage> { new TextMessage { Text = "Hello", Role = Role.User } }, null);
     }
-    
+
     // Helper method to create middleware with default configuration
     private NaturalToolUseParserMiddleware CreateMiddleware()
     {
         return new NaturalToolUseParserMiddleware(_functionContracts, _mockSchemaValidator.Object, _mockFallbackParser.Object);
     }
-    
+
     // Helper method to setup mock agent with text response
     private Mock<IAgent> SetupMockAgent(string responseText)
     {
@@ -70,29 +70,29 @@ public class NaturalToolUseParserMiddlewareTests
                  .ReturnsAsync(new List<IMessage> { new TextMessage { Text = responseText, Role = Role.Assistant } });
         return mockAgent;
     }
-    
+
     // Helper method to setup a streaming agent with text update messages
     private Mock<IStreamingAgent> SetupStreamingAgent(string fullText, int chunkSize = 5)
     {
         var textChunks = SplitIntoChunks(fullText, chunkSize);
         var textUpdateMessages = MessageUpdateJoinerMiddlewareTests.CreateTextUpdateMessages(textChunks);
-        
+
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         mockStreamingAgent.Setup(a => a.GenerateReplyStreamingAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
                           .Returns(Task.FromResult(CreateAsyncEnumerable(textUpdateMessages)));
-        
+
         return mockStreamingAgent;
     }
-    
+
     // Helper method to create middleware chain for streaming tests
     private IStreamingAgent CreateStreamingMiddlewareChain(IStreamingAgent innerAgent)
     {
         // First, use MessageUpdateJoinerMiddleware to join text updates into a complete TextMessage
         var joinerMiddleware = new MessageUpdateJoinerMiddleware();
-        
+
         // Then, apply the NaturalToolUseParserMiddleware to the joined messages
         var naturalToolUseMiddleware = CreateMiddleware();
-        
+
         // Create the chain: innerAgent -> joinerMiddleware -> naturalToolUseMiddleware
         var joinerWrappingAgent = new MiddlewareWrappingStreamingAgent(innerAgent, joinerMiddleware);
         return new MiddlewareWrappingStreamingAgent(joinerWrappingAgent, naturalToolUseMiddleware);
@@ -138,19 +138,19 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        
+
         // Create a response with proper tool call format but invalid JSON inside
         string invalidJsonToolCall = "Let me get that weather: <GetWeather>\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_json\": true,\n}\n```\n</GetWeather>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
-        
+
         // Setup schema validator to reject the JSON (invalid schema)
         _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
-        
+
         // Setup fallback parser to return valid JSON (this is what the fallback parser is supposed to do)
         string validFallbackJson = "```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```";
         _mockFallbackParser.Setup(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
                            .ReturnsAsync(new List<IMessage> { new TextMessage { Text = validFallbackJson, Role = Role.Assistant } });
-        
+
         // Make schema validator accept the fixed JSON from the fallback parser
         _mockSchemaValidator.SetupSequence(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
             .Returns(false)  // First call with invalid JSON
@@ -162,14 +162,14 @@ public class NaturalToolUseParserMiddlewareTests
         // Assert
         // Verify the fallback parser was called
         _mockFallbackParser.Verify(f => f.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()), Times.Once);
-        
+
         // Should receive text message and tool call message
         Assert.Equal(2, result.Count());
-        
+
         // First message should be the original text before the tool call
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Let me get that weather:", textMessage.Text);
-        
+
         // Last message should be the raw JSON returned from the fallback parser
         // The fallback parser returns just the JSON content, not a formatted tool call message
         var jsonMessage = result.OfType<TextMessage>().Last();
@@ -182,7 +182,7 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        
+
         // Create a response with a tool name that doesn't exist in the function contracts
         string unknownToolCall = "Let me search for that: <NonExistentTool>\n```json\n{\n  \"query\": \"test search\"\n}\n```\n</NonExistentTool>";
         var mockAgent = SetupMockAgent(unknownToolCall);
@@ -192,11 +192,11 @@ public class NaturalToolUseParserMiddlewareTests
         var exception = await Assert.ThrowsAsync<ToolUseParsingException>(
             async () => await middleware.InvokeAsync(_defaultContext, mockAgent.Object)
         );
-        
+
         // Verify the exception message contains the tool name
         Assert.Contains("NonExistentTool", exception.Message);
     }
-    
+
     [Fact]
     public async Task InvokeStreamingAsync_WithNoToolCall_ReturnsTextMessage()
     {
@@ -220,9 +220,9 @@ public class NaturalToolUseParserMiddlewareTests
         // Arrange
         // The full text containing a tool call
         string fullText = "Here's the weather: <GetWeather>\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</GetWeather>";
-        
+
         _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
-        
+
         var mockStreamingAgent = SetupStreamingAgent(fullText, 7);
         var agent = CreateStreamingMiddlewareChain(mockStreamingAgent.Object);
 

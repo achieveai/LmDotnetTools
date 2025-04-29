@@ -19,7 +19,7 @@ public static class MockGreetingTool
     {
         throw new NotImplementedException("Mock tool call - implement using callback override");
     }
-    
+
     /// <summary>
     /// Says goodbye to the provided name
     /// </summary>
@@ -30,4 +30,4 @@ public static class MockGreetingTool
     {
         throw new NotImplementedException("Mock tool call - implement using callback override");
     }
-} 
+}

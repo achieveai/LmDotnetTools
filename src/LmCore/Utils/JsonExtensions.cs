@@ -13,4 +13,4 @@ public static class JsonExtensions
         }
         return node.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
     }
-} 
+}

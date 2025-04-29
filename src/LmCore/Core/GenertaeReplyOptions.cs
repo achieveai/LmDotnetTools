@@ -57,13 +57,13 @@ public record GenerateReplyOptions
 
         // Deep merge the extra properties
         var mergedExtraProps = ImmutableDictionary<string, object?>.Empty;
-        
+
         // First copy the original properties
         foreach (var prop in ExtraProperties)
         {
             mergedExtraProps = mergedExtraProps.SetItem(prop.Key, CloneExtraPropertyValue(prop.Value));
         }
-        
+
         // Then merge with the other properties
         foreach (var extraProperty in other.ExtraProperties)
         {

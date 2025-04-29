@@ -23,16 +23,16 @@ public static class ChatCompletionRequestFactory
     {
         // Check if we're explicitly using OpenRouter
         bool isOpenRouter = IsOpenRouterRequest(options);
-        
+
         if (isOpenRouter)
         {
             return CreateOpenRouterRequest(messages, options);
         }
-        
+
         // Default to standard OpenAI format
         return CreateStandardRequest(messages, options);
     }
-    
+
     /// <summary>
     /// Creates a standard OpenAI-compatible ChatCompletionRequest
     /// </summary>
@@ -40,11 +40,11 @@ public static class ChatCompletionRequestFactory
     {
         // Get model name with fallback
         string modelName = GetModelName(options);
-        
+
         // Extract basic parameters
         var temperature = options?.Temperature ?? 0.7f;
         var maxTokens = options?.MaxToken ?? 4096;
-        
+
         // Convert messages to ChatMessage objects
         var chatMessages = ConvertMessagesToChat(messages);
 
@@ -55,11 +55,11 @@ public static class ChatCompletionRequestFactory
             temperature,
             maxTokens
         );
-        
+
         // Apply additional options and return the new instance
         return ApplyStandardOptions(request, options);
     }
-    
+
     /// <summary>
     /// Creates an OpenRouter-specific ChatCompletionRequest
     /// </summary>
@@ -67,11 +67,11 @@ public static class ChatCompletionRequestFactory
     {
         // First create a standard request
         var request = CreateStandardRequest(messages, options);
-        
+
         // Then apply OpenRouter specific parameters and return the new instance
         return ApplyOpenRouterOptions(request, options);
     }
-    
+
     private static string GetModelName(GenerateReplyOptions? options)
     {
         // First check ModelId
@@ -79,19 +79,19 @@ public static class ChatCompletionRequestFactory
         {
             return options.ModelId;
         }
-        
+
         // Then check ExtraProperties for "model"
-        if (options?.ExtraProperties != null && 
-            options.ExtraProperties.TryGetValue("model", out var modelObj) && 
+        if (options?.ExtraProperties != null &&
+            options.ExtraProperties.TryGetValue("model", out var modelObj) &&
             modelObj is string modelStr)
         {
             return modelStr;
         }
-        
+
         // Default model
         return "gpt-3.5-turbo";
     }
-    
+
     private static bool IsOpenRouterRequest(GenerateReplyOptions? options)
     {
         // Check if Providers includes "openrouter"
@@ -101,37 +101,39 @@ public static class ChatCompletionRequestFactory
         {
             return true;
         }
-        
+
         // Check if ModelId starts with a provider prefix (openrouter format)
-        if (!string.IsNullOrEmpty(options?.ModelId) && 
-            (options.ModelId.Contains('/') || options.ModelId.StartsWith("anthropic/") || 
+        if (!string.IsNullOrEmpty(options?.ModelId) &&
+            (options.ModelId.Contains('/') || options.ModelId.StartsWith("anthropic/") ||
              options.ModelId.StartsWith("meta/") || options.ModelId.StartsWith("google/")))
         {
             return true;
         }
-        
+
         // Check if ExtraProperties contains OpenRouter specific keys
-        if (options?.ExtraProperties != null && 
-            (options.ExtraProperties.ContainsKey("route") || 
+        if (options?.ExtraProperties != null &&
+            (options.ExtraProperties.ContainsKey("route") ||
              options.ExtraProperties.ContainsKey("models") ||
              options.ExtraProperties.ContainsKey("transforms")))
         {
             return true;
         }
-        
+
         return false;
     }
-    
+
     private static List<ChatMessage> ConvertMessagesToChat(IEnumerable<IMessage> messages)
     {
-        return messages.Select(message => {
+        return messages.Select(message =>
+        {
             // Map role
             var role = message.Role == Role.User ? RoleEnum.User :
                        message.Role == Role.System ? RoleEnum.System :
                        message.Role == Role.Tool ? RoleEnum.Tool :
                        RoleEnum.Assistant;
 
-            var chatMessage = new ChatMessage { 
+            var chatMessage = new ChatMessage
+            {
                 Role = role,
                 Name = message.FromAgent
             };
@@ -146,7 +148,7 @@ public static class ChatCompletionRequestFactory
             {
                 // Convert tool calls
                 chatMessage.ToolCalls = new List<FunctionContent>();
-                
+
                 foreach (var tc in toolsCallMessage.ToolCalls)
                 {
                     var toolId = tc.ToolCallId ?? Guid.NewGuid().ToString();
@@ -169,11 +171,11 @@ public static class ChatCompletionRequestFactory
             return chatMessage;
         }).ToList();
     }
-    
+
     private static ChatCompletionRequest ApplyStandardOptions(ChatCompletionRequest request, GenerateReplyOptions? options)
     {
         if (options == null) return request;
-        
+
         // Prepare properties for the new request instance
         float? topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
         string[]? stop = options.StopSequence ?? request.Stop;
@@ -182,27 +184,27 @@ public static class ChatCompletionRequestFactory
         bool? safePrompt = options.ExtraProperties.TryGetValue("safe_prompt", out var safePromptObj)
             && safePromptObj is bool safePromptBool ? safePromptBool : request.SafePrompt;
         int? randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
-        
+
         // Prepare tools if functions are provided
         List<FunctionTool>? tools = request.Tools;
-        
+
         if (options.Functions != null && options.Functions.Length > 0)
         {
             tools = options.Functions.Select(f => new FunctionTool(f.ToOpenFunctionDefinition())).ToList();
         }
-        
+
         // Check for response format
         ResponseFormat? responseFormat = request.ResponseFormat;
-        
-        if (options.ExtraProperties != null && 
-            options.ExtraProperties.TryGetValue("response_format", out var formatObj) && 
+
+        if (options.ExtraProperties != null &&
+            options.ExtraProperties.TryGetValue("response_format", out var formatObj) &&
             formatObj is Dictionary<string, object?> formatDict &&
             formatDict.TryGetValue("type", out var typeObj) &&
             typeObj is string typeStr)
         {
             responseFormat = new ResponseFormat { ResponseFormatType = typeStr };
         }
-        
+
         // Create a new instance with all the updated properties
         return new ChatCompletionRequest(
             request.Model,
@@ -226,14 +228,14 @@ public static class ChatCompletionRequestFactory
             ToolChoice = request.ToolChoice,
         };
     }
-    
+
     private static ChatCompletionRequest ApplyOpenRouterOptions(ChatCompletionRequest request, GenerateReplyOptions? options)
     {
         if (options?.ExtraProperties == null) return request;
-        
+
         // Create a new JsonObject for the additional parameters
         var jsonObject = new Dictionary<string, object>();
-        
+
         // Add the existing AdditionalParameters if any
         if (request.AdditionalParameters != null)
         {
@@ -246,7 +248,7 @@ public static class ChatCompletionRequestFactory
                 }
             }
         }
-        
+
         // Copy OpenRouter-specific properties
         foreach (var kvp in options.ExtraProperties)
         {
@@ -277,7 +279,7 @@ public static class ChatCompletionRequestFactory
                     break;
             }
         }
-        
+
         // Create a new request with all the properties from the original plus our changes
         return new ChatCompletionRequest(
             request.Model,

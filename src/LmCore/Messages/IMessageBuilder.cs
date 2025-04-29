@@ -5,7 +5,7 @@ public interface IMessageBuilder
     public IMessage Build();
 }
 
-public interface IMessageBuilder<T, U> : IMessageBuilder where T : IMessage where U: IMessage
+public interface IMessageBuilder<T, U> : IMessageBuilder where T : IMessage where U : IMessage
 {
     public string? FromAgent { get; }
 

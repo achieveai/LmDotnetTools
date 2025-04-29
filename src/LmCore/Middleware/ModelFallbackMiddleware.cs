@@ -11,255 +11,255 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class ModelFallbackMiddleware : IStreamingMiddleware
 {
-  private readonly Dictionary<string, IAgent[]> _modelAgentMap;
-  private readonly IAgent _defaultAgent;
-  private readonly bool _tryDefaultLast;
+    private readonly Dictionary<string, IAgent[]> _modelAgentMap;
+    private readonly IAgent _defaultAgent;
+    private readonly bool _tryDefaultLast;
 
-  /// <summary>
-  /// Initializes a new instance of the <see cref="ModelFallbackMiddleware"/> class.
-  /// </summary>
-  /// <param name="modelAgentMap">A dictionary mapping model names to arrays of agents to try in order.</param>
-  /// <param name="defaultAgent">The default agent to use if no mapping is found for the model.</param>
-  /// <param name="tryDefaultLast">If true, the default agent will be tried as a last resort after all mapped agents fail.</param>
-  /// <param name="name">Optional name for the middleware.</param>
-  public ModelFallbackMiddleware(
-    Dictionary<string, IAgent[]> modelAgentMap,
-    IAgent defaultAgent,
-    bool tryDefaultLast = true,
-    string? name = null)
-  {
-    _modelAgentMap = modelAgentMap ?? throw new ArgumentNullException(nameof(modelAgentMap));
-    _defaultAgent = defaultAgent ?? throw new ArgumentNullException(nameof(defaultAgent));
-    _tryDefaultLast = tryDefaultLast;
-    Name = name ?? nameof(ModelFallbackMiddleware);
-  }
-
-  /// <summary>
-  /// Gets the name of the middleware.
-  /// </summary>
-  public string? Name { get; }
-
-  /// <summary>
-  /// Invokes the middleware, attempting agents based on the model name in the options.
-  /// </summary>
-  public async Task<IEnumerable<IMessage>> InvokeAsync(
-    MiddlewareContext context,
-    IAgent agent,
-    CancellationToken cancellationToken = default)
-  {
-    // Check if options is null or doesn't contain ModelId
-    if (context.Options?.ModelId == null)
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ModelFallbackMiddleware"/> class.
+    /// </summary>
+    /// <param name="modelAgentMap">A dictionary mapping model names to arrays of agents to try in order.</param>
+    /// <param name="defaultAgent">The default agent to use if no mapping is found for the model.</param>
+    /// <param name="tryDefaultLast">If true, the default agent will be tried as a last resort after all mapped agents fail.</param>
+    /// <param name="name">Optional name for the middleware.</param>
+    public ModelFallbackMiddleware(
+      Dictionary<string, IAgent[]> modelAgentMap,
+      IAgent defaultAgent,
+      bool tryDefaultLast = true,
+      string? name = null)
     {
-      return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+        _modelAgentMap = modelAgentMap ?? throw new ArgumentNullException(nameof(modelAgentMap));
+        _defaultAgent = defaultAgent ?? throw new ArgumentNullException(nameof(defaultAgent));
+        _tryDefaultLast = tryDefaultLast;
+        Name = name ?? nameof(ModelFallbackMiddleware);
     }
 
-    // Get the model name from options
-    string modelId = context.Options.ModelId;
+    /// <summary>
+    /// Gets the name of the middleware.
+    /// </summary>
+    public string? Name { get; }
 
-    // Try to get agents for the model
-    if (_modelAgentMap.TryGetValue(modelId, out var agents) && agents.Length > 0)
+    /// <summary>
+    /// Invokes the middleware, attempting agents based on the model name in the options.
+    /// </summary>
+    public async Task<IEnumerable<IMessage>> InvokeAsync(
+      MiddlewareContext context,
+      IAgent agent,
+      CancellationToken cancellationToken = default)
     {
-      Exception? lastException = null;
-
-      // Try each agent in order
-      foreach (var mappedAgent in agents)
-      {
-        try
+        // Check if options is null or doesn't contain ModelId
+        if (context.Options?.ModelId == null)
         {
-          return await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+            return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
         }
-        catch (Exception ex)
+
+        // Get the model name from options
+        string modelId = context.Options.ModelId;
+
+        // Try to get agents for the model
+        if (_modelAgentMap.TryGetValue(modelId, out var agents) && agents.Length > 0)
         {
-          // Store the exception and try the next agent
-          lastException = ex;
-        }
-      }
+            Exception? lastException = null;
 
-      // If we should try the default agent as a last resort
-      if (_tryDefaultLast)
-      {
-        try
+            // Try each agent in order
+            foreach (var mappedAgent in agents)
+            {
+                try
+                {
+                    return await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    // Store the exception and try the next agent
+                    lastException = ex;
+                }
+            }
+
+            // If we should try the default agent as a last resort
+            if (_tryDefaultLast)
+            {
+                try
+                {
+                    return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                }
+                catch (Exception) when (lastException != null)
+                {
+                    // If both mapped agents and default agent failed, throw the original exception
+                    throw lastException;
+                }
+            }
+
+            // If all agents failed and we're not trying default last, throw the last exception
+            if (lastException != null)
+            {
+                throw lastException;
+            }
+        }
+
+        // If no mapping was found for the model, use the default agent
+        return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Invokes the middleware for streaming scenarios, attempting agents based on the model name in the options.
+    /// </summary>
+    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+      MiddlewareContext context,
+      IStreamingAgent agent,
+      CancellationToken cancellationToken = default)
+    {
+        // Check if options is null or doesn't contain ModelId
+        if (context.Options?.ModelId == null)
         {
-          return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+            return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
         }
-        catch (Exception) when (lastException != null)
+
+        // Get the model name from options
+        string modelId = context.Options.ModelId;
+
+        // Try to get agents for the model
+        if (_modelAgentMap.TryGetValue(modelId, out var agents) && agents.Length > 0)
         {
-          // If both mapped agents and default agent failed, throw the original exception
-          throw lastException;
+            Exception? lastException = null;
+
+            // Try each agent in order
+            foreach (var mappedAgent in agents)
+            {
+                try
+                {
+                    if (mappedAgent is IStreamingAgent streamingAgent)
+                    {
+                        return await streamingAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+                    }
+                    else
+                    {
+                        // If the agent doesn't support streaming, fall back to non-streaming
+                        // and convert to an async enumerable
+                        var result = await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                        return ToAsyncEnumerableInternal(result, cancellationToken);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Store the exception and try the next agent
+                    lastException = ex;
+                }
+            }
+
+            // If we should try the default agent as a last resort
+            if (_tryDefaultLast && _defaultAgent != null)
+            {
+                try
+                {
+                    if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
+                    {
+                        return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+                    }
+                    else
+                    {
+                        // If the agent doesn't support streaming, fall back to non-streaming
+                        // and convert to an async enumerable
+                        var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                        return ToAsyncEnumerableInternal(result, cancellationToken);
+                    }
+                }
+                catch (Exception) when (lastException != null)
+                {
+                    // If both mapped agents and default agent failed, throw the original exception
+                    throw lastException;
+                }
+            }
+
+            // If all agents failed and we're not trying default last, throw the last exception
+            if (lastException != null)
+            {
+                throw lastException;
+            }
         }
-      }
 
-      // If all agents failed and we're not trying default last, throw the last exception
-      if (lastException != null)
-      {
-        throw lastException;
-      }
-    }
-
-    // If no mapping was found for the model, use the default agent
-    return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
-  }
-
-  /// <summary>
-  /// Invokes the middleware for streaming scenarios, attempting agents based on the model name in the options.
-  /// </summary>
-  public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
-    MiddlewareContext context,
-    IStreamingAgent agent,
-    CancellationToken cancellationToken = default)
-  {
-    // Check if options is null or doesn't contain ModelId
-    if (context.Options?.ModelId == null)
-    {
-      return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
-    }
-
-    // Get the model name from options
-    string modelId = context.Options.ModelId;
-
-    // Try to get agents for the model
-    if (_modelAgentMap.TryGetValue(modelId, out var agents) && agents.Length > 0)
-    {
-      Exception? lastException = null;
-
-      // Try each agent in order
-      foreach (var mappedAgent in agents)
-      {
-        try
+        // If no mapping was found for the model, use the default agent
+        if (_defaultAgent != null)
         {
-          if (mappedAgent is IStreamingAgent streamingAgent)
-          {
-            return await streamingAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
-          }
-          else
-          {
-            // If the agent doesn't support streaming, fall back to non-streaming
-            // and convert to an async enumerable
-            var result = await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
-            return ToAsyncEnumerableInternal(result, cancellationToken);
-          }
+            if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
+            {
+                return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+            }
+            else
+            {
+                // If the agent doesn't support streaming, fall back to non-streaming
+                // and convert to an async enumerable
+                var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                return ToAsyncEnumerableInternal(result, cancellationToken);
+            }
         }
-        catch (Exception ex)
+
+        // Fall back to using the provided agent if all else fails
+        return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Helper method to convert IEnumerable to IAsyncEnumerable
+    /// </summary>
+    private static async IAsyncEnumerable<IMessage> ToAsyncEnumerableInternal(
+      IEnumerable<IMessage> messages,
+      [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var message in messages)
         {
-          // Store the exception and try the next agent
-          lastException = ex;
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Yield(); // Make this truly async
+            yield return message;
         }
-      }
+    }
 
-      // If we should try the default agent as a last resort
-      if (_tryDefaultLast && _defaultAgent != null)
-      {
-        try
+    /// <summary>
+    /// Helper class to create an IAsyncEnumerable from a single item.
+    /// </summary>
+    private class SingleItemAsyncEnumerable<T> : IAsyncEnumerable<T>
+    {
+        private readonly T _item;
+
+        public SingleItemAsyncEnumerable(T item)
         {
-          if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
-          {
-            return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
-          }
-          else
-          {
-            // If the agent doesn't support streaming, fall back to non-streaming
-            // and convert to an async enumerable
-            var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
-            return ToAsyncEnumerableInternal(result, cancellationToken);
-          }
+            _item = item;
         }
-        catch (Exception) when (lastException != null)
+
+        public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
-          // If both mapped agents and default agent failed, throw the original exception
-          throw lastException;
+            return new SingleItemAsyncEnumerator<T>(_item);
         }
-      }
-
-      // If all agents failed and we're not trying default last, throw the last exception
-      if (lastException != null)
-      {
-        throw lastException;
-      }
     }
 
-    // If no mapping was found for the model, use the default agent
-    if (_defaultAgent != null)
+    /// <summary>
+    /// Helper class for a single item async enumerator.
+    /// </summary>
+    private class SingleItemAsyncEnumerator<T> : IAsyncEnumerator<T>
     {
-      if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
-      {
-        return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
-      }
-      else
-      {
-        // If the agent doesn't support streaming, fall back to non-streaming
-        // and convert to an async enumerable
-        var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
-        return ToAsyncEnumerableInternal(result, cancellationToken);
-      }
-    }
+        private readonly T _item;
+        private bool _moved;
 
-    // Fall back to using the provided agent if all else fails
-    return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
-  }
+        public SingleItemAsyncEnumerator(T item)
+        {
+            _item = item;
+            _moved = false;
+        }
 
-  /// <summary>
-  /// Helper method to convert IEnumerable to IAsyncEnumerable
-  /// </summary>
-  private static async IAsyncEnumerable<IMessage> ToAsyncEnumerableInternal(
-    IEnumerable<IMessage> messages,
-    [EnumeratorCancellation] CancellationToken cancellationToken = default)
-  {
-    foreach (var message in messages)
-    {
-      cancellationToken.ThrowIfCancellationRequested();
-      await Task.Yield(); // Make this truly async
-      yield return message;
-    }
-  }
+        public T Current => _item;
 
-  /// <summary>
-  /// Helper class to create an IAsyncEnumerable from a single item.
-  /// </summary>
-  private class SingleItemAsyncEnumerable<T> : IAsyncEnumerable<T>
-  {
-    private readonly T _item;
-    
-    public SingleItemAsyncEnumerable(T item)
-    {
-      _item = item;
-    }
-    
-    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
-    {
-      return new SingleItemAsyncEnumerator<T>(_item);
-    }
-  }
+        public ValueTask DisposeAsync()
+        {
+            return new ValueTask();
+        }
 
-  /// <summary>
-  /// Helper class for a single item async enumerator.
-  /// </summary>
-  private class SingleItemAsyncEnumerator<T> : IAsyncEnumerator<T>
-  {
-    private readonly T _item;
-    private bool _moved;
-    
-    public SingleItemAsyncEnumerator(T item)
-    {
-      _item = item;
-      _moved = false;
+        public ValueTask<bool> MoveNextAsync()
+        {
+            if (!_moved)
+            {
+                _moved = true;
+                return new ValueTask<bool>(true);
+            }
+
+            return new ValueTask<bool>(false);
+        }
     }
-    
-    public T Current => _item;
-    
-    public ValueTask DisposeAsync()
-    {
-      return new ValueTask();
-    }
-    
-    public ValueTask<bool> MoveNextAsync()
-    {
-      if (!_moved)
-      {
-        _moved = true;
-        return new ValueTask<bool>(true);
-      }
-      
-      return new ValueTask<bool>(false);
-    }
-  }
 }

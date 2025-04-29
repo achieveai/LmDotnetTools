@@ -15,50 +15,50 @@ public record ToolsCallAggregateMessage : IMessage
     /// </summary>
     [JsonPropertyName("tool_call_message")]
     public ToolsCallMessage ToolsCallMessage { get; init; }
-    
+
     /// <summary>
     /// The result of the tool call
     /// </summary>
     [JsonPropertyName("tool_call_result")]
     public ToolsCallResultMessage ToolsCallResult { get; init; }
-    
+
     /// <summary>
     /// The agent that processed this aggregate message
     /// </summary>
     [JsonPropertyName("from_agent")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FromAgent { get; init; }
-    
+
     /// <summary>
     /// The role of this message (typically Assistant)
     /// </summary>
     [JsonPropertyName("role")]
     public Role Role => Role.Assistant;
-    
+
     /// <summary>
     /// Combined metadata from the tool call and its result
     /// </summary>
     [JsonIgnore]
     public ImmutableDictionary<string, object>? Metadata { get; init; }
-    
+
     /// <summary>
     /// Generation ID from the original tool call
     /// </summary>
     [JsonPropertyName("generation_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId => ToolsCallMessage.GenerationId;
-    
+
     public ToolsCallAggregateMessage(ToolsCallMessage toolCallMessage, ToolsCallResultMessage toolCallResult, string? fromAgent = null)
     {
         ToolsCallMessage = toolCallMessage;
         ToolsCallResult = toolCallResult;
         FromAgent = fromAgent;
-        
+
         // Combine metadata from both messages
         if (toolCallMessage.Metadata != null || toolCallResult.Metadata != null)
         {
             Metadata = ImmutableDictionary<string, object>.Empty;
-            
+
             if (toolCallResult.Metadata != null)
             {
                 foreach (var prop in toolCallResult.Metadata)
@@ -66,7 +66,7 @@ public record ToolsCallAggregateMessage : IMessage
                     Metadata = Metadata.Add(prop.Key, prop.Value);
                 }
             }
-            
+
             if (toolCallMessage.Metadata != null)
             {
                 foreach (var prop in toolCallMessage.Metadata)
@@ -80,9 +80,9 @@ public record ToolsCallAggregateMessage : IMessage
             }
         }
     }
-    
+
     // IMessage implementation
-    
+
     public string? GetText()
     {
         // Use text from the result if available
@@ -91,11 +91,11 @@ public record ToolsCallAggregateMessage : IMessage
         {
             return resultText;
         }
-        
+
         // Otherwise, delegate to the tool call message
         return null;
     }
-    
+
     public BinaryData? GetBinary()
     {
         // Use binary from the result if available
@@ -104,7 +104,7 @@ public record ToolsCallAggregateMessage : IMessage
         {
             return resultBinary;
         }
-        
+
         // Otherwise, delegate to the tool call message
         return null;
     }
@@ -119,4 +119,4 @@ public class ToolsCallAggregateMessageJsonConverter : ShadowPropertiesJsonConver
         var defaultResult = new ToolsCallResultMessage();
         return new ToolsCallAggregateMessage(defaultToolCall, defaultResult);
     }
-} 
+}

@@ -12,4 +12,4 @@ public enum ToolChoiceEnum
     None,
     [JsonPropertyName("any")]
     Any
-} 
+}

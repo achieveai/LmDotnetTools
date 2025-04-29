@@ -15,14 +15,14 @@ public record OpenMessage
     public IEnumerable<IMessage> ToMessages()
     {
         var messages = new List<IMessage>();
-        
+
         // First, add all content messages
         foreach (var baseMessage in ChatMessage.ToMessages(ChatMessage.Name))
         {
             // Create metadata without usage data
             var metadata = baseMessage.Metadata ?? ImmutableDictionary<string, object>.Empty;
             metadata = metadata.Add("completion_id", CompletionId);
-            
+
             // Update the message with the metadata containing OpenMessage properties
             if (baseMessage is TextMessage textMessage)
             {
@@ -49,7 +49,7 @@ public record OpenMessage
                 messages.Add(baseMessage);
             }
         }
-        
+
         // Then, if we have usage data, add a dedicated UsageMessage
         if (Usage != null)
         {
@@ -66,14 +66,14 @@ public record OpenMessage
                 GenerationId = CompletionId
             });
         }
-        
+
         return messages;
     }
 
     public IEnumerable<IMessage> ToStreamingMessage()
     {
         var messages = new List<IMessage>();
-        
+
         // First, add all content update messages
         foreach (var baseMessage in ChatMessage.ToStreamingMessages(ChatMessage.Name))
         {
@@ -84,7 +84,8 @@ public record OpenMessage
             // Fill in the OpenMessage specific fields
             if (baseMessage is ToolsCallMessage toolCallMessage)
             {
-                messages.Add(toolCallMessage with {
+                messages.Add(toolCallMessage with
+                {
                     GenerationId = CompletionId,
                     FromAgent = ChatMessage.Name,
                     Role = toolCallMessage.Role,
@@ -93,7 +94,8 @@ public record OpenMessage
             }
             else if (baseMessage is TextMessage textMessage)
             {
-                messages.Add(new TextUpdateMessage {
+                messages.Add(new TextUpdateMessage
+                {
                     Text = textMessage.Text,
                     Role = textMessage.Role,
                     FromAgent = ChatMessage.Name,
@@ -106,7 +108,7 @@ public record OpenMessage
                 messages.Add(baseMessage);
             }
         }
-        
+
         // Then, if we have usage data, add a dedicated UsageMessage
         if (Usage != null)
         {
@@ -123,7 +125,7 @@ public record OpenMessage
                 GenerationId = CompletionId
             });
         }
-        
+
         return messages;
     }
 }

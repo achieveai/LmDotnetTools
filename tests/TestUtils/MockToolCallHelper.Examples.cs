@@ -23,14 +23,14 @@ public static class MockToolCallHelperExamples
                 var name = args!["name"].GetString();
                 return Task.FromResult($"Hello, {name}! This is a mock response.");
             },
-            
+
             ["MockGreetingTool-SayGoodbye"] = (argsJson) =>
             {
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var name = args!["name"].GetString();
                 return Task.FromResult($"Goodbye, {name}! Have a great day from the mock.");
             },
-            
+
             // Override calculator method as an example
             ["MockCalculatorTool-Add"] = (argsJson) =>
             {
@@ -39,7 +39,7 @@ public static class MockToolCallHelperExamples
                 var b = args!["b"].GetDouble();
                 return Task.FromResult((a + b).ToString());
             },
-            
+
             // Override one Python tool method using correct Python method name
             ["MockPythonExecutionTool-execute_python_in_container"] = (argsJson) =>
             {
@@ -48,10 +48,10 @@ public static class MockToolCallHelperExamples
                 return Task.FromResult($"Mock Python execution output for code: {code}");
             }
         };
-        
+
         return MockToolCallHelper.CreateMockToolCalls(MockToolTypes.All, callbackOverrides);
     }
-    
+
     /// <summary>
     /// Example showing how to create mock tool calls for C# sample only
     /// </summary>
@@ -59,7 +59,7 @@ public static class MockToolCallHelperExamples
     {
         return MockToolCallHelper.CreateMockToolCalls(MockToolTypes.CSharpSample);
     }
-    
+
     /// <summary>
     /// Example of creating a specific override for a calculator method
     /// </summary>
@@ -72,18 +72,18 @@ public static class MockToolCallHelperExamples
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var a = args!["a"].GetDouble();
                 var b = args!["b"].GetDouble();
-                
+
                 if (b == 0)
                 {
                     return Task.FromResult(JsonSerializer.Serialize(new { error = "Cannot divide by zero" }));
                 }
-                
+
                 return Task.FromResult((a / b).ToString());
             }
         };
-        
+
         return MockToolCallHelper.CreateMockToolCalls(
-            new[] { typeof(MockCalculatorTool) }, 
+            new[] { typeof(MockCalculatorTool) },
             callbackOverrides);
     }
-} 
+}

@@ -68,7 +68,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
             // Read the value
             reader.Read();
             TValue value;
-            
+
             value = JsonSerializer.Deserialize<TValue>(ref reader, options)!;
 
             builder.Add(key, value);
@@ -88,7 +88,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
         foreach (var kvp in value)
         {
             string propertyName;
-            
+
             if (typeof(TKey) == typeof(string))
             {
                 propertyName = (string)(object)kvp.Key;
@@ -148,7 +148,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
 
         writer.WriteEndObject();
     }
-    
+
     private void WriteObjectValue(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
     {
         if (value == null)
@@ -156,37 +156,37 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
             writer.WriteNullValue();
             return;
         }
-        
+
         switch (value)
         {
             case string stringValue:
                 writer.WriteStringValue(stringValue);
                 break;
-                
+
             case int intValue:
                 writer.WriteNumberValue(intValue);
                 break;
-                
+
             case long longValue:
                 writer.WriteNumberValue(longValue);
                 break;
-                
+
             case double doubleValue:
                 writer.WriteNumberValue(doubleValue);
                 break;
-                
+
             case decimal decimalValue:
                 writer.WriteNumberValue(decimalValue);
                 break;
-                
+
             case bool boolValue:
                 writer.WriteBooleanValue(boolValue);
                 break;
-                
+
             case JsonElement jsonElement:
                 jsonElement.WriteTo(writer);
                 break;
-                
+
             default:
                 JsonSerializer.Serialize(writer, value, options);
                 break;

@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Runtime.CompilerServices; 
+using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -118,7 +118,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         {
             accumulatedMessages.Add(reply);
         }
-        
+
         List<IMessage> processedMessages = new List<IMessage>();
         foreach (var msg in accumulatedMessages)
         {
@@ -132,7 +132,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 processedMessages.Add(msg);
             }
         }
-        
+
         return new AsyncEnumerableWrapper<IMessage>(processedMessages);
     }
 

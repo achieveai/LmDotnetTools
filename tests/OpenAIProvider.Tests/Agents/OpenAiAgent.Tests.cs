@@ -229,13 +229,13 @@ public class OpenAiAgentTests
         foreach (var response in responses)
         {
             Assert.NotNull(response);
-            
+
             // Accept and skip usage messages
             if (response is UsageMessage)
             {
                 continue;
             }
-            
+
             // Since the response type may vary depending on the implementation,
             // we should check for different possible types of responses
             if (response is ToolsCallUpdateMessage toolMessage)
@@ -247,7 +247,7 @@ public class OpenAiAgentTests
                 }
                 else
                 {
-                    Assert.True(string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionName) || 
+                    Assert.True(string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionName) ||
                                 toolMessage.ToolCallUpdates[0].FunctionName == "getWeather");
                     Assert.True(!string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionArgs));
                 }
@@ -335,13 +335,13 @@ public class OpenAiAgentTests
         foreach (var response in responses)
         {
             Assert.NotNull(response);
-            
+
             // Accept and skip usage messages
             if (response is UsageMessage)
             {
                 continue;
             }
-            
+
             // Since the response type may vary depending on the implementation,
             // we should check for different possible types of responses
             if (response is ToolsCallUpdateMessage toolMessage)
@@ -353,7 +353,7 @@ public class OpenAiAgentTests
                 }
                 else
                 {
-                    Assert.True(string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionName) || 
+                    Assert.True(string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionName) ||
                                 toolMessage.ToolCallUpdates[0].FunctionName == "getWeather");
                     Assert.True(!string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionArgs));
                 }

@@ -63,4 +63,4 @@ public class UsageMessageJsonConverter : ShadowPropertiesJsonConverter<UsageMess
     {
         return new UsageMessage { Usage = new Usage() };
     }
-} 
+}

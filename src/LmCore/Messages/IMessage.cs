@@ -21,6 +21,6 @@ public interface IMessage
     public string? GenerationId { get; }
 
     public ImmutableDictionary<string, object>? Metadata { get; }
-    
+
     public ImmutableDictionary<string, object?>? GetMetaTools() => null;
 }

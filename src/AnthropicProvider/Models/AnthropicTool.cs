@@ -8,23 +8,23 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 /// </summary>
 public record AnthropicTool
 {
-  /// <summary>
-  /// The name of the tool.
-  /// </summary>
-  [JsonPropertyName("name")]
-  public string Name { get; init; } = string.Empty;
+    /// <summary>
+    /// The name of the tool.
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
 
-  /// <summary>
-  /// The description of the tool.
-  /// </summary>
-  [JsonPropertyName("description")]
-  public string? Description { get; init; }
+    /// <summary>
+    /// The description of the tool.
+    /// </summary>
+    [JsonPropertyName("description")]
+    public string? Description { get; init; }
 
-  /// <summary>
-  /// The input schema of the tool following JSON Schema format.
-  /// </summary>
-  [JsonPropertyName("input_schema")]
-  public JsonObject? InputSchema { get; init; }
+    /// <summary>
+    /// The input schema of the tool following JSON Schema format.
+    /// </summary>
+    [JsonPropertyName("input_schema")]
+    public JsonObject? InputSchema { get; init; }
 }
 
 /// <summary>
@@ -32,23 +32,23 @@ public record AnthropicTool
 /// </summary>
 public record AnthropicToolCall
 {
-  /// <summary>
-  /// The ID of the tool call.
-  /// </summary>
-  [JsonPropertyName("id")]
-  public string Id { get; init; } = string.Empty;
-  
-  /// <summary>
-  /// The type of the tool. Currently only "function" is supported.
-  /// </summary>
-  [JsonPropertyName("type")]
-  public string Type { get; init; } = "function";
-  
-  /// <summary>
-  /// The function that was called.
-  /// </summary>
-  [JsonPropertyName("function")]
-  public AnthropicToolCallFunction Function { get; init; } = new();
+    /// <summary>
+    /// The ID of the tool call.
+    /// </summary>
+    [JsonPropertyName("id")]
+    public string Id { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The type of the tool. Currently only "function" is supported.
+    /// </summary>
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "function";
+
+    /// <summary>
+    /// The function that was called.
+    /// </summary>
+    [JsonPropertyName("function")]
+    public AnthropicToolCallFunction Function { get; init; } = new();
 }
 
 /// <summary>
@@ -56,17 +56,17 @@ public record AnthropicToolCall
 /// </summary>
 public record AnthropicToolCallFunction
 {
-  /// <summary>
-  /// The name of the function that was called.
-  /// </summary>
-  [JsonPropertyName("name")]
-  public string Name { get; init; } = string.Empty;
-  
-  /// <summary>
-  /// The arguments to the function as a JSON string.
-  /// </summary>
-  [JsonPropertyName("arguments")]
-  public string Arguments { get; init; } = string.Empty;
+    /// <summary>
+    /// The name of the function that was called.
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The arguments to the function as a JSON string.
+    /// </summary>
+    [JsonPropertyName("arguments")]
+    public string Arguments { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -74,15 +74,15 @@ public record AnthropicToolCallFunction
 /// </summary>
 public record AnthropicToolOutput
 {
-  /// <summary>
-  /// The ID of the tool call that this output is for.
-  /// </summary>
-  [JsonPropertyName("tool_call_id")]
-  public string ToolCallId { get; init; } = string.Empty;
-  
-  /// <summary>
-  /// The output of the tool call.
-  /// </summary>
-  [JsonPropertyName("output")]
-  public string Output { get; init; } = string.Empty;
+    /// <summary>
+    /// The ID of the tool call that this output is for.
+    /// </summary>
+    [JsonPropertyName("tool_call_id")]
+    public string ToolCallId { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The output of the tool call.
+    /// </summary>
+    [JsonPropertyName("output")]
+    public string Output { get; init; } = string.Empty;
 }

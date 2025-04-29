@@ -18,20 +18,20 @@ public record TextMessage : IMessage, ICanGetText
 
     [JsonPropertyName("role")]
     public Role Role { get; init; }
-    
+
     [JsonIgnore]
     public ImmutableDictionary<string, object>? Metadata { get; init; }
-    
+
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
-    
+
     [JsonPropertyName("isThinking")]
     public bool IsThinking { get; init; }
-    
+
     public BinaryData? GetBinary() => null;
-    
+
     public ToolCall? GetToolCalls() => null;
-    
+
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
@@ -50,11 +50,11 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
     public string? FromAgent { get; set; }
 
     public Role Role { get; set; }
-    
+
     public ImmutableDictionary<string, object>? Metadata { get; private set; }
 
     public string? GenerationId { get; set; }
-    
+
     public bool IsThinking { get; set; }
 
     IMessage IMessageBuilder.Build()
@@ -65,10 +65,10 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
     public void Add(TextUpdateMessage streamingMessageUpdate)
     {
         _textBuilder.Append(streamingMessageUpdate.Text);
-        
+
         // Set IsThinking from the update
         IsThinking = streamingMessageUpdate.IsThinking;
-        
+
         // Merge metadata from the update
         if (streamingMessageUpdate.Metadata != null)
         {

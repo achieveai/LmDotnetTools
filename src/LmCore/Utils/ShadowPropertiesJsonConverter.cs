@@ -24,8 +24,8 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
 
         // Find ImmutableDictionary property marked as extra properties storage
         _extraPropertiesProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .FirstOrDefault(p => 
-                p.PropertyType.IsGenericType && 
+            .FirstOrDefault(p =>
+                p.PropertyType.IsGenericType &&
                 (p.Name == "ExtraProperties" || p.Name == "Metadata") &&
                 p.PropertyType.GetGenericTypeDefinition() == typeof(ImmutableDictionary<,>) &&
                 p.GetCustomAttribute<JsonIgnoreAttribute>() != null);
@@ -67,9 +67,9 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
             // Try reflection-based handling
             if (_jsonProperties != null)
             {
-                var property = _jsonProperties.FirstOrDefault(p => 
+                var property = _jsonProperties.FirstOrDefault(p =>
                     p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name == propertyName);
-                
+
                 if (property != null)
                 {
                     var value = JsonSerializer.Deserialize(ref reader, property.PropertyType, options);
@@ -145,7 +145,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T> where 
     {
         if (_extraPropertiesProperty != null)
         {
-            return (ImmutableDictionary<string, object?>?)_extraPropertiesProperty.GetValue(value) 
+            return (ImmutableDictionary<string, object?>?)_extraPropertiesProperty.GetValue(value)
                 ?? ImmutableDictionary<string, object?>.Empty;
         }
         return ImmutableDictionary<string, object?>.Empty;

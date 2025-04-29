@@ -165,7 +165,7 @@ public sealed record JsonSchemaObject
     /// <summary>
     /// Creates a builder for constructing a JSON Schema object more fluently
     /// </summary>
-    public static JsonSchemaObjectBuilder Create(string type = "object") => 
+    public static JsonSchemaObjectBuilder Create(string type = "object") =>
         new JsonSchemaObjectBuilder(type);
 
     /// <summary>
@@ -319,7 +319,7 @@ public sealed record JsonSchemaProperty
             Type = "string",
             Description = itemDescription
         };
-        
+
         return Array(items, description);
     }
 
@@ -336,7 +336,7 @@ public sealed record JsonSchemaProperty
             Type = "number",
             Description = itemDescription
         };
-        
+
         return Array(items, description);
     }
 }

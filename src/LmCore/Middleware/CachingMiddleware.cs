@@ -13,60 +13,60 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 public class CachingMiddleware : IStreamingMiddleware
 {
-  /// <summary>
-  /// Static JsonSerializerOptions used for serialization and deserialization of messages
-  /// </summary>
-  private static readonly JsonSerializerOptions S_jsonSerializerOptions = CreateJsonSerializerOptions();
-  
-  /// <summary>
-  /// Creates a JsonSerializerOptions instance with all necessary converters for message serialization
-  /// </summary>
-  private static JsonSerializerOptions CreateJsonSerializerOptions()
-  {
-    var options = new JsonSerializerOptions
+    /// <summary>
+    /// Static JsonSerializerOptions used for serialization and deserialization of messages
+    /// </summary>
+    public static readonly JsonSerializerOptions S_jsonSerializerOptions = CreateJsonSerializerOptions();
+
+    /// <summary>
+    /// Creates a JsonSerializerOptions instance with all necessary converters for message serialization
+    /// </summary>
+    private static JsonSerializerOptions CreateJsonSerializerOptions()
     {
-      DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-      WriteIndented = false,
-      PropertyNameCaseInsensitive = true
-    };
-    
-    // Add the IMessage converter for polymorphic serialization
-    options.Converters.Add(new IMessageJsonConverter());
-    
-    // Add converters for specific message types
-    options.Converters.Add(new TextMessageJsonConverter());
-    options.Converters.Add(new ImageMessageJsonConverter());
-    options.Converters.Add(new ToolsCallMessageJsonConverter());
-    options.Converters.Add(new ToolsCallResultMessageJsonConverter());
-    options.Converters.Add(new ToolsCallAggregateMessageJsonConverter());
-    options.Converters.Add(new TextUpdateMessageJsonConverter());
-    options.Converters.Add(new ToolsCallUpdateMessageJsonConverter());
-    
-    return options;
-  }
+        var options = new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            WriteIndented = false,
+            PropertyNameCaseInsensitive = true
+        };
 
-  private readonly IKvStore _kvStore;
+        // Add the IMessage converter for polymorphic serialization
+        options.Converters.Add(new IMessageJsonConverter());
 
-  /// <summary>
-  /// Creates a new caching middleware with the specified key-value store
-  /// </summary>
-  /// <param name="kvStore">Key-value store implementation to use for caching</param>
-  public CachingMiddleware(IKvStore kvStore)
-  {
-    _kvStore = kvStore ?? throw new ArgumentNullException(nameof(kvStore));
-  }
+        // Add converters for specific message types
+        options.Converters.Add(new TextMessageJsonConverter());
+        options.Converters.Add(new ImageMessageJsonConverter());
+        options.Converters.Add(new ToolsCallMessageJsonConverter());
+        options.Converters.Add(new ToolsCallResultMessageJsonConverter());
+        options.Converters.Add(new ToolsCallAggregateMessageJsonConverter());
+        options.Converters.Add(new TextUpdateMessageJsonConverter());
+        options.Converters.Add(new ToolsCallUpdateMessageJsonConverter());
+
+        return options;
+    }
+
+    private readonly IKvStore _kvStore;
+
+    /// <summary>
+    /// Creates a new caching middleware with the specified key-value store
+    /// </summary>
+    /// <param name="kvStore">Key-value store implementation to use for caching</param>
+    public CachingMiddleware(IKvStore kvStore)
+    {
+        _kvStore = kvStore ?? throw new ArgumentNullException(nameof(kvStore));
+    }
 
     public string? Name => "CachingMiddleware";
 
     /// <inheritdoc/>
-  public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
-    MiddlewareContext context,
-    IStreamingAgent agent,
-    CancellationToken cancellationToken = default)
-  {
-    // Return the streaming messages implementation directly
-    return await Task.FromResult(StreamMessages(context, agent, cancellationToken));
-  }
+    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+      MiddlewareContext context,
+      IStreamingAgent agent,
+      CancellationToken cancellationToken = default)
+    {
+        // Return the streaming messages implementation directly
+        return await Task.FromResult(StreamMessages(context, agent, cancellationToken));
+    }
 
     private async IAsyncEnumerable<IMessage> StreamMessages(
         MiddlewareContext context,
@@ -80,7 +80,7 @@ public class CachingMiddleware : IStreamingMiddleware
         var values = await _kvStore.GetAsync<string[]>(key, cancellationToken);
         if (values != null)
         {
-            foreach(var value in values)
+            foreach (var value in values)
             {
                 var message = JsonSerializer.Deserialize<IMessage>(
                     value,
@@ -121,11 +121,11 @@ public class CachingMiddleware : IStreamingMiddleware
         await _kvStore.SetAsync(key, serializedMessages);
     }
 
-  /// <inheritdoc/>
-  public async Task<IEnumerable<IMessage>> InvokeAsync(
-    MiddlewareContext context,
-    IAgent agent, 
-    CancellationToken cancellationToken = default)
+    /// <inheritdoc/>
+    public async Task<IEnumerable<IMessage>> InvokeAsync(
+      MiddlewareContext context,
+      IAgent agent,
+      CancellationToken cancellationToken = default)
     {
         var key = GetKey(
             context.Messages,
@@ -177,9 +177,9 @@ public class CachingMiddleware : IStreamingMiddleware
         return responseList;
     }
 
-  public string GetKey(
-    IEnumerable<IMessage> messages,
-    GenerateReplyOptions? options)
+    public string GetKey(
+      IEnumerable<IMessage> messages,
+      GenerateReplyOptions? options)
     {
         var rawData = JsonSerializer.Serialize(
             new { messages, options },

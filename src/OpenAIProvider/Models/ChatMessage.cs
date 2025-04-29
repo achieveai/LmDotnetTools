@@ -3,10 +3,11 @@ using System.Diagnostics;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using Json.Schema.Generation;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
-public class ChatMessage
+public record ChatMessage
 {
     public ChatMessage() { }
 
@@ -42,7 +43,8 @@ public class ChatMessage
             if (isStreaming)
             {
                 var toolCallUpdates = ToolCalls.Select(tc =>
-                    new ToolCallUpdate{
+                    new ToolCallUpdate
+                    {
                         FunctionName = tc.Function.Name,
                         FunctionArgs = tc.Function.Arguments,
                         ToolCallId = tc.Id,
@@ -75,7 +77,7 @@ public class ChatMessage
                 };
             }
         }
-        
+
         if (Content == null)
         {
             throw new InvalidOperationException("Content is null");
@@ -220,48 +222,20 @@ public record ImageContent
     };
 }
 
-public class FunctionContent
+public record FunctionContent(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("function")] FunctionCall Function)
 {
-    public FunctionContent(
-        string id,
-        FunctionCall function)
-    {
-        Id = id;
-        Function = function;
-    }
-
-    [JsonPropertyName("id")]
-    public string Id { get; set; }
-
     [JsonPropertyName("index")]
-    public int? Index { get; set; }
+    public int? Index { get; init; }
 
     [JsonPropertyName("type")]
     public string Type { get; } = "function";
-
-    [JsonPropertyName("function")]
-    public FunctionCall Function { get; set; }
-
-    public class FunctionCall
-    {
-        public FunctionCall(string name, string arguments)
-        {
-            Name = name;
-            Arguments = arguments;
-        }
-
-        [JsonPropertyName("name")]
-        public string Name { get; set; }
-
-        [JsonPropertyName("arguments")]
-        public string Arguments { get; set; }
-
-        public string ComputeToolCallId()
-        {
-            return "call_" + ((uint)$"tool_{Name}_{Arguments}".GetHashCode()).ToString();
-        }
-    }
 }
+
+public record FunctionCall(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("arguments")] string Arguments) { }
 
 [JsonConverter(typeof(JsonPropertyNameEnumConverter<RoleEnum>))]
 public enum RoleEnum
