@@ -154,7 +154,7 @@ public static class ChatCompletionRequestFactory
                     var toolId = tc.ToolCallId ?? Guid.NewGuid().ToString();
                     var functionName = tc.FunctionName ?? string.Empty;
                     var functionArgs = tc.FunctionArgs ?? string.Empty;
-                    var functionCall = new FunctionContent.FunctionCall(functionName, functionArgs);
+                    var functionCall = new FunctionCall(functionName, functionArgs);
                     chatMessage.ToolCalls.Add(new FunctionContent(toolId, functionCall));
                 }
             }

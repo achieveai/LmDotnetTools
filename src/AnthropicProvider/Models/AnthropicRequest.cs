@@ -197,7 +197,7 @@ public record AnthropicRequest
                     throw new ArgumentException("ToolsCallAggregateMessage must be from the Assistant role");
                 }
 
-                secondaryMessage ??= new AnthropicMessage { Role = role };
+                secondaryMessage ??= new AnthropicMessage { Role = "user" };
                 foreach (var (toolCallContent, toolResultContent) in ToolCallAggregateMessageToAnthropicMessage(aggregateMsg))
                 {
                     primaryMessage.Content.Add(toolCallContent);

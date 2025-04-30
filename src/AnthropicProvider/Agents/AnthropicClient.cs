@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Net.ServerSentEvents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using System.Net;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 
@@ -78,7 +79,17 @@ public class AnthropicClient : IAnthropicClient
           HttpCompletionOption.ResponseHeadersRead,
           cancellationToken);
 
-        response.EnsureSuccessStatusCode();
+        try
+        {
+            response.EnsureSuccessStatusCode();
+        }
+        catch ( Exception ex )
+        {
+            var error = await response.Content.ReadAsStringAsync();
+            throw new InvalidProgramException(
+                $"Error processing request:\n{requestJson}\nResponse:\n{error}",
+                ex);
+        }
 
         return StreamData(response.Content, cancellationToken);
     }

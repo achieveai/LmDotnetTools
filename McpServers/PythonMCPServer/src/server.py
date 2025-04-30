@@ -258,13 +258,15 @@ def execute_python_in_container(code: str) -> str:
             container = client.containers.run(
                 image=image_name,
                 command=["sleep", "3600"],  # Initially just sleep, we'll execute code later
-                volumes={script_dir: {'bind': '/code', 'mode': 'ro'}},
+                volumes={script_dir: {'bind': '/code', 'mode': 'rw'}},
                 detach=True,
                 remove=False,  # Set to False to prevent automatic removal
                 mem_limit="512m",
                 cap_drop=["ALL"],
                 security_opt=["no-new-privileges"],
-                environment=env_vars
+                environment=env_vars,
+                network="none",
+                auto_remove=True
             )
             
             # Add the container to the manager for tracking

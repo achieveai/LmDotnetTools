@@ -91,7 +91,7 @@ public class CachingMiddleware : IStreamingMiddleware
                     continue;
                 }
 
-                await Task.Delay(20, cancellationToken);
+                await Task.Delay(5, cancellationToken);
                 yield return message;
             }
 
