@@ -5,8 +5,9 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
-using AchieveAi.LmDotnetTools.LmCore.Storage;
 using AchieveAi.LmDotnetTools.McpMiddleware;
+using AchieveAi.LmDotnetTools.Misc.Middleware;
+using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
@@ -95,7 +96,7 @@ public static class Program
             var anthropicAgent = new AnthropicAgent("Claude", anthropicClient) as IStreamingAgent;
             anthropicAgent = anthropicAgent.WithMiddleware(cachingMiddleware);
 
-            var llmAgent = openAgent;
+            var llmAgent = anthropicAgent;
 
             // Create the agent pipeline with MCP middleware
             var mcpClientDictionary = clientsConfigs.Zip(pythonMcpClients.Zip(tools)).ToDictionary(pair => pair.First.Id, pair => pair.Second.First);
@@ -109,8 +110,8 @@ public static class Program
 
             var options = new GenerateReplyOptions
             {
-                // ModelId = "claude-3-7-sonnet-20250219",
-                ModelId = "meta-llama/llama-4-maverick",
+                ModelId = "claude-3-7-sonnet-20250219",
+                // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
                 MaxToken = 4096,
                 ExtraProperties = ImmutableDictionary<string, object?>.Empty
@@ -124,80 +125,77 @@ data can be used and few insights based on this data.";
             string? previousPlan = null;
             string? progress = null;
 
-            while (!string.IsNullOrEmpty(task))
+            var promptReader = new PromptReader(PROMPTS_PATH);
+
+            var dict = new Dictionary<string, object>()
             {
-                var promptReader = new PromptReader(PROMPTS_PATH);
+                ["task"] = task!,
+            };
 
-                var dict = new Dictionary<string, object>()
-                {
-                    ["task"] = task!,
-                };
-
-                if (previousPlan != null)
-                {
-                    dict["previous_plan"] = previousPlan;
-                }
-
-                if (progress != null)
-                {
-                    dict["progress"] = progress;
-                }
-
-                var plannerPrompt = promptReader
-                  .GetPromptChain("UniAgentLoop")
-                  .PromptMessages(dict);
-
-                do
-                {
-                    bool contLoop = true;
-                    while (contLoop)
-                    {
-                        contLoop = false;
-                        var repliesStream = await theogent.GenerateReplyStreamingAsync(
-                            plannerPrompt,
-                            options);
-
-                        var replyMessages = new List<IMessage>();
-                        await foreach (var reply in repliesStream)
-                        {
-                            WriteToConsole(reply);
-                            contLoop = contLoop || reply is ToolsCallAggregateMessage;
-
-                            if (reply is not UsageMessage)
-                            {
-                                replyMessages.Add(reply);
-                            }
-                        }
-
-                        if (replyMessages.Count > 1)
-                        {
-                            plannerPrompt.Add(
-                                new CompositeMessage
-                                {
-                                    FromAgent = "UniAgentLoop",
-                                    GenerationId = replyMessages[0].GenerationId,
-                                    Role = Role.Assistant,
-                                    Messages = replyMessages.ToImmutableList(),
-                                });
-                        }
-                        else if (replyMessages.Count == 1)
-                        {
-                            plannerPrompt.Add(replyMessages[0]);
-                        }
-                    }
-
-                    Console.WriteLine("What's Next (q/quit to quit)?");
-                    var x = Console.ReadLine().Trim();
-
-                    if (x.ToLowerInvariant() == "quit" ||  x.ToLowerInvariant() == "q")
-                    {
-                        break;
-                    }
-
-                    plannerPrompt.Add(new TextMessage { Text = x, Role = Role.User });
-                }
-                while (false);
+            if (previousPlan != null)
+            {
+                dict["previous_plan"] = previousPlan;
             }
+
+            if (progress != null)
+            {
+                dict["progress"] = progress;
+            }
+
+            var plannerPrompt = promptReader
+              .GetPromptChain("UniAgentLoop")
+              .PromptMessages(dict);
+
+            do
+            {
+                bool contLoop = true;
+                while (contLoop)
+                {
+                    contLoop = false;
+                    var repliesStream = await theogent.GenerateReplyStreamingAsync(
+                        plannerPrompt,
+                        options);
+
+                    var replyMessages = new List<IMessage>();
+                    await foreach (var reply in repliesStream)
+                    {
+                        WriteToConsole(reply);
+                        contLoop = contLoop || reply is ToolsCallAggregateMessage;
+
+                        if (reply is not UsageMessage)
+                        {
+                            replyMessages.Add(reply);
+                        }
+                    }
+
+                    if (replyMessages.Count > 1)
+                    {
+                        plannerPrompt.Add(
+                            new CompositeMessage
+                            {
+                                FromAgent = "UniAgentLoop",
+                                GenerationId = replyMessages[0].GenerationId,
+                                Role = Role.Assistant,
+                                Messages = replyMessages.ToImmutableList(),
+                            });
+                    }
+                    else if (replyMessages.Count == 1)
+                    {
+                        plannerPrompt.Add(replyMessages[0]);
+                    }
+                }
+
+                Console.WriteLine("What's Next (q/quit to quit)?");
+                var x = Console.ReadLine().Trim();
+
+                if (x.ToLowerInvariant() == "quit" || x.ToLowerInvariant() == "q")
+                {
+                    break;
+                }
+
+                plannerPrompt.Add(new TextMessage { Text = x, Role = Role.User });
+            }
+            while (true);
         }
         catch (Exception ex)
         {
@@ -293,7 +291,8 @@ data can be used and few insights based on this data.";
             Console.BackgroundColor = bgColor ?? Console.BackgroundColor;
             Console.WriteLine(text);
         }
-        finally {
+        finally
+        {
             Console.ForegroundColor = fgColorBak;
             Console.BackgroundColor = bgColorBak;
         }

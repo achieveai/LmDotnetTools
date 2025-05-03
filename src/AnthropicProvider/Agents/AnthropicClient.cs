@@ -83,7 +83,7 @@ public class AnthropicClient : IAnthropicClient
         {
             response.EnsureSuccessStatusCode();
         }
-        catch ( Exception ex )
+        catch (Exception ex)
         {
             var error = await response.Content.ReadAsStringAsync();
             throw new InvalidProgramException(

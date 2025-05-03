@@ -7,9 +7,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
+namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 
 public class CachingMiddleware : IStreamingMiddleware
 {

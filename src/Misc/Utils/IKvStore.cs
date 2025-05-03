@@ -1,4 +1,4 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Utils;
+namespace AchieveAi.LmDotnetTools.Misc.Utils;
 
 public interface IKvStore
 {

@@ -5,10 +5,10 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using Microsoft.Data.Sqlite;
 
-namespace AchieveAi.LmDotnetTools.LmCore.Storage;
+namespace AchieveAi.LmDotnetTools.Misc.Storage;
 
 /// <summary>
 /// SQLite-backed implementation of IKvStore
