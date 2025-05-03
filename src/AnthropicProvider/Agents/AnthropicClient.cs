@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using System.Net.ServerSentEvents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using System.Net;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 
