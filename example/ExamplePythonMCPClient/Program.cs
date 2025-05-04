@@ -4,9 +4,9 @@ using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.Misc.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.McpMiddleware;
-using AchieveAi.LmDotnetTools.Misc.Middleware;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using ModelContextProtocol;
@@ -103,10 +103,12 @@ public static class Program
 
             // Create the middleware using the factory
             var mcpMiddlewareFactory = new McpMiddlewareFactory();
+            var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
 
             var theogent = llmAgent
-              .WithMiddleware(await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary))
-              .WithMiddleware(new MessageUpdateJoinerMiddleware());
+                .WithMiddleware(consolePrinterMiddleware)
+                .WithMiddleware(await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary))
+                .WithMiddleware(new MessageUpdateJoinerMiddleware());
 
             var options = new GenerateReplyOptions
             {

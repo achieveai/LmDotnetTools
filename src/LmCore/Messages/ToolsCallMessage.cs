@@ -95,6 +95,16 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         return this.Build();
     }
 
+    public string? CurrentFunctionName => _currentFunctionName;
+
+    public string AccumulatedArgs => _accumulatedArgs;
+
+    public string? CurrentToolCallId => _currentToolCallId;
+
+    public int? CurrentIndex => _currentIndex;
+
+    public ImmutableList<ToolCall> CompletedToolCalls => _completedToolCalls;
+
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
         // Process each update
