@@ -338,6 +338,11 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         }
     }
 
+    private static void Flush()
+    {
+        Console.Out.Flush();
+    }
+
     /// <summary>
     /// Creates the default tool formatter factory
     /// </summary>
@@ -434,6 +439,8 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
             {
                 WriteColoredText(text, color, isLine: false);
             }
+
+            Flush();
         }
     }
 }
