@@ -12,3 +12,4 @@ __pycache__
 .suo
 .csproj.user
 .code_workspace/
+kv_store
