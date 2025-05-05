@@ -115,7 +115,7 @@ public static class Program
                 ModelId = "claude-3-7-sonnet-20250219",
                 // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
-                MaxToken = 4096,
+                MaxToken = 4096 * 2,
                 ExtraProperties = ImmutableDictionary<string, object?>.Empty
             };
 
