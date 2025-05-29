@@ -79,12 +79,15 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         }        /// <summary>
         /// Specialized formatter for sequential thinking tool
         /// </summary>
-        private IEnumerable<(ConsoleColorPair, string)> SequentialThinkingFormatter(string toolName, string paramUpdate)
+        private IEnumerable<(ConsoleColorPair, string)> SequentialThinkingFormatter(string toolName, IEnumerable<JsonFragmentUpdate> fragmentUpdates)
         {
             var results = new List<(ConsoleColorPair, string)>();
 
-            // For name-only first call, just show the function name
-            if (string.IsNullOrEmpty(paramUpdate))
+            // Convert to list for easier enumeration
+            var updates = fragmentUpdates.ToList();
+
+            // For empty updates, just show the function name
+            if (!updates.Any())
             {
                 results.Add((_functionNameColor, "Sequential Thinking" + " "));
                 return results;
@@ -92,9 +95,6 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
 
             try
             {
-                // Process the fragment through the accumulator
-                var updates = _accumulator.AddFragment(paramUpdate);
-
                 foreach (var update in updates)
                 {                    // We're interested in thought properties - both complete and partial
                     if (update.Path == "root.thought" && update.TextValue != null)
@@ -139,7 +139,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 _accumulator.Reset();
                 _thinkingLine = string.Empty; // Also clear the cached line
                 results.Add((_errorColor, $"[Parser Error: {ex.Message}] "));
-                results.Add((_propertyValueColor, paramUpdate));
+                // For error handling, we can try to get the raw JSON from the accumulator
+                results.Add((_propertyValueColor, _accumulator.CurrentJson));
             }
 
             return results;
@@ -267,12 +268,15 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         }        /// <summary>
         /// Specialized formatter for Python code execution
         /// </summary>
-        private IEnumerable<(ConsoleColorPair, string)> PythonCodeFormatter(string toolName, string paramUpdate)
+        private IEnumerable<(ConsoleColorPair, string)> PythonCodeFormatter(string toolName, IEnumerable<JsonFragmentUpdate> fragmentUpdates)
         {
             var results = new List<(ConsoleColorPair, string)>();
 
-            // For name-only first call, just show the function name
-            if (string.IsNullOrEmpty(paramUpdate))
+            // Convert to list for easier enumeration
+            var updates = fragmentUpdates.ToList();
+
+            // For empty updates, just show the function name
+            if (!updates.Any())
             {
                 results.Add((_functionNameColor, "Python Code Execution" + " "));
                 return results;
@@ -280,9 +284,6 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
 
             try
             {
-                // Process the fragment through the accumulator
-                var updates = _accumulator.AddFragment(paramUpdate);
-
                 foreach (var update in updates)
                 {                    // We're interested in code properties - both complete and partial
                     if (update.Path.EndsWith("code") && update.TextValue != null)
@@ -327,7 +328,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 _accumulator.Reset();
                 _pythonLine = string.Empty; // Also clear the cached line
                 results.Add((_errorColor, $"[Parser Error: {ex.Message}] "));
-                results.Add((_pythonCodeColor, paramUpdate));
+                // For error handling, we can try to get the raw JSON from the accumulator
+                results.Add((_pythonCodeColor, _accumulator.CurrentJson));
             }
 
             return results;

@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Middleware;
 using Xunit.Abstractions;
@@ -19,9 +20,10 @@ public class JsonToolFormatterTests
         // Arrange
         var formatter = new JsonToolFormatter();
         var json = "{\"name\":\"John\",\"age\":30}";
+        var fragmentUpdates = CreateFragmentUpdates("testTool", json);
 
         // Act
-        var updates = formatter.Format("testTool", json).ToList();
+        var updates = formatter.Format("testTool", fragmentUpdates).ToList();
 
         // Assert
         PrintUpdates(updates);
@@ -49,9 +51,10 @@ public class JsonToolFormatterTests
         // Arrange
         var formatter = new JsonToolFormatter();
         var json = "{\"user\":{\"name\":\"John\",\"scores\":[10,20,30]}}";
+        var fragmentUpdates = CreateFragmentUpdates("testTool", json);
 
         // Act
-        var updates = formatter.Format("testTool", json).ToList();
+        var updates = formatter.Format("testTool", fragmentUpdates).ToList();
 
         // Assert
         PrintUpdates(updates);
@@ -69,10 +72,15 @@ public class JsonToolFormatterTests
         // Arrange
         var formatter = new JsonToolFormatter();
         
-        // Act - Send JSON in fragments
-        var updates1 = formatter.Format("testTool", "{\"status\":\"process").ToList();
-        var updates2 = formatter.Format("testTool", "ing\",\"progress\":").ToList();
-        var updates3 = formatter.Format("testTool", "50}").ToList();
+        // Act - Send JSON in fragments using a single generator for streaming behavior
+        var generator = new JsonFragmentToStructuredUpdateGenerator("testTool");
+        var fragmentUpdates1 = generator.AddFragment("{\"status\":\"process").ToList();
+        var fragmentUpdates2 = generator.AddFragment("ing\",\"progress\":").ToList();
+        var fragmentUpdates3 = generator.AddFragment("50}").ToList();
+        
+        var updates1 = formatter.Format("testTool", fragmentUpdates1).ToList();
+        var updates2 = formatter.Format("testTool", fragmentUpdates2).ToList();
+        var updates3 = formatter.Format("testTool", fragmentUpdates3).ToList();
 
         // Assert
         PrintUpdates(updates1, "Fragment 1");
@@ -83,6 +91,15 @@ public class JsonToolFormatterTests
         Assert.Contains(updates1, u => u.Text == "\"status\"" && u.Color.Foreground == ConsoleColor.Green);
         Assert.Contains(updates2, u => u.Text == "ing" && u.Color.Foreground == ConsoleColor.Magenta);
         Assert.Contains(updates3, u => u.Text == "50" && u.Color.Foreground == ConsoleColor.Cyan);
+    }
+
+    /// <summary>
+    /// Helper method to create JsonFragmentUpdates from raw JSON for testing
+    /// </summary>
+    private IEnumerable<JsonFragmentUpdate> CreateFragmentUpdates(string toolName, string json)
+    {
+        var generator = new JsonFragmentToStructuredUpdateGenerator(toolName);
+        return generator.AddFragment(json);
     }
 
     private void PrintUpdates(List<(ConsoleColorPair Color, string Text)> updates, string? header = null)

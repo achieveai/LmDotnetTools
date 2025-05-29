@@ -4,13 +4,12 @@ using AchieveAi.LmDotnetTools.Misc.Utils;
 namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 
 /// <summary>
-/// Formats tool output as colorized JSON
+/// Formats tool output as colorized JSON using structured fragment updates
 /// </summary>
 public class JsonToolFormatter
 {
-    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _accumulators = new();
     private readonly Dictionary<string, int> _indentLevels = new();
-    private readonly HashSet<string> _processedStrings = new(); // Track processed strings to avoid duplicates
+    private readonly Dictionary<string, HashSet<string>> _processedStringsByTool = new(); // Track processed strings per tool
     private static readonly ConsoleColorPair NumberColor = new() { Foreground = ConsoleColor.Cyan };
     private static readonly ConsoleColorPair BooleanColor = new() { Foreground = ConsoleColor.Yellow };
     private static readonly ConsoleColorPair NullColor = new() { Foreground = ConsoleColor.DarkGray };
@@ -21,23 +20,26 @@ public class JsonToolFormatter
     private static readonly ConsoleColorPair CommaColor = new() { Foreground = ConsoleColor.DarkCyan };
 
     /// <summary>
-    /// Formats a tool update as colorized JSON fragments
+    /// Formats structured JSON fragment updates as colorized text segments
     /// </summary>
-    public IEnumerable<(ConsoleColorPair Color, string Text)> Format(string toolCallName, string toolParameterUpdate)
+    /// <param name="toolCallName">Name of the tool being called</param>
+    /// <param name="fragmentUpdates">Structured JSON fragment updates to format</param>
+    /// <returns>Sequence of colored text segments</returns>
+    public IEnumerable<(ConsoleColorPair Color, string Text)> Format(string toolCallName, IEnumerable<JsonFragmentUpdate> fragmentUpdates)
     {
-        // Get or create accumulator for this tool
-        if (!_accumulators.TryGetValue(toolCallName, out var accumulator))
+        // Initialize tracking for this tool if needed
+        if (!_indentLevels.ContainsKey(toolCallName))
         {
-            accumulator = new JsonFragmentToStructuredUpdateGenerator(toolCallName);
-            _accumulators[toolCallName] = accumulator;
             _indentLevels[toolCallName] = 0;
-            _processedStrings.Clear(); // Clear the processed strings when starting fresh
+        }
+        if (!_processedStringsByTool.ContainsKey(toolCallName))
+        {
+            _processedStringsByTool[toolCallName] = new HashSet<string>();
         }
 
-        // Process the update through the accumulator
-        var updates = accumulator.AddFragment(toolParameterUpdate);
+        var processedStrings = _processedStringsByTool[toolCallName];
 
-        foreach (var update in updates)
+        foreach (var update in fragmentUpdates)
         {
             var indentLevel = _indentLevels[toolCallName];
 
@@ -83,25 +85,25 @@ public class JsonToolFormatter
                     // Skip if we've already processed this string path.
                     // The partial strings will have already processed all
                     // the fragments, and complete string update is ignorable.
-                    if (_processedStrings.Contains(update.Path))
+                    if (processedStrings.Contains(update.Path))
                     {
                         yield return (StringColor, "\"");
                         continue;
                     }
                     
                     yield return (StringColor, update.TextValue ?? string.Empty);
-                    _processedStrings.Add(update.Path);
+                    processedStrings.Add(update.Path);
                     break;
 
                 case JsonFragmentKind.PartialString:
                     var value = update.TextValue ?? string.Empty;
-                    if (!_processedStrings.Contains(update.Path))
+                    if (!processedStrings.Contains(update.Path))
                     {
                         value = "\"" + value;
                     }
                     // Ensure we have quotes around the string
                     yield return (StringColor, value);
-                    _processedStrings.Add(update.Path);
+                    processedStrings.Add(update.Path);
                     break;
 
                 case JsonFragmentKind.CompleteNumber:
@@ -114,6 +116,12 @@ public class JsonToolFormatter
 
                 case JsonFragmentKind.CompleteNull:
                     yield return (NullColor, "null");
+                    break;
+
+                case JsonFragmentKind.JsonComplete:
+                    // Reset state when JSON is complete
+                    _indentLevels[toolCallName] = 0;
+                    processedStrings.Clear();
                     break;
             }
 

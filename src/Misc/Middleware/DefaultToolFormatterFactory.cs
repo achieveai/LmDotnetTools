@@ -46,19 +46,21 @@ public class DefaultToolFormatterFactory : IToolFormatterFactory
             _formatters[toolCallName] = jsonFormatter;
         }
 
-        return (name, paramUpdate) =>
+        return (name, fragmentUpdates) =>
         {
             var results = new List<(ConsoleColorPair, string)>();
 
-            // For name-only first call, just show the function name
-            if (string.IsNullOrEmpty(paramUpdate))
+            // Check if we have any fragment updates
+            var updates = fragmentUpdates.ToList();
+            if (!updates.Any())
             {
+                // For empty updates, just show the function name
                 results.Add((_functionNameColor, name + " "));
                 return results;
             }
 
             // Use JsonToolFormatter for parameter formatting
-            return jsonFormatter.Format(name, paramUpdate);
+            return jsonFormatter.Format(name, updates);
         };
     }
 }

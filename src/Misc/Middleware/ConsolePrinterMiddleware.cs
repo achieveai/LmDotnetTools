@@ -3,6 +3,7 @@ using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 
 namespace AchieveAi.LmDotnetTools.Misc.Middleware;
@@ -261,8 +262,8 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         // Get a formatter for this tool call and use it to format the parameters
         _formatter = _formatter ?? _toolFormatterFactory.GetFormatter(toolCall.FunctionName ?? "unknown");
 
-        // First call with empty update just to print the function name
-        var headerParts = _formatter(toolCall.FunctionName ?? "unknown", "");
+        // First call with empty updates just to print the function name
+        var headerParts = _formatter(toolCall.FunctionName ?? "unknown", Enumerable.Empty<JsonFragmentUpdate>());
         foreach (var (color, text) in headerParts)
         {
             WriteColoredText(text, color);
@@ -273,8 +274,9 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
             return; // No function args to print
         }
 
-        // Then call with the full args to format the parameters
-        var formattedParts = _formatter(toolCall.FunctionName ?? "unknown", toolCall.FunctionArgs ?? "");
+        // Generate fragment updates from the function args and format them
+        var fragmentUpdates = CreateFragmentUpdatesFromRawJson(toolCall.FunctionName ?? "unknown", toolCall.FunctionArgs ?? "");
+        var formattedParts = _formatter(toolCall.FunctionName ?? "unknown", fragmentUpdates);
 
         foreach (var (color, text) in formattedParts)
         {
@@ -432,15 +434,52 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         }
         else
         {
-            // Then call with the full args to format the parameters
-            var formattedParts = _formatter!(update.FunctionName ?? "unknown", update.FunctionArgs ?? "");
+            // Get formatter for this tool call
+            _formatter = _formatter ?? _toolFormatterFactory.GetFormatter(update.FunctionName ?? "unknown");
 
-            foreach (var (color, text) in formattedParts)
+            // Check if JsonFragmentUpdates is available (populated by JsonFragmentUpdateMiddleware)
+            if (update.JsonFragmentUpdates != null && update.JsonFragmentUpdates.Any())
             {
-                WriteColoredText(text, color, isLine: false);
+                // Use the structured fragment updates directly
+                var formattedParts = _formatter(update.FunctionName ?? "unknown", update.JsonFragmentUpdates);
+
+                foreach (var (color, text) in formattedParts)
+                {
+                    WriteColoredText(text, color, isLine: false);
+                }
+            }
+            else
+            {
+                // Fallback: create fragment updates from raw FunctionArgs
+                // This ensures backward compatibility when JsonFragmentUpdateMiddleware is not in the chain
+                var fragmentUpdates = CreateFragmentUpdatesFromRawJson(update.FunctionName ?? "unknown", update.FunctionArgs ?? "");
+                var formattedParts = _formatter(update.FunctionName ?? "unknown", fragmentUpdates);
+
+                foreach (var (color, text) in formattedParts)
+                {
+                    WriteColoredText(text, color, isLine: false);
+                }
             }
 
             Flush();
         }
+    }
+
+    /// <summary>
+    /// Creates JsonFragmentUpdates from raw JSON string for backward compatibility
+    /// </summary>
+    /// <param name="toolName">Name of the tool</param>
+    /// <param name="jsonString">Raw JSON string</param>
+    /// <returns>JsonFragmentUpdates generated from the JSON</returns>
+    private IEnumerable<JsonFragmentUpdate> CreateFragmentUpdatesFromRawJson(string toolName, string jsonString)
+    {
+        if (string.IsNullOrEmpty(jsonString))
+        {
+            return Enumerable.Empty<JsonFragmentUpdate>();
+        }
+
+        // Create a temporary generator for backward compatibility
+        var generator = new JsonFragmentToStructuredUpdateGenerator(toolName);
+        return generator.AddFragment(jsonString);
     }
 }
