@@ -1,6 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Utils;
-using System.Collections.Generic;
 
 namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 
@@ -9,7 +8,7 @@ namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 /// </summary>
 public class JsonToolFormatter
 {
-    private readonly Dictionary<string, JsonFragmentAccumulator> _accumulators = new();
+    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _accumulators = new();
     private readonly Dictionary<string, int> _indentLevels = new();
     private readonly HashSet<string> _processedStrings = new(); // Track processed strings to avoid duplicates
     private static readonly ConsoleColorPair NumberColor = new() { Foreground = ConsoleColor.Cyan };
@@ -29,7 +28,7 @@ public class JsonToolFormatter
         // Get or create accumulator for this tool
         if (!_accumulators.TryGetValue(toolCallName, out var accumulator))
         {
-            accumulator = new JsonFragmentAccumulator(toolCallName);
+            accumulator = new JsonFragmentToStructuredUpdateGenerator(toolCallName);
             _accumulators[toolCallName] = accumulator;
             _indentLevels[toolCallName] = 0;
             _processedStrings.Clear(); // Clear the processed strings when starting fresh

@@ -7,7 +7,7 @@ namespace AchieveAi.LmDotnetTools.Misc.Utils;
 /// Accumulates and manages JSON fragments from streaming responses using a robust stack-based visitor pattern.
 /// Emits incremental updates as JSON is parsed, allowing for partial JSON processing.
 /// </summary>
-public class JsonFragmentAccumulator
+public class JsonFragmentToStructuredUpdateGenerator
 {
     private readonly StringBuilder _buffer = new();
     private readonly string _toolName;
@@ -61,7 +61,7 @@ public class JsonFragmentAccumulator
     /// Creates a new JsonFragmentAccumulator for the specified tool
     /// </summary>
     /// <param name="toolName">The name of the tool generating the fragments</param>
-    public JsonFragmentAccumulator(string toolName)
+    public JsonFragmentToStructuredUpdateGenerator(string toolName)
     {
         _toolName = toolName;
         // Initialize with a root frame

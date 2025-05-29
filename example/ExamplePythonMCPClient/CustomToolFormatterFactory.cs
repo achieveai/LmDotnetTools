@@ -37,7 +37,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         private readonly ConsoleColorPair _pythonPunctuationColor = new() { Foreground = ConsoleColor.Green };        private readonly ConsoleColorPair _errorColor = new() { Foreground = ConsoleColor.Red };
         
         // State management for JSON accumulation
-        private readonly JsonFragmentAccumulator _accumulator = new("tool");
+        private readonly JsonFragmentToStructuredUpdateGenerator _accumulator = new("tool");
         private readonly IToolFormatterFactory _defaultFormatterFactory = new DefaultToolFormatterFactory(new ConsoleColorPair { Foreground = ConsoleColor.Blue });
         private ConsoleColorPair _markdownColor = new() { Foreground = ConsoleColor.White };
         

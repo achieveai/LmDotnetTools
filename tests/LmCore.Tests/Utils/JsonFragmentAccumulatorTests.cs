@@ -19,7 +19,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_BasicPath()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment("{\"name\":\"John\",\"age\":30}").ToList();
@@ -47,7 +47,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_ArrayPath()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment("{\"items\":[1,2,\"three\"]}").ToList();
@@ -73,7 +73,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_PartialStringValues()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates1 = accumulator.AddFragment("{\"description\":\"This is ").ToList();
@@ -110,7 +110,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_Keys()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act - Send key parts in fragments
         var updates1 = accumulator.AddFragment("{\"user").ToList();
@@ -143,7 +143,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_ScalarValues()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment(
@@ -167,7 +167,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_NestedStructures()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment(
@@ -194,7 +194,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_NestedObjectPaths()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment(
@@ -218,7 +218,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_NestedArrayPaths()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment(
@@ -240,7 +240,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_SimpleObjectPath()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment("{\"name\":\"John\"}").ToList();
@@ -259,7 +259,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_SimpleArrayPath()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
         var updates = accumulator.AddFragment("[1,2,3]").ToList();
@@ -282,7 +282,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_StringUpdatesGroupedByFragment()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act - Send string in multiple fragments
         var updates1 = accumulator.AddFragment("{\"message\":\"First ").ToList();
@@ -318,7 +318,7 @@ public class JsonFragmentAccumulatorTests
     public void Test_EscapeSequencesBetweenFragments()
     {
         // Arrange
-        var accumulator = new JsonFragmentAccumulator("testTool");
+        var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act - Send escape sequence split across fragments
         var updates1 = accumulator.AddFragment("{\"escaped\":\"before\\").ToList();
