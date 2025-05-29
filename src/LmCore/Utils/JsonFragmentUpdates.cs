@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace AchieveAi.LmDotnetTools.Misc.Utils;
+namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
 /// Represents the kind of fragment update emitted during JSON parsing
@@ -60,7 +60,12 @@ public enum JsonFragmentKind
     /// <summary>
     /// Complete null value
     /// </summary>
-    CompleteNull
+    CompleteNull,
+
+    /// <summary>
+    /// JSON document is complete and valid
+    /// </summary>
+    JsonComplete
 }
 
 /// <summary>
@@ -98,4 +103,4 @@ public sealed record JsonFragmentUpdate
         TextValue = textValue;
         JsonValue = jsonValue;
     }
-}
+} 

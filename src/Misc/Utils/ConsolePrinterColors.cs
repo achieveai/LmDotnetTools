@@ -1,4 +1,4 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Misc.Utils;
+namespace AchieveAi.LmDotnetTools.Misc.Utils;
 
 /// <summary>
 /// Represents a color with optional foreground and background components

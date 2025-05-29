@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
-namespace AchieveAi.LmDotnetTools.Misc.Utils;
+namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
 /// Accumulates and manages JSON fragments from streaming responses using a robust stack-based visitor pattern.
@@ -20,6 +20,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     private System.Text.StringBuilder? _currentString = null;
     private TokenType _currentTokenType = TokenType.None;
     private StringBuilder? _pendingStringUpdate = null; // Buffer for pending string updates
+    private bool _wasComplete = false; // Track previous completion state to detect completion transitions
 
     private enum TokenType
     {
@@ -115,7 +116,7 @@ public class JsonFragmentToStructuredUpdateGenerator
 
             foreach (var update in charUpdates)
             {
-                // If this is a partial string update, buffer it
+                // For PartialString updates from value strings (not property names), group them by fragment
                 if (update.Kind == JsonFragmentKind.PartialString)
                 {
                     // If path changed, emit the pending update and start new buffer
@@ -138,7 +139,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 }
                 else
                 {
-                    // For non-string updates, first emit any pending string update
+                    // For non-PartialString updates, first emit any pending string update
                     if (pendingStringUpdate.Length > 0)
                     {
                         yield return new JsonFragmentUpdate(
@@ -155,6 +156,20 @@ public class JsonFragmentToStructuredUpdateGenerator
                     yield return update;
                 }
             }
+
+            // Check for completion state change after processing each character
+            bool isCurrentlyComplete = IsComplete;
+            if (!_wasComplete && isCurrentlyComplete)
+            {
+                // Document just became complete - emit completion event
+                yield return new JsonFragmentUpdate(
+                    "root",
+                    JsonFragmentKind.JsonComplete,
+                    CurrentJson,
+                    null
+                );
+            }
+            _wasComplete = isCurrentlyComplete;
         }
 
         // Emit any remaining pending string update
@@ -182,6 +197,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         _expectingPropertyName = false;
         _afterColon = false;
         _lastPropertyName = string.Empty;
+        _wasComplete = false;
     }
 
     /// <summary>
@@ -359,62 +375,60 @@ public class JsonFragmentToStructuredUpdateGenerator
         {
             // End of string
             _currentString!.Append(c);
-            var value = _currentString.ToString();
-
-            // Update frame with new state
+            _pendingStringUpdate?.Append(c);
+            
+            // Update frame state to not be in string
             _contextStack.Pop();
-            _contextStack.Push(currentFrame with { IsInString = false });
+            _contextStack.Push(currentFrame with { 
+                IsInString = false, 
+                IsEscaped = false,
+                IsStartOrEnd = currentFrame.Type == ContainerType.Array ? false : currentFrame.IsStartOrEnd
+            });
 
+            var stringValue = _currentString.ToString();
+            
+            // For property names, use the Key kind - no partial string events for property names
             if (_expectingPropertyName)
             {
-                // This is a property name - store it but don't update the frame yet
-                _lastPropertyName = value.Trim('"');
+                _lastPropertyName = stringValue[1..^1]; // Remove quotes for internal use
                 yield return new JsonFragmentUpdate(
                     GetCurrentPath(),
                     JsonFragmentKind.Key,
-                    value,
-                    null
+                    stringValue,
+                    stringValue
                 );
             }
             else
             {
-                // If we have any pending updates, send them first
-                if (_pendingStringUpdate.Length > 0)
-                {
-                    yield return new JsonFragmentUpdate(
-                        GetCurrentPath(),
-                        JsonFragmentKind.PartialString,
-                        _pendingStringUpdate.ToString(),
-                        null
-                    );
-                }
-
-                // Then send complete string
+                // For value strings, use CompleteString
                 yield return new JsonFragmentUpdate(
                     GetCurrentPath(),
                     JsonFragmentKind.CompleteString,
-                    value,
-                    null
+                    stringValue,
+                    stringValue
                 );
             }
 
+            // Reset string state
             _currentString = null;
             _pendingStringUpdate = null;
+            
             yield break;
         }
 
+        // Regular character in string
         _currentString!.Append(c);
-        _pendingStringUpdate.Append(c);
-
-        if (!_expectingPropertyName && _pendingStringUpdate.Length > 0)
+        _pendingStringUpdate!.Append(c);
+        
+        // Emit partial string updates for value strings only (not property names)
+        if (!_expectingPropertyName)
         {
             yield return new JsonFragmentUpdate(
                 GetCurrentPath(),
                 JsonFragmentKind.PartialString,
-                _pendingStringUpdate.ToString(),
-                null
+                c.ToString(),
+                c.ToString()
             );
-            _pendingStringUpdate.Clear();
         }
     }
 
@@ -490,6 +504,23 @@ public class JsonFragmentToStructuredUpdateGenerator
             }
             
             _contextStack.Pop();
+            
+            // Reset object-specific state flags when finishing an object
+            // This ensures proper completion detection
+            _afterColon = false;
+            
+            // If we're returning to a parent object, restore the appropriate state
+            if (_contextStack.Count > 1 && _contextStack.Peek().Type == ContainerType.Object)
+            {
+                // We're back in a parent object, so we're no longer expecting a property name
+                // (we just finished a value)
+                _expectingPropertyName = false;
+            }
+            else
+            {
+                // We're at root level, no longer in any object context
+                _expectingPropertyName = false;
+            }
             
             yield return new JsonFragmentUpdate(
                 currentPath,
@@ -824,4 +855,4 @@ public class JsonFragmentToStructuredUpdateGenerator
     }
 
     #endregion
-}
+} 

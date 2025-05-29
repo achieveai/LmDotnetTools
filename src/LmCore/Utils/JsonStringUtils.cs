@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace AchieveAi.LmDotnetTools.Misc.Utils;
+namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
 /// Utility methods for handling JSON strings, especially partial or streaming JSON data
@@ -116,4 +116,4 @@ public static class JsonStringUtils
 
         return false;
     }
-}
+} 

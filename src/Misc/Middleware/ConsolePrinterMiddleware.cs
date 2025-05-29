@@ -3,7 +3,7 @@ using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Misc.Utils;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 
 namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 

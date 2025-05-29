@@ -1,4 +1,6 @@
+using System.Collections.Immutable;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -43,4 +45,10 @@ public record ToolCallUpdate
     [JsonPropertyName("function_args")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? FunctionArgs { get; init; }
+
+    /// <summary>
+    /// Structured JSON fragment updates generated from the function arguments
+    /// </summary>
+    [JsonIgnore]
+    public ImmutableList<JsonFragmentUpdate>? JsonFragmentUpdates { get; init; }
 }
