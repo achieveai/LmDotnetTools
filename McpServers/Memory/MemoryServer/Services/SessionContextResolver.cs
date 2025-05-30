@@ -58,38 +58,38 @@ public class SessionContextResolver : ISessionContextResolver
     /// <summary>
     /// Validates that a session context is valid and accessible.
     /// </summary>
-    public async Task<bool> ValidateSessionContextAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
+    public Task<bool> ValidateSessionContextAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         // Basic validation rules
         if (string.IsNullOrWhiteSpace(sessionContext.UserId))
         {
             _logger.LogWarning("Session context validation failed: UserId is required");
-            return false;
+            return Task.FromResult(false);
         }
 
         if (sessionContext.UserId.Length > 100)
         {
             _logger.LogWarning("Session context validation failed: UserId too long ({Length} > 100)", sessionContext.UserId.Length);
-            return false;
+            return Task.FromResult(false);
         }
 
         if (!string.IsNullOrEmpty(sessionContext.AgentId) && sessionContext.AgentId.Length > 100)
         {
             _logger.LogWarning("Session context validation failed: AgentId too long ({Length} > 100)", sessionContext.AgentId.Length);
-            return false;
+            return Task.FromResult(false);
         }
 
         if (!string.IsNullOrEmpty(sessionContext.RunId) && sessionContext.RunId.Length > 100)
         {
             _logger.LogWarning("Session context validation failed: RunId too long ({Length} > 100)", sessionContext.RunId.Length);
-            return false;
+            return Task.FromResult(false);
         }
 
         // Additional validation rules can be added here
         // For example, checking against allowed user lists, etc.
 
         _logger.LogDebug("Session context validation passed for {SessionContext}", sessionContext);
-        return true;
+        return Task.FromResult(true);
     }
 
     /// <summary>

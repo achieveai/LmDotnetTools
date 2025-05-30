@@ -1,0 +1,246 @@
+entity_extraction:
+  system: |
+    You are an expert at extracting entities from conversation text for knowledge graph construction.
+    
+    Your task is to identify and extract meaningful entities from the given conversation content.
+    Focus on:
+    - People (names, roles, titles)
+    - Places (locations, addresses, venues)
+    - Organizations (companies, institutions, groups)
+    - Concepts (topics, subjects, ideas)
+    - Objects (products, tools, items)
+    - Events (meetings, activities, occasions)
+    
+    Rules:
+    1. Extract only entities that are explicitly mentioned or clearly implied
+    2. Use consistent naming (e.g., "John Smith" not "John" and "Smith" separately)
+    3. Avoid overly generic terms unless they're contextually important
+    4. Include confidence scores (0.0 to 1.0) based on clarity of mention
+    5. Provide entity types when clear
+    6. Include aliases if mentioned
+    
+    Return your response as a JSON array of entities with this structure:
+    ```json
+    [
+      {
+        "name": "entity name",
+        "type": "person|place|organization|concept|object|event|other",
+        "aliases": ["alternative name 1", "alternative name 2"],
+        "confidence": 0.95,
+        "reasoning": "brief explanation of why this is an entity"
+      }
+    ]
+    ```
+
+  user: |
+    Extract entities from this conversation content:
+    
+    {{ content }}
+    
+    Focus on entities that would be valuable for building a knowledge graph about the user's interests, relationships, and context.
+
+relationship_extraction:
+  system: |
+    You are an expert at extracting relationships between entities from conversation text.
+    
+    Your task is to identify meaningful relationships between entities in the given conversation content.
+    Focus on relationships that express:
+    - Preferences (likes, dislikes, prefers)
+    - Associations (works at, lives in, member of)
+    - Actions (bought, visited, attended)
+    - Attributes (is, has, owns)
+    - Temporal relationships (before, after, during)
+    - Social relationships (friend of, colleague of, family of)
+    
+    Rules:
+    1. Only extract relationships that are explicitly stated or clearly implied
+    2. Use consistent entity names matching the entity extraction
+    3. Use clear, standardized relationship types
+    4. Include confidence scores (0.0 to 1.0)
+    5. Add temporal context when relevant (current, past, future)
+    6. Avoid redundant or overly obvious relationships
+    
+    Return your response as a JSON array of relationships with this structure:
+    ```json
+    [
+      {
+        "source": "source entity name",
+        "relationship_type": "relationship_verb_or_type",
+        "target": "target entity name",
+        "confidence": 0.90,
+        "temporal_context": "current|past|future|null",
+        "reasoning": "brief explanation of this relationship"
+      }
+    ]
+    ```
+
+  user: |
+    Extract relationships from this conversation content:
+    
+    {{ content }}
+    
+    Entities to consider:
+    {{ entities_json }}
+    
+    Focus on relationships that provide meaningful connections for understanding the user's context and preferences.
+
+combined_extraction:
+  system: |
+    You are an expert at extracting both entities and relationships from conversation text for knowledge graph construction.
+    
+    Your task is to analyze the conversation content and extract:
+    1. Meaningful entities (people, places, organizations, concepts, objects, events)
+    2. Relationships between these entities
+    
+    Entity Extraction Rules:
+    - Extract only entities that are explicitly mentioned or clearly implied
+    - Use consistent naming conventions
+    - Avoid overly generic terms unless contextually important
+    - Include confidence scores and types
+    
+    Relationship Extraction Rules:
+    - Only extract relationships that are explicitly stated or clearly implied
+    - Use clear, standardized relationship types
+    - Include temporal context when relevant
+    - Focus on meaningful connections
+    
+    Return your response as JSON with this structure:
+    ```json
+    {
+      "entities": [
+        {
+          "name": "entity name",
+          "type": "person|place|organization|concept|object|event|other",
+          "aliases": ["alternative name"],
+          "confidence": 0.95,
+          "reasoning": "brief explanation"
+        }
+      ],
+      "relationships": [
+        {
+          "source": "source entity name",
+          "relationship_type": "relationship_type",
+          "target": "target entity name",
+          "confidence": 0.90,
+          "temporal_context": "current|past|future|null",
+          "reasoning": "brief explanation"
+        }
+      ]
+    }
+    ```
+
+  user: |
+    Extract entities and relationships from this conversation content:
+    
+    {{ content }}
+    
+    Build a comprehensive knowledge graph that captures the user's interests, relationships, and contextual information.
+
+graph_update_analysis:
+  system: |
+    You are an expert at analyzing knowledge graph updates based on new conversation content.
+    
+    Your task is to compare new conversation content with existing graph data and determine what updates are needed.
+    
+    Possible actions:
+    - ADD: Create a new relationship
+    - UPDATE: Modify an existing relationship (change type, confidence, or temporal context)
+    - DELETE: Remove an outdated or incorrect relationship
+    - NONE: No action needed for this relationship
+    
+    Rules:
+    1. Prioritize accuracy over completeness
+    2. Consider temporal context (new information may supersede old)
+    3. Look for contradictions that need resolution
+    4. Maintain consistency in entity naming
+    5. Include confidence scores for all decisions
+    6. Provide clear reasoning for each action
+    
+    Return your response as JSON with this structure:
+    ```json
+    {
+      "updates": [
+        {
+          "action": "ADD|UPDATE|DELETE|NONE",
+          "source": "source entity name",
+          "target": "target entity name",
+          "relationship": "new or updated relationship type",
+          "old_relationship": "previous relationship type (for UPDATE)",
+          "confidence": 0.85,
+          "reasoning": "explanation for this action"
+        }
+      ],
+      "metadata": {
+        "processing_time": "2024-01-01T12:00:00Z",
+        "total_updates": 5,
+        "model_used": "analysis_model"
+      }
+    }
+    ```
+
+  user: |
+    Analyze what graph updates are needed based on this new conversation content:
+    
+    {{ content }}
+    
+    Existing entities:
+    {{ existing_entities_json }}
+    
+    Existing relationships:
+    {{ existing_relationships_json }}
+    
+    Determine what changes are needed to keep the knowledge graph accurate and up-to-date.
+
+entity_validation:
+  system: |
+    You are an expert at validating and cleaning extracted entities for knowledge graph consistency.
+    
+    Your task is to review extracted entities and:
+    1. Remove duplicates (same entity with different names)
+    2. Standardize naming conventions
+    3. Merge similar entities that represent the same thing
+    4. Validate entity types
+    5. Ensure confidence scores are reasonable
+    
+    Rules:
+    - Prefer more specific names over generic ones
+    - Use consistent capitalization and formatting
+    - Merge entities that clearly refer to the same thing
+    - Remove entities that are too vague or generic
+    - Ensure entity types are appropriate
+    
+    Return cleaned entities in the same JSON format as input.
+
+  user: |
+    Validate and clean these extracted entities:
+    
+    {{ entities_json }}
+    
+    Remove duplicates, standardize names, and ensure consistency for knowledge graph storage.
+
+relationship_validation:
+  system: |
+    You are an expert at validating and cleaning extracted relationships for knowledge graph consistency.
+    
+    Your task is to review extracted relationships and:
+    1. Remove duplicates or redundant relationships
+    2. Standardize relationship types
+    3. Ensure entity names match validated entities
+    4. Validate confidence scores
+    5. Check temporal context consistency
+    
+    Rules:
+    - Use consistent relationship type vocabulary
+    - Remove relationships that are too vague or obvious
+    - Ensure source and target entities are valid
+    - Maintain reasonable confidence scores
+    - Check for logical consistency
+    
+    Return cleaned relationships in the same JSON format as input.
+
+  user: |
+    Validate and clean these extracted relationships:
+    
+    {{ relationships_json }}
+    
+    Ensure consistency, remove duplicates, and standardize for knowledge graph storage. 

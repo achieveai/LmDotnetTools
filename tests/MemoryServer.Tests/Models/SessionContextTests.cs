@@ -182,12 +182,12 @@ public class SessionContextTests
 
     public static IEnumerable<object[]> GetToStringTestData()
     {
-        yield return new object[] { SessionContext.ForUser("user1"), "User:user1", "User-only context toString" };
-        yield return new object[] { SessionContext.ForAgent("user1", "agent1"), "User:user1, Agent:agent1", "User-agent context toString" };
-        yield return new object[] { SessionContext.ForRun("user1", "agent1", "run1"), "User:user1, Agent:agent1, Run:run1", "Full context toString" };
+        yield return new object[] { SessionContext.ForUser("user1"), "user1", "User-only context toString" };
+        yield return new object[] { SessionContext.ForAgent("user1", "agent1"), "user1/agent1", "User-agent context toString" };
+        yield return new object[] { SessionContext.ForRun("user1", "agent1", "run1"), "user1/agent1/run1", "Full context toString" };
         
         var userRunContext = new SessionContext { UserId = "user1", RunId = "run1" };
-        yield return new object[] { userRunContext, "User:user1, Run:run1", "User-run context (no agent) toString" };
+        yield return new object[] { userRunContext, "user1//run1", "User-run context (no agent) toString" };
     }
 
     public static IEnumerable<object[]> GetSessionIsolationTestData()

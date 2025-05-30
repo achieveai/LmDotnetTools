@@ -15,6 +15,7 @@ public class SqliteManager : IDisposable
     private readonly string _connectionString;
     private readonly ILogger<SqliteManager> _logger;
     private readonly SemaphoreSlim _connectionSemaphore;
+    private readonly SemaphoreSlim _initSemaphore;
     private readonly DatabaseOptions _options;
     private bool _isInitialized = false;
     private readonly object _initLock = new object();
@@ -25,6 +26,7 @@ public class SqliteManager : IDisposable
         _connectionString = _options.ConnectionString;
         _logger = logger;
         _connectionSemaphore = new SemaphoreSlim(_options.MaxConnections, _options.MaxConnections);
+        _initSemaphore = new SemaphoreSlim(1, 1);
     }
 
     /// <summary>
@@ -73,7 +75,9 @@ public class SqliteManager : IDisposable
     {
         if (_isInitialized) return;
 
-        lock (_initLock)
+        // Use SemaphoreSlim for async-safe initialization
+        await _initSemaphore.WaitAsync(cancellationToken);
+        try
         {
             if (_isInitialized) return;
 
@@ -81,13 +85,13 @@ public class SqliteManager : IDisposable
             
             try
             {
-                using var connection = GetConnectionAsync(cancellationToken).Result;
+                using var connection = await GetConnectionAsync(cancellationToken);
                 
                 // Load extensions first
                 LoadExtensions(connection);
                 
                 // Create schema
-                ExecuteSchemaScriptsAsync(connection, cancellationToken).Wait();
+                await ExecuteSchemaScriptsAsync(connection, cancellationToken);
                 
                 _isInitialized = true;
                 _logger.LogInformation("SQLite database initialized successfully");
@@ -97,6 +101,10 @@ public class SqliteManager : IDisposable
                 _logger.LogError(ex, "Failed to initialize SQLite database");
                 throw;
             }
+        }
+        finally
+        {
+            _initSemaphore.Release();
         }
     }
 
@@ -239,12 +247,78 @@ public class SqliteManager : IDisposable
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );");
         
+        // Graph database tables for entities and relationships
+        
+        // Entities table for knowledge graph
+        schema.AppendLine(@"
+            CREATE TABLE IF NOT EXISTS entities (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                type TEXT,
+                aliases TEXT, -- JSON array
+                user_id TEXT NOT NULL,
+                agent_id TEXT,
+                run_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                source_memory_ids TEXT, -- JSON array of memory IDs
+                metadata TEXT, -- JSON
+                version INTEGER DEFAULT 1,
+                CONSTRAINT chk_entity_name_length CHECK (length(name) > 0 AND length(name) <= 500),
+                CONSTRAINT chk_entity_user_id_format CHECK (length(user_id) > 0 AND length(user_id) <= 100),
+                CONSTRAINT chk_entity_confidence CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                UNIQUE(name, user_id, agent_id, run_id)
+            );");
+        
+        // Relationships table for knowledge graph
+        schema.AppendLine(@"
+            CREATE TABLE IF NOT EXISTS relationships (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                target TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                agent_id TEXT,
+                run_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                source_memory_id INTEGER,
+                temporal_context TEXT,
+                metadata TEXT, -- JSON
+                version INTEGER DEFAULT 1,
+                CONSTRAINT chk_relationship_source_length CHECK (length(source) > 0 AND length(source) <= 500),
+                CONSTRAINT chk_relationship_type_length CHECK (length(relationship_type) > 0 AND length(relationship_type) <= 200),
+                CONSTRAINT chk_relationship_target_length CHECK (length(target) > 0 AND length(target) <= 500),
+                CONSTRAINT chk_relationship_user_id_format CHECK (length(user_id) > 0 AND length(user_id) <= 100),
+                CONSTRAINT chk_relationship_confidence CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE SET NULL,
+                UNIQUE(source, relationship_type, target, user_id, agent_id, run_id)
+            );");
+        
         // Indexes for performance
         schema.AppendLine(@"
             CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_session_defaults_created ON session_defaults(created_at DESC);");
+            CREATE INDEX IF NOT EXISTS idx_session_defaults_created ON session_defaults(created_at DESC);
+            
+            -- Graph database indexes
+            CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(user_id, agent_id, run_id);
+            CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+            CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
+            CREATE INDEX IF NOT EXISTS idx_entities_created ON entities(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_entities_updated ON entities(updated_at DESC);
+            
+            CREATE INDEX IF NOT EXISTS idx_relationships_session ON relationships(user_id, agent_id, run_id);
+            CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source);
+            CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target);
+            CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships(relationship_type);
+            CREATE INDEX IF NOT EXISTS idx_relationships_source_target ON relationships(source, target);
+            CREATE INDEX IF NOT EXISTS idx_relationships_created ON relationships(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_relationships_updated ON relationships(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_relationships_memory ON relationships(source_memory_id);");
         
         // Triggers for FTS5 synchronization
         schema.AppendLine(@"
@@ -286,5 +360,6 @@ public class SqliteManager : IDisposable
     public void Dispose()
     {
         _connectionSemaphore?.Dispose();
+        _initSemaphore?.Dispose();
     }
 } 

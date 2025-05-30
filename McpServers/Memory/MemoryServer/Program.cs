@@ -84,7 +84,7 @@ app.MapGet("/health", async (SqliteManager db) =>
 });
 
 // MCP server endpoint (will be implemented in Phase 2)
-app.MapPost("/mcp", async (HttpContext context) =>
+app.MapPost("/mcp", (HttpContext context) =>
 {
     // TODO: Implement MCP protocol handling
     return Results.Ok(new { message = "MCP endpoint - coming soon" });

@@ -80,10 +80,16 @@ public class SessionContext
     /// </summary>
     public override string ToString()
     {
-        var parts = new List<string> { $"User:{UserId}" };
-        if (!string.IsNullOrEmpty(AgentId)) parts.Add($"Agent:{AgentId}");
-        if (!string.IsNullOrEmpty(RunId)) parts.Add($"Run:{RunId}");
-        return string.Join(", ", parts);
+        var parts = new List<string> { UserId };
+        
+        // Always add agent part (empty string if null) to maintain consistent format
+        parts.Add(string.IsNullOrEmpty(AgentId) ? "" : AgentId);
+        
+        // Only add run part if it exists
+        if (!string.IsNullOrEmpty(RunId)) 
+            parts.Add(RunId);
+        
+        return string.Join("/", parts);
     }
 
     /// <summary>
