@@ -1,32 +1,326 @@
-# Memory System Design Documentation
+# Memory MCP Server - Documentation
 
 ## Overview
 
-This directory contains comprehensive design documentation for a simplified yet sophisticated memory management system inspired by mem0. The design focuses on two primary LLM providers (OpenAI and Anthropic) and Qdrant as the vector storage solution, providing a production-ready architecture with reduced complexity.
+This directory contains comprehensive design documentation for a simplified yet sophisticated memory management system inspired by mem0. The design focuses on two primary LLM providers (OpenAI and Anthropic) and SQLite with sqlite-vec as the vector storage solution, providing a production-ready architecture with reduced complexity and enhanced reliability through the Database Session Pattern.
 
 ## Design Philosophy
 
-### Core Principles
+**Simplicity Through Focus**: Rather than supporting 15+ providers like the original mem0, this design focuses on proven, reliable solutions that cover the majority of use cases while maintaining sophisticated functionality.
 
-**Simplicity Through Focus**: Rather than supporting 15+ providers, we focus on proven, reliable solutions that cover the majority of use cases.
+**Production-First Architecture**: Every component is designed with production deployment in mind, including comprehensive error handling, monitoring, performance optimization, and scalability considerations.
 
-**Production-First Architecture**: Every component is designed with production deployment in mind, including error handling, monitoring, performance optimization, and scalability.
+**Reliable Resource Management**: The Database Session Pattern ensures proper SQLite connection lifecycle management, eliminates file locking issues, provides proper resource cleanup, and enables robust test isolation.
 
-**Intelligent Memory Management**: Sophisticated fact extraction and decision-making capabilities that understand context, resolve conflicts, and maintain consistency.
-
-**Modular Design**: Clean separation of concerns with well-defined interfaces, enabling independent testing, development, and potential future extensions.
+**Intelligent Memory Management**: Advanced fact extraction and decision-making capabilities that understand context, resolve conflicts, and maintain consistency across the memory system.
 
 **Type Safety and Modern Patterns**: Full type annotations, dependency injection, factory patterns, and async-first design throughout the system.
 
+## Document Structure
+
+### Core Design Documents
+
+1. **[DeepDesignDoc.md](./DeepDesignDoc.md)** - Comprehensive system architecture
+   - High-level system design and component interactions
+   - Database Session Pattern architecture for reliable connection management
+   - Data flow diagrams and processing pipelines
+   - Integration patterns and deployment strategies
+   - Performance optimization and monitoring approaches
+
+2. **[FunctionalRequirements.md](./FunctionalRequirements.md)** - Detailed functional specifications
+   - Complete MCP tool specifications with session pattern integration
+   - Session management and isolation requirements
+   - Database Session Pattern functional requirements (FR-DB-001 through FR-DB-020)
+   - Performance, security, and reliability requirements
+   - Testing and validation criteria
+
+3. **[ExecutionPlan.md](./ExecutionPlan.md)** - Implementation roadmap
+   - Phase-by-phase development plan including Database Session Pattern implementation
+   - Phase 1.5: Critical Database Session Pattern implementation phase
+   - Milestone definitions and success criteria
+   - Risk assessment and mitigation strategies
+   - Resource requirements and timeline
+
+### Technical Specifications
+
+4. **[SqliteAsGotoDb.md](./SqliteAsGotoDb.md)** - SQLite storage architecture
+   - Database Session Pattern implementation details
+   - SQLite with sqlite-vec integration for vector operations
+   - Session-scoped connection management and resource cleanup
+   - Test isolation mechanisms and production reliability
+   - Schema design and performance optimization
+
+5. **[MemoryCore.md](./MemoryCore.md)** - Core memory management
+   - Memory and AsyncMemory class implementations with session pattern
+   - Session-scoped database operations and transaction management
+   - Dual processing modes (inference vs direct)
+   - Component orchestration and error handling
+   - Performance optimization and caching strategies
+
+6. **[DataModels.md](./DataModels.md)** - Data structures and schemas
+   - Database Session Pattern interfaces (ISqliteSession, ISqliteSessionFactory)
+   - Session configuration and performance metrics models
+   - Core memory entities with integer ID support
+   - Session context and isolation models
+   - Graph memory and relationship structures
+
+7. **[VectorStorage.md](./VectorStorage.md)** - Vector storage system
+   - SQLite with sqlite-vec integration for semantic similarity search
+   - Session isolation and metadata filtering
+   - Graph memory integration with relationship extraction
+   - Performance optimization and monitoring
+
+### Implementation Guides
+
+8. **[LLMProviders.md](./LLMProviders.md)** - LLM provider integration
+   - OpenAI and Anthropic provider implementations
+   - Structured output handling and response parsing
+   - Error handling and fallback mechanisms
+   - Cost optimization and rate limiting
+
+9. **[MemoryDecisionEngine.md](./MemoryDecisionEngine.md)** - Decision-making system
+   - AI-powered memory operation decisions
+   - Conflict resolution and consistency management
+   - Integer ID mapping for LLM compatibility
+   - Temporal reasoning and relationship analysis
+
+10. **[FactExtraction.md](./FactExtraction.md)** - Fact extraction engine
+    - LLM-powered fact extraction from conversations
+    - Custom prompt configuration and domain adaptation
+    - Multi-language support and cultural considerations
+    - Quality validation and filtering mechanisms
+
+## Key Features
+
+**Database Session Pattern**:
+- Reliable SQLite connection lifecycle management
+- Proper resource cleanup with automatic WAL checkpoint handling
+- Complete test isolation with unique database instances
+- Connection leak detection and prevention
+- Production-ready connection pooling and monitoring
+
+**Multi-Provider Support**:
+- OpenAI and Anthropic LLM providers
+- SQLite with sqlite-vec for vector storage
+- Extensible architecture for future providers
+
+**Advanced Capabilities**:
+- Intelligent fact extraction from conversations
+- AI-powered memory decision making (ADD/UPDATE/DELETE)
+- Semantic similarity search with vector embeddings
+- Full-text search with SQLite FTS5
+- Session-based memory isolation
+- Graph memory with entity and relationship extraction
+- Procedural memory for agent workflow documentation
+- Vision message processing for multimodal conversations
+
+**Production Features**:
+- Comprehensive error handling and recovery
+- Performance monitoring and optimization
+- Secure session management and access control
+- Scalable architecture with horizontal scaling support
+- Database session pattern for reliable resource management
+
+## Architecture Highlights
+
+### Simplified Provider Selection
+
+**LLM Providers**: Focus on OpenAI (GPT-4, GPT-3.5) and Anthropic (Claude) for reliable, high-quality language understanding and generation.
+
+**Vector Storage**: SQLite with sqlite-vec extension as the primary vector database, offering excellent performance, rich filtering capabilities, and simplified deployment without external dependencies.
+
+**Embedding Providers**: Support for OpenAI embeddings with caching and batch processing for cost optimization.
+
+### Database Session Pattern Benefits
+
+**Reliability**: Eliminates SQLite file locking issues and connection leaks through proper resource management.
+
+**Test Isolation**: Complete separation between test runs with automatic cleanup.
+
+**Resource Management**: Guaranteed connection disposal and WAL checkpoint handling.
+
+**Performance**: Optimized connection usage with monitoring and leak detection.
+
+**Production Ready**: Connection pooling and health monitoring for robust deployment.
+
+## Implementation Phases
+
+### Phase 1: Foundation (Weeks 1-2)
+**Foundation Components**
+- LLM provider implementations (OpenAI, Anthropic)
+- SQLite storage with Database Session Pattern integration
+- Memory core classes with session management
+- Basic configuration and error handling
+
+**Deliverables**:
+- Working LLM provider factory with structured output
+- Functional SQLite vector storage with session-scoped CRUD operations
+- Memory class with basic add/search functionality using session pattern
+- Comprehensive test suite for core components with test isolation
+
+### Phase 1.5: Database Session Pattern (Weeks 2.5-3.5) **NEW PHASE**
+**Session Pattern Implementation**
+- ISqliteSession and ISqliteSessionFactory interfaces
+- Production and test session implementations
+- Repository migration to session pattern
+- Comprehensive testing and validation
+
+**Deliverables**:
+- Reliable SQLite connection management
+- Test isolation and cleanup mechanisms
+- Eliminated file locking issues
+- Improved resource management and monitoring
+
+### Phase 2: Core Operations (Weeks 4-5)
+**Memory Operations**
+- Session-scoped memory storage and retrieval
+- Integer ID management for LLM compatibility
+- Basic search functionality with session isolation
+- Session defaults and HTTP header processing
+
+**Deliverables**:
+- Complete memory CRUD operations with session pattern
+- Session isolation and security
+- Integer ID generation and mapping
+- HTTP header processing for session defaults
+
+### Phase 3: Intelligence (Weeks 6-7)
+**AI-Powered Features**
+- Fact extraction engine with custom prompts
+- Memory decision engine with conflict resolution
+- Advanced search with semantic similarity
+- Vision message processing
+
+**Deliverables**:
+- Intelligent memory operations (ADD/UPDATE/DELETE/NONE)
+- Question-answering capabilities
+- Vision and multimodal support
+- Custom prompt configuration
+
+### Phase 4: Advanced Features (Weeks 8-9)
+**Production Features**
+- Graph memory with entity and relationship extraction
+- Procedural memory for agent workflows
+- Performance optimization and caching
+- Monitoring and observability
+
+**Deliverables**:
+- Full graph memory capabilities
+- Agent workflow documentation
+- Performance optimization
+- Production monitoring
+
+## Quality Standards
+
+### Database Session Pattern Quality
+**Resource Management**: 100% connection disposal rate with automatic cleanup validation.
+
+**Test Isolation**: Complete separation between test runs with deterministic cleanup.
+
+**Performance**: Session creation <100ms, disposal <500ms including WAL checkpoint.
+
+**Reliability**: Zero tolerance for connection leaks in production environments.
+
+### Type Safety
+**Full Type Annotations**: Complete type coverage with validation throughout the system.
+
+**Error Handling**: Comprehensive exception handling with proper logging and recovery.
+
+**Testing**: >80% code coverage with unit, integration, and performance tests.
+
+## Deployment Considerations
+
+### Infrastructure Requirements
+**Compute Resources**: Moderate CPU and memory requirements with horizontal scaling support.
+
+**External Dependencies**: OpenAI/Anthropic API access and SQLite with sqlite-vec extension support.
+
+**Storage Requirements**: Local SQLite database files with proper backup and recovery mechanisms.
+
+### Scaling Strategies
+**Horizontal Scaling**: Stateless design enables easy horizontal scaling of application instances.
+
+**Database Scaling**: SQLite read replicas and connection pooling for improved performance.
+
+**Caching**: Multi-level caching for embeddings, responses, and metadata.
+
+## Getting Started
+
+### Prerequisites
+- .NET 9.0 SDK
+- SQLite with sqlite-vec extension support
+- OpenAI or Anthropic API key
+
+### Quick Start Process
+1. **Environment Setup**: Configure API keys and SQLite database
+2. **Basic Configuration**: Set up minimal configuration for testing
+3. **Component Testing**: Validate individual components work correctly
+4. **Integration Testing**: Test complete memory workflows
+5. **Session Pattern Validation**: Verify database session management and cleanup
+
+This documentation provides a comprehensive guide for implementing a production-ready memory management system with simplified architecture, enhanced reliability through the Database Session Pattern, and sophisticated AI-powered capabilities.
+
+---
+
+## Overview
+
+The Memory MCP Server is a sophisticated memory management system that provides intelligent storage, retrieval, and management of contextual information through the Model Context Protocol (MCP). Built with C# and .NET 9.0, it leverages SQLite with sqlite-vec for vector operations and FTS5 for full-text search, enhanced with a robust Database Session Pattern for reliable connection management.
+
+**ARCHITECTURE ENHANCEMENT**: This implementation features a Database Session Pattern that ensures reliable SQLite connection lifecycle management, eliminates file locking issues, provides proper resource cleanup, and enables robust test isolation.
+
+## Key Features
+
+### Core Capabilities
+- **Memory Storage**: Intelligent storage of conversation context and facts
+- **Semantic Search**: Vector-based similarity search for relevant memory retrieval
+- **Session Isolation**: Multi-tenant memory spaces with strict data separation
+- **Integer IDs**: LLM-friendly integer identifiers instead of UUIDs
+- **Session Defaults**: HTTP header and initialization-based default context
+
+### Advanced Features
+- **Fact Extraction**: LLM-powered extraction of structured information from conversations
+- **Memory Decision Engine**: Intelligent conflict resolution and memory updates
+- **Vector Storage**: High-performance semantic similarity search using sqlite-vec
+- **Full-Text Search**: Advanced text search capabilities with FTS5
+
 ## Architecture Overview
 
+### Database Session Pattern
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Memory System                            │
+│                Database Session Pattern                     │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Memory    │  │ AsyncMemory │  │   Session           │  │
-│  │   Core      │  │    Core     │  │  Management         │  │
+│  │ISqliteSession│  │ISqliteSession│  │   Session          │  │
+│  │ Interface   │  │  Factory    │  │  Implementations    │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Production Implementation                     │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ SqliteSession│  │SqliteSession│  │   Connection        │  │
+│  │             │  │  Factory    │  │   Lifecycle         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Test Implementation                          │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │TestSqlite   │  │TestSqlite   │  │   Test Database     │  │
+│  │ Session     │  │SessionFactory│  │   Isolation         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### System Components
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Memory MCP Server                        │
+├─────────────────────────────────────────────────────────────┤
+│                    MCP Protocol Layer                       │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │   Memory    │  │   Search    │  │   Session           │  │
+│  │   Tools     │  │   Tools     │  │  Management         │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                Intelligence Layer                           │
@@ -37,311 +331,319 @@ This directory contains comprehensive design documentation for a simplified yet 
 │  │   Engine    │  │   Engine    │  │                     │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                Storage Layer                                │
+│                Storage Layer (Enhanced)                     │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Vector    │  │   Qdrant    │  │    Embedding        │  │
-│  │  Storage    │  │  Provider   │  │    Manager          │  │
+│  │  Database   │  │   SQLite    │  │    Embedding        │  │
+│  │  Session    │  │  Storage    │  │    Manager          │  │
+│  │  Pattern    │  │ (sqlite-vec)│  │                     │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Design Documents
+## Prerequisites
 
-This directory contains comprehensive design documentation for the memory system implementation. These documents provide detailed architectural guidance, implementation patterns, and specifications for building a production-ready memory management system.
+- .NET 9.0 SDK
+- SQLite with sqlite-vec extension support
+- OpenAI or Anthropic API key
 
-### Document Overview
+### Installation
 
-1. **[DeepDesignDoc.md](./DeepDesignDoc.md)** - Master architecture document
-   - Complete system overview and design principles
-   - High-level architecture and component relationships
-   - Implementation roadmap and success metrics
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd LmDotnetTools/McpServers/Memory
+   ```
 
-2. **[DataModels.md](./DataModels.md)** - Comprehensive data schemas and models
-   - All data structures and schemas used throughout the system
-   - Validation rules and constraints
-   - Complete API request/response examples
-   - Graph memory and configuration data models
+2. **Install dependencies**
+   ```bash
+   dotnet restore
+   ```
 
-3. **[MemoryCore.md](./MemoryCore.md)** - Memory management classes
-   - Memory and AsyncMemory class designs
-   - Core operation flows (add, search, update, delete)
-   - Session management and isolation
-   - Memory answer system and procedural memory
-   - Vision message support and custom prompt configuration
+3. **Configure environment**
+   ```bash
+   # Copy example configuration
+   cp .env.example .env
+   
+   # Edit configuration with your API keys
+   # OPENAI_API_KEY=your_openai_key
+   # ANTHROPIC_API_KEY=your_anthropic_key
+   ```
 
-4. **[FactExtraction.md](./FactExtraction.md)** - Fact extraction engine
-   - LLM-powered fact extraction from conversations
-   - Real production prompts from mem0 codebase
-   - Multi-language and domain-specific support
-   - Processing flows and quality validation
+4. **Initialize database**
+   ```bash
+   dotnet run -- --init-db
+   ```
 
-5. **[MemoryDecisionEngine.md](./MemoryDecisionEngine.md)** - Memory decision system
-   - Intelligent memory operation decisions (ADD/UPDATE/DELETE/NONE)
-   - Real memory decision prompts from mem0 codebase
-   - UUID mapping strategy to prevent LLM hallucinations
-   - Conflict resolution and temporal reasoning
-   - Code block removal utility for reliable JSON parsing
+5. **Run the server**
+   ```bash
+   dotnet run
+   ```
 
-6. **[LLMProviders.md](./LLMProviders.md)** - LLM provider architecture
-   - OpenAI and Anthropic provider implementations
-   - Structured output generation and validation
-   - Enhanced error handling and retry mechanisms
-   - Rate limiting and performance optimization
-   - Code block removal and JSON repair strategies
+## Configuration
 
-7. **[VectorStorage.md](./VectorStorage.md)** - Vector storage system
-   - Qdrant integration for semantic similarity search
-   - Session isolation and metadata filtering
-   - Graph memory integration with relationship extraction
-   - Real graph prompts from mem0 codebase
-   - Hybrid search combining vector and graph capabilities
-
-### Key Features Covered
-
-**Production-Ready Architecture**:
-- Comprehensive error handling and resilience patterns
-- Performance optimization and caching strategies
-- Security considerations and access control
-- Monitoring, observability, and operational concerns
-
-**Advanced Memory Intelligence**:
-- Sophisticated fact extraction with real prompts
-- Intelligent memory decision-making with conflict resolution
-- UUID mapping to prevent LLM hallucinations
-- Graph memory for relationship-based storage and retrieval
-
-**Complete Data Specifications**:
-- Detailed schemas for all data structures
-- Validation rules and constraints
-- API request/response formats
-- Configuration and error handling models
-
-**Multi-Provider Support**:
-- OpenAI and Anthropic LLM providers
-- Qdrant vector storage
-- Extensible architecture for future providers
-
-**Advanced Capabilities**:
-- Vision message processing for multimodal memories
-- Procedural memory for agent workflow documentation
-- Memory answer system for question-answering
-- Custom prompt configuration for domain-specific use cases
-
-### Implementation Guidance
-
-These documents are designed to be:
-- **Language Agnostic**: Implementation patterns work in any programming language
-- **Production Ready**: Include all necessary error handling, monitoring, and optimization
-- **Comprehensive**: Cover all aspects from data models to deployment considerations
-- **Authentic**: Use real prompts and patterns from the mem0 codebase
-
-Each document includes:
-- Detailed pseudo code flows
-- Real-world examples and use cases
-- Configuration specifications
-- Testing strategies
-- Performance considerations
-
-### Getting Started
-
-1. Start with **DeepDesignDoc.md** for overall system understanding
-2. Review **DataModels.md** for all data structures and schemas
-3. Follow the implementation roadmap in the master document
-4. Refer to individual component documents for detailed implementation guidance
-
-The documents provide a complete blueprint for implementing a sophisticated memory management system with production-grade reliability and advanced AI-powered capabilities.
-
-## Key Design Features
-
-### Simplified Provider Selection
-
-**LLM Providers**: Focus on OpenAI (GPT-4, GPT-3.5) and Anthropic (Claude) for reliable, high-quality language understanding and generation.
-
-**Vector Storage**: Qdrant as the primary vector database, offering excellent performance, rich filtering capabilities, and both cloud and self-hosted options.
-
-**Embedding Providers**: Support for OpenAI embeddings with caching and batch processing for cost optimization.
-
-### Advanced Memory Intelligence
-
-**Sophisticated Fact Extraction**: Multi-step analysis process that identifies personal information, preferences, plans, and relationships from natural language conversations.
-
-**Intelligent Decision Making**: LLM-powered decision engine that determines when to add, update, or delete memories based on new information and existing context.
-
-**Conflict Resolution**: Advanced logic for handling contradictory information, temporal updates, and maintaining consistency across the memory system.
-
-**Session Isolation**: Secure multi-tenant architecture with strict data separation based on user, agent, and run identifiers.
-
-### Production-Ready Architecture
-
-**Async-First Design**: All operations support asynchronous execution for optimal performance and scalability.
-
-**Comprehensive Error Handling**: Graceful degradation, retry logic, circuit breakers, and fallback strategies throughout the system.
-
-**Performance Optimization**: Caching strategies, batch processing, connection pooling, and intelligent resource management.
-
-**Monitoring and Observability**: Built-in metrics collection, performance tracking, and alerting capabilities.
-
-**Type Safety**: Complete type annotations and validation for reliable development and maintenance.
-
-## Implementation Roadmap
-
-### Phase 1: Core Infrastructure (Weeks 1-3)
-**Foundation Components**
-- LLM provider implementations (OpenAI, Anthropic)
-- Vector storage with Qdrant integration
-- Memory core classes with session management
-- Basic configuration and error handling
-
-**Deliverables**:
-- Working LLM provider factory with structured output
-- Functional Qdrant vector storage with CRUD operations
-- Memory class with basic add/search functionality
-- Comprehensive test suite for core components
-
-### Phase 2: Intelligence Layer (Weeks 4-6)
-**Smart Memory Processing**
-- Fact extraction engine with sophisticated prompting
-- Memory decision engine with conflict resolution
-- Advanced similarity analysis and temporal reasoning
-- Quality validation and consistency checking
-
-**Deliverables**:
-- Production-ready fact extraction with multi-language support
-- Intelligent memory decision making with high accuracy
-- Conflict resolution and quality assurance systems
-- Performance optimization and caching strategies
-
-### Phase 3: Production Features (Weeks 7-8)
-**Enterprise Readiness**
-- Advanced monitoring and alerting
-- Performance optimization and scaling
-- Security hardening and compliance features
-- Documentation and deployment guides
-
-**Deliverables**:
-- Complete monitoring and observability stack
-- Performance benchmarks and optimization guides
-- Security audit and compliance documentation
-- Production deployment templates and guides
-
-## Configuration Examples
-
-### Basic System Configuration
-```yaml
-memory_system:
-  llm:
-    provider: openai
-    model: gpt-4
-    api_key: ${OPENAI_API_KEY}
-  
-  vector_store:
-    provider: qdrant
-    host: localhost
-    port: 6333
-    collection_name: memories
-  
-  embedding:
-    provider: openai
-    model: text-embedding-ada-002
-    cache_size: 1000
+### Basic Configuration
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Data Source=memory.db;Mode=ReadWriteCreate;"
+  },
+  "LlmProviders": {
+    "OpenAI": {
+      "ApiKey": "your_openai_key",
+      "Model": "gpt-4"
+    },
+    "Anthropic": {
+      "ApiKey": "your_anthropic_key",
+      "Model": "claude-3-sonnet-20240229"
+    }
+  },
+  "SessionFactory": {
+    "EnableWalMode": true,
+    "CacheSize": 10000,
+    "ConnectionTimeoutSeconds": 30,
+    "EnableConnectionLeakDetection": true
+  }
+}
 ```
 
-### Advanced Configuration
-```yaml
-memory_system:
-  performance:
-    enable_caching: true
-    batch_size: 100
-    max_concurrent_requests: 10
-    
-  quality:
-    fact_extraction_threshold: 0.8
-    decision_confidence_threshold: 0.7
-    enable_conflict_resolution: true
-    
-  monitoring:
-    enable_metrics: true
-    enable_tracing: true
-    log_level: INFO
+### Database Session Configuration
+```json
+{
+  "SessionFactory": {
+    "ConnectionString": "Data Source=memory.db;Mode=ReadWriteCreate;",
+    "EnableWalMode": true,
+    "CacheSize": 10000,
+    "MmapSize": 268435456,
+    "ConnectionTimeoutSeconds": 30,
+    "EnableForeignKeys": true,
+    "MaxRetryAttempts": 3,
+    "RetryBaseDelayMs": 100,
+    "EnableConnectionLeakDetection": true,
+    "LeakDetectionIntervalMinutes": 1
+  }
+}
 ```
 
-## Testing Strategy
+## MCP Tools
 
-### Component Testing
-**Unit Tests**: Comprehensive testing of individual components with mocking for external dependencies.
+### Memory Management Tools
 
-**Integration Tests**: End-to-end testing with real providers to validate complete workflows.
+#### memory_add
+Adds new memories from conversation messages or direct content.
 
-**Performance Tests**: Load testing and benchmarking to ensure scalability requirements.
+**Parameters**:
+- `messages` (required): Array of conversation messages or string content
+- `user_id` (optional): User identifier for session isolation
+- `agent_id` (optional): Agent identifier for session isolation
+- `run_id` (optional): Run identifier for session isolation
+- `metadata` (optional): Additional metadata to attach to memories
+- `mode` (optional): Processing mode ("inference" or "direct", default: "inference")
 
-### Quality Assurance
-**Memory Quality Tests**: Validation of fact extraction accuracy and decision-making consistency.
+**Returns**: Array of created memory objects with integer IDs
 
-**Error Handling Tests**: Comprehensive testing of failure scenarios and recovery mechanisms.
+#### memory_search
+Searches for relevant memories using semantic similarity and full-text search.
 
-**Security Tests**: Validation of session isolation, data protection, and access controls.
+**Parameters**:
+- `query` (required): Search query text
+- `user_id` (optional): User identifier for session filtering
+- `agent_id` (optional): Agent identifier for session filtering
+- `run_id` (optional): Run identifier for session filtering
+- `limit` (optional): Maximum number of results (default: 100, max: 100)
+- `search_type` (optional): Search type ("vector", "text", "hybrid", default: "hybrid")
 
-## Development Guidelines
+**Returns**: Array of relevant memory objects with relevance scores
 
-### Code Organization
-**Modular Structure**: Clear separation between core logic, providers, and utilities.
+#### memory_get_all
+Retrieves all memories for a specific session.
 
-**Interface-Driven Design**: Abstract base classes for all major components to enable testing and future extensions.
+**Parameters**:
+- `user_id` (optional): User identifier for session filtering
+- `agent_id` (optional): Agent identifier for session filtering
+- `run_id` (optional): Run identifier for session filtering
+- `limit` (optional): Maximum number of results (default: 100, max: 100)
+- `offset` (optional): Pagination offset (default: 0)
 
-**Configuration Management**: Centralized configuration with environment variable support and validation.
+**Returns**: Array of all memory objects in the session
 
-### Quality Standards
-**Type Safety**: Full type annotations and mypy validation.
+#### memory_update
+Updates existing memory content with intelligent merging.
 
-**Error Handling**: Comprehensive exception handling with proper logging and recovery.
+**Parameters**:
+- `memory_id` (required): Integer ID of the memory to update
+- `data` (required): New content or update instructions
+- `user_id` (optional): User identifier for session validation
+- `agent_id` (optional): Agent identifier for session validation
+- `run_id` (optional): Run identifier for session validation
 
-**Documentation**: Detailed docstrings and architectural documentation for all components.
+**Returns**: Updated memory object with new content and metadata
 
-**Testing**: High test coverage with unit, integration, and performance tests.
+#### memory_delete
+Removes specific memories from the system.
 
-## Deployment Considerations
+**Parameters**:
+- `memory_id` (required): Integer ID of the memory to delete
+- `user_id` (optional): User identifier for session validation
+- `agent_id` (optional): Agent identifier for session validation
+- `run_id` (optional): Run identifier for session validation
 
-### Infrastructure Requirements
-**Compute Resources**: Moderate CPU and memory requirements with horizontal scaling support.
+**Returns**: Deletion confirmation with memory details
 
-**External Dependencies**: OpenAI/Anthropic API access and Qdrant instance (cloud or self-hosted).
+#### memory_delete_all
+Removes all memories for a specific session.
 
-**Storage Requirements**: Minimal local storage with primary data in Qdrant.
+**Parameters**:
+- `user_id` (optional): User identifier for session targeting
+- `agent_id` (optional): Agent identifier for session targeting
+- `run_id` (optional): Run identifier for session targeting
+- `confirm` (required): Confirmation flag to prevent accidental deletion
 
-### Scaling Strategies
-**Horizontal Scaling**: Stateless design enables easy horizontal scaling of application instances.
+**Returns**: Deletion summary with count of removed memories
 
-**Caching**: Multi-level caching strategy to reduce external API calls and improve performance.
+### Session Management Tools
 
-**Resource Management**: Intelligent connection pooling and request batching for optimal resource utilization.
+#### memory_init_session
+Establishes default session context for subsequent operations.
 
-### Security Considerations
-**API Key Management**: Secure storage and rotation of API keys for external services.
+**Parameters**:
+- `user_id` (optional): Default user identifier for the session
+- `agent_id` (optional): Default agent identifier for the session
+- `run_id` (optional): Default run identifier for the session
+- `metadata` (optional): Additional session metadata
 
-**Data Protection**: Encryption at rest and in transit with proper access controls.
+**Returns**: Session configuration confirmation and active defaults summary
 
-**Session Isolation**: Strict data separation and access validation for multi-tenant scenarios.
+### Analytics Tools
 
-## Getting Started
+#### memory_get_history
+Retrieves memory operation history for debugging and analysis.
 
-### Prerequisites
-- Python 3.8+ with async support
-- Access to OpenAI or Anthropic APIs
-- Qdrant instance (local or cloud)
-- Basic understanding of vector databases and LLM concepts
+**Parameters**:
+- `user_id` (optional): User identifier for session filtering
+- `agent_id` (optional): Agent identifier for session filtering
+- `run_id` (optional): Run identifier for session filtering
+- `limit` (optional): Maximum number of history entries (default: 50, max: 100)
 
-### Quick Start Process
-1. **Environment Setup**: Configure API keys and Qdrant connection
-2. **Basic Configuration**: Set up minimal configuration for testing
-3. **Component Testing**: Validate individual components work correctly
-4. **Integration Testing**: Test complete memory workflows
-5. **Production Deployment**: Deploy with monitoring and scaling configuration
+**Returns**: Array of memory operations with timestamps and details
 
-### Development Workflow
-1. **Component Development**: Build and test individual components
-2. **Integration Development**: Connect components and test workflows
-3. **Performance Optimization**: Profile and optimize for production loads
-4. **Production Deployment**: Deploy with proper monitoring and scaling
+#### memory_get_stats
+Provides memory usage statistics and analytics.
 
-This design provides a solid foundation for building a sophisticated memory management system that balances simplicity with powerful capabilities, ensuring both developer productivity and production reliability. 
+**Parameters**:
+- `user_id` (optional): User identifier for session filtering
+- `agent_id` (optional): Agent identifier for session filtering
+- `run_id` (optional): Run identifier for session filtering
+
+**Returns**: Memory count statistics, storage usage, and performance metrics
+
+## Session Management
+
+### HTTP Headers
+The server supports session defaults via HTTP headers:
+- `X-Memory-User-ID`: Default user identifier
+- `X-Memory-Agent-ID`: Default agent identifier
+- `X-Memory-Run-ID`: Default run identifier
+- `X-Memory-Session-Metadata`: JSON object with additional metadata
+
+### Session Precedence
+1. **Explicit Parameters**: Parameters provided directly in tool calls
+2. **HTTP Headers**: Default session context from headers
+3. **Session Initialization**: Context set via `memory_init_session`
+4. **System Defaults**: Fallback defaults configured at server level
+
+## Database Session Pattern
+
+### Benefits
+- **Reliability**: Eliminates SQLite file locking issues and connection leaks
+- **Test Isolation**: Complete separation between test runs with automatic cleanup
+- **Resource Management**: Guaranteed connection disposal and WAL checkpoint handling
+- **Error Recovery**: Proper transaction rollback and error handling
+- **Performance**: Optimized connection usage and monitoring
+
+### Usage Example
+```csharp
+// Service registration
+services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
+
+// Repository usage
+public class MemoryRepository
+{
+    private readonly ISqliteSessionFactory _sessionFactory;
+    
+    public async Task<int> AddMemoryAsync(Memory memory)
+    {
+        using var session = await _sessionFactory.CreateSessionAsync();
+        
+        return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Database operations with automatic cleanup
+            // ...
+            return memoryId;
+        });
+    }
+}
+```
+
+## Testing
+
+### Unit Tests
+```bash
+dotnet test tests/MemoryServer.Tests
+```
+
+### Integration Tests
+```bash
+dotnet test tests/McpIntegrationTests
+```
+
+### Test Isolation
+The Database Session Pattern ensures complete test isolation:
+- Each test gets a unique database file
+- Automatic cleanup after test completion
+- No interference between parallel tests
+- Deterministic test results
+
+## Performance
+
+### Benchmarks
+- Memory addition: <1000ms
+- Memory search: <500ms
+- Session creation: <100ms
+- Session disposal: <500ms (including WAL checkpoint)
+
+### Optimization
+- Connection pooling for production environments
+- Embedding caching with LRU eviction
+- Batch operations for high-volume scenarios
+- SQLite performance tuning with optimal PRAGMA settings
+
+## Monitoring
+
+### Health Checks
+- Database connection health
+- Session factory metrics
+- Connection leak detection
+- Performance monitoring
+
+### Metrics
+- Operation latency and throughput
+- Error rates and types
+- Resource utilization
+- Cache hit rates
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes with proper tests
+4. Ensure all tests pass with session pattern validation
+5. Submit a pull request
+
+## License
+
+[License information]
+
+---
+
+This documentation provides comprehensive guidance for implementing and using the Memory MCP Server with the enhanced Database Session Pattern architecture, ensuring reliable resource management and robust production deployment. 

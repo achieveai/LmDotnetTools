@@ -4,26 +4,61 @@
 
 This document defines the functional requirements for implementing a Memory MCP (Model Context Protocol) server in C#. The server exposes memory management capabilities as MCP tools that can be consumed by AI applications and agents for sophisticated memory operations.
 
+**ARCHITECTURE UPDATE**: These requirements have been enhanced to include the Database Session Pattern for reliable SQLite connection management, ensuring robust resource cleanup, proper test isolation, and production-ready reliability.
+
 ## 1. System Context
 
 ### 1.1 Purpose
-The Memory MCP Server provides intelligent memory management capabilities through the Model Context Protocol, enabling AI applications to store, retrieve, and manage contextual information with advanced semantic understanding.
+The Memory MCP Server provides intelligent memory management capabilities through the Model Context Protocol, enabling AI applications to store, retrieve, and manage contextual information with advanced semantic understanding and reliable database operations.
 
 ### 1.2 Architecture Context
 - **Protocol**: Model Context Protocol (MCP) with SSE (Server-Sent Events) transport
 - **Language**: C# (.NET 9.0)
 - **LLM Providers**: OpenAI, Anthropic (existing providers in workspace)
 - **Storage**: SQLite with sqlite-vec extension for vector operations and FTS5 for full-text search
-- **Data Access**: Microsoft.Data.Sqlite with raw SQL queries (no Entity Framework)
-- **Design Pattern**: Modular architecture with clear separation of concerns
+- **Database Management**: Database Session Pattern for reliable connection lifecycle management
+- **Data Access**: Microsoft.Data.Sqlite with session-based connection management (no Entity Framework)
+- **Design Pattern**: Modular architecture with clear separation of concerns and robust resource management
 
 ### 1.3 Key Design Principles
 - **Session Isolation**: Multi-tenant memory spaces with strict data separation
 - **Intelligent Processing**: AI-powered fact extraction and memory decision making
 - **Production Ready**: Comprehensive error handling, monitoring, and performance optimization
+- **Reliable Resource Management**: Database Session Pattern ensuring proper connection cleanup
 - **Type Safety**: Full type annotations and validation throughout
 - **SQLite-First**: Leverage SQLite's advanced features including vector search, full-text indexing, and graph traversals
 - **LLM-Friendly IDs**: Use integer IDs instead of UUIDs for better LLM comprehension and token efficiency
+- **Test Isolation**: Complete separation between test runs with automatic cleanup
+
+## 1.5. Database Session Pattern Requirements
+
+### 1.5.1 Core Session Management
+**FR-DB-001**: The system must implement ISqliteSession interface for encapsulated connection lifecycle management
+**FR-DB-002**: The system must implement ISqliteSessionFactory interface for creating database sessions
+**FR-DB-003**: All database operations must be performed through session-scoped connections
+**FR-DB-004**: Sessions must automatically handle WAL checkpoint operations during disposal
+**FR-DB-005**: Sessions must provide both transactional and non-transactional operation methods
+
+### 1.5.2 Resource Management
+**FR-DB-006**: All SQLite connections must be properly disposed with guaranteed cleanup
+**FR-DB-007**: WAL and SHM files must be properly cleaned up during session disposal
+**FR-DB-008**: Connection leaks must be prevented through proper resource management
+**FR-DB-009**: The system must detect and alert on connection leaks in monitoring
+**FR-DB-010**: Session creation must complete within 100ms under normal conditions
+
+### 1.5.3 Test Environment Isolation
+**FR-DB-011**: Test sessions must use unique database files for complete isolation
+**FR-DB-012**: Test database files must be automatically cleaned up after test completion
+**FR-DB-013**: Tests must not interfere with each other through shared database resources
+**FR-DB-014**: Test session factory must create isolated database instances
+**FR-DB-015**: Test cleanup must be deterministic and complete within 1 second
+
+### 1.5.4 Production Environment Reliability
+**FR-DB-016**: Production sessions must support connection pooling for performance
+**FR-DB-017**: Production sessions must handle connection failures with retry logic
+**FR-DB-018**: Production sessions must support concurrent access with proper locking
+**FR-DB-019**: Production sessions must monitor and report connection health
+**FR-DB-020**: Production sessions must support graceful shutdown with resource cleanup
 
 ## 2. Session Management and Defaults
 
@@ -90,12 +125,13 @@ The system supports a hierarchical approach to session context with the followin
 **Functional Requirements**:
 - FR-008: Extract facts from conversation messages using LLM providers
 - FR-009: Generate embeddings for semantic similarity search using sqlite-vec
-- FR-010: Store memories with session isolation in SQLite tables
+- FR-010: Store memories with session isolation in SQLite tables using Database Session Pattern
 - FR-011: Support both inference mode (AI-powered) and direct mode
 - FR-012: Validate input parameters and handle malformed data gracefully
 - FR-013: Return structured response with created memory integer IDs
 - FR-014: Index memory content in FTS5 virtual table for full-text search
 - FR-015: Use session defaults when explicit session parameters are not provided
+- **FR-016**: All database operations must use session-scoped connections with proper cleanup
 
 #### 3.1.2 SearchMemory Tool
 **Tool Name**: `memory_search`
@@ -116,15 +152,16 @@ The system supports a hierarchical approach to session context with the followin
 - Total count and search performance metrics
 
 **Functional Requirements**:
-- FR-016: Generate embeddings for search query using configured embedding provider
-- FR-017: Perform semantic similarity search using sqlite-vec K-NN operations
-- FR-018: Perform full-text search using FTS5 MATCH operations
-- FR-019: Support hybrid search combining vector and text search results
-- FR-020: Return results ranked by relevance score with session filtering
-- FR-021: Include memory metadata and timestamps
-- FR-022: Enforce session isolation in search results using SQL WHERE clauses
-- FR-023: Handle empty search results gracefully
-- FR-024: Use session defaults when explicit session parameters are not provided
+- FR-017: Generate embeddings for search query using configured embedding provider
+- FR-018: Perform semantic similarity search using sqlite-vec K-NN operations
+- FR-019: Perform full-text search using FTS5 MATCH operations
+- FR-020: Support hybrid search combining vector and text search results
+- FR-021: Return results ranked by relevance score with session filtering
+- FR-022: Include memory metadata and timestamps
+- FR-023: Enforce session isolation in search results using SQL WHERE clauses
+- FR-024: Handle empty search results gracefully
+- FR-025: Use session defaults when explicit session parameters are not provided
+- **FR-026**: All search operations must use session-scoped database connections
 
 #### 3.1.3 GetAllMemories Tool
 **Tool Name**: `memory_get_all`
@@ -142,11 +179,12 @@ The system supports a hierarchical approach to session context with the followin
 - Pagination metadata (total count, has_more)
 
 **Functional Requirements**:
-- FR-025: Retrieve all memories within session boundaries using SQL queries
-- FR-026: Support pagination using LIMIT and OFFSET clauses
-- FR-027: Return memories sorted by creation timestamp (newest first)
-- FR-028: Include memory metadata and session information
-- FR-029: Use session defaults when explicit session parameters are not provided
+- FR-027: Retrieve all memories within session boundaries using SQL queries
+- FR-028: Support pagination using LIMIT and OFFSET clauses
+- FR-029: Return memories sorted by creation timestamp (newest first)
+- FR-030: Include memory metadata and session information
+- FR-031: Use session defaults when explicit session parameters are not provided
+- **FR-032**: All retrieval operations must use session-scoped database connections
 
 ### 3.2 Memory Management Tools
 
@@ -166,13 +204,14 @@ The system supports a hierarchical approach to session context with the followin
 - Update operation details and success status
 
 **Functional Requirements**:
-- FR-030: Validate memory ownership within session boundaries using SQL joins
-- FR-031: Use LLM providers to intelligently merge content
-- FR-032: Update embeddings in sqlite-vec when content changes significantly
-- FR-033: Update FTS5 index when memory content changes
-- FR-034: Maintain update history for audit trail in SQLite tables
-- FR-035: Handle concurrent update conflicts using SQLite transactions
-- FR-036: Use session defaults when explicit session parameters are not provided
+- FR-033: Validate memory ownership within session boundaries using SQL joins
+- FR-034: Use LLM providers to intelligently merge content
+- FR-035: Update embeddings in sqlite-vec when content changes significantly
+- FR-036: Update FTS5 index when memory content changes
+- FR-037: Maintain update history for audit trail in SQLite tables
+- FR-038: Handle concurrent update conflicts using SQLite transactions
+- FR-039: Use session defaults when explicit session parameters are not provided
+- **FR-040**: All update operations must use transactional session-scoped connections
 
 #### 3.2.2 DeleteMemory Tool
 **Tool Name**: `memory_delete`
@@ -189,11 +228,12 @@ The system supports a hierarchical approach to session context with the followin
 - Success/failure status
 
 **Functional Requirements**:
-- FR-037: Validate memory ownership before deletion using SQL queries
-- FR-038: Remove memory from SQLite tables including vector and FTS5 indexes
-- FR-039: Log deletion operations for audit trail
-- FR-040: Handle deletion of non-existent memories gracefully
-- FR-041: Use session defaults when explicit session parameters are not provided
+- FR-041: Validate memory ownership before deletion using SQL queries
+- FR-042: Remove memory from SQLite tables including vector and FTS5 indexes
+- FR-043: Log deletion operations for audit trail
+- FR-044: Handle deletion of non-existent memories gracefully
+- FR-045: Use session defaults when explicit session parameters are not provided
+- **FR-046**: All deletion operations must use transactional session-scoped connections
 
 #### 3.2.3 DeleteAllMemories Tool
 **Tool Name**: `memory_delete_all`
@@ -210,11 +250,12 @@ The system supports a hierarchical approach to session context with the followin
 - Success/failure status
 
 **Functional Requirements**:
-- FR-042: Require explicit confirmation for bulk deletion
-- FR-043: Delete all memories within session boundaries using SQL WHERE clauses
-- FR-044: Provide summary of deletion operation
-- FR-045: Log bulk deletion operations for audit trail
-- FR-046: Use session defaults when explicit session parameters are not provided
+- FR-047: Require explicit confirmation for bulk deletion
+- FR-048: Delete all memories within session boundaries using SQL WHERE clauses
+- FR-049: Provide summary of deletion operation
+- FR-050: Log bulk deletion operations for audit trail
+- FR-051: Use session defaults when explicit session parameters are not provided
+- **FR-052**: All bulk deletion operations must use transactional session-scoped connections
 
 ### 3.3 History and Analytics Tools
 
@@ -233,11 +274,12 @@ The system supports a hierarchical approach to session context with the followin
 - Operation types (add, update, delete, search)
 
 **Functional Requirements**:
-- FR-047: Track all memory operations in SQLite audit tables
-- FR-048: Include operation type, timestamp, and affected memory IDs
-- FR-049: Support filtering by session identifiers using SQL queries
-- FR-050: Provide operation status and error details
-- FR-051: Use session defaults when explicit session parameters are not provided
+- FR-053: Track all memory operations in SQLite audit tables
+- FR-054: Include operation type, timestamp, and affected memory IDs
+- FR-055: Support filtering by session identifiers using SQL queries
+- FR-056: Provide operation status and error details
+- FR-057: Use session defaults when explicit session parameters are not provided
+- **FR-058**: All history operations must use session-scoped database connections
 
 #### 3.3.2 GetStats Tool
 **Tool Name**: `memory_get_stats`
@@ -253,11 +295,12 @@ The system supports a hierarchical approach to session context with the followin
 - Operation frequency and performance metrics
 
 **Functional Requirements**:
-- FR-052: Calculate memory count per session using SQL aggregate functions
-- FR-053: Provide storage usage statistics from SQLite database size
-- FR-054: Include operation performance metrics from audit tables
-- FR-055: Support session-level analytics using SQL GROUP BY operations
-- FR-056: Use session defaults when explicit session parameters are not provided
+- FR-059: Calculate memory count per session using SQL aggregate functions
+- FR-060: Provide storage usage statistics from SQLite database size
+- FR-061: Include operation performance metrics from audit tables
+- FR-062: Support session-level analytics using SQL GROUP BY operations
+- FR-063: Use session defaults when explicit session parameters are not provided
+- **FR-064**: All statistics operations must use session-scoped database connections
 
 ## 4. Non-Functional Requirements
 
@@ -268,30 +311,42 @@ The system supports a hierarchical approach to session context with the followin
 - **NFR-004**: Vector embeddings must be cached to reduce API costs
 - **NFR-005**: SQLite database must be optimized with appropriate indexes and PRAGMA settings
 - **NFR-006**: Integer IDs must provide better performance than UUIDs for LLM operations
+- **NFR-007**: Database session creation must complete within 100ms under normal conditions
+- **NFR-008**: Session disposal must complete within 500ms including WAL checkpoint
+- **NFR-009**: Connection leak detection must identify leaks within 1 minute
 
 ### 4.2 Reliability Requirements
-- **NFR-007**: System must gracefully handle LLM provider API failures
-- **NFR-008**: SQLite database failures must not cause data loss
-- **NFR-009**: Invalid input must be validated and rejected with clear error messages
-- **NFR-010**: All operations must support cancellation tokens
-- **NFR-011**: SQLite transactions must ensure data consistency
-- **NFR-012**: Session defaults must be reliably maintained throughout MCP connection lifetime
+- **NFR-010**: System must gracefully handle LLM provider API failures
+- **NFR-011**: SQLite database failures must not cause data loss
+- **NFR-012**: Invalid input must be validated and rejected with clear error messages
+- **NFR-013**: All operations must support cancellation tokens
+- **NFR-014**: SQLite transactions must ensure data consistency
+- **NFR-015**: Session defaults must be reliably maintained throughout MCP connection lifetime
+- **NFR-016**: Database sessions must guarantee resource cleanup on disposal
+- **NFR-017**: WAL checkpoint operations must complete successfully during session disposal
+- **NFR-018**: Connection failures must trigger automatic retry with exponential backoff
+- **NFR-019**: Test isolation must be 100% reliable with no cross-test interference
 
 ### 4.3 Security Requirements
-- **NFR-013**: Session isolation must be strictly enforced through SQL queries
-- **NFR-014**: Memory access must be validated against session identifiers
-- **NFR-015**: Sensitive data must be handled according to privacy requirements
-- **NFR-016**: API keys and configuration must be securely managed
-- **NFR-017**: SQLite database file must be protected with appropriate file permissions
-- **NFR-018**: HTTP headers containing session defaults must be validated and sanitized
+- **NFR-020**: Session isolation must be strictly enforced through SQL queries
+- **NFR-021**: Memory access must be validated against session identifiers
+- **NFR-022**: Sensitive data must be handled according to privacy requirements
+- **NFR-023**: API keys and configuration must be securely managed
+- **NFR-024**: SQLite database file must be protected with appropriate file permissions
+- **NFR-025**: HTTP headers containing session defaults must be validated and sanitized
+- **NFR-026**: Database connections must use parameterized queries to prevent SQL injection
+- **NFR-027**: Connection strings must be securely stored and encrypted where necessary
 
 ### 4.4 Monitoring Requirements
-- **NFR-019**: All operations must be logged with appropriate detail levels
-- **NFR-020**: Performance metrics must be tracked and available
-- **NFR-021**: Error rates and failure patterns must be monitored
-- **NFR-022**: LLM provider usage and costs must be tracked
-- **NFR-023**: SQLite database performance metrics must be monitored
-- **NFR-024**: Session default usage and override patterns must be tracked
+- **NFR-028**: All operations must be logged with appropriate detail levels
+- **NFR-029**: Performance metrics must be tracked and available
+- **NFR-030**: Error rates and failure patterns must be monitored
+- **NFR-031**: LLM provider usage and costs must be tracked
+- **NFR-032**: SQLite database performance metrics must be monitored
+- **NFR-033**: Session default usage and override patterns must be tracked
+- **NFR-034**: Database connection lifecycle must be monitored and logged
+- **NFR-035**: Connection leak detection must be implemented with alerting
+- **NFR-036**: WAL checkpoint frequency and performance must be monitored
 
 ## 5. Integration Requirements
 
@@ -306,18 +361,20 @@ The system supports a hierarchical approach to session context with the followin
 - **INT-006**: Integrate with SQLite using Microsoft.Data.Sqlite
 - **INT-007**: Load and configure sqlite-vec extension for vector operations
 - **INT-008**: Configure FTS5 for full-text search capabilities
-- **INT-009**: Implement connection pooling and retry logic for SQLite
+- **INT-009**: Implement Database Session Pattern for connection management
 - **INT-010**: Support database creation and schema migration
 - **INT-011**: Implement backup and recovery mechanisms
 - **INT-012**: Use integer primary keys for optimal performance and LLM compatibility
+- **INT-013**: Implement session factory pattern for production and test environments
+- **INT-014**: Support WAL mode with proper checkpoint management
 
 ### 5.3 MCP Protocol Integration
-- **INT-013**: Implement SSE-based MCP server transport
-- **INT-014**: Support standard MCP tool discovery and listing
-- **INT-015**: Handle MCP client connections and disconnections
-- **INT-016**: Provide proper MCP error responses and status codes
-- **INT-017**: Process HTTP headers for session defaults during connection establishment
-- **INT-018**: Support session initialization through dedicated MCP tool
+- **INT-015**: Implement SSE-based MCP server transport
+- **INT-016**: Support standard MCP tool discovery and listing
+- **INT-017**: Handle MCP client connections and disconnections
+- **INT-018**: Provide proper MCP error responses and status codes
+- **INT-019**: Process HTTP headers for session defaults during connection establishment
+- **INT-020**: Support session initialization through dedicated MCP tool
 
 ## 6. Data Requirements
 
@@ -345,6 +402,7 @@ The system supports a hierarchical approach to session context with the followin
 - **DATA-017**: Prompt templates must be customizable
 - **DATA-018**: SQLite PRAGMA settings must be configurable for performance tuning
 - **DATA-019**: Session default policies must be configurable
+- **DATA-020**: Database session configuration must support production and test environments
 
 ## 7. Error Handling Requirements
 
@@ -362,13 +420,17 @@ The system supports a hierarchical approach to session context with the followin
 - **ERR-009**: Network timeouts must be handled gracefully
 - **ERR-010**: Rate limiting must be respected and handled appropriately
 - **ERR-011**: sqlite-vec extension loading failures must be handled gracefully
+- **ERR-012**: Database session creation failures must be retried with backoff
+- **ERR-013**: Connection disposal failures must be logged but not block operations
 
 ### 7.3 Data Consistency
-- **ERR-012**: Concurrent access conflicts must be detected and resolved using SQLite transactions
-- **ERR-013**: Partial failures must be rolled back appropriately using SQLite transactions
-- **ERR-014**: Data corruption must be detected and reported using SQLite integrity checks
-- **ERR-015**: Inconsistent state must trigger recovery procedures
-- **ERR-016**: Session default conflicts must be resolved with clear precedence rules
+- **ERR-014**: Concurrent access conflicts must be detected and resolved using SQLite transactions
+- **ERR-015**: Partial failures must be rolled back appropriately using SQLite transactions
+- **ERR-016**: Data corruption must be detected and reported using SQLite integrity checks
+- **ERR-017**: Inconsistent state must trigger recovery procedures
+- **ERR-018**: Session default conflicts must be resolved with clear precedence rules
+- **ERR-019**: Database session disposal must handle WAL checkpoint failures gracefully
+- **ERR-020**: Connection leak detection must trigger alerts and cleanup procedures
 
 ## 8. Testing Requirements
 
@@ -380,22 +442,29 @@ The system supports a hierarchical approach to session context with the followin
 - **TEST-005**: SQLite operations must be tested with in-memory databases
 - **TEST-006**: Session default handling must be thoroughly tested
 - **TEST-007**: HTTP header processing must be validated in tests
+- **TEST-008**: Database session lifecycle must be tested with proper cleanup validation
+- **TEST-009**: Connection leak detection must be tested and validated
+- **TEST-010**: WAL checkpoint operations must be tested in session disposal
 
 ### 8.2 Integration Testing
-- **TEST-008**: End-to-end MCP tool invocation must be tested
-- **TEST-009**: Real LLM provider integration must be validated
-- **TEST-010**: SQLite vector and text search operations must be tested with real data
-- **TEST-011**: Performance benchmarks must be established for SQLite operations
-- **TEST-012**: Session default precedence must be tested across all tools
-- **TEST-013**: Integer ID generation and usage must be validated
+- **TEST-011**: End-to-end MCP tool invocation must be tested
+- **TEST-012**: Real LLM provider integration must be validated
+- **TEST-013**: SQLite vector and text search operations must be tested with real data
+- **TEST-014**: Performance benchmarks must be established for SQLite operations
+- **TEST-015**: Session default precedence must be tested across all tools
+- **TEST-016**: Integer ID generation and usage must be validated
+- **TEST-017**: Database session pattern must be tested with concurrent operations
+- **TEST-018**: Test isolation must be validated with parallel test execution
 
 ### 8.3 Load Testing
-- **TEST-014**: Concurrent operation handling must be tested
-- **TEST-015**: Memory usage under load must be validated
-- **TEST-016**: Provider rate limiting must be tested
-- **TEST-017**: System stability under stress must be verified
-- **TEST-018**: SQLite database performance under concurrent access must be tested
-- **TEST-019**: Session default caching performance must be validated
+- **TEST-019**: Concurrent operation handling must be tested
+- **TEST-020**: Memory usage under load must be validated
+- **TEST-021**: Provider rate limiting must be tested
+- **TEST-022**: System stability under stress must be verified
+- **TEST-023**: SQLite database performance under concurrent access must be tested
+- **TEST-024**: Session default caching performance must be validated
+- **TEST-025**: Database session creation and disposal performance must be benchmarked
+- **TEST-026**: Connection leak prevention must be tested under high load
 
 ## 9. Success Criteria
 
@@ -407,6 +476,8 @@ The system supports a hierarchical approach to session context with the followin
 - Vector search and full-text search are working effectively
 - Session defaults work seamlessly across all tools
 - Integer IDs provide better LLM integration than UUIDs
+- Database Session Pattern eliminates connection management issues
+- Test isolation is 100% reliable with automatic cleanup
 
 ### 9.2 Quality Success
 - Code coverage exceeds 80% for core functionality
@@ -415,6 +486,9 @@ The system supports a hierarchical approach to session context with the followin
 - Security requirements are validated and enforced
 - SQLite database operations are reliable and performant
 - Session default handling is robust and reliable
+- Database session pattern has >95% test coverage
+- No connection leaks detected in stress testing
+- All tests pass reliably without file locking issues
 
 ### 9.3 Integration Success
 - MCP server can be discovered and used by MCP clients
@@ -423,6 +497,8 @@ The system supports a hierarchical approach to session context with the followin
 - SQLite storage operations are reliable and performant
 - Vector and text search provide accurate and fast results
 - HTTP headers and session initialization work as expected
+- Database sessions provide reliable connection management
+- Test environment provides complete isolation between runs
 
 ## 10. Future Considerations
 
@@ -432,6 +508,7 @@ The system supports a hierarchical approach to session context with the followin
 - Graph-based memory relationships using SQLite recursive CTEs
 - Custom memory processing pipelines
 - Enhanced session management with role-based access control
+- Database session pooling optimization for high-throughput scenarios
 
 ### 10.2 Scalability
 - SQLite database optimization for large datasets
@@ -439,5 +516,6 @@ The system supports a hierarchical approach to session context with the followin
 - Read replicas for scaling read operations
 - Backup and archival strategies for long-term storage
 - Horizontal scaling of session default management
+- Database session factory optimization for multi-tenant scenarios
 
-This functional requirements document provides the foundation for implementing a sophisticated Memory MCP server that uses SQLite as the primary storage solution, leveraging sqlite-vec for vector operations and FTS5 for full-text search while integrating with existing workspace infrastructure. The system uses integer IDs for optimal LLM integration and supports flexible session default management through HTTP headers and session initialization. 
+This enhanced functional requirements document provides the foundation for implementing a sophisticated Memory MCP server that uses SQLite as the primary storage solution with the Database Session Pattern for reliable connection management. The system leverages sqlite-vec for vector operations and FTS5 for full-text search while integrating with existing workspace infrastructure, ensuring robust resource management and complete test isolation. 

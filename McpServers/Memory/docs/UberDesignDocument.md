@@ -2,7 +2,9 @@
 
 ## Executive Summary
 
-This document presents the comprehensive technical design for a Memory MCP (Model Context Protocol) server implemented in C# (.NET 9.0). The system leverages SQLite as the primary storage solution with sqlite-vec extension for vector operations and FTS5 for full-text search, providing sophisticated memory management capabilities through the MCP protocol while integrating with existing workspace LLM providers. The system uses integer IDs for optimal LLM integration and supports flexible session default management.
+This document presents the comprehensive technical design for a Memory MCP (Model Context Protocol) server implemented in C# (.NET 9.0). The system leverages SQLite as the primary storage solution with sqlite-vec extension for vector operations and FTS5 for full-text search, enhanced with a robust Database Session Pattern for reliable connection management. The system provides sophisticated memory management capabilities through the MCP protocol while integrating with existing workspace LLM providers, using integer IDs for optimal LLM integration and supporting flexible session default management.
+
+**ARCHITECTURE ENHANCEMENT**: This design has been significantly enhanced with a Database Session Pattern that ensures reliable SQLite connection lifecycle management, eliminates file locking issues, provides proper resource cleanup, and enables robust test isolation.
 
 ## 1. System Architecture Overview
 
@@ -31,11 +33,11 @@ This document presents the comprehensive technical design for a Memory MCP (Mode
 │  │   Engine    │  │   Engine    │  │   Factory           │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                Storage Layer                                │
+│                Storage Layer (Enhanced)                     │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   SQLite    │  │ sqlite-vec  │  │      FTS5           │  │
-│  │   Manager   │  │  Vector     │  │   Full-Text         │  │
-│  │             │  │  Storage    │  │    Search           │  │
+│  │  Database   │  │   SQLite    │  │      FTS5           │  │
+│  │  Session    │  │ with        │  │   Full-Text         │  │
+│  │  Pattern    │  │ sqlite-vec  │  │    Search           │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                Infrastructure Layer                         │
@@ -46,7 +48,36 @@ This document presents the comprehensive technical design for a Memory MCP (Mode
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 1.2 Core Design Principles
+### 1.2 Database Session Pattern Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                Database Session Pattern                     │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ISqliteSession│  │ISqliteSession│  │   Session          │  │
+│  │ Interface   │  │  Factory    │  │  Implementations    │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Production Implementation                     │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ SqliteSession│  │SqliteSession│  │   Connection        │  │
+│  │             │  │  Factory    │  │   Lifecycle         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Test Implementation                          │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │TestSqlite   │  │TestSqlite   │  │   Test Database     │  │
+│  │ Session     │  │SessionFactory│  │   Isolation         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 1.3 Core Design Principles
+
+**Database Session Pattern**: Encapsulated SQLite connection lifecycle management ensuring proper resource cleanup, test isolation, and production reliability.
 
 **SQLite-First Architecture**: Leverage SQLite's advanced capabilities including vector search (sqlite-vec), full-text indexing (FTS5), and graph traversals (recursive CTEs) for all storage needs.
 
@@ -54,9 +85,9 @@ This document presents the comprehensive technical design for a Memory MCP (Mode
 
 **Workspace Integration**: Seamless integration with existing OpenAI and Anthropic providers in the workspace, avoiding duplication of LLM infrastructure.
 
-**Session Isolation**: Strict multi-tenant data separation using SQL-based session boundaries and access control.
+**Session Isolation**: Strict multi-tenant data separation using SQL-based session boundaries and access control with session-scoped database operations.
 
-**Production Readiness**: Comprehensive error handling, monitoring, performance optimization, and operational considerations.
+**Production Readiness**: Comprehensive error handling, monitoring, performance optimization, and operational considerations with reliable resource management.
 
 **LLM-Optimized Design**: Use integer IDs instead of UUIDs for better LLM comprehension, token efficiency, and easier reference in prompts.
 
@@ -64,9 +95,134 @@ This document presents the comprehensive technical design for a Memory MCP (Mode
 
 ## 2. Component Design
 
-### 2.1 MCP Protocol Layer
+### 2.1 Database Session Pattern Layer
 
-#### 2.1.1 SSE Server Transport
+#### 2.1.1 Core Session Interfaces
+**Purpose**: Provides reliable SQLite connection lifecycle management with proper resource cleanup
+
+**Key Interfaces**:
+```csharp
+public interface ISqliteSession : IAsyncDisposable
+{
+    Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation);
+    Task<T> ExecuteInTransactionAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> operation);
+    Task ExecuteAsync(Func<SqliteConnection, Task> operation);
+    Task ExecuteInTransactionAsync(Func<SqliteConnection, SqliteTransaction, Task> operation);
+    Task<SessionHealthStatus> GetHealthAsync();
+}
+
+public interface ISqliteSessionFactory
+{
+    Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default);
+    Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default);
+    Task InitializeDatabaseAsync(CancellationToken cancellationToken = default);
+    Task<SessionPerformanceMetrics> GetMetricsAsync();
+}
+```
+
+#### 2.1.2 Production Session Implementation
+**Purpose**: Production-ready session implementation with connection pooling and monitoring
+
+**Implementation Pattern**:
+```csharp
+public class SqliteSession : ISqliteSession
+{
+    private readonly string _connectionString;
+    private readonly ILogger<SqliteSession> _logger;
+    private SqliteConnection? _connection;
+    private bool _disposed;
+
+    public async Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation)
+    {
+        await EnsureConnectionAsync();
+        try
+        {
+            return await operation(_connection!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error executing database operation");
+            throw;
+        }
+    }
+
+    public async Task<T> ExecuteInTransactionAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> operation)
+    {
+        await EnsureConnectionAsync();
+        using var transaction = _connection!.BeginTransaction();
+        try
+        {
+            var result = await operation(_connection, transaction);
+            transaction.Commit();
+            return result;
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_connection != null && !_disposed)
+        {
+            // Force WAL checkpoint before closing
+            await ExecuteAsync(async conn =>
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+                await cmd.ExecuteNonQueryAsync();
+                return true;
+            });
+            
+            await _connection.DisposeAsync();
+            _connection = null;
+        }
+        _disposed = true;
+    }
+}
+```
+
+#### 2.1.3 Test Session Implementation
+**Purpose**: Test-specific session implementation with complete isolation and automatic cleanup
+
+**Implementation Pattern**:
+```csharp
+public class TestSqliteSession : SqliteSession
+{
+    private readonly string _databasePath;
+
+    public override async ValueTask DisposeAsync()
+    {
+        await base.DisposeAsync();
+        
+        // Clean up test database files
+        try
+        {
+            if (File.Exists(_databasePath))
+            {
+                File.Delete(_databasePath);
+            }
+            
+            // Clean up WAL and SHM files
+            var walPath = _databasePath + "-wal";
+            var shmPath = _databasePath + "-shm";
+            
+            if (File.Exists(walPath)) File.Delete(walPath);
+            if (File.Exists(shmPath)) File.Delete(shmPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to clean up test database files");
+        }
+    }
+}
+```
+
+### 2.2 MCP Protocol Layer
+
+#### 2.2.1 SSE Server Transport
 **Purpose**: Implements MCP server-sent events transport protocol with session default support
 
 **Key Components**:
@@ -140,7 +296,7 @@ public class HeaderProcessor : IHeaderProcessor
 }
 ```
 
-#### 2.1.2 Tool Registry and Router
+#### 2.2.2 Tool Registry and Router
 **Purpose**: Manages MCP tool registration and request routing with session context resolution
 
 **Key Components**:
@@ -155,6 +311,7 @@ public class HeaderProcessor : IHeaderProcessor
 public class AddMemoryTool : IMcpTool
 {
     private readonly ISessionContextResolver _sessionResolver;
+    private readonly ISqliteSessionFactory _sessionFactory;
     
     public string Name => "memory_add";
     public string Description => "Adds new memories from conversation messages";
@@ -166,7 +323,11 @@ public class AddMemoryTool : IMcpTool
         // Resolve session context using precedence rules
         var sessionContext = await _sessionResolver.ResolveSessionAsync(parameters);
         
-        // Tool implementation with resolved session
+        // Execute with database session
+        using var dbSession = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        // Tool implementation with resolved session and database session
+        return await ProcessMemoryAdditionAsync(dbSession, sessionContext, parameters);
     }
 }
 ```
@@ -209,10 +370,12 @@ public class SessionContextResolver : ISessionContextResolver
         {
             context.UserId = userIdParam.GetString();
         }
+
         if (parameters.TryGetProperty("agent_id", out var agentIdParam))
         {
             context.AgentId = agentIdParam.GetString();
         }
+
         if (parameters.TryGetProperty("run_id", out var runIdParam))
         {
             context.RunId = runIdParam.GetString();
@@ -223,9 +386,9 @@ public class SessionContextResolver : ISessionContextResolver
 }
 ```
 
-### 2.2 Memory Core Layer
+### 2.3 Memory Core Layer
 
-#### 2.2.1 Memory Manager
+#### 2.3.1 Memory Manager
 **Purpose**: Primary orchestration layer for memory operations with integer ID management
 
 **Key Responsibilities**:
@@ -282,7 +445,7 @@ public class MemoryIdGenerator
 }
 ```
 
-#### 2.2.2 Session Management
+#### 2.3.2 Session Management
 **Purpose**: Handles multi-tenant session isolation and default management
 
 **Key Features**:
@@ -355,9 +518,9 @@ public class SessionManager : ISessionManager
 }
 ```
 
-### 2.3 Intelligence Layer
+### 2.4 Intelligence Layer
 
-#### 2.3.1 Memory Decision Engine
+#### 2.4.1 Memory Decision Engine
 **Purpose**: AI-powered decision making for memory operations with integer ID mapping
 
 **Decision Types**:
@@ -424,9 +587,9 @@ Return operations in JSON format with integer IDs.";
 }
 ```
 
-### 2.4 Storage Layer
+### 2.5 Storage Layer
 
-#### 2.4.1 Vector Storage (sqlite-vec) with Integer IDs
+#### 2.5.1 Vector Storage (sqlite-vec) with Integer IDs
 **Purpose**: Handles vector embeddings storage and similarity search using integer primary keys
 
 **Database Schema**:
@@ -504,7 +667,7 @@ public async Task<IEnumerable<MemorySearchResult>> SearchVectorAsync(
 }
 ```
 
-#### 2.4.2 Full-Text Search (FTS5) with Integer References
+#### 2.5.2 Full-Text Search (FTS5) with Integer References
 **Purpose**: Provides full-text search capabilities for memory content with integer ID references
 
 **FTS5 Schema**:

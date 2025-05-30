@@ -82,12 +82,21 @@ public class SessionContext
     {
         var parts = new List<string> { UserId };
         
-        // Always add agent part (empty string if null) to maintain consistent format
-        parts.Add(string.IsNullOrEmpty(AgentId) ? "" : AgentId);
-        
-        // Only add run part if it exists
-        if (!string.IsNullOrEmpty(RunId)) 
+        // Only add agent part if there's actually an agent ID
+        if (!string.IsNullOrEmpty(AgentId))
+        {
+            parts.Add(AgentId);
+            
+            // Only add run part if it exists
+            if (!string.IsNullOrEmpty(RunId)) 
+                parts.Add(RunId);
+        }
+        else if (!string.IsNullOrEmpty(RunId))
+        {
+            // Special case: user and run but no agent
+            parts.Add(""); // Empty agent part
             parts.Add(RunId);
+        }
         
         return string.Join("/", parts);
     }

@@ -21,7 +21,7 @@ public class MockMemoryRepository : IMemoryRepository
 
     // Tracking for verification
     public List<string> MethodCalls { get; } = new();
-    public Dictionary<string, object> LastCallParameters { get; } = new();
+    public Dictionary<string, object?> LastCallParameters { get; } = new();
 
     public Task<Memory> AddAsync(string content, SessionContext sessionContext, Dictionary<string, object>? metadata = null, CancellationToken cancellationToken = default)
     {

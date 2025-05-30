@@ -4,6 +4,8 @@
 
 This document outlines the comprehensive execution plan for implementing the Memory MCP server in C#. The plan is structured in phases to ensure systematic development, testing, and deployment while maintaining quality and meeting all functional requirements.
 
+**IMPORTANT UPDATE**: This execution plan has been updated to include a critical new phase for implementing the Database Session Pattern architecture to address SQLite connection management issues identified during development. This new architecture ensures reliable connection handling, proper resource cleanup, and robust test isolation.
+
 ## 1. Project Structure and Timeline
 
 ### 1.1 Development Phases
@@ -14,31 +16,38 @@ This document outlines the comprehensive execution plan for implementing the Mem
 - Basic MCP protocol implementation
 - Session management foundation
 
-**Phase 2: Core Memory Operations (Week 3-4)**
-- Memory storage and retrieval
+**Phase 1.5: Database Session Pattern Implementation (Week 2.5-3.5)**
+- **NEW PHASE**: Critical architecture update for reliable SQLite connection management
+- Implementation of Database Session Pattern
+- Migration of existing code to new architecture
+- Comprehensive testing of connection lifecycle
+- Test environment isolation improvements
+
+**Phase 2: Core Memory Operations (Week 4-5)**
+- Memory storage and retrieval using new session pattern
 - Integer ID management
 - Basic search functionality
 - Session isolation implementation
 
-**Phase 3: Intelligence Layer (Week 5-6)**
+**Phase 3: Intelligence Layer (Week 6-7)**
 - LLM provider integration
 - Fact extraction engine
 - Memory decision engine
 - Advanced search capabilities
 
-**Phase 4: Session Defaults and Advanced Features (Week 7-8)**
+**Phase 4: Session Defaults and Advanced Features (Week 8-9)**
 - HTTP header processing
 - Session initialization
 - Advanced MCP tools
 - Performance optimization
 
-**Phase 5: Testing and Quality Assurance (Week 9-10)**
-- Comprehensive testing suite
+**Phase 5: Testing and Quality Assurance (Week 10-11)**
+- Comprehensive testing suite with session pattern validation
 - Integration testing
 - Performance testing
 - Security validation
 
-**Phase 6: Documentation and Deployment (Week 11-12)**
+**Phase 6: Documentation and Deployment (Week 12-13)**
 - API documentation
 - Deployment configuration
 - Monitoring setup
@@ -47,11 +56,108 @@ This document outlines the comprehensive execution plan for implementing the Mem
 ### 1.2 Key Milestones
 
 - **M1**: Basic SQLite infrastructure working (End of Week 1)
-- **M2**: Core memory operations functional (End of Week 3)
-- **M3**: LLM integration complete (End of Week 5)
-- **M4**: Session defaults implemented (End of Week 7)
-- **M5**: All tests passing (End of Week 9)
-- **M6**: Production ready deployment (End of Week 11)
+- **M1.5**: Database Session Pattern implemented and tested (End of Week 3.5) **NEW MILESTONE**
+- **M2**: Core memory operations functional with session pattern (End of Week 5)
+- **M3**: LLM integration complete (End of Week 7)
+- **M4**: Session defaults implemented (End of Week 9)
+- **M5**: All tests passing with robust connection management (End of Week 11)
+- **M6**: Production ready deployment (End of Week 13)
+
+## 1.5. Phase 1.5: Database Session Pattern Implementation
+
+### 1.5.1 Architecture Overview
+
+**Problem Statement**: 
+The current SQLite connection management approach leads to file locking issues during tests, particularly with WAL mode, connection pooling conflicts, and improper resource disposal. This causes test failures and potential production reliability issues.
+
+**Solution**: 
+Implement a Database Session Pattern that encapsulates connection lifecycle management, ensures proper resource cleanup, and provides test-friendly isolation mechanisms.
+
+### 1.5.2 Core Components to Implement
+
+#### ISqliteSession Interface
+```csharp
+public interface ISqliteSession : IAsyncDisposable
+{
+    Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation);
+    Task<T> ExecuteInTransactionAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> operation);
+    Task ExecuteAsync(Func<SqliteConnection, Task> operation);
+    Task ExecuteInTransactionAsync(Func<SqliteConnection, SqliteTransaction, Task> operation);
+}
+```
+
+#### ISqliteSessionFactory Interface
+```csharp
+public interface ISqliteSessionFactory
+{
+    Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default);
+    Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default);
+}
+```
+
+### 1.5.3 Implementation Tasks
+
+**Week 2.5: Core Session Implementation**
+1. Create ISqliteSession and ISqliteSessionFactory interfaces
+2. Implement SqliteSession with proper disposal and WAL checkpoint handling
+3. Implement SqliteSessionFactory for production use
+4. Create TestSqliteSessionFactory for test isolation
+5. Add comprehensive error handling and retry logic
+
+**Week 3: Repository Migration**
+1. Update all repository classes to use ISqliteSessionFactory
+2. Migrate GraphRepository to use session pattern
+3. Update MemoryRepository to use session pattern
+4. Remove direct SqliteManager dependencies from repositories
+5. Implement proper transaction scoping through sessions
+
+**Week 3.5: Service Layer Integration**
+1. Update service layer dependency injection to use ISqliteSessionFactory
+2. Migrate all database operations to use session pattern
+3. Update error handling to work with session lifecycle
+4. Implement session-based performance monitoring
+5. Complete testing and validation of new architecture
+
+### 1.5.4 Migration Strategy
+
+**Backward Compatibility**:
+- Maintain existing SqliteManager for gradual migration
+- Implement adapter pattern for smooth transition
+- Ensure no breaking changes to public APIs
+- Provide migration utilities for existing data
+
+**Testing Strategy**:
+- Comprehensive unit tests for session implementations
+- Integration tests with real SQLite databases
+- Performance benchmarks comparing old vs new approach
+- Stress testing for connection leak detection
+- Test isolation validation
+
+**Risk Mitigation**:
+- Parallel implementation allowing rollback if needed
+- Extensive testing before migration
+- Performance monitoring during transition
+- Gradual rollout with feature flags
+
+### 1.5.5 Expected Benefits
+
+**Reliability Improvements**:
+- Eliminates SQLite file locking issues in tests
+- Proper WAL mode handling and cleanup
+- Guaranteed connection disposal and resource cleanup
+- Reduced connection pool conflicts
+
+**Test Environment Benefits**:
+- Deterministic test cleanup procedures
+- Complete test isolation between runs
+- Connection leak detection and prevention
+- Faster test execution with proper resource management
+
+**Production Benefits**:
+- More reliable connection management
+- Better error handling and recovery
+- Improved performance monitoring
+- Reduced resource leaks and memory usage
 
 ## 2. Phase 1: Foundation and Infrastructure
 
@@ -65,7 +171,7 @@ This document outlines the comprehensive execution plan for implementing the Mem
 
 **Deliverables**:
 - `MemoryServer.csproj` with all required dependencies
-- `Program.cs` with proper service registration
+- `Program.cs` with proper service registration including session factory
 - `appsettings.json` with configuration schema
 - Basic logging configuration
 
@@ -87,13 +193,14 @@ dotnet add package System.Text.Json
 dotnet add package Microsoft.Extensions.Caching.Memory
 ```
 
-#### Step 1.2: Basic Service Registration
+#### Step 1.2: Basic Service Registration with Session Factory
 ```csharp
 // Program.cs
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services
+// Add services with new session pattern
 builder.Services.AddMemoryMcpServer(builder.Configuration);
+builder.Services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
 builder.Services.AddLogging();
 builder.Services.AddMemoryCache();
 
@@ -106,203 +213,196 @@ app.MapGet("/health", () => "Healthy");
 app.Run();
 ```
 
-### 2.2 SQLite Database Infrastructure
+### 2.2 SQLite Database Infrastructure with Session Pattern
 
 **Tasks**:
-1. Implement SQLiteManager for connection management
+1. Implement Database Session Pattern interfaces and implementations
 2. Create database schema with integer IDs
-3. Set up sqlite-vec extension loading
-4. Implement database initialization and migration
+3. Set up sqlite-vec extension loading through sessions
+4. Implement database initialization and migration with session management
 
 **Deliverables**:
-- `SqliteManager.cs` with connection pooling
+- `ISqliteSession.cs` and `ISqliteSessionFactory.cs` interfaces
+- `SqliteSession.cs` and `SqliteSessionFactory.cs` implementations
+- `TestSqliteSessionFactory.cs` for test isolation
 - Database schema SQL scripts
-- Extension loading mechanism
-- Migration system
+- Session-based extension loading mechanism
+- Migration system using session pattern
 
 **Implementation Steps**:
 
-#### Step 2.1: SQLiteManager Implementation
+#### Step 2.1: Database Session Pattern Implementation
 ```csharp
-public class SqliteManager : IDisposable
+public class SqliteSession : ISqliteSession
 {
     private readonly string _connectionString;
-    private readonly ILogger<SqliteManager> _logger;
-    private readonly SemaphoreSlim _connectionSemaphore;
+    private readonly ILogger<SqliteSession> _logger;
+    private SqliteConnection? _connection;
+    private bool _disposed;
 
-    public async Task<SqliteConnection> GetConnectionAsync(CancellationToken cancellationToken = default)
+    public async Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation)
     {
-        await _connectionSemaphore.WaitAsync(cancellationToken);
-        
+        await EnsureConnectionAsync();
+        return await operation(_connection!);
+    }
+
+    public async Task<T> ExecuteInTransactionAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> operation)
+    {
+        await EnsureConnectionAsync();
+        using var transaction = _connection!.BeginTransaction();
         try
         {
-            var connection = new SqliteConnection(_connectionString);
-            await connection.OpenAsync(cancellationToken);
-            
-            // Enable extensions and load sqlite-vec
-            connection.EnableExtensions(true);
-            connection.LoadExtension("vec0");
-            
-            return connection;
+            var result = await operation(_connection, transaction);
+            transaction.Commit();
+            return result;
         }
         catch
         {
-            _connectionSemaphore.Release();
+            transaction.Rollback();
             throw;
         }
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        if (_connection != null && !_disposed)
+        {
+            // Force WAL checkpoint before closing
+            await ExecuteAsync(async conn =>
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+                await cmd.ExecuteNonQueryAsync();
+                return true;
+            });
+            
+            await _connection.DisposeAsync();
+            _connection = null;
+        }
+        _disposed = true;
+    }
+
+    private async Task EnsureConnectionAsync()
+    {
+        if (_connection == null)
+        {
+            _connection = new SqliteConnection(_connectionString);
+            await _connection.OpenAsync();
+            
+            // Enable extensions and load sqlite-vec
+            _connection.EnableExtensions(true);
+            _connection.LoadExtension("vec0");
+        }
+    }
+}
+```
+
+#### Step 2.2: Session Factory Implementation
+```csharp
+public class SqliteSessionFactory : ISqliteSessionFactory
+{
+    private readonly string _connectionString;
+    private readonly ILogger<SqliteSessionFactory> _logger;
+
+    public async Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default)
+    {
+        var session = new SqliteSession(_connectionString, _logger);
+        return session;
+    }
+
     public async Task InitializeDatabaseAsync(CancellationToken cancellationToken = default)
     {
-        using var connection = await GetConnectionAsync(cancellationToken);
+        using var session = await CreateSessionAsync(cancellationToken);
         
-        // Execute schema creation scripts
-        await ExecuteSchemaScriptsAsync(connection, cancellationToken);
+        await session.ExecuteAsync(async connection =>
+        {
+            // Execute schema creation scripts
+            await ExecuteSchemaScriptsAsync(connection, cancellationToken);
+            return true;
+        });
     }
 }
 ```
 
-#### Step 2.2: Database Schema Creation
-```sql
--- Create schema.sql
--- ID sequence table for generating unique integers
-CREATE TABLE IF NOT EXISTS memory_id_sequence (
-    id INTEGER PRIMARY KEY AUTOINCREMENT
-);
-
--- Main memories table with integer primary key
-CREATE TABLE IF NOT EXISTS memories (
-    id INTEGER PRIMARY KEY,
-    content TEXT NOT NULL,
-    user_id TEXT,
-    agent_id TEXT,
-    run_id TEXT,
-    metadata TEXT, -- JSON
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    version INTEGER DEFAULT 1
-);
-
--- Vector embeddings using sqlite-vec
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
-    memory_id INTEGER PRIMARY KEY,
-    embedding BLOB
-);
-
--- FTS5 virtual table for full-text search
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-    memory_id UNINDEXED,
-    content,
-    metadata,
-    content='memories',
-    content_rowid='id'
-);
-
--- Session defaults storage
-CREATE TABLE IF NOT EXISTS session_defaults (
-    connection_id TEXT PRIMARY KEY,
-    user_id TEXT,
-    agent_id TEXT,
-    run_id TEXT,
-    metadata TEXT, -- JSON
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id);
-CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_session_defaults_created ON session_defaults(created_at DESC);
-```
-
-### 2.3 Basic MCP Protocol Implementation
-
-**Tasks**:
-1. Implement SSE server transport
-2. Create tool registry and router
-3. Set up MCP message handling
-4. Implement basic tool discovery
-
-**Deliverables**:
-- `McpSseServer.cs` for SSE transport
-- `ToolRegistry.cs` and `ToolRouter.cs`
-- Basic MCP message handlers
-- Tool discovery endpoint
-
-**Implementation Steps**:
-
-#### Step 2.3.1: MCP SSE Server
+#### Step 2.3: Test Session Factory for Isolation
 ```csharp
-public class McpSseServer
+public class TestSqliteSessionFactory : ISqliteSessionFactory
 {
-    private readonly IServiceProvider _serviceProvider;
-    private readonly ILogger<McpSseServer> _logger;
-    private readonly ToolRouter _toolRouter;
+    private readonly string _testDatabasePath;
+    private readonly ILogger<TestSqliteSessionFactory> _logger;
 
-    public async Task HandleConnectionAsync(HttpContext context)
+    public async Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default)
     {
-        context.Response.Headers.Add("Content-Type", "text/event-stream");
-        context.Response.Headers.Add("Cache-Control", "no-cache");
-        context.Response.Headers.Add("Connection", "keep-alive");
-
-        // Process session defaults from headers
-        var sessionDefaults = await ProcessHeadersAsync(context.Request.Headers);
-
-        // Handle MCP messages
-        await ProcessMcpMessagesAsync(context, sessionDefaults);
+        // Create unique database file for each test session
+        var uniqueDbPath = Path.Combine(Path.GetTempPath(), $"test_memory_{Guid.NewGuid()}.db");
+        var connectionString = $"Data Source={uniqueDbPath};Mode=ReadWriteCreate;";
+        
+        var session = new TestSqliteSession(connectionString, _logger, uniqueDbPath);
+        await session.InitializeAsync();
+        return session;
     }
+}
 
-    private async Task ProcessMcpMessagesAsync(HttpContext context, SessionDefaults sessionDefaults)
+public class TestSqliteSession : SqliteSession
+{
+    private readonly string _databasePath;
+
+    public override async ValueTask DisposeAsync()
     {
-        // Implementation for processing MCP messages
-        // Handle tool calls, discovery, etc.
+        await base.DisposeAsync();
+        
+        // Clean up test database file
+        try
+        {
+            if (File.Exists(_databasePath))
+            {
+                File.Delete(_databasePath);
+            }
+            
+            // Clean up WAL and SHM files
+            var walPath = _databasePath + "-wal";
+            var shmPath = _databasePath + "-shm";
+            
+            if (File.Exists(walPath)) File.Delete(walPath);
+            if (File.Exists(shmPath)) File.Delete(shmPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to clean up test database files");
+        }
     }
 }
 ```
 
-### 2.4 Session Management Foundation
+## 3. Phase 2: Core Memory Operations (Updated for Session Pattern)
+
+### 3.1 Integer ID Management with Session Pattern
 
 **Tasks**:
-1. Implement session context models
-2. Create session manager for defaults
-3. Set up HTTP header processing
-4. Implement session validation
-
-**Deliverables**:
-- `SessionContext.cs` and `SessionDefaults.cs` models
-- `SessionManager.cs` for session handling
-- `HeaderProcessor.cs` for HTTP header extraction
-- Session validation utilities
-
-## 3. Phase 2: Core Memory Operations
-
-### 3.1 Integer ID Management
-
-**Tasks**:
-1. Implement MemoryIdGenerator
-2. Create secure ID generation
+1. Implement MemoryIdGenerator using session pattern
+2. Create secure ID generation through sessions
 3. Set up ID validation
 4. Implement ID caching for performance
 
 **Deliverables**:
-- `MemoryIdGenerator.cs` with secure generation
+- `MemoryIdGenerator.cs` with session-based secure generation
 - ID validation utilities
 - Performance optimizations
 
 **Implementation Steps**:
 
-#### Step 3.1.1: Memory ID Generator
+#### Step 3.1.1: Memory ID Generator with Session Pattern
 ```csharp
 public class MemoryIdGenerator
 {
-    private readonly SqliteManager _sqliteManager;
+    private readonly ISqliteSessionFactory _sessionFactory;
     private readonly ILogger<MemoryIdGenerator> _logger;
 
     public async Task<int> GenerateNextIdAsync(CancellationToken cancellationToken = default)
     {
-        using var connection = await _sqliteManager.GetConnectionAsync(cancellationToken);
-        using var transaction = connection.BeginTransaction();
+        using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
         
-        try
+        return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             using var command = connection.CreateCommand();
             command.Transaction = transaction;
@@ -320,59 +420,57 @@ public class MemoryIdGenerator
                 throw new InvalidOperationException("Generated ID is out of acceptable range");
             }
             
-            transaction.Commit();
             return id;
-        }
-        catch
-        {
-            transaction.Rollback();
-            throw;
-        }
+        });
     }
 }
 ```
 
-### 3.2 Basic Memory Storage
+### 3.2 Repository Pattern Updates for Session Management
 
 **Tasks**:
-1. Implement memory data models
-2. Create memory repository
-3. Set up basic CRUD operations
-4. Implement session isolation
+1. Update all repository classes to use ISqliteSessionFactory
+2. Implement session-scoped operations
+3. Remove direct SqliteManager dependencies
+4. Add proper transaction management through sessions
 
 **Deliverables**:
-- `Memory.cs` and related models
-- `MemoryRepository.cs` for data access
-- Basic storage operations
-- Session filtering implementation
+- Updated `GraphRepository.cs` using session pattern
+- Updated `MemoryRepository.cs` using session pattern
+- Session-based transaction management
+- Improved error handling and resource cleanup
 
-### 3.3 Basic Search Functionality
+**Implementation Example**:
+```csharp
+public class GraphRepository : IGraphRepository
+{
+    private readonly ISqliteSessionFactory _sessionFactory;
+    private readonly ILogger<GraphRepository> _logger;
 
-**Tasks**:
-1. Implement vector search with sqlite-vec
-2. Set up FTS5 full-text search
-3. Create hybrid search capability
-4. Implement result ranking
-
-**Deliverables**:
-- Vector search implementation
-- Full-text search functionality
-- Hybrid search algorithm
-- Result ranking and scoring
-
-### 3.4 Core MCP Tools Implementation
-
-**Tasks**:
-1. Implement AddMemory tool
-2. Create SearchMemory tool
-3. Set up GetAllMemories tool
-4. Implement basic error handling
-
-**Deliverables**:
-- `AddMemoryTool.cs`
-- `SearchMemoryTool.cs`
-- `GetAllMemoriesTool.cs`
-- Error handling framework
+    public async Task<int> AddEntityAsync(Entity entity, CancellationToken cancellationToken = default)
+    {
+        using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Generate new ID
+            var id = await GenerateEntityIdAsync(connection, transaction);
+            
+            // Insert entity
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = @"
+                INSERT INTO entities (id, name, type, aliases, user_id, agent_id, run_id, confidence, metadata)
+                VALUES (@id, @name, @type, @aliases, @userId, @agentId, @runId, @confidence, @metadata)";
+            
+            // Add parameters...
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            
+            return id;
+        });
+    }
+}
+```
 
 ## 4. Phase 3: Intelligence Layer
 
@@ -585,9 +683,21 @@ public class MemoryIdGenerator
 - Monitoring dashboards
 - Alert configurations
 
-## 8. Risk Management and Mitigation
+## 8. Risk Management and Mitigation (Updated)
 
 ### 8.1 Technical Risks
+
+**Risk**: Database Session Pattern implementation complexity
+**Mitigation**: Comprehensive testing, gradual migration, rollback capability
+**Timeline Impact**: Additional 1 week for implementation and testing
+
+**Risk**: SQLite connection management issues (RESOLVED)
+**Mitigation**: Database Session Pattern implementation addresses this completely
+**Timeline Impact**: None, built into new Phase 1.5
+
+**Risk**: Performance impact of session pattern
+**Mitigation**: Performance benchmarking, optimization during implementation
+**Timeline Impact**: Potential optimization phase extension
 
 **Risk**: SQLite-vec extension compatibility issues
 **Mitigation**: Early testing with extension, fallback to alternative vector storage
@@ -596,10 +706,6 @@ public class MemoryIdGenerator
 **Risk**: LLM provider API changes
 **Mitigation**: Use existing workspace providers, implement adapter pattern
 **Timeline Impact**: Minimal, existing infrastructure
-
-**Risk**: Performance issues with large datasets
-**Mitigation**: Early performance testing, optimization in Phase 4
-**Timeline Impact**: Potential optimization phase extension
 
 ### 8.2 Integration Risks
 
@@ -621,12 +727,15 @@ public class MemoryIdGenerator
 **Mitigation**: Security review in each phase, dedicated security testing
 **Timeline Impact**: None, built into schedule
 
-## 9. Success Criteria and Validation
+## 9. Success Criteria and Validation (Updated)
 
 ### 9.1 Functional Validation
 
-- [ ] All MCP tools implemented and functional
-- [ ] Session isolation working correctly
+- [ ] Database Session Pattern implemented and working correctly
+- [ ] All SQLite connection issues resolved with proper cleanup
+- [ ] Test isolation working reliably with no file locking issues
+- [ ] All MCP tools implemented and functional with session pattern
+- [ ] Session isolation working correctly with SQLite
 - [ ] Integer IDs providing better LLM integration
 - [ ] Session defaults working via HTTP headers and initialization
 - [ ] Vector and text search providing accurate results
@@ -634,9 +743,12 @@ public class MemoryIdGenerator
 
 ### 9.2 Quality Validation
 
-- [ ] Code coverage > 80%
+- [ ] Database Session Pattern has >95% test coverage
+- [ ] No connection leaks detected in stress testing
+- [ ] All tests pass reliably without file locking issues
+- [ ] Code coverage > 80% overall
 - [ ] All security requirements validated
-- [ ] Performance benchmarks met
+- [ ] Performance benchmarks met with session pattern
 - [ ] Integration tests passing
 - [ ] Documentation complete and accurate
 
@@ -670,36 +782,42 @@ public class MemoryIdGenerator
 - **MCP Specification**: Protocol compliance
 - **Testing Frameworks**: xUnit, Moq, TestContainers
 
-## 11. Delivery Schedule
+## 11. Delivery Schedule (Updated)
 
 ### Week 1-2: Foundation
 - Project setup and infrastructure
-- SQLite integration and schema
+- Basic SQLite integration and schema
 - Basic MCP protocol implementation
 
-### Week 3-4: Core Operations
-- Memory storage and retrieval
-- Integer ID management
-- Basic search functionality
+### Week 2.5-3.5: Database Session Pattern (NEW)
+- Implementation of Database Session Pattern
+- Migration of existing code to new architecture
+- Comprehensive testing and validation
+- Performance optimization
 
-### Week 5-6: Intelligence
-- LLM provider integration
+### Week 4-5: Core Operations (Updated)
+- Memory storage and retrieval using session pattern
+- Integer ID management with sessions
+- Basic search functionality with session isolation
+
+### Week 6-7: Intelligence (Updated)
+- LLM provider integration with session pattern
 - Fact extraction and decision engines
 - Advanced search capabilities
 
-### Week 7-8: Advanced Features
+### Week 8-9: Advanced Features
 - Session defaults implementation
 - Advanced MCP tools
 - Performance optimization
 
-### Week 9-10: Testing
-- Comprehensive testing suite
+### Week 10-11: Testing (Updated)
+- Comprehensive testing suite including session pattern validation
 - Integration and performance testing
 - Security validation
 
-### Week 11-12: Deployment
+### Week 12-13: Deployment (Updated)
 - Documentation completion
 - Deployment configuration
 - Final validation and delivery
 
-This execution plan provides a comprehensive roadmap for implementing the Memory MCP server with clear phases, deliverables, and success criteria. The plan balances feature development with quality assurance and includes appropriate risk mitigation strategies. 
+This updated execution plan provides a comprehensive roadmap for implementing the Memory MCP server with the new Database Session Pattern architecture, ensuring reliable SQLite connection management and robust test isolation. 

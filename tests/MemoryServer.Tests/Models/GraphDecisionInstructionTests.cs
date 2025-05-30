@@ -222,10 +222,10 @@ public class GraphDecisionInstructionTests
 
     #region Test Data
 
-    public static IEnumerable<object[]> ValidInstructionTestCases => new List<object[]>
+    public static IEnumerable<object?[]> ValidInstructionTestCases => new List<object?[]>
     {
         // Format: testName, operation, entityData, relationshipData, confidence, reasoning, sessionContext
-        new object[] 
+        new object?[] 
         { 
             "Add entity instruction", 
             GraphDecisionOperation.ADD,
@@ -235,7 +235,7 @@ public class GraphDecisionInstructionTests
             "New entity detected in conversation",
             new SessionContext { UserId = "user123" }
         },
-        new object[] 
+        new object?[] 
         { 
             "Update relationship instruction", 
             GraphDecisionOperation.UPDATE,
@@ -245,7 +245,7 @@ public class GraphDecisionInstructionTests
             "Relationship confidence updated based on new information",
             new SessionContext { UserId = "user456", AgentId = "agent789" }
         },
-        new object[] 
+        new object?[] 
         { 
             "Delete entity instruction", 
             GraphDecisionOperation.DELETE,
@@ -255,7 +255,7 @@ public class GraphDecisionInstructionTests
             "Entity no longer relevant based on conversation context",
             new SessionContext { UserId = "user789", AgentId = "agent123", RunId = "run456" }
         },
-        new object[] 
+        new object?[] 
         { 
             "No operation instruction", 
             GraphDecisionOperation.NONE,
@@ -278,10 +278,10 @@ public class GraphDecisionInstructionTests
         new object[] { "Extreme positive confidence", GraphDecisionOperation.UPDATE, 999.0f, "Valid reasoning", "Extreme positive confidence" }
     };
 
-    public static IEnumerable<object[]> OperationValidationTestCases => new List<object[]>
+    public static IEnumerable<object?[]> OperationValidationTestCases => new List<object?[]>
     {
         // Format: testName, operation, entityData, relationshipData, expectedValid, expectedIssue
-        new object[] 
+        new object?[] 
         { 
             "Valid ADD entity", 
             GraphDecisionOperation.ADD,
@@ -290,7 +290,7 @@ public class GraphDecisionInstructionTests
             true,
             ""
         },
-        new object[] 
+        new object?[] 
         { 
             "Valid UPDATE relationship", 
             GraphDecisionOperation.UPDATE,
@@ -299,7 +299,7 @@ public class GraphDecisionInstructionTests
             true,
             ""
         },
-        new object[] 
+        new object?[] 
         { 
             "Invalid - both entity and relationship", 
             GraphDecisionOperation.ADD,
@@ -308,7 +308,7 @@ public class GraphDecisionInstructionTests
             false,
             "both entity and relationship"
         },
-        new object[] 
+        new object?[] 
         { 
             "Invalid - no data for ADD", 
             GraphDecisionOperation.ADD,
@@ -317,7 +317,7 @@ public class GraphDecisionInstructionTests
             false,
             "either entity or relationship"
         },
-        new object[] 
+        new object?[] 
         { 
             "Valid NONE operation", 
             GraphDecisionOperation.NONE,
@@ -326,7 +326,7 @@ public class GraphDecisionInstructionTests
             true,
             ""
         },
-        new object[] 
+        new object?[] 
         { 
             "Invalid NONE with data", 
             GraphDecisionOperation.NONE,
@@ -337,10 +337,10 @@ public class GraphDecisionInstructionTests
         }
     };
 
-    public static IEnumerable<object[]> SerializationTestCases => new List<object[]>
+    public static IEnumerable<object?[]> SerializationTestCases => new List<object?[]>
     {
         // Format: testName, instruction
-        new object[] 
+        new object?[] 
         { 
             "Entity instruction", 
             new GraphDecisionInstruction 
@@ -361,7 +361,7 @@ public class GraphDecisionInstructionTests
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
             } 
         },
-        new object[] 
+        new object?[] 
         { 
             "Relationship instruction", 
             new GraphDecisionInstruction 
@@ -383,7 +383,7 @@ public class GraphDecisionInstructionTests
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
             } 
         },
-        new object[] 
+        new object?[] 
         { 
             "NONE operation instruction", 
             new GraphDecisionInstruction 

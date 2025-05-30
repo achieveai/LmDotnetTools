@@ -199,10 +199,10 @@ public class EntityTests
 
     #region Test Data
 
-    public static IEnumerable<object[]> ValidEntityTestCases => new List<object[]>
+    public static IEnumerable<object?[]> ValidEntityTestCases => new List<object?[]>
     {
         // Format: testName, name, type, aliases, userId, agentId, runId, confidence, sourceMemoryIds, metadata
-        new object[] 
+        new object?[] 
         { 
             "Basic entity with minimal data", 
             "John Doe", 
@@ -215,7 +215,7 @@ public class EntityTests
             null, 
             null 
         },
-        new object[] 
+        new object?[] 
         { 
             "Entity with aliases", 
             "New York City", 
@@ -228,7 +228,7 @@ public class EntityTests
             new List<int> { 1, 2, 3 }, 
             null 
         },
-        new object[] 
+        new object?[] 
         { 
             "Entity with full session context", 
             "Machine Learning", 
@@ -241,7 +241,7 @@ public class EntityTests
             new List<int> { 10, 20 }, 
             new Dictionary<string, object> { { "domain", "technology" }, { "complexity", "high" } }
         },
-        new object[] 
+        new object?[] 
         { 
             "Entity with maximum confidence", 
             "Earth", 
@@ -254,7 +254,7 @@ public class EntityTests
             new List<int> { 100, 200, 300, 400 }, 
             new Dictionary<string, object> { { "type", "celestial_body" }, { "habitable", true }, { "radius_km", 6371 } }
         },
-        new object[] 
+        new object?[] 
         { 
             "Entity with minimum confidence", 
             "Uncertain Entity", 
@@ -281,20 +281,20 @@ public class EntityTests
         new object[] { "Extreme positive confidence", "Valid Name", "user123", 999.0f, "Extreme positive confidence" }
     };
 
-    public static IEnumerable<object[]> SessionContextTestCases => new List<object[]>
+    public static IEnumerable<object?[]> SessionContextTestCases => new List<object?[]>
     {
         // Format: testName, userId, agentId, runId, expectedToString
-        new object[] { "User only", "user123", null, null, "user123" },
-        new object[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
-        new object[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
-        new object[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
-        new object[] { "Empty strings treated as null", "user123", "", "", "user123" }
+        new object?[] { "User only", "user123", null, null, "user123" },
+        new object?[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
+        new object?[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
+        new object?[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
+        new object?[] { "Empty strings treated as null", "user123", "", "", "user123" }
     };
 
-    public static IEnumerable<object[]> SerializationTestCases => new List<object[]>
+    public static IEnumerable<object?[]> SerializationTestCases => new List<object?[]>
     {
         // Format: testName, entity
-        new object[] 
+        new object?[] 
         { 
             "Simple entity", 
             new Entity 
@@ -308,7 +308,7 @@ public class EntityTests
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
             } 
         },
-        new object[] 
+        new object?[] 
         { 
             "Entity with aliases and metadata", 
             new Entity 
@@ -327,7 +327,7 @@ public class EntityTests
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
             } 
         },
-        new object[] 
+        new object?[] 
         { 
             "Entity with null collections", 
             new Entity 

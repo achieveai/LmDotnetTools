@@ -824,4 +824,195 @@ Exclude: specific medical record numbers, detailed personal information.
 - Component availability monitoring
 - Dependency health validation
 - Performance threshold alerting
-- Automated recovery procedures 
+- Automated recovery procedures
+
+## Database Session Pattern
+
+### Memory Class Hierarchy
+
+```csharp
+public abstract class MemoryBase
+{
+    protected readonly ISqliteSessionFactory SessionFactory;
+    protected readonly ILlmProvider LlmProvider;
+    protected readonly IEmbeddingProvider EmbeddingProvider;
+    protected readonly ILogger Logger;
+    
+    // Session-based operations with proper resource management
+    protected async Task<T> ExecuteWithSessionAsync<T>(Func<ISqliteSession, Task<T>> operation)
+    {
+        using var session = await SessionFactory.CreateSessionAsync();
+        return await operation(session);
+    }
+}
+
+public class Memory : MemoryBase
+{
+    // Synchronous interface for simple use cases
+    public MemoryResult Add(string content, MemoryContext context = null)
+    {
+        return AddAsync(content, context).GetAwaiter().GetResult();
+    }
+    
+    public async Task<MemoryResult> AddAsync(string content, MemoryContext context = null)
+    {
+        return await ExecuteWithSessionAsync(async session =>
+        {
+            // Implementation using session-scoped database operations
+            return await ProcessMemoryAdditionAsync(session, content, context);
+        });
+    }
+}
+
+public class AsyncMemory : MemoryBase
+{
+    // Fully asynchronous interface for high-performance scenarios
+    public async Task<MemoryResult> AddAsync(string content, MemoryContext context = null)
+    {
+        return await ExecuteWithSessionAsync(async session =>
+        {
+            return await ProcessMemoryAdditionAsync(session, content, context);
+        });
+    }
+}
+```
+
+### Session Factory Configuration
+
+```csharp
+// Dependency injection setup
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddMemoryCore(this IServiceCollection services, IConfiguration configuration)
+    {
+        // Configure session factory based on environment
+        if (IsTestEnvironment())
+        {
+            services.AddSingleton<ISqliteSessionFactory, TestSqliteSessionFactory>();
+        }
+        else
+        {
+            services.AddSingleton<ISqliteSessionFactory>(provider =>
+            {
+                var connectionString = configuration.GetConnectionString("DefaultConnection");
+                var logger = provider.GetRequiredService<ILogger<SqliteSessionFactory>>();
+                return new SqliteSessionFactory(connectionString, logger);
+            });
+        }
+
+        // Register memory services
+        services.AddScoped<Memory>();
+        services.AddScoped<AsyncMemory>();
+        services.AddScoped<IMemoryRepository, MemoryRepository>();
+        
+        return services;
+    }
+}
+```
+
+### Session-Scoped Operations
+
+```csharp
+public class MemoryRepository : IMemoryRepository
+{
+    private readonly ISqliteSessionFactory _sessionFactory;
+    private readonly ILogger<MemoryRepository> _logger;
+
+    public async Task<int> AddMemoryAsync(MemoryEntity memory, CancellationToken cancellationToken = default)
+    {
+        using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Generate unique integer ID
+            var id = await GenerateMemoryIdAsync(connection, transaction, cancellationToken);
+            
+            // Insert memory record
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = @"
+                INSERT INTO memories (id, content, user_id, agent_id, run_id, metadata, created_at, updated_at)
+                VALUES (@id, @content, @userId, @agentId, @runId, @metadata, @createdAt, @updatedAt)";
+            
+            // Add parameters...
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            
+            // Insert vector embedding
+            if (memory.Embedding != null)
+            {
+                await InsertEmbeddingAsync(connection, transaction, id, memory.Embedding, cancellationToken);
+            }
+            
+            // Update FTS5 index
+            await UpdateFtsIndexAsync(connection, transaction, id, memory.Content, cancellationToken);
+            
+            _logger.LogDebug("Added memory with ID {MemoryId} in session", id);
+            return id;
+        });
+    }
+}
+```
+
+### Session-Scoped Operations
+
+```csharp
+public class MemoryRepository : IMemoryRepository
+{
+    private readonly ISqliteSessionFactory _sessionFactory;
+    private readonly ILogger<MemoryRepository> _logger;
+
+    public async Task<int> AddMemoryAsync(MemoryEntity memory, CancellationToken cancellationToken = default)
+    {
+        using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Generate unique integer ID
+            var id = await GenerateMemoryIdAsync(connection, transaction, cancellationToken);
+            
+            // Insert memory record
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = @"
+                INSERT INTO memories (id, content, user_id, agent_id, run_id, metadata, created_at, updated_at)
+                VALUES (@id, @content, @userId, @agentId, @runId, @metadata, @createdAt, @updatedAt)";
+            
+            command.Parameters.AddWithValue("@id", id);
+            command.Parameters.AddWithValue("@content", memory.Content);
+            command.Parameters.AddWithValue("@userId", memory.UserId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@agentId", memory.AgentId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@runId", memory.RunId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(memory.Metadata ?? new Dictionary<string, object>()));
+            command.Parameters.AddWithValue("@createdAt", DateTime.UtcNow);
+            command.Parameters.AddWithValue("@updatedAt", DateTime.UtcNow);
+            
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            
+            // Insert vector embedding if available
+            if (memory.Embedding != null)
+            {
+                await InsertEmbeddingAsync(connection, transaction, id, memory.Embedding, cancellationToken);
+            }
+            
+            // Update FTS5 index for full-text search
+            await UpdateFtsIndexAsync(connection, transaction, id, memory.Content, cancellationToken);
+            
+            _logger.LogDebug("Added memory with ID {MemoryId} in session", id);
+            return id;
+        });
+    }
+}
+```
+
+## Conclusion
+
+The enhanced Memory Core implementation with Database Session Pattern provides a robust, reliable, and performant foundation for memory management operations. Key benefits include:
+
+- **Reliable Resource Management**: Guaranteed connection cleanup and proper WAL checkpoint handling
+- **Test Isolation**: Complete separation between test runs with automatic cleanup
+- **Session-Scoped Operations**: All database operations properly scoped within sessions
+- **Error Resilience**: Comprehensive error handling with retry logic and proper transaction management
+- **Performance Optimization**: Connection pooling, caching, and optimized SQLite operations
+- **Monitoring Support**: Built-in metrics and observability for production deployment
+
+This architecture ensures that the Memory MCP Server can reliably handle memory operations in both development and production environments while maintaining high performance and data integrity. 

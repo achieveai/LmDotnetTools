@@ -244,10 +244,10 @@ public class RelationshipTests
 
     #region Test Data
 
-    public static IEnumerable<object[]> ValidRelationshipTestCases => new List<object[]>
+    public static IEnumerable<object?[]> ValidRelationshipTestCases => new List<object?[]>
     {
         // Format: testName, source, relationshipType, target, userId, agentId, runId, confidence, sourceMemoryId, temporalContext, metadata
-        new object[] 
+        new object?[] 
         { 
             "Basic relationship with minimal data", 
             "John", 
@@ -261,7 +261,7 @@ public class RelationshipTests
             null, 
             null 
         },
-        new object[] 
+        new object?[] 
         { 
             "Relationship with full context", 
             "Alice", 
@@ -275,7 +275,7 @@ public class RelationshipTests
             "2024-01-15", 
             new Dictionary<string, object> { { "department", "engineering" }, { "start_date", "2023-06-01" } }
         },
-        new object[] 
+        new object?[] 
         { 
             "Relationship with temporal context", 
             "Bob", 
@@ -289,7 +289,7 @@ public class RelationshipTests
             "last summer", 
             null 
         },
-        new object[] 
+        new object?[] 
         { 
             "Complex relationship with metadata", 
             "Company A", 
@@ -309,7 +309,7 @@ public class RelationshipTests
                 { "completion_date", "2023-09-15" }
             }
         },
-        new object[] 
+        new object?[] 
         { 
             "Relationship with minimum confidence", 
             "Uncertain Entity", 
@@ -339,20 +339,20 @@ public class RelationshipTests
         new object[] { "Confidence above 1", "John", "likes", "Pizza", "user123", 1.1f, "Confidence above 1" }
     };
 
-    public static IEnumerable<object[]> SessionContextTestCases => new List<object[]>
+    public static IEnumerable<object?[]> SessionContextTestCases => new List<object?[]>
     {
         // Format: testName, userId, agentId, runId, expectedToString
-        new object[] { "User only", "user123", null, null, "user123" },
-        new object[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
-        new object[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
-        new object[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
-        new object[] { "Empty strings treated as null", "user123", "", "", "user123" }
+        new object?[] { "User only", "user123", null, null, "user123" },
+        new object?[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
+        new object?[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
+        new object?[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
+        new object?[] { "Empty strings treated as null", "user123", "", "", "user123" }
     };
 
-    public static IEnumerable<object[]> SerializationTestCases => new List<object[]>
+    public static IEnumerable<object?[]> SerializationTestCases => new List<object?[]>
     {
         // Format: testName, relationship
-        new object[] 
+        new object?[] 
         { 
             "Simple relationship", 
             new Relationship 
@@ -367,7 +367,7 @@ public class RelationshipTests
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
             } 
         },
-        new object[] 
+        new object?[] 
         { 
             "Relationship with all fields", 
             new Relationship 
@@ -387,7 +387,7 @@ public class RelationshipTests
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
             } 
         },
-        new object[] 
+        new object?[] 
         { 
             "Relationship with null optional fields", 
             new Relationship 

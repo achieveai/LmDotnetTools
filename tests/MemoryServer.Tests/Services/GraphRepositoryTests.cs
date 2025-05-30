@@ -1,46 +1,66 @@
+using System.Diagnostics;
+using System.Text.Json;
+using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using MemoryServer.Services;
-using MemoryServer.Infrastructure;
 using Microsoft.Data.Sqlite;
-using Moq;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Moq;
+using Xunit;
 
 namespace MemoryServer.Tests.Services;
 
 /// <summary>
-/// Comprehensive tests for GraphRepository including CRUD operations, graph traversal, and session isolation.
-/// Uses data-driven testing approach with in-memory SQLite database for realistic testing.
+/// Comprehensive tests for GraphRepository implementation.
+/// Uses data-driven testing approach with file-based SQLite database for realistic testing.
+/// ARCHITECTURE: Only the GraphRepository manages database connections to avoid deadlocks.
 /// </summary>
+[Collection("GraphRepository")]
 public class GraphRepositoryTests : IDisposable
 {
-    private readonly SqliteConnection _connection;
     private readonly SqliteManager _sqliteManager;
     private readonly GraphRepository _repository;
     private readonly Mock<ILogger<GraphRepository>> _mockLogger;
+    private readonly string _dbPath;
+    private static int _instanceCounter = 0;
+    private readonly int _instanceId;
 
     public GraphRepositoryTests()
     {
-        // Setup in-memory SQLite database for testing with shared cache
-        var connectionString = "Data Source=test_db_" + Guid.NewGuid().ToString("N")[..8] + ";Mode=Memory;Cache=Shared";
-        _connection = new SqliteConnection(connectionString);
-        _connection.Open();
+        _instanceId = Interlocked.Increment(ref _instanceCounter);
+        
+        // Use proper shared in-memory database URI format to eliminate file locking issues
+        var uniqueDbName = $"test_memory_{_instanceId}_{Guid.NewGuid():N}";
+        var connectionString = $"Data Source=file:{uniqueDbName}?mode=memory&cache=shared;";
+        _dbPath = $":memory:{uniqueDbName}"; // For logging purposes only
 
         _mockLogger = new Mock<ILogger<GraphRepository>>();
         
         // Create mock options for SqliteManager
         var mockOptions = new Mock<IOptions<DatabaseOptions>>();
-        mockOptions.Setup(o => o.Value).Returns(new DatabaseOptions { ConnectionString = connectionString });
+        mockOptions.Setup(o => o.Value).Returns(new DatabaseOptions 
+        { 
+            ConnectionString = connectionString,
+            MaxConnections = 10,
+            BusyTimeout = 5000,
+            EnableWAL = false, // Disable WAL for in-memory databases
+            CommandTimeout = 10
+        });
         
         var mockSqliteLogger = new Mock<ILogger<SqliteManager>>();
+        
         _sqliteManager = new SqliteManager(mockOptions.Object, mockSqliteLogger.Object);
         
         // Initialize database schema
-        _sqliteManager.InitializeDatabaseAsync().Wait();
+        var initTask = _sqliteManager.InitializeDatabaseAsync();
+        
+        if (!initTask.Wait(TimeSpan.FromSeconds(30)))
+        {
+            throw new TimeoutException("Database initialization timed out after 30 seconds");
+        }
         
         _repository = new GraphRepository(_sqliteManager, _mockLogger.Object);
-
-        Debug.WriteLine("✅ Test database initialized");
     }
 
     #region Entity CRUD Tests
@@ -48,14 +68,10 @@ public class GraphRepositoryTests : IDisposable
     [Theory]
     [MemberData(nameof(EntityTestCases))]
     public async Task AddEntityAsync_WithValidData_ShouldSucceed(
-        string testName,
         Entity entity,
         SessionContext sessionContext)
     {
         // Arrange
-        Debug.WriteLine($"Testing entity addition: {testName}");
-        Debug.WriteLine($"Entity: {entity.Name}, Session: {sessionContext}");
-
         // Act
         var result = await _repository.AddEntityAsync(entity, sessionContext);
 
@@ -65,19 +81,15 @@ public class GraphRepositoryTests : IDisposable
         Assert.Equal(entity.Name, result.Name);
         Assert.Equal(entity.Type, result.Type);
         Assert.Equal(sessionContext.UserId, result.UserId);
-
-        Debug.WriteLine($"✅ Entity added with ID: {result.Id}");
     }
 
     [Theory]
     [MemberData(nameof(EntityTestCases))]
     public async Task GetEntityByIdAsync_WithExistingEntity_ShouldReturnEntity(
-        string testName,
         Entity entity,
         SessionContext sessionContext)
     {
         // Arrange
-        Debug.WriteLine($"Testing entity retrieval by ID: {testName}");
         var addedEntity = await _repository.AddEntityAsync(entity, sessionContext);
 
         // Act
@@ -88,19 +100,15 @@ public class GraphRepositoryTests : IDisposable
         Assert.Equal(addedEntity.Id, result.Id);
         Assert.Equal(addedEntity.Name, result.Name);
         Assert.Equal(addedEntity.Type, result.Type);
-
-        Debug.WriteLine($"✅ Entity retrieved successfully: {result.Name}");
     }
 
     [Theory]
     [MemberData(nameof(EntityTestCases))]
     public async Task GetEntityByNameAsync_WithExistingEntity_ShouldReturnEntity(
-        string testName,
         Entity entity,
         SessionContext sessionContext)
     {
         // Arrange
-        Debug.WriteLine($"Testing entity retrieval by name: {testName}");
         await _repository.AddEntityAsync(entity, sessionContext);
 
         // Act
@@ -110,20 +118,16 @@ public class GraphRepositoryTests : IDisposable
         Assert.NotNull(result);
         Assert.Equal(entity.Name, result.Name);
         Assert.Equal(entity.Type, result.Type);
-
-        Debug.WriteLine($"✅ Entity retrieved by name: {result.Name}");
     }
 
     [Theory]
     [MemberData(nameof(EntityUpdateTestCases))]
     public async Task UpdateEntityAsync_WithValidData_ShouldUpdateSuccessfully(
-        string testName,
         Entity originalEntity,
         Entity updatedEntity,
         SessionContext sessionContext)
     {
         // Arrange
-        Debug.WriteLine($"Testing entity update: {testName}");
         var addedEntity = await _repository.AddEntityAsync(originalEntity, sessionContext);
         updatedEntity.Id = addedEntity.Id;
 
@@ -135,8 +139,6 @@ public class GraphRepositoryTests : IDisposable
         Assert.Equal(updatedEntity.Name, result.Name);
         Assert.Equal(updatedEntity.Type, result.Type);
         Assert.Equal(updatedEntity.Confidence, result.Confidence);
-
-        Debug.WriteLine($"✅ Entity updated: {result.Name}");
     }
 
     #endregion
@@ -146,14 +148,10 @@ public class GraphRepositoryTests : IDisposable
     [Theory]
     [MemberData(nameof(RelationshipTestCases))]
     public async Task AddRelationshipAsync_WithValidData_ShouldSucceed(
-        string testName,
         Relationship relationship,
         SessionContext sessionContext)
     {
         // Arrange
-        Debug.WriteLine($"Testing relationship addition: {testName}");
-        Debug.WriteLine($"Relationship: {relationship.Source} --[{relationship.RelationshipType}]--> {relationship.Target}");
-
         // Act
         var result = await _repository.AddRelationshipAsync(relationship, sessionContext);
 
@@ -163,19 +161,15 @@ public class GraphRepositoryTests : IDisposable
         Assert.Equal(relationship.Source, result.Source);
         Assert.Equal(relationship.RelationshipType, result.RelationshipType);
         Assert.Equal(relationship.Target, result.Target);
-
-        Debug.WriteLine($"✅ Relationship added with ID: {result.Id}");
     }
 
     [Theory]
     [MemberData(nameof(RelationshipTestCases))]
     public async Task GetRelationshipByIdAsync_WithExistingRelationship_ShouldReturnRelationship(
-        string testName,
         Relationship relationship,
         SessionContext sessionContext)
     {
         // Arrange
-        Debug.WriteLine($"Testing relationship retrieval by ID: {testName}");
         var addedRelationship = await _repository.AddRelationshipAsync(relationship, sessionContext);
 
         // Act
@@ -186,8 +180,6 @@ public class GraphRepositoryTests : IDisposable
         Assert.Equal(addedRelationship.Id, result.Id);
         Assert.Equal(addedRelationship.Source, result.Source);
         Assert.Equal(addedRelationship.Target, result.Target);
-
-        Debug.WriteLine($"✅ Relationship retrieved successfully");
     }
 
     #endregion
@@ -197,16 +189,12 @@ public class GraphRepositoryTests : IDisposable
     [Theory]
     [MemberData(nameof(SessionIsolationTestCases))]
     public async Task SessionIsolation_WithDifferentSessions_ShouldIsolateData(
-        string testName,
         SessionContext session1,
         SessionContext session2,
         Entity entity1,
         Entity entity2)
     {
         // Arrange
-        Debug.WriteLine($"Testing session isolation: {testName}");
-        Debug.WriteLine($"Session1: {session1}, Session2: {session2}");
-
         // Act
         await _repository.AddEntityAsync(entity1, session1);
         await _repository.AddEntityAsync(entity2, session2);
@@ -219,8 +207,93 @@ public class GraphRepositoryTests : IDisposable
         Assert.Single(entitiesSession2);
         Assert.Equal(entity1.Name, entitiesSession1.First().Name);
         Assert.Equal(entity2.Name, entitiesSession2.First().Name);
+    }
 
-        Debug.WriteLine($"✅ Session isolation verified");
+    #endregion
+
+    #region Deadlock Detection Test
+
+    [Fact]
+    public async Task DeadlockDetection_SingleEntityAddition_ShouldCompleteWithinTimeout()
+    {
+        // Create a simple entity
+        var entity = new Entity 
+        { 
+            Name = "TestEntity", 
+            Type = "test", 
+            UserId = "deadlock_test_user", 
+            Confidence = 0.8f 
+        };
+        
+        var sessionContext = new SessionContext { UserId = "deadlock_test_user" };
+        
+        // Use timeout wrapper to detect deadlocks quickly
+        var result = await WithTimeoutAsync(
+            _repository.AddEntityAsync(entity, sessionContext), 
+            8, 
+            "Deadlock Detection Entity Addition");
+        
+        Assert.NotNull(result);
+        Assert.True(result.Id > 0);
+    }
+
+    #endregion
+
+    #region Basic Database Test
+
+    [Fact]
+    public async Task BasicDatabaseTest_InMemory_ShouldWork()
+    {
+        // Use in-memory database to avoid file locking issues
+        var uniqueDbName = $"basic_test_{Guid.NewGuid():N}";
+        var connectionString = $"Data Source=file:{uniqueDbName}?mode=memory&cache=shared;";
+        
+        SqliteManager? sqliteManager = null;
+        
+        try
+        {
+            // Create SqliteManager
+            var mockOptions = new Mock<IOptions<DatabaseOptions>>();
+            mockOptions.Setup(x => x.Value).Returns(new DatabaseOptions
+            {
+                ConnectionString = connectionString,
+                MaxConnections = 10,
+                BusyTimeout = 5000,
+                EnableWAL = false
+            });
+            
+            var mockLogger = new Mock<ILogger<SqliteManager>>();
+            sqliteManager = new SqliteManager(mockOptions.Object, mockLogger.Object);
+            
+            // Initialize database
+            await sqliteManager.InitializeDatabaseAsync();
+            
+            // Test connection pooling
+            using (var conn1 = await sqliteManager.GetConnectionAsync())
+            {
+                using var cmd = conn1.CreateCommand();
+                cmd.CommandText = "CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT)";
+                await cmd.ExecuteNonQueryAsync();
+                
+                using var insertCmd = conn1.CreateCommand();
+                insertCmd.CommandText = "INSERT INTO test_table (name) VALUES ('test')";
+                await insertCmd.ExecuteNonQueryAsync();
+            }
+            
+            // Test with second connection
+            using (var conn2 = await sqliteManager.GetConnectionAsync())
+            {
+                using var selectCmd = conn2.CreateCommand();
+                selectCmd.CommandText = "SELECT COUNT(*) FROM test_table";
+                var count = await selectCmd.ExecuteScalarAsync();
+                
+                Assert.Equal(1, Convert.ToInt32(count));
+            }
+        }
+        finally
+        {
+            sqliteManager?.Dispose();
+        }
     }
 
     #endregion
@@ -231,13 +304,11 @@ public class GraphRepositoryTests : IDisposable
     {
         new object[]
         {
-            "Basic entity",
             new Entity { Name = "John Doe", Type = "person", UserId = "user123", Confidence = 0.8f },
             new SessionContext { UserId = "user123" }
         },
         new object[]
         {
-            "Entity with aliases",
             new Entity 
             { 
                 Name = "New York", 
@@ -250,7 +321,6 @@ public class GraphRepositoryTests : IDisposable
         },
         new object[]
         {
-            "Entity with metadata",
             new Entity 
             { 
                 Name = "Machine Learning", 
@@ -267,14 +337,12 @@ public class GraphRepositoryTests : IDisposable
     {
         new object[]
         {
-            "Update entity confidence",
             new Entity { Name = "John", Type = "person", UserId = "user123", Confidence = 0.5f },
             new Entity { Name = "John", Type = "person", UserId = "user123", Confidence = 0.9f },
             new SessionContext { UserId = "user123" }
         },
         new object[]
         {
-            "Update entity type",
             new Entity { Name = "Entity", Type = "unknown", UserId = "user456", Confidence = 0.8f },
             new Entity { Name = "Entity", Type = "person", UserId = "user456", Confidence = 0.8f },
             new SessionContext { UserId = "user456" }
@@ -285,13 +353,11 @@ public class GraphRepositoryTests : IDisposable
     {
         new object[]
         {
-            "Basic relationship",
             new Relationship { Source = "John", RelationshipType = "likes", Target = "Pizza", UserId = "user123", Confidence = 0.8f },
             new SessionContext { UserId = "user123" }
         },
         new object[]
         {
-            "Relationship with temporal context",
             new Relationship 
             { 
                 Source = "Alice", 
@@ -309,7 +375,6 @@ public class GraphRepositoryTests : IDisposable
     {
         new object[]
         {
-            "Different users",
             new SessionContext { UserId = "user1" },
             new SessionContext { UserId = "user2" },
             new Entity { Name = "Entity1", UserId = "user1", Confidence = 0.8f },
@@ -317,7 +382,6 @@ public class GraphRepositoryTests : IDisposable
         },
         new object[]
         {
-            "Same user, different agents",
             new SessionContext { UserId = "user1", AgentId = "agent1" },
             new SessionContext { UserId = "user1", AgentId = "agent2" },
             new Entity { Name = "Entity1", UserId = "user1", AgentId = "agent1", Confidence = 0.8f },
@@ -327,9 +391,64 @@ public class GraphRepositoryTests : IDisposable
 
     #endregion
 
+    #region Timeout Helper
+
+    private async Task<T> WithTimeoutAsync<T>(Task<T> task, int timeoutSeconds, string operationName)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);
+        
+        var completedTask = await Task.WhenAny(task, timeoutTask);
+        
+        if (completedTask == timeoutTask)
+        {
+            throw new TimeoutException($"{operationName} timed out after {timeoutSeconds} seconds");
+        }
+        
+        return await task;
+    }
+
+    private async Task WithTimeoutAsync(Task task, int timeoutSeconds, string operationName)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);
+        
+        var completedTask = await Task.WhenAny(task, timeoutTask);
+        
+        if (completedTask == timeoutTask)
+        {
+            throw new TimeoutException($"{operationName} timed out after {timeoutSeconds} seconds");
+        }
+        
+        await task;
+    }
+
+    #endregion
+
     public void Dispose()
     {
-        _connection?.Dispose();
-        Debug.WriteLine("✅ Test database disposed");
+        try
+        {
+            // Dispose the SqliteManager to close all its connections
+            _sqliteManager?.Dispose();
+            
+            // Force garbage collection to help release any remaining resources
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+        catch (Exception ex)
+        {
+            // Log disposal errors but don't throw
+            System.Diagnostics.Debug.WriteLine($"Error during disposal: {ex.Message}");
+        }
     }
+}
+
+[CollectionDefinition("GraphRepository")]
+public class GraphRepositoryCollection
+{
+    // This class has no code, and is never created.
+    // Its purpose is simply to be the place to apply [CollectionDefinition] and all the
+    // ICollectionFixture<> interfaces.
 } 

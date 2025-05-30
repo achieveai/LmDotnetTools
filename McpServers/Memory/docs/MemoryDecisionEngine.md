@@ -1,18 +1,28 @@
-# Memory Decision Engine - Detailed Design
+# Memory Decision Engine - Enhanced with Database Session Pattern
 
 ## Overview
 
-The Memory Decision Engine is responsible for intelligently deciding what operations to perform on memories when new facts are extracted. It uses sophisticated LLM-powered logic to determine whether to ADD new memories, UPDATE existing ones, DELETE outdated information, or take no action.
+The Memory Decision Engine is responsible for intelligently deciding what operations to perform on memories when new facts are extracted. It uses sophisticated LLM-powered logic to determine whether to ADD new memories, UPDATE existing ones, DELETE outdated information, or take no action. Enhanced with Database Session Pattern integration, it ensures reliable resource management and session-scoped decision making.
+
+**ARCHITECTURE ENHANCEMENT**: This design has been updated to integrate with the Database Session Pattern, providing session-aware memory decision operations and reliable resource management for AI-powered memory management.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                Memory Decision Engine                       │
+│            Memory Decision Engine (Enhanced)                │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │  Decision   │  │   Memory    │  │     Operation       │  │
 │  │  Analyzer   │  │ Comparator  │  │   Generator         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Session Integration Layer                    │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ Session     │  │ Context     │  │   Memory            │  │
+│  │ Scoped      │  │ Resolver    │  │  Repository         │  │
+│  │ Decisions   │  │             │  │  Integration        │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                    Decision Types                           │
@@ -33,30 +43,150 @@ The Memory Decision Engine is responsible for intelligently deciding what operat
 
 ## Core Components
 
-### 1. MemoryDecisionEngine (Main Class)
+### 1. MemoryDecisionEngine (Main Class) with Session Support
 
-**Purpose**: Orchestrates the entire decision-making process for memory operations, combining LLM intelligence with analytical logic.
+**Purpose**: Orchestrates the entire decision-making process for memory operations, combining LLM intelligence with analytical logic and session-scoped database operations.
 
 **Core Responsibilities**:
-- Analyze relationships between existing memories and new facts
-- Generate sophisticated prompts for LLM-based decision making
+- Analyze relationships between existing memories and new facts within session scope
+- Generate sophisticated prompts for LLM-based decision making with session context
 - Parse and validate LLM responses for operation instructions
 - Apply conflict resolution and quality assurance logic
-- Coordinate with memory analyzer and validation components
+- Coordinate with memory analyzer and validation components using database sessions
+- Ensure session isolation and proper resource cleanup
 
-**Decision Process Flow**:
-1. **Memory Analysis**: Examine existing memories and new facts for relationships and conflicts
-2. **Context Building**: Construct rich context including similarity analysis and temporal insights
-3. **LLM Consultation**: Generate sophisticated prompts and obtain structured decisions
+**Session-Enhanced Interface**:
+```csharp
+public interface IMemoryDecisionEngine
+{
+    Task<MemoryOperations> DecideOperationsAsync(
+        ISqliteSession session,
+        IEnumerable<string> facts,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default);
+    
+    Task<MemoryOperations> DecideOperationsWithExistingAsync(
+        ISqliteSession session,
+        IEnumerable<string> facts,
+        IEnumerable<ExistingMemory> existingMemories,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default);
+    
+    Task<ConflictResolutionResult> ResolveConflictsAsync(
+        ISqliteSession session,
+        MemoryOperations operations,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default);
+}
+```
+
+**Decision Process Flow with Session Pattern**:
+1. **Session-Scoped Memory Analysis**: Examine existing memories and new facts for relationships within session boundaries
+2. **Context Building**: Construct rich context including session information and similarity analysis
+3. **LLM Consultation**: Generate sophisticated prompts with session context and obtain structured decisions
 4. **Response Validation**: Parse and validate LLM responses for operation feasibility
-5. **Conflict Resolution**: Apply advanced logic to resolve conflicting operations
-6. **Quality Assurance**: Ensure all operations meet quality and consistency standards
+5. **Session-Aware Conflict Resolution**: Apply advanced logic to resolve conflicting operations within session scope
+6. **Quality Assurance**: Ensure all operations meet quality and consistency standards with session validation
 
-**Configuration Options**:
-- Custom decision prompts for domain-specific scenarios
-- Conflict resolution strategy selection
-- Quality threshold configuration
-- Fallback behavior for LLM failures
+**Implementation with Session Pattern**:
+```csharp
+public class MemoryDecisionEngine : IMemoryDecisionEngine
+{
+    private readonly ILlmProvider _llmProvider;
+    private readonly IMemoryRepository _memoryRepository;
+    private readonly ILogger<MemoryDecisionEngine> _logger;
+
+    public async Task<MemoryOperations> DecideOperationsAsync(
+        ISqliteSession session,
+        IEnumerable<string> facts,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default)
+    {
+        // Get existing memories for session using database session
+        var existingMemories = await _memoryRepository.GetMemoriesForSessionAsync(
+            session, sessionContext, cancellationToken);
+
+        return await DecideOperationsWithExistingAsync(
+            session, facts, existingMemories, sessionContext, cancellationToken);
+    }
+
+    public async Task<MemoryOperations> DecideOperationsWithExistingAsync(
+        ISqliteSession session,
+        IEnumerable<string> facts,
+        IEnumerable<ExistingMemory> existingMemories,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default)
+    {
+        // Create integer mapping for LLM clarity
+        var idMapping = CreateIntegerMapping(existingMemories);
+        
+        // Build session-aware decision prompt
+        var prompt = BuildDecisionPrompt(facts, idMapping, sessionContext);
+        
+        // Get decision from LLM provider with session context
+        var operations = await _llmProvider.DecideMemoryOperationsAsync(
+            facts, existingMemories, sessionContext, cancellationToken);
+        
+        // Validate operations within session scope
+        var validatedOperations = await ValidateOperationsAsync(
+            session, operations, sessionContext, cancellationToken);
+        
+        // Resolve conflicts with session awareness
+        var resolvedOperations = await ResolveConflictsAsync(
+            session, validatedOperations, sessionContext, cancellationToken);
+        
+        _logger.LogDebug("Generated {OperationCount} memory operations for session {UserId}/{AgentId}/{RunId}",
+            resolvedOperations.Operations.Count, sessionContext.UserId, sessionContext.AgentId, sessionContext.RunId);
+        
+        return resolvedOperations;
+    }
+
+    private Dictionary<int, int> CreateIntegerMapping(IEnumerable<ExistingMemory> memories)
+    {
+        // Create simple 1-based mapping for LLM clarity
+        var mapping = new Dictionary<int, int>();
+        var index = 1;
+        
+        foreach (var memory in memories)
+        {
+            mapping[index] = memory.Id;
+            index++;
+        }
+        
+        return mapping;
+    }
+
+    private string BuildDecisionPrompt(
+        IEnumerable<string> facts, 
+        Dictionary<int, int> idMapping, 
+        MemoryContext sessionContext)
+    {
+        var existingMemoriesText = string.Join("\n", 
+            idMapping.Select(kvp => $"{kvp.Key}. {GetMemoryContent(kvp.Value)}"));
+
+        return $@"
+You are a smart memory manager for a session-aware memory system.
+
+Session Context:
+- User ID: {sessionContext.UserId ?? "unknown"}
+- Agent ID: {sessionContext.AgentId ?? "unknown"}
+- Run ID: {sessionContext.RunId ?? "unknown"}
+
+You can perform four operations: (1) ADD, (2) UPDATE, (3) DELETE, and (4) NONE.
+
+New facts to process:
+{string.Join("\n", facts.Select((f, i) => $"- {f}"))}
+
+Existing memories for this session:
+{existingMemoriesText}
+
+Decide what operations to perform. Use simple numbers (1, 2, 3, etc.) to reference existing memories.
+Consider the session context when making decisions - memories should be relevant to this specific user/agent/run.
+
+Return operations in JSON format with integer IDs.";
+    }
+}
+```
 
 ### 2. Memory Decision Prompts
 

@@ -2,7 +2,9 @@
 
 ## Executive Summary
 
-This document presents a comprehensive design for a sophisticated memory management system inspired by mem0, with a focus on simplicity through strategic provider selection. The system supports OpenAI and Anthropic as LLM providers and Qdrant as the vector storage solution, providing production-ready architecture with reduced complexity while maintaining advanced memory intelligence capabilities.
+This document presents a comprehensive design for a sophisticated memory management system inspired by mem0, with a focus on simplicity through strategic provider selection. The system supports OpenAI and Anthropic as LLM providers and SQLite with the sqlite-vec extension as the storage solution, providing production-ready architecture with reduced complexity while maintaining advanced memory intelligence capabilities.
+
+**ARCHITECTURE UPDATE**: This design has been enhanced with a Database Session Pattern to address SQLite connection management challenges, ensuring reliable resource cleanup, proper test isolation, and robust production deployment.
 
 ## System Architecture Overview
 
@@ -27,11 +29,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 │  │   Engine    │  │   Engine    │  │                     │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                Storage Layer                                │
+│                Storage Layer (Enhanced)                     │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Vector    │  │   Qdrant    │  │    Embedding        │  │
-│  │  Storage    │  │  Provider   │  │    Manager          │  │
+│  │  Database   │  │   SQLite    │  │    Embedding        │  │
+│  │  Session    │  │  Storage    │  │    Manager          │  │
+│  │  Pattern    │  │  (sqlite-vec)│  │                     │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                Infrastructure Layer                         │
@@ -48,6 +51,8 @@ This document presents a comprehensive design for a sophisticated memory managem
 **Simplicity Through Focus**: Rather than supporting 15+ providers like the original mem0, we focus on proven, reliable solutions that cover the majority of use cases while maintaining sophisticated functionality.
 
 **Production-First Architecture**: Every component is designed with production deployment in mind, including comprehensive error handling, monitoring, performance optimization, and scalability considerations.
+
+**Reliable Resource Management**: The new Database Session Pattern ensures proper SQLite connection lifecycle management, eliminating file locking issues and providing robust test isolation.
 
 **Intelligent Memory Management**: Advanced fact extraction and decision-making capabilities that understand context, resolve conflicts, and maintain consistency across the memory system.
 
@@ -146,13 +151,21 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Cross-provider consistency and fallback strategies
 - Learning and adaptation from user feedback
 
-### 3. Storage Layer
+### 3. Storage Layer (Enhanced with Database Session Pattern)
 
-**Vector Storage (Qdrant)**:
-- High-performance semantic similarity search
+**Database Session Pattern**:
+- Encapsulated connection lifecycle management through ISqliteSession interface
+- Proper resource cleanup with automatic WAL checkpoint handling
+- Test-friendly isolation with TestSqliteSessionFactory
+- Transaction scoping and error recovery mechanisms
+- Connection leak prevention and monitoring
+
+**SQLite Storage with sqlite-vec**:
+- High-performance semantic similarity search using sqlite-vec extension
 - Rich metadata filtering and session isolation
 - Batch operations and performance optimization
 - Comprehensive monitoring and alerting
+- Integer ID usage for optimal LLM integration
 
 **Embedding Management**:
 - Intelligent caching with LRU eviction
@@ -161,10 +174,45 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Performance monitoring and optimization
 
 **Key Features**:
-- Multi-tenant data isolation
-- Advanced filtering capabilities
-- Scalable architecture with connection pooling
+- Multi-tenant data isolation through session management
+- Advanced filtering capabilities with SQL-based queries
+- Scalable architecture with proper connection management
 - Backup and recovery mechanisms
+- Test environment isolation and cleanup
+
+#### Database Session Pattern Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                Database Session Pattern                     │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ISqliteSession│  │ISqliteSession│  │   Session          │  │
+│  │ Interface   │  │  Factory    │  │  Implementations    │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Production Implementation                     │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ SqliteSession│  │SqliteSession│  │   Connection        │  │
+│  │             │  │  Factory    │  │   Lifecycle         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Test Implementation                          │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │TestSqlite   │  │TestSqlite   │  │   Test Database     │  │
+│  │ Session     │  │SessionFactory│  │   Isolation         │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Session Pattern Benefits**:
+- **Reliability**: Eliminates SQLite file locking issues and connection leaks
+- **Test Isolation**: Complete separation between test runs with automatic cleanup
+- **Resource Management**: Guaranteed connection disposal and WAL checkpoint handling
+- **Error Recovery**: Proper transaction rollback and error handling
+- **Performance**: Optimized connection usage and monitoring
 
 ### 4. LLM Provider Layer
 
@@ -196,6 +244,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Secure access control and validation
 - Audit trail for compliance and debugging
 
+**Database Session Integration**:
+- Session-scoped database operations
+- Automatic resource cleanup per session
+- Test isolation with unique database instances
+- Production connection pooling and optimization
+
 **Session Types**:
 - **User Sessions**: Personal memory spaces for individual users
 - **Agent Sessions**: AI assistant memory contexts
@@ -217,6 +271,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 
 ### 3. Performance Optimization
 
+**Database Session Optimization**:
+- Connection pooling and reuse in production
+- Proper WAL mode handling and checkpointing
+- Transaction scoping for optimal performance
+- Connection leak detection and prevention
+
 **Caching Strategy**:
 - Multi-level caching (embeddings, responses, metadata)
 - Intelligent cache invalidation and warming
@@ -230,6 +290,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Progress tracking and error recovery
 
 ### 4. Monitoring and Observability
+
+**Database Performance Monitoring**:
+- Connection usage and lifecycle tracking
+- SQLite performance metrics and optimization
+- WAL mode monitoring and checkpoint frequency
+- Resource leak detection and alerting
 
 **Comprehensive Metrics**:
 - Operation latency and throughput tracking
@@ -248,10 +314,16 @@ This document presents a comprehensive design for a sophisticated memory managem
 ### 1. Data Protection
 
 **Privacy Safeguards**:
-- Session-based data isolation
+- Session-based data isolation with database-level enforcement
 - Encryption at rest and in transit
 - PII detection and handling
 - Compliance with data protection regulations
+
+**Database Security**:
+- Secure connection string management
+- SQL injection prevention through parameterized queries
+- Database file permissions and access control
+- Audit logging for security compliance
 
 **Access Control**:
 - Role-based access control
@@ -267,6 +339,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Network security and isolation
 - Monitoring and intrusion detection
 
+**Database Security**:
+- Parameterized queries for SQL injection prevention
+- Connection string encryption and secure storage
+- Database file access control and permissions
+- Transaction-level security and isolation
+
 ## Configuration Management
 
 ### System Configuration Structure
@@ -277,9 +355,15 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Performance tuning parameters
 - Feature flags and toggles
 
+**Database Session Configuration**:
+- Production connection string management
+- Test database isolation settings
+- WAL mode and checkpoint configuration
+- Connection pooling and timeout settings
+
 **Configuration Areas**:
 - LLM provider settings (API keys, models, parameters)
-- Vector store configuration (connection, indexing)
+- SQLite storage configuration (connection, indexing, session management)
 - Embedding provider setup
 - Performance parameters (timeouts, batch sizes)
 - Optional features (monitoring, telemetry)
@@ -293,6 +377,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 ## Testing Strategy
 
 ### 1. Comprehensive Testing Approach
+
+**Database Session Testing**:
+- Session lifecycle testing with proper cleanup validation
+- Connection leak detection and prevention testing
+- Test isolation verification with concurrent test execution
+- WAL mode handling and checkpoint testing
 
 **Unit Testing**:
 - Component isolation with mocking
@@ -313,6 +403,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Latency measurement under load
 
 ### 2. Quality Assurance
+
+**Database Reliability Testing**:
+- Connection management stress testing
+- File locking issue prevention validation
+- Resource cleanup verification
+- Performance impact assessment
 
 **Memory Quality Testing**:
 - Fact extraction accuracy validation
@@ -336,29 +432,41 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Container-ready architecture
 - Cloud-native deployment patterns
 
+**Database Requirements**:
+- SQLite with sqlite-vec extension support
+- Proper file system permissions for database files
+- WAL mode support and checkpoint scheduling
+- Backup and recovery mechanisms
+
 **External Dependencies**:
 - OpenAI or Anthropic API access
-- Qdrant instance (cloud or self-hosted)
+- SQLite instance with sqlite-vec extension
 - Optional monitoring and logging services
 - Configuration management systems
 
 ### 2. Scaling Strategies
 
 **Horizontal Scaling**:
-- Stateless application design
+- Stateless application design with session-based database management
 - Load balancing and distribution
 - Auto-scaling based on demand
 - Resource optimization
 
+**Database Scaling**:
+- Read replica support for scaling read operations
+- Connection pooling optimization
+- WAL mode optimization for concurrent access
+- Backup and archival strategies
+
 **Performance Optimization**:
-- Connection pooling and reuse
+- Database session pooling and reuse
 - Intelligent caching strategies
 - Batch processing optimization
 - Resource monitoring and tuning
 
 ## Implementation Roadmap
 
-### Phase 1: Core Infrastructure (Weeks 1-4)
+### Phase 1: Core Infrastructure (Weeks 1-2)
 **Goal**: Establish foundational memory management capabilities
 
 **Week 1-2: Foundation**
@@ -368,20 +476,44 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Implement UUID mapping strategy (critical for reliability)
 - Set up basic error handling and logging
 
-**Week 3-4: Storage & LLM Integration**
-- Implement Qdrant vector storage integration
+### Phase 1.5: Database Session Pattern (Weeks 2.5-3.5) **NEW PHASE**
+**Goal**: Implement reliable SQLite connection management architecture
+
+**Week 2.5-3: Session Pattern Implementation**
+- Implement ISqliteSession and ISqliteSessionFactory interfaces
+- Create production SqliteSession with proper WAL handling
+- Implement TestSqliteSessionFactory for test isolation
+- Add comprehensive error handling and retry mechanisms
+
+**Week 3-3.5: Migration and Integration**
+- Migrate existing repositories to use session pattern
+- Update service layer dependency injection
+- Comprehensive testing and validation
+- Performance optimization and monitoring
+
+**Deliverables**:
+- Reliable SQLite connection management
+- Test isolation and cleanup mechanisms
+- Eliminated file locking issues
+- Improved resource management
+
+### Phase 2: Storage & LLM Integration (Weeks 4-5)
+**Goal**: Complete storage and LLM provider integration
+
+**Week 4-5: Enhanced Storage & LLM Integration**
+- Complete SQLite storage integration with session pattern
 - Create OpenAI and Anthropic LLM providers
 - Add code block removal utility (critical for JSON parsing)
 - Implement basic fact extraction with real prompts
 - Add comprehensive error handling and retry mechanisms
 
 **Deliverables**:
-- Working memory add/search operations
+- Working memory add/search operations with session management
 - Session isolation and security
 - Reliable LLM response processing
 - Basic fact extraction functionality
 
-### Phase 2: Intelligence Layer (Weeks 5-8)
+### Phase 3: Intelligence Layer (Weeks 5-8)
 **Goal**: Add sophisticated memory decision-making and advanced features
 
 **Week 5-6: Memory Decision Engine**
@@ -402,7 +534,7 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Vision and multimodal support
 - Agent workflow documentation
 
-### Phase 3: Production Features (Weeks 9-12)
+### Phase 4: Production Features (Weeks 9-12)
 **Goal**: Add enterprise-grade features and optimization
 
 **Week 9-10: Graph Memory System**
@@ -427,6 +559,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 
 ### 1. Performance Metrics
 
+**Database Performance**:
+- Connection lifecycle management efficiency (target: <10ms session creation)
+- SQLite operation latency (target: <100ms for typical queries)
+- Resource cleanup effectiveness (target: 100% connection disposal)
+- Test isolation reliability (target: 100% test independence)
+
 **System Performance**:
 - Memory operation latency (target: <500ms for add, <100ms for search)
 - Throughput capacity (target: 1000+ operations/minute)
@@ -447,6 +585,12 @@ This document presents a comprehensive design for a sophisticated memory managem
 - Deployment and maintenance simplicity
 - Time to market for new features
 
+**Reliability Metrics**:
+- Database connection reliability (target: 99.99% success rate)
+- Test suite reliability (target: 100% consistent pass rate)
+- Resource leak prevention (target: 0 connection leaks)
+- Error recovery effectiveness
+
 **Scalability Metrics**:
 - Concurrent user capacity
 - Data volume handling capability
@@ -457,19 +601,27 @@ This document presents a comprehensive design for a sophisticated memory managem
 
 ### 1. Technical Risks
 
+**Database Session Pattern Risks**:
+- **Risk**: Implementation complexity and migration challenges
+- **Mitigation**: Comprehensive testing, gradual migration, rollback capability
+
 **Provider Dependencies**:
 - **Risk**: LLM provider service outages or rate limiting
 - **Mitigation**: Multi-provider support with automatic failover
 
 **Data Consistency**:
 - **Risk**: Inconsistent memory states during concurrent operations
-- **Mitigation**: Atomic operations and conflict resolution mechanisms
+- **Mitigation**: Session-scoped transactions and conflict resolution mechanisms
 
 **Performance Degradation**:
 - **Risk**: System slowdown under high load
-- **Mitigation**: Comprehensive caching, batch processing, and monitoring
+- **Mitigation**: Database session optimization, caching, and monitoring
 
 ### 2. Operational Risks
+
+**Database Reliability**:
+- **Risk**: SQLite file corruption or locking issues
+- **Mitigation**: Database Session Pattern with proper cleanup and monitoring
 
 **Security Vulnerabilities**:
 - **Risk**: Data breaches or unauthorized access
@@ -481,9 +633,11 @@ This document presents a comprehensive design for a sophisticated memory managem
 
 ## Conclusion
 
-This design document presents a comprehensive architecture for a sophisticated memory management system that balances simplicity with powerful capabilities. By focusing on proven providers and implementing production-ready patterns, the system provides a solid foundation for building intelligent memory-enabled applications while maintaining developer productivity and operational reliability.
+This enhanced design document presents a comprehensive architecture for a sophisticated memory management system that balances simplicity with powerful capabilities. The addition of the Database Session Pattern addresses critical SQLite connection management challenges, ensuring reliable resource cleanup, proper test isolation, and robust production deployment.
 
-The modular design enables independent development and testing of components, while the comprehensive error handling and monitoring ensure production readiness. The implementation roadmap provides a clear path to deployment, with measurable success criteria and risk mitigation strategies.
+By focusing on proven providers and implementing production-ready patterns with enhanced database reliability, the system provides a solid foundation for building intelligent memory-enabled applications while maintaining developer productivity and operational reliability.
+
+The modular design enables independent development and testing of components, while the comprehensive error handling, monitoring, and Database Session Pattern ensure production readiness. The implementation roadmap provides a clear path to deployment, with measurable success criteria and risk mitigation strategies.
 
 ## Core Components
 

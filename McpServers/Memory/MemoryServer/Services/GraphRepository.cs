@@ -34,7 +34,7 @@ public class GraphRepository : IGraphRepository
             // Generate ID if not provided
             if (entity.Id == 0)
             {
-                entity.Id = await GenerateNextIdAsync(cancellationToken);
+                entity.Id = await GenerateNextIdAsync(connection, transaction, cancellationToken);
             }
 
             // Set session context
@@ -301,7 +301,7 @@ public class GraphRepository : IGraphRepository
             // Generate ID if not provided
             if (relationship.Id == 0)
             {
-                relationship.Id = await GenerateNextIdAsync(cancellationToken);
+                relationship.Id = await GenerateNextIdAsync(connection, transaction, cancellationToken);
             }
 
             // Set session context
@@ -676,28 +676,63 @@ public class GraphRepository : IGraphRepository
         
         try
         {
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            
-            command.CommandText = @"
-                INSERT INTO memory_id_sequence DEFAULT VALUES;
-                SELECT last_insert_rowid();";
-            
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-            var id = Convert.ToInt32(result);
-            
-            // Validate ID range
-            if (id <= 0 || id > int.MaxValue - 1000)
-            {
-                throw new InvalidOperationException("Generated ID is out of acceptable range");
-            }
-            
+            var id = await GenerateNextIdAsync(connection, transaction, cancellationToken);
             transaction.Commit();
             return id;
         }
         catch
         {
             transaction.Rollback();
+            throw;
+        }
+    }
+
+    public async Task<int> GenerateNextIdAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken = default)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+        
+        _logger.LogDebug("🔄 GenerateNextIdAsync START - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+        
+        try
+        {
+            _logger.LogDebug("✅ Using existing connection - Thread: {ThreadId}, Task: {TaskId}, ConnectionState: {State}, Elapsed: {Elapsed}ms", 
+                threadId, taskId, connection.State, stopwatch.ElapsedMilliseconds);
+            
+            _logger.LogDebug("✅ Using existing transaction - Thread: {ThreadId}, Task: {TaskId}, Elapsed: {Elapsed}ms", 
+                threadId, taskId, stopwatch.ElapsedMilliseconds);
+            
+            try
+            {
+                _logger.LogDebug("📝 Inserting into memory_id_sequence - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "INSERT INTO memory_id_sequence DEFAULT VALUES";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                _logger.LogDebug("✅ Insert completed - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                
+                _logger.LogDebug("📖 Getting last insert rowid - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
+                command.CommandText = "SELECT last_insert_rowid()";
+                var result = await command.ExecuteScalarAsync(cancellationToken);
+                var id = Convert.ToInt32(result);
+                _logger.LogDebug("✅ Generated ID: {Id} - Thread: {ThreadId}, Task: {TaskId}", id, threadId, taskId);
+                
+                _logger.LogDebug("✅ GenerateNextIdAsync COMPLETE - ID: {Id}, Thread: {ThreadId}, Task: {TaskId}, Total Elapsed: {Elapsed}ms", 
+                    id, threadId, taskId, stopwatch.ElapsedMilliseconds);
+                return id;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error in GenerateNextIdAsync operation - Thread: {ThreadId}, Task: {TaskId}, Elapsed: {Elapsed}ms", 
+                    threadId, taskId, stopwatch.ElapsedMilliseconds);
+                throw;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ GenerateNextIdAsync FAILED - Thread: {ThreadId}, Task: {TaskId}, Elapsed: {Elapsed}ms", 
+                threadId, taskId, stopwatch.ElapsedMilliseconds);
             throw;
         }
     }

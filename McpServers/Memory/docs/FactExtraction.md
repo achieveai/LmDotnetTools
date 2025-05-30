@@ -1,18 +1,28 @@
-# Fact Extraction Engine - Detailed Design
+# Fact Extraction Engine - Enhanced with Database Session Pattern
 
 ## Overview
 
-The Fact Extraction Engine is responsible for intelligently parsing conversations and extracting meaningful facts that should be stored in memory. It uses sophisticated LLM prompting strategies to identify personal information, preferences, plans, and other relevant details from natural language conversations.
+The Fact Extraction Engine is responsible for intelligently parsing conversations and extracting meaningful facts that should be stored in memory. It uses sophisticated LLM prompting strategies to identify personal information, preferences, plans, and other relevant details from natural language conversations. Enhanced with Database Session Pattern integration, it ensures reliable resource management and session-scoped fact extraction.
+
+**ARCHITECTURE ENHANCEMENT**: This design has been updated to integrate with the Database Session Pattern, providing session-aware fact extraction operations and reliable resource management for AI-powered conversation analysis.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                 Fact Extraction Engine                      │
+│             Fact Extraction Engine (Enhanced)               │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │   Message   │  │   Fact      │  │     Prompt          │  │
 │  │  Processor  │  │ Extractor   │  │   Manager           │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Session Integration Layer                    │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ Session     │  │ Context     │  │   Memory            │  │
+│  │ Scoped      │  │ Resolver    │  │  Repository         │  │
+│  │ Extraction  │  │             │  │  Integration        │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                    Processing Pipeline                      │
@@ -33,115 +43,231 @@ The Fact Extraction Engine is responsible for intelligently parsing conversation
 
 ## Core Components
 
-### 1. FactExtractor (Main Class)
+### 1. FactExtractor (Main Class) with Session Support
 
-**Purpose**: Orchestrates the entire fact extraction process from raw conversation messages to validated, structured facts.
+**Purpose**: Orchestrates the entire fact extraction process from raw conversation messages to validated, structured facts with session-scoped database operations.
 
 **Core Responsibilities**:
-- Message preprocessing and normalization
-- LLM-based fact extraction with sophisticated prompting
-- Fact validation and quality control
-- Context-aware extraction based on session information
-- Multi-language support and localization
+- Message preprocessing and normalization with session context
+- LLM-based fact extraction with sophisticated prompting and session awareness
+- Fact validation and quality control within session boundaries
+- Context-aware extraction based on session information and historical data
+- Multi-language support and localization with session preferences
+- Integration with Database Session Pattern for reliable resource management
 
-**Processing Flow**:
+**Session-Enhanced Interface**:
+```csharp
+public interface IFactExtractor
+{
+    Task<FactExtractionResult> ExtractFactsAsync(
+        ISqliteSession session,
+        IEnumerable<Message> messages,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default);
+    
+    Task<FactExtractionResult> ExtractFactsWithHistoryAsync(
+        ISqliteSession session,
+        IEnumerable<Message> messages,
+        MemoryContext sessionContext,
+        int historyLimit = 10,
+        CancellationToken cancellationToken = default);
+    
+    Task<ValidationResult> ValidateFactsAsync(
+        ISqliteSession session,
+        IEnumerable<string> facts,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default);
+}
+```
+
+**Processing Flow with Session Pattern**:
 1. **Message Validation**: Ensure input messages are properly formatted and contain extractable content
-2. **Context Building**: Incorporate session context, user preferences, and domain-specific requirements
-3. **Prompt Construction**: Build sophisticated prompts with examples and guidelines
-4. **LLM Interaction**: Execute structured fact extraction using configured LLM provider
+2. **Session Context Building**: Incorporate session context, user preferences, and historical data from database session
+3. **Prompt Construction**: Build sophisticated prompts with session-aware examples and guidelines
+4. **LLM Interaction**: Execute structured fact extraction using configured LLM provider with session context
 5. **Response Processing**: Parse and validate LLM responses for fact lists
-6. **Quality Assurance**: Apply validation rules and filtering to ensure fact quality
+6. **Session-Aware Quality Assurance**: Apply validation rules and filtering within session scope
 
-**Configuration Options**:
-- Custom extraction prompts for domain-specific use cases
-- Language selection for multi-language support
-- Extraction sensitivity levels (conservative vs comprehensive)
-- Context integration preferences
+**Implementation with Session Pattern**:
+```csharp
+public class FactExtractor : IFactExtractor
+{
+    private readonly ILlmProvider _llmProvider;
+    private readonly IMemoryRepository _memoryRepository;
+    private readonly ILogger<FactExtractor> _logger;
 
-### 2. Message Processor
+    public async Task<FactExtractionResult> ExtractFactsAsync(
+        ISqliteSession session,
+        IEnumerable<Message> messages,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default)
+    {
+        // Normalize and validate messages
+        var normalizedMessages = NormalizeMessages(messages);
+        
+        // Get session-specific context from database
+        var sessionHistory = await GetSessionHistoryAsync(session, sessionContext, cancellationToken);
+        
+        // Build session-aware extraction prompt
+        var extractionPrompt = BuildExtractionPrompt(normalizedMessages, sessionContext, sessionHistory);
+        
+        // Extract facts using LLM with session context
+        var factResult = await _llmProvider.ExtractFactsWithSessionAsync(
+            normalizedMessages, sessionContext, cancellationToken);
+        
+        // Validate facts within session scope
+        var validationResult = await ValidateFactsAsync(
+            session, factResult.Facts, sessionContext, cancellationToken);
+        
+        // Filter and enhance facts based on session context
+        var enhancedFacts = await EnhanceFactsWithSessionContextAsync(
+            session, validationResult.ValidFacts, sessionContext, cancellationToken);
+        
+        _logger.LogDebug("Extracted {FactCount} facts for session {UserId}/{AgentId}/{RunId}",
+            enhancedFacts.Count, sessionContext.UserId, sessionContext.AgentId, sessionContext.RunId);
+        
+        return new FactExtractionResult
+        {
+            Facts = enhancedFacts,
+            ExtractionMetadata = new ExtractionMetadata
+            {
+                SessionContextUsed = true,
+                ConfidenceScore = factResult.ExtractionMetadata.ConfidenceScore,
+                ExtractionTime = DateTime.UtcNow,
+                SessionId = sessionContext.SessionId
+            }
+        };
+    }
 
-**Purpose**: Normalizes and prepares conversation messages for fact extraction.
+    public async Task<FactExtractionResult> ExtractFactsWithHistoryAsync(
+        ISqliteSession session,
+        IEnumerable<Message> messages,
+        MemoryContext sessionContext,
+        int historyLimit = 10,
+        CancellationToken cancellationToken = default)
+    {
+        // Get recent memories for context
+        var recentMemories = await _memoryRepository.GetRecentMemoriesAsync(
+            session, sessionContext, historyLimit, cancellationToken);
+        
+        // Build enhanced context with historical information
+        var enhancedContext = BuildEnhancedContext(sessionContext, recentMemories);
+        
+        // Extract facts with historical context
+        return await ExtractFactsAsync(session, messages, enhancedContext, cancellationToken);
+    }
 
-**Message Normalization Strategy**:
-- Standardize role names across different conversation formats
-- Clean and sanitize message content while preserving meaning
-- Remove formatting artifacts that might confuse LLM processing
-- Handle multi-participant conversations with proper attribution
+    private async Task<List<Memory>> GetSessionHistoryAsync(
+        ISqliteSession session,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken)
+    {
+        return await _memoryRepository.GetRecentMemoriesAsync(
+            session, sessionContext, 5, cancellationToken);
+    }
 
-**Content Processing**:
-- Remove excessive whitespace and formatting inconsistencies
-- Strip markdown formatting while preserving semantic content
-- Replace URLs with placeholders to protect privacy
-- Normalize punctuation and character encoding
+    private string BuildExtractionPrompt(
+        IEnumerable<Message> messages,
+        MemoryContext sessionContext,
+        List<Memory> sessionHistory)
+    {
+        var conversationText = string.Join("\n", 
+            messages.Select(m => $"{m.Role}: {m.Content}"));
+        
+        var historyText = sessionHistory.Any() 
+            ? string.Join("\n", sessionHistory.Select(h => $"- {h.Content}"))
+            : "No previous memories for this session.";
 
-**Conversation Structure**:
-- Maintain conversation flow and context
-- Preserve speaker attribution and timestamps where available
-- Filter out system messages and non-content elements
-- Handle conversation threading and reply structures
+        return $@"
+You are extracting facts from a conversation for a session-aware memory system.
 
-**Privacy Protection**:
-- Sanitize personally identifiable information during processing
-- Replace sensitive data with generic placeholders
-- Maintain audit trail of sanitization actions
-- Ensure compliance with privacy regulations
+Session Context:
+- User ID: {sessionContext.UserId ?? "unknown"}
+- Agent ID: {sessionContext.AgentId ?? "unknown"}
+- Run ID: {sessionContext.RunId ?? "unknown"}
 
-### 3. Fact Extraction Prompts
+Recent memories for this session:
+{historyText}
 
-**Prompt Engineering Strategy**:
-- Sophisticated system prompts with clear extraction guidelines
-- Few-shot examples demonstrating desired output format
-- Context-aware prompting based on conversation domain
-- Multi-language prompt templates for international support
+Current conversation:
+{conversationText}
 
-**Fact Categories Defined**:
-- **Personal Information**: Names, demographics, contact details, locations
-- **Preferences**: Likes, dislikes, favorites, opinions, taste preferences
-- **Plans and Intentions**: Future events, goals, scheduled activities, aspirations
-- **Relationships**: Family, friends, colleagues, professional connections
-- **Professional Details**: Job roles, skills, career information, work preferences
-- **Health and Wellness**: Dietary restrictions, fitness goals, health conditions
-- **Miscellaneous**: Hobbies, interests, learning goals, technology preferences
+Extract factual information that should be remembered about this specific user/session.
+Focus on new information that isn't already captured in the recent memories.
 
-**Prompt Customization**:
-- Domain-specific extraction guidelines (healthcare, education, business)
-- Context-sensitive prompting based on user history
-- Temporal awareness for time-sensitive information
-- Cultural and linguistic adaptation for different regions
+Return a JSON object with this structure:
+{{
+  ""facts"": [""fact1"", ""fact2"", ...],
+  ""extraction_metadata"": {{
+    ""confidence_score"": 0.95,
+    ""session_context_used"": true,
+    ""extraction_time"": ""{DateTime.UtcNow:yyyy-MM-ddTHH:mm:ssZ}""
+  }}
+}}";
+    }
+}
+```
 
-**Quality Guidelines**:
-- Emphasis on specific, actionable facts over general statements
-- Preference for user-stated information over inferences
-- Temporal context preservation for time-sensitive facts
-- Consistency in fact formatting and structure
+### 2. Session-Aware Message Processor
 
-### 4. Fact Validator
+**Purpose**: Normalizes and prepares conversation messages for fact extraction with session context awareness.
 
-**Purpose**: Ensures extracted facts meet quality standards and filtering criteria.
+**Session-Enhanced Processing**:
+```csharp
+public class SessionAwareMessageProcessor
+{
+    public async Task<List<Message>> ProcessMessagesWithSessionAsync(
+        ISqliteSession session,
+        IEnumerable<Message> messages,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken = default)
+    {
+        var processedMessages = new List<Message>();
+        
+        foreach (var message in messages)
+        {
+            // Normalize message content
+            var normalizedContent = NormalizeContent(message.Content);
+            
+            // Add session context to system messages
+            if (message.Role == "system")
+            {
+                normalizedContent = EnhanceSystemMessageWithSession(normalizedContent, sessionContext);
+            }
+            
+            // Apply session-specific privacy filters
+            var sanitizedContent = await ApplySessionPrivacyFiltersAsync(
+                session, normalizedContent, sessionContext, cancellationToken);
+            
+            processedMessages.Add(new Message
+            {
+                Role = message.Role,
+                Content = sanitizedContent,
+                Name = message.Name,
+                Timestamp = message.Timestamp
+            });
+        }
+        
+        return processedMessages;
+    }
 
-**Validation Criteria**:
-- **Length Constraints**: Minimum and maximum fact length requirements
-- **Content Quality**: Meaningful content with substantive information
-- **Format Compliance**: Proper structure and formatting standards
-- **Relevance Filtering**: Remove facts that don't add meaningful value
+    private string EnhanceSystemMessageWithSession(string content, MemoryContext sessionContext)
+    {
+        return $"{content}\n\nSession Context: User {sessionContext.UserId}, Agent {sessionContext.AgentId}, Run {sessionContext.RunId}";
+    }
 
-**Quality Filters**:
-- Remove common greetings and conversational filler
-- Filter out questions and requests that aren't factual statements
-- Eliminate duplicate or near-duplicate facts
-- Remove overly generic or vague statements
-
-**Content Analysis**:
-- Semantic analysis to ensure facts contain meaningful information
-- Stop word filtering to identify substantial content
-- Duplicate detection using text similarity algorithms
-- Category-based validation for domain-specific requirements
-
-**Fact Categorization**:
-- Automatic categorization of facts by type and domain
-- Category-specific validation rules and requirements
-- Cross-category consistency checking
-- Priority scoring based on fact importance and relevance
+    private async Task<string> ApplySessionPrivacyFiltersAsync(
+        ISqliteSession session,
+        string content,
+        MemoryContext sessionContext,
+        CancellationToken cancellationToken)
+    {
+        // Apply session-specific privacy rules
+        // This could include user preferences stored in the database
+        return content; // Simplified for example
+    }
+}
+```
 
 ## Advanced Features
 

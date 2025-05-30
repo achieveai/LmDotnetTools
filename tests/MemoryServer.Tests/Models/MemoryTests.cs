@@ -182,7 +182,7 @@ public class MemoryTests
         Debug.WriteLine("✅ WithScore embedding test passed");
     }
 
-    public static IEnumerable<object[]> GetSessionContextTestData()
+    public static IEnumerable<object?[]> GetSessionContextTestData()
     {
         return MemoryTestDataFactory.GetSessionContextTestCases();
     }
@@ -197,13 +197,13 @@ public class MemoryTests
         yield return new object[] { 1.5f, "Score above 1.0" };
     }
 
-    public static IEnumerable<object[]> GetEmbeddingTestData()
+    public static IEnumerable<object?[]> GetEmbeddingTestData()
     {
         yield return new object?[] { null, "Null embedding" };
-        yield return new object[] { new float[0], "Empty embedding array" };
-        yield return new object[] { new float[] { 0.1f }, "Single element embedding" };
-        yield return new object[] { new float[] { 0.1f, 0.2f, 0.3f }, "Small embedding" };
-        yield return new object[] { 
+        yield return new object?[] { new float[0], "Empty embedding array" };
+        yield return new object?[] { new float[] { 0.1f }, "Single element embedding" };
+        yield return new object?[] { new float[] { 0.1f, 0.2f, 0.3f }, "Small embedding" };
+        yield return new object?[] { 
             Enumerable.Range(0, 100).Select(i => (float)i / 100).ToArray(), 
             "Large embedding (100 dimensions)" 
         };

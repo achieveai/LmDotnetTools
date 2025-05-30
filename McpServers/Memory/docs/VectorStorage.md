@@ -1,18 +1,28 @@
-# Vector Storage Design - Detailed Design
+# Vector Storage Design - Enhanced with Database Session Pattern
 
 ## Overview
 
-The Vector Storage system provides semantic similarity search capabilities for the memory system using Qdrant as the primary vector database. It handles embedding storage, similarity search, metadata filtering, and efficient vector operations.
+The Vector Storage system provides semantic similarity search capabilities for the memory system using SQLite with the sqlite-vec extension as the primary vector database. Enhanced with the Database Session Pattern, it ensures reliable connection management, proper resource cleanup, and robust test isolation while handling embedding storage, similarity search, metadata filtering, and efficient vector operations.
+
+**ARCHITECTURE ENHANCEMENT**: This design has been updated to use SQLite with sqlite-vec extension and the Database Session Pattern, providing reliable resource management, test isolation, and simplified deployment without external dependencies.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Vector Storage Layer                     │
+│                Vector Storage Layer (Enhanced)              │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ VectorStore │  │   Qdrant    │  │    Embedding        │  │
-│  │    Base     │  │  Provider   │  │    Manager          │  │
+│  │ VectorStore │  │   SQLite    │  │    Embedding        │  │
+│  │    Base     │  │ with        │  │    Manager          │  │
+│  │             │  │ sqlite-vec  │  │                     │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                Database Session Layer                       │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │ISqliteSession│  │ISqliteSession│  │   Session          │  │
+│  │ Interface   │  │  Factory    │  │  Implementations    │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                    Core Operations                          │
@@ -35,116 +45,300 @@ The Vector Storage system provides semantic similarity search capabilities for t
 
 ### 1. VectorStoreBase (Abstract Interface)
 
-**Purpose**: Defines the contract for all vector store implementations, ensuring consistent behavior across different vector database providers.
+**Purpose**: Defines the contract for all vector store implementations, ensuring consistent behavior across different vector database providers with session-scoped operations.
 
 **Key Operations**:
 - `create_collection()`: Initialize vector collections with specified dimensions and distance metrics
-- `insert()`: Store vectors with associated metadata and unique identifiers
+- `insert()`: Store vectors with associated metadata and unique integer identifiers
 - `search()`: Perform similarity search with filtering and scoring capabilities
-- `get()`: Retrieve specific vectors by identifier
+- `get()`: Retrieve specific vectors by integer identifier
 - `update()`: Modify existing vectors and their metadata
 - `delete()`: Remove vectors from the collection
 - `list_vectors()`: Enumerate vectors with optional filtering
 - `collection_info()`: Retrieve collection statistics and configuration
 
+**Session-Scoped Interface**:
+```csharp
+public interface IVectorStore
+{
+    Task<int> InsertAsync(ISqliteSession session, VectorRecord record, CancellationToken cancellationToken = default);
+    Task<List<VectorSearchResult>> SearchAsync(ISqliteSession session, VectorSearchRequest request, CancellationToken cancellationToken = default);
+    Task<VectorRecord?> GetAsync(ISqliteSession session, int id, CancellationToken cancellationToken = default);
+    Task UpdateAsync(ISqliteSession session, int id, VectorRecord record, CancellationToken cancellationToken = default);
+    Task DeleteAsync(ISqliteSession session, int id, CancellationToken cancellationToken = default);
+    Task<List<VectorRecord>> ListAsync(ISqliteSession session, VectorListRequest request, CancellationToken cancellationToken = default);
+}
+```
+
 **Design Principles**:
+- Session-scoped operations for reliable resource management
 - Provider-agnostic interface for easy switching between vector databases
 - Consistent error handling and response formats
 - Support for both synchronous and asynchronous operations
 - Comprehensive metadata support for rich filtering capabilities
+- Integer ID usage for optimal LLM integration
 
-**Data Models**:
-- Standardized vector search result format with ID, score, payload, and optional vector data
-- Flexible metadata structure supporting complex filtering requirements
-- Consistent distance metric support (cosine, euclidean, dot product)
-- Scalable collection management with configurable parameters
+### 2. SQLite with sqlite-vec Provider Implementation
 
-### 2. Qdrant Provider Implementation
-
-**Connection Management**:
-- Support for both local and cloud Qdrant instances
-- Flexible authentication with API keys for cloud deployments
-- Connection pooling for high-performance scenarios
-- Health monitoring and automatic reconnection capabilities
+**Connection Management with Session Pattern**:
+- Session-scoped connection lifecycle management
+- Automatic WAL checkpoint handling during session disposal
+- Test isolation with unique database instances
+- Production connection pooling and optimization
+- Health monitoring and connection leak detection
 
 **Collection Management**:
-- Automatic collection creation with optimal configuration
+- Automatic virtual table creation with optimal configuration
 - Support for multiple distance metrics and vector dimensions
 - Collection optimization for search performance
-- Backup and recovery capabilities for data protection
+- Schema migration and upgrade capabilities
 
-**Vector Operations**:
-- Efficient batch insertion for high-volume data loading
-- Advanced similarity search with multiple filtering options
-- Point-in-time consistency for read operations
-- Atomic updates and deletes with proper error handling
+**Vector Operations with Session Pattern**:
+```csharp
+public class SqliteVectorStore : IVectorStore
+{
+    private readonly ILogger<SqliteVectorStore> _logger;
 
-**Metadata Filtering**:
-- Rich filtering capabilities using Qdrant's filter system
+    public async Task<int> InsertAsync(ISqliteSession session, VectorRecord record, CancellationToken cancellationToken = default)
+    {
+        return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Generate unique integer ID
+            var id = await GenerateVectorIdAsync(connection, transaction, cancellationToken);
+            
+            // Insert vector embedding
+            using var vectorCmd = connection.CreateCommand();
+            vectorCmd.Transaction = transaction;
+            vectorCmd.CommandText = @"
+                INSERT INTO memory_embeddings (memory_id, embedding)
+                VALUES (@id, @embedding)";
+            
+            vectorCmd.Parameters.AddWithValue("@id", id);
+            vectorCmd.Parameters.AddWithValue("@embedding", record.Embedding);
+            
+            await vectorCmd.ExecuteNonQueryAsync(cancellationToken);
+            
+            // Insert metadata
+            using var metadataCmd = connection.CreateCommand();
+            metadataCmd.Transaction = transaction;
+            metadataCmd.CommandText = @"
+                INSERT INTO memories (id, content, user_id, agent_id, run_id, metadata, created_at, updated_at)
+                VALUES (@id, @content, @userId, @agentId, @runId, @metadata, @createdAt, @updatedAt)";
+            
+            metadataCmd.Parameters.AddWithValue("@id", id);
+            metadataCmd.Parameters.AddWithValue("@content", record.Content);
+            metadataCmd.Parameters.AddWithValue("@userId", record.UserId ?? (object)DBNull.Value);
+            metadataCmd.Parameters.AddWithValue("@agentId", record.AgentId ?? (object)DBNull.Value);
+            metadataCmd.Parameters.AddWithValue("@runId", record.RunId ?? (object)DBNull.Value);
+            metadataCmd.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(record.Metadata ?? new Dictionary<string, object>()));
+            metadataCmd.Parameters.AddWithValue("@createdAt", DateTime.UtcNow);
+            metadataCmd.Parameters.AddWithValue("@updatedAt", DateTime.UtcNow);
+            
+            await metadataCmd.ExecuteNonQueryAsync(cancellationToken);
+            
+            _logger.LogDebug("Inserted vector with ID {VectorId}", id);
+            return id;
+        });
+    }
+
+    public async Task<List<VectorSearchResult>> SearchAsync(ISqliteSession session, VectorSearchRequest request, CancellationToken cancellationToken = default)
+    {
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            
+            // Build similarity search query with session filtering
+            command.CommandText = @"
+                SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, m.created_at, m.updated_at,
+                       vec_distance_cosine(e.embedding, @queryVector) as distance
+                FROM memories m
+                JOIN memory_embeddings e ON m.id = e.memory_id
+                WHERE (@userId IS NULL OR m.user_id = @userId)
+                  AND (@agentId IS NULL OR m.agent_id = @agentId)
+                  AND (@runId IS NULL OR m.run_id = @runId)
+                  AND vec_distance_cosine(e.embedding, @queryVector) < @threshold
+                ORDER BY distance ASC
+                LIMIT @limit";
+            
+            command.Parameters.AddWithValue("@queryVector", request.QueryVector);
+            command.Parameters.AddWithValue("@userId", request.UserId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@agentId", request.AgentId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@runId", request.RunId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@threshold", request.ScoreThreshold ?? 1.0);
+            command.Parameters.AddWithValue("@limit", request.Limit);
+            
+            var results = new List<VectorSearchResult>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var result = new VectorSearchResult
+                {
+                    Id = reader.GetInt32("id"),
+                    Content = reader.GetString("content"),
+                    UserId = reader.IsDBNull("user_id") ? null : reader.GetString("user_id"),
+                    AgentId = reader.IsDBNull("agent_id") ? null : reader.GetString("agent_id"),
+                    RunId = reader.IsDBNull("run_id") ? null : reader.GetString("run_id"),
+                    Metadata = JsonSerializer.Deserialize<Dictionary<string, object>>(reader.GetString("metadata")) ?? new Dictionary<string, object>(),
+                    CreatedAt = reader.GetDateTime("created_at"),
+                    UpdatedAt = reader.GetDateTime("updated_at"),
+                    Score = 1.0 - reader.GetDouble("distance") // Convert distance to similarity score
+                };
+                
+                results.Add(result);
+            }
+            
+            _logger.LogDebug("Found {ResultCount} vectors for search query", results.Count);
+            return results;
+        });
+    }
+}
+```
+
+**Metadata Filtering with SQL**:
+- Session-based filtering using SQL WHERE clauses
+- Rich filtering capabilities using SQLite's JSON functions
 - Support for exact match, range, and existence filters
 - Complex boolean logic with AND/OR/NOT operations
-- Optimized filter execution for performance
+- Optimized filter execution with proper indexing
 
 **Performance Optimization**:
 - Intelligent indexing strategies for large collections
 - Query optimization based on access patterns
 - Memory management for efficient resource utilization
-- Monitoring and alerting for performance issues
+- WAL mode optimization for concurrent access
+- Connection pooling for high-throughput scenarios
 
-### 3. Vector Store Factory
+### 3. Vector Store Factory with Session Pattern
 
 **Provider Management**:
 - Dynamic provider registration and discovery
 - Configuration-driven provider selection
-- Runtime provider switching capabilities
+- Session factory integration for reliable connections
 - Extensible architecture for custom providers
+
+**Session Integration**:
+```csharp
+public class VectorStoreFactory : IVectorStoreFactory
+{
+    private readonly ISqliteSessionFactory _sessionFactory;
+    private readonly ILogger<VectorStoreFactory> _logger;
+
+    public async Task<IVectorStore> CreateVectorStoreAsync(VectorStoreConfiguration config)
+    {
+        return config.Provider.ToLowerInvariant() switch
+        {
+            "sqlite" => new SqliteVectorStore(_logger),
+            _ => throw new NotSupportedException($"Vector store provider '{config.Provider}' is not supported")
+        };
+    }
+
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        // Initialize database schema using session factory
+        await _sessionFactory.InitializeDatabaseAsync(cancellationToken);
+    }
+}
+```
 
 **Configuration Handling**:
 - Provider-specific configuration validation
 - Environment variable integration for secure credential management
 - Default configuration templates for common scenarios
-- Configuration migration and upgrade support
+- Session factory configuration integration
 
-**Instance Lifecycle**:
-- Lazy initialization for optimal resource usage
-- Proper cleanup and resource management
-- Health checking and monitoring integration
-- Graceful shutdown and recovery procedures
+### 4. Embedding Manager with Session Support
 
-### 4. Embedding Manager
-
-**Purpose**: Manages embedding generation and caching for optimal performance and cost efficiency.
+**Purpose**: Manages embedding generation and caching for optimal performance and cost efficiency with session-scoped operations.
 
 **Caching Strategy**:
 - LRU cache with configurable size limits
 - Intelligent cache key generation based on content and operation type
 - Cache warming for frequently accessed patterns
-- Distributed caching support for multi-instance deployments
+- Session-aware caching for multi-tenant scenarios
 
-**Batch Processing**:
-- Efficient batch embedding generation to reduce API calls
-- Parallel processing for independent embedding requests
-- Memory optimization for large batch operations
-- Error handling and retry logic for failed embeddings
+**Batch Processing with Session Pattern**:
+```csharp
+public class EmbeddingManager : IEmbeddingManager
+{
+    private readonly IEmbeddingProvider _embeddingProvider;
+    private readonly IMemoryCache _cache;
+    private readonly ILogger<EmbeddingManager> _logger;
 
-**Performance Optimization**:
-- Cache hit rate monitoring and optimization
-- Embedding reuse across similar content
-- Cost tracking and optimization for embedding API usage
-- Latency optimization through intelligent batching
+    public async Task<float[]> GenerateEmbeddingAsync(string content, CancellationToken cancellationToken = default)
+    {
+        var cacheKey = GenerateCacheKey(content);
+        
+        if (_cache.TryGetValue(cacheKey, out float[]? cachedEmbedding))
+        {
+            _logger.LogDebug("Cache hit for embedding generation");
+            return cachedEmbedding!;
+        }
+
+        var embedding = await _embeddingProvider.GenerateEmbeddingAsync(content, cancellationToken);
+        
+        _cache.Set(cacheKey, embedding, TimeSpan.FromHours(24));
+        _logger.LogDebug("Generated and cached embedding for content");
+        
+        return embedding;
+    }
+
+    public async Task<List<float[]>> GenerateBatchEmbeddingsAsync(List<string> contents, CancellationToken cancellationToken = default)
+    {
+        var results = new List<float[]>();
+        var uncachedContents = new List<(int index, string content)>();
+
+        // Check cache for existing embeddings
+        for (int i = 0; i < contents.Count; i++)
+        {
+            var cacheKey = GenerateCacheKey(contents[i]);
+            if (_cache.TryGetValue(cacheKey, out float[]? cachedEmbedding))
+            {
+                results.Add(cachedEmbedding!);
+            }
+            else
+            {
+                uncachedContents.Add((i, contents[i]));
+                results.Add(null!); // Placeholder
+            }
+        }
+
+        // Generate embeddings for uncached content
+        if (uncachedContents.Any())
+        {
+            var uncachedTexts = uncachedContents.Select(x => x.content).ToList();
+            var newEmbeddings = await _embeddingProvider.GenerateBatchEmbeddingsAsync(uncachedTexts, cancellationToken);
+
+            // Update results and cache
+            for (int i = 0; i < uncachedContents.Count; i++)
+            {
+                var (index, content) = uncachedContents[i];
+                var embedding = newEmbeddings[i];
+                
+                results[index] = embedding;
+                
+                var cacheKey = GenerateCacheKey(content);
+                _cache.Set(cacheKey, embedding, TimeSpan.FromHours(24));
+            }
+        }
+
+        return results;
+    }
+}
+```
 
 ## Advanced Features
 
-### 1. Metadata Filtering System
+### 1. Session-Based Metadata Filtering System
 
 **Session Isolation**:
 - Strict filtering based on session identifiers (user_id, agent_id, run_id)
-- Multi-tenant support with secure data separation
+- Multi-tenant support with secure data separation using SQL WHERE clauses
 - Access control validation for all operations
 - Audit trail for compliance and debugging
 
 **Content-Based Filtering**:
-- Filtering by memory type, role, and content categories
+- Filtering by memory type, role, and content categories using SQLite JSON functions
 - Temporal filtering for time-based queries
 - Custom metadata field filtering for application-specific needs
 - Complex filter composition with boolean logic
@@ -152,535 +346,303 @@ The Vector Storage system provides semantic similarity search capabilities for t
 **Performance Optimization**:
 - Index creation for frequently filtered fields
 - Query optimization based on filter selectivity
-- Caching of filter results for repeated queries
+- Session-scoped query caching for repeated operations
 - Monitoring of filter performance and optimization
 
-### 2. Batch Operations
+### 2. Batch Operations with Session Pattern
 
 **Bulk Data Loading**:
-- Efficient batch insertion with optimal chunk sizes
-- Parallel processing for independent operations
-- Progress tracking and resumption for large datasets
-- Error handling and partial failure recovery
+```csharp
+public async Task<List<int>> InsertBatchAsync(ISqliteSession session, List<VectorRecord> records, CancellationToken cancellationToken = default)
+{
+    return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+    {
+        var ids = new List<int>();
+        
+        foreach (var record in records)
+        {
+            var id = await InsertSingleRecordAsync(connection, transaction, record, cancellationToken);
+            ids.Add(id);
+        }
+        
+        _logger.LogDebug("Inserted {RecordCount} vector records in batch", records.Count);
+        return ids;
+    });
+}
+```
 
 **Batch Search Operations**:
-- Multiple query processing in single requests
+- Multiple query processing in single sessions
 - Result aggregation and deduplication
 - Performance optimization through query batching
 - Resource management for concurrent operations
 
-**Maintenance Operations**:
-- Bulk updates and deletions with transaction support
-- Collection optimization and reindexing
-- Data migration and backup operations
-- Performance monitoring and alerting
-
-### 3. Performance Monitoring
+### 3. Performance Monitoring with Session Metrics
 
 **Metrics Collection**:
+- Session creation and disposal time tracking
 - Operation latency and throughput tracking
 - Error rate monitoring and alerting
 - Resource utilization monitoring (CPU, memory, disk)
 - Cache performance and hit rate analysis
+- Connection leak detection and prevention
 
 **Performance Optimization**:
 - Query performance analysis and optimization
 - Index usage monitoring and optimization
-- Connection pool monitoring and tuning
+- Session pool monitoring and tuning
 - Capacity planning and scaling recommendations
 
-**Alerting and Diagnostics**:
-- Real-time alerting for performance issues
-- Detailed logging for debugging and analysis
-- Performance baseline establishment and monitoring
-- Automated remediation for common issues
+**Session Health Monitoring**:
+```csharp
+public class VectorStoreHealthMonitor
+{
+    private readonly ISqliteSessionFactory _sessionFactory;
+    private readonly ILogger<VectorStoreHealthMonitor> _logger;
+
+    public async Task<HealthStatus> CheckHealthAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+            
+            var healthStatus = await session.GetHealthAsync();
+            var metrics = await _sessionFactory.GetMetricsAsync();
+            
+            return new HealthStatus
+            {
+                IsHealthy = healthStatus.IsHealthy && metrics.ConnectionLeaksDetected == 0,
+                SessionMetrics = metrics,
+                LastChecked = DateTime.UtcNow
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Health check failed");
+            return new HealthStatus
+            {
+                IsHealthy = false,
+                ErrorMessage = ex.Message,
+                LastChecked = DateTime.UtcNow
+            };
+        }
+    }
+}
+```
 
 ## Integration Patterns
 
-### 1. Memory System Integration
+### 1. Memory System Integration with Session Pattern
 
-**Seamless Operation**:
-- Direct integration with memory core operations
-- Consistent error handling and recovery
-- Transaction support for complex operations
-- Performance optimization for memory workflows
+**Repository Pattern Integration**:
+```csharp
+public class MemoryRepository : IMemoryRepository
+{
+    private readonly ISqliteSessionFactory _sessionFactory;
+    private readonly IVectorStore _vectorStore;
+    private readonly IEmbeddingManager _embeddingManager;
 
-**Session Management**:
-- Automatic session context application
-- Secure multi-tenant data isolation
-- Session-based performance optimization
-- Audit trail for compliance requirements
+    public async Task<int> AddMemoryAsync(MemoryEntity memory, CancellationToken cancellationToken = default)
+    {
+        using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        // Generate embedding
+        var embedding = await _embeddingManager.GenerateEmbeddingAsync(memory.Content, cancellationToken);
+        
+        // Create vector record
+        var vectorRecord = new VectorRecord
+        {
+            Content = memory.Content,
+            Embedding = embedding,
+            UserId = memory.UserId,
+            AgentId = memory.AgentId,
+            RunId = memory.RunId,
+            Metadata = memory.Metadata
+        };
+        
+        // Insert using session-scoped vector store
+        return await _vectorStore.InsertAsync(session, vectorRecord, cancellationToken);
+    }
 
-### 2. Embedding Provider Integration
-
-**Provider Abstraction**:
-- Consistent interface across different embedding providers
-- Automatic embedding generation and caching
-- Cost optimization through intelligent provider selection
-- Fallback strategies for provider failures
-
-**Performance Optimization**:
-- Embedding reuse and caching strategies
-- Batch processing for cost and performance optimization
-- Monitoring and alerting for embedding operations
-- Quality assurance for embedding consistency
-
-## Configuration Management
-
-**Connection Configuration**:
-```yaml
-vector_store:
-  provider: qdrant
-  host: localhost
-  port: 6333
-  api_key: ${QDRANT_API_KEY}
-  collection_name: mem0_memories
-  vector_size: 1536
-  distance_metric: cosine
+    public async Task<List<MemorySearchResult>> SearchMemoriesAsync(MemorySearchRequest request, CancellationToken cancellationToken = default)
+    {
+        using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        // Generate query embedding
+        var queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(request.Query, cancellationToken);
+        
+        // Create vector search request
+        var vectorRequest = new VectorSearchRequest
+        {
+            QueryVector = queryEmbedding,
+            UserId = request.UserId,
+            AgentId = request.AgentId,
+            RunId = request.RunId,
+            Limit = request.Limit,
+            ScoreThreshold = request.ScoreThreshold
+        };
+        
+        // Search using session-scoped vector store
+        var vectorResults = await _vectorStore.SearchAsync(session, vectorRequest, cancellationToken);
+        
+        // Convert to memory search results
+        return vectorResults.Select(vr => new MemorySearchResult
+        {
+            Id = vr.Id,
+            Content = vr.Content,
+            Score = vr.Score,
+            Metadata = vr.Metadata,
+            CreatedAt = vr.CreatedAt
+        }).ToList();
+    }
+}
 ```
 
-**Performance Configuration**:
-```yaml
-performance:
-  batch_size: 100
-  parallel_requests: 4
-  connection_timeout: 30
-  max_retries: 3
-  cache_size: 1000
+### 2. Service Layer Integration
+
+**Dependency Injection Configuration**:
+```csharp
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddVectorStorage(this IServiceCollection services, IConfiguration configuration)
+    {
+        // Register session factory
+        services.AddSingleton<ISqliteSessionFactory>(provider =>
+        {
+            var connectionString = configuration.GetConnectionString("DefaultConnection");
+            var logger = provider.GetRequiredService<ILogger<SqliteSessionFactory>>();
+            return new SqliteSessionFactory(connectionString, logger);
+        });
+
+        // Register vector store components
+        services.AddScoped<IVectorStore, SqliteVectorStore>();
+        services.AddScoped<IVectorStoreFactory, VectorStoreFactory>();
+        services.AddScoped<IEmbeddingManager, EmbeddingManager>();
+        services.AddScoped<IMemoryRepository, MemoryRepository>();
+
+        return services;
+    }
+}
 ```
 
-**Feature Configuration**:
-```yaml
-features:
-  enable_caching: true
-  enable_monitoring: true
-  enable_batch_operations: true
-  enable_auto_optimization: true
+## Testing Strategy with Session Pattern
+
+### 1. Unit Testing with Test Sessions
+
+```csharp
+[TestClass]
+public class VectorStoreTests
+{
+    private ISqliteSessionFactory _sessionFactory;
+    private IVectorStore _vectorStore;
+
+    [TestInitialize]
+    public async Task Setup()
+    {
+        var logger = new Mock<ILogger<TestSqliteSessionFactory>>().Object;
+        _sessionFactory = new TestSqliteSessionFactory(logger);
+        
+        var storeLogger = new Mock<ILogger<SqliteVectorStore>>().Object;
+        _vectorStore = new SqliteVectorStore(storeLogger);
+    }
+
+    [TestMethod]
+    public async Task InsertAsync_ShouldCreateVectorWithUniqueId()
+    {
+        // Arrange
+        using var session = await _sessionFactory.CreateSessionAsync();
+        
+        var record = new VectorRecord
+        {
+            Content = "Test content",
+            Embedding = new float[] { 0.1f, 0.2f, 0.3f },
+            UserId = "user123"
+        };
+
+        // Act
+        var id = await _vectorStore.InsertAsync(session, record);
+
+        // Assert
+        Assert.IsTrue(id > 0);
+        
+        var retrieved = await _vectorStore.GetAsync(session, id);
+        Assert.IsNotNull(retrieved);
+        Assert.AreEqual("Test content", retrieved.Content);
+    }
+
+    [TestMethod]
+    public async Task SearchAsync_ShouldReturnRelevantResults()
+    {
+        // Arrange
+        using var session = await _sessionFactory.CreateSessionAsync();
+        
+        // Insert test data
+        var record1 = new VectorRecord
+        {
+            Content = "Machine learning algorithms",
+            Embedding = new float[] { 0.8f, 0.1f, 0.1f },
+            UserId = "user123"
+        };
+        
+        var record2 = new VectorRecord
+        {
+            Content = "Cooking recipes",
+            Embedding = new float[] { 0.1f, 0.8f, 0.1f },
+            UserId = "user123"
+        };
+        
+        await _vectorStore.InsertAsync(session, record1);
+        await _vectorStore.InsertAsync(session, record2);
+
+        // Act
+        var searchRequest = new VectorSearchRequest
+        {
+            QueryVector = new float[] { 0.7f, 0.2f, 0.1f }, // Similar to record1
+            UserId = "user123",
+            Limit = 10
+        };
+        
+        var results = await _vectorStore.SearchAsync(session, searchRequest);
+
+        // Assert
+        Assert.IsTrue(results.Count > 0);
+        Assert.AreEqual("Machine learning algorithms", results[0].Content);
+        Assert.IsTrue(results[0].Score > 0.5); // Should have high similarity
+    }
+}
 ```
-
-## Testing Strategy
-
-### 1. Unit Testing
-
-**Component Testing**:
-- Mock-based testing for isolated component validation
-- Configuration validation and error handling testing
-- Interface compliance testing for all implementations
-- Edge case and boundary condition testing
-
-**Test Coverage**:
-- All vector operations (CRUD) with various data types
-- Error conditions and recovery scenarios
-- Configuration variations and edge cases
-- Performance boundary testing
 
 ### 2. Integration Testing
 
-**End-to-End Testing**:
-- Real Qdrant instance testing with actual data
-- Performance testing under realistic conditions
-- Multi-tenant isolation validation
-- Concurrent operation testing
-
-**Compatibility Testing**:
-- Different Qdrant versions and configurations
-- Various vector dimensions and distance metrics
-- Large dataset handling and performance validation
-- Migration and upgrade scenario testing
-
-### 3. Performance Testing
-
-**Load Testing**:
-- High-volume insertion and search operations
-- Concurrent user simulation and stress testing
-- Memory and resource utilization under load
-- Scalability testing with growing datasets
-
-**Benchmark Testing**:
-- Performance comparison with baseline metrics
-- Query optimization and index performance testing
-- Cache effectiveness and hit rate analysis
-- Cost optimization and resource efficiency testing
-
-## Error Handling and Resilience
-
-### 1. Connection Resilience
-
-**Fault Tolerance**:
-- Automatic retry with exponential backoff
-- Circuit breaker pattern for persistent failures
-- Health check monitoring and recovery
-- Graceful degradation for service unavailability
-
-**Recovery Strategies**:
-- Connection pool management and recovery
-- Data consistency validation after recovery
-- Partial failure handling and recovery
-- Monitoring and alerting for connection issues
-
-### 2. Data Consistency
-
-**Transaction Support**:
-- Atomic operations for complex updates
-- Consistency validation for critical operations
-- Rollback mechanisms for failed transactions
-- Conflict resolution for concurrent updates
-
-**Data Validation**:
-- Input validation for all vector operations
-- Schema validation for metadata and payloads
-- Data integrity checking and repair
-- Audit trail for data changes and access
-
-### 3. Performance Protection
-
-**Resource Management**:
-- Memory usage monitoring and limits
-- Connection pool size management
-- Query timeout and cancellation
-- Resource cleanup and garbage collection
-
-**Quality Assurance**:
-- Performance threshold monitoring and alerting
-- Automatic optimization trigger points
-- Capacity planning and scaling recommendations
-- Performance regression detection and alerting
-
-## Security Considerations
-
-### 1. Access Control
-
-**Authentication and Authorization**:
-- Secure API key management and rotation
-- Role-based access control for operations
-- Session-based access validation
-- Audit logging for security compliance
-
-**Data Protection**:
-- Encryption at rest and in transit
-- Secure credential storage and management
-- Data anonymization and privacy protection
-- Compliance with data protection regulations
-
-### 2. Network Security
-
-**Communication Security**:
-- TLS encryption for all network communications
-- Certificate validation and management
-- Network isolation and firewall configuration
-- Secure connection pooling and management
-
-**Monitoring and Alerting**:
-- Security event monitoring and alerting
-- Access pattern analysis and anomaly detection
-- Intrusion detection and response
-- Security audit trail and compliance reporting
-
-## Implementation Priorities
-
-### Phase 1: Core Infrastructure
-1. Abstract interface definition and basic Qdrant implementation
-2. Essential CRUD operations with error handling
-3. Basic configuration and connection management
-
-### Phase 2: Advanced Features
-4. Metadata filtering and session isolation
-5. Batch operations and performance optimization
-6. Caching and embedding management
-
-### Phase 3: Production Readiness
-7. Comprehensive monitoring and alerting
-8. Security hardening and compliance features
-9. Advanced optimization and scaling capabilities
-
-## Graph Memory Integration
-
-### 1. Knowledge Graph Support
-
-**Purpose**: Extends vector storage with knowledge graph capabilities for relationship-based memory storage and retrieval.
-
-**Core Concepts**:
-- **Entities**: Named objects, people, places, concepts
-- **Relationships**: Connections between entities with semantic meaning
-- **Temporal Awareness**: Time-based relationship evolution
-- **Conflict Resolution**: Handling contradictory relationship information
-
-**Graph Memory Architecture**:
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Graph Memory Layer                       │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Entity    │  │ Relationship│  │     Graph           │  │
-│  │ Extraction  │  │ Extraction  │  │   Storage           │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                    Graph Operations                         │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Update    │  │   Search    │  │     Conflict        │  │
-│  │ Relations   │  │ Relations   │  │   Resolution        │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 2. Relationship Extraction Prompts
-
-**Extract Relations Prompt**:
-```
-You are an advanced algorithm designed to extract structured information from text to construct knowledge graphs. Your goal is to capture comprehensive and accurate information. Follow these key principles:
-
-1. Extract only explicitly stated information from the text.
-2. Establish relationships among the entities provided.
-3. Use "USER_ID" as the source entity for any self-references (e.g., "I," "me," "my," etc.) in user messages.
-
-Relationships:
-    - Use consistent, general, and timeless relationship types.
-    - Example: Prefer "professor" over "became_professor."
-    - Relationships should only be established among the entities explicitly mentioned in the user message.
-
-Entity Consistency:
-    - Ensure that relationships are coherent and logically align with the context of the message.
-    - Maintain consistent naming for entities across the extracted data.
-
-Strive to construct a coherent and easily understandable knowledge graph by establishing all the relationships among the entities and adherence to the user's context.
-
-Adhere strictly to these guidelines to ensure high-quality knowledge graph extraction.
-
-Input Text: {input_text}
-Entities: {entities}
-
-Extract relationships in the format:
-[
-    {"source": "entity1", "relationship": "relationship_type", "target": "entity2"},
-    {"source": "entity2", "relationship": "relationship_type", "target": "entity3"}
-]
-```
-
-**Update Graph Prompt**:
-```
-You are an AI expert specializing in graph memory management and optimization. Your task is to analyze existing graph memories alongside new information, and update the relationships in the memory list to ensure the most accurate, current, and coherent representation of knowledge.
-
-Input:
-1. Existing Graph Memories: A list of current graph memories, each containing source, target, and relationship information.
-2. New Graph Memory: Fresh information to be integrated into the existing graph structure.
-
-Guidelines:
-1. Identification: Use the source and target as primary identifiers when matching existing memories with new information.
-2. Conflict Resolution:
-   - If new information contradicts an existing memory:
-     a) For matching source and target but differing content, update the relationship of the existing memory.
-     b) If the new memory provides more recent or accurate information, update the existing memory accordingly.
-3. Comprehensive Review: Thoroughly examine each existing graph memory against the new information, updating relationships as necessary. Multiple updates may be required.
-4. Consistency: Maintain a uniform and clear style across all memories. Each entry should be concise yet comprehensive.
-5. Semantic Coherence: Ensure that updates maintain or improve the overall semantic structure of the graph.
-6. Temporal Awareness: If timestamps are available, consider the recency of information when making updates.
-7. Relationship Refinement: Look for opportunities to refine relationship descriptions for greater precision or clarity.
-8. Redundancy Elimination: Identify and merge any redundant or highly similar relationships that may result from the update.
-
-Memory Format:
-source -- RELATIONSHIP -- destination
-
-Task Details:
-======= Existing Graph Memories:=======
-{existing_memories}
-
-======= New Graph Memory:=======
-{new_memories}
-
-Output:
-Provide a list of update instructions, each specifying the source, target, and the new relationship to be set. Only include memories that require updates.
-```
-
-### 3. Graph Memory Operations
-
-**Relationship Extraction Flow**:
-```
-FUNCTION extract_relationships(messages, session_context):
-    // 1. Entity Extraction
-    entities = extract_entities_from_messages(messages)
-    
-    // 2. Relationship Extraction
-    relationships = []
-    FOR message IN messages:
-        message_relationships = extract_relationships_from_text(
-            text=message.content,
-            entities=entities,
-            context=session_context
-        )
-        relationships.extend(message_relationships)
-    
-    // 3. Relationship Validation and Deduplication
-    validated_relationships = validate_relationships(relationships)
-    unique_relationships = deduplicate_relationships(validated_relationships)
-    
-    // 4. Store in Graph Database
-    FOR relationship IN unique_relationships:
-        store_relationship(
-            source=relationship.source,
-            target=relationship.target,
-            relationship_type=relationship.relationship,
-            metadata=relationship.metadata,
-            session=session_context
-        )
-    
-    RETURN unique_relationships
-END FUNCTION
-```
-
-**Graph Update Flow**:
-```
-FUNCTION update_graph_memories(existing_memories, new_memories, session_context):
-    // 1. Prepare Update Prompt
-    update_prompt = build_graph_update_prompt(existing_memories, new_memories)
-    
-    // 2. Generate Update Instructions
-    update_instructions = llm_provider.generate_structured_response(
-        prompt=update_prompt,
-        format="json_list"
-    )
-    
-    // 3. Process Update Instructions
-    updated_relationships = []
-    FOR instruction IN update_instructions:
-        IF instruction.action == "UPDATE":
-            updated_relationship = update_relationship(
-                source=instruction.source,
-                target=instruction.target,
-                new_relationship=instruction.relationship,
-                session=session_context
-            )
-            updated_relationships.append(updated_relationship)
-        
-        ELIF instruction.action == "ADD":
-            new_relationship = add_relationship(
-                source=instruction.source,
-                target=instruction.target,
-                relationship=instruction.relationship,
-                session=session_context
-            )
-            updated_relationships.append(new_relationship)
-    
-    // 4. Validate Graph Consistency
-    validate_graph_consistency(updated_relationships, session_context)
-    
-    RETURN updated_relationships
-END FUNCTION
-```
-
-**Graph Search and Retrieval**:
-```
-FUNCTION search_graph_relationships(query, session_context, max_depth=2):
-    // 1. Entity Recognition in Query
-    query_entities = extract_entities_from_query(query)
-    
-    // 2. Direct Relationship Search
-    direct_relationships = []
-    FOR entity IN query_entities:
-        relationships = get_relationships_for_entity(
-            entity=entity,
-            session=session_context
-        )
-        direct_relationships.extend(relationships)
-    
-    // 3. Multi-hop Relationship Search
-    extended_relationships = []
-    IF max_depth > 1:
-        FOR relationship IN direct_relationships:
-            connected_relationships = get_connected_relationships(
-                entity=relationship.target,
-                depth=max_depth - 1,
-                session=session_context
-            )
-            extended_relationships.extend(connected_relationships)
-    
-    // 4. Relevance Scoring
-    scored_relationships = score_relationship_relevance(
-        relationships=direct_relationships + extended_relationships,
-        query=query
-    )
-    
-    // 5. Format for Response
-    formatted_relationships = format_relationships_for_response(scored_relationships)
-    
-    RETURN formatted_relationships
-END FUNCTION
-```
-
-### 4. Graph Storage Integration
-
-**Dual Storage Strategy**:
-- **Vector Store**: For semantic similarity search of memory content
-- **Graph Store**: For relationship-based queries and entity connections
-- **Synchronized Operations**: Ensure consistency between vector and graph representations
-
-**Integration Patterns**:
-```
-FUNCTION add_memory_with_graph(content, embeddings, metadata, session_context):
-    // 1. Store in Vector Database
-    vector_memory_id = vector_store.insert(
-        content=content,
-        embeddings=embeddings,
-        metadata=metadata
-    )
-    
-    // 2. Extract and Store Relationships
-    relationships = extract_relationships([{"content": content}], session_context)
-    graph_memory_ids = []
-    
-    FOR relationship IN relationships:
-        graph_memory_id = graph_store.add_relationship(
-            source=relationship.source,
-            target=relationship.target,
-            relationship_type=relationship.relationship,
-            vector_memory_id=vector_memory_id,
-            metadata=metadata
-        )
-        graph_memory_ids.append(graph_memory_id)
-    
-    // 3. Link Vector and Graph Memories
-    link_vector_graph_memories(vector_memory_id, graph_memory_ids)
-    
-    RETURN {
-        "vector_id": vector_memory_id,
-        "graph_ids": graph_memory_ids,
-        "relationships": relationships
+```csharp
+[TestClass]
+public class VectorStoreIntegrationTests
+{
+    [TestMethod]
+    public async Task EndToEndWorkflow_ShouldWorkCorrectly()
+    {
+        // Test complete workflow from memory addition to search
+        // with session pattern ensuring proper cleanup
     }
-END FUNCTION
+
+    [TestMethod]
+    public async Task ConcurrentOperations_ShouldNotInterfere()
+    {
+        // Test concurrent operations with session isolation
+        // ensuring no cross-contamination between sessions
+    }
+}
 ```
 
-**Hybrid Search Strategy**:
-```
-FUNCTION hybrid_search(query, session_context, include_graph=True):
-    // 1. Vector-based Semantic Search
-    vector_results = vector_store.search(
-        query=query,
-        session_filters=session_context,
-        limit=10
-    )
-    
-    // 2. Graph-based Relationship Search
-    graph_results = []
-    IF include_graph:
-        graph_results = search_graph_relationships(
-            query=query,
-            session_context=session_context
-        )
-    
-    // 3. Combine and Rank Results
-    combined_results = combine_vector_graph_results(
-        vector_results=vector_results,
-        graph_results=graph_results,
-        query=query
-    )
-    
-    // 4. Re-rank by Relevance
-    final_results = rerank_hybrid_results(combined_results, query)
-    
-    RETURN {
-        "memories": vector_results,
-        "relationships": graph_results,
-        "combined_score": final_results
-    }
-END FUNCTION
-``` 
+## Conclusion
+
+The enhanced Vector Storage system with Database Session Pattern provides a robust, reliable, and performant foundation for semantic similarity search operations. Key benefits include:
+
+- **Simplified Deployment**: No external dependencies with SQLite and sqlite-vec
+- **Reliable Resource Management**: Guaranteed connection cleanup and proper WAL checkpoint handling
+- **Test Isolation**: Complete separation between test runs with automatic cleanup
+- **Session-Scoped Operations**: All vector operations properly scoped within database sessions
+- **Performance Optimization**: Optimized SQLite operations with proper indexing and caching
+- **Production Ready**: Connection pooling, health monitoring, and comprehensive error handling
+
+This architecture ensures that the Memory MCP Server can reliably handle vector storage operations in both development and production environments while maintaining high performance and data integrity. 

@@ -27,13 +27,13 @@ public static class MemoryTestDataFactory
     /// <summary>
     /// Generates test data for session context scenarios.
     /// </summary>
-    public static IEnumerable<object[]> GetSessionContextTestCases()
+    public static IEnumerable<object?[]> GetSessionContextTestCases()
     {
-        yield return new object[] { "user1", null!, null!, "User-only session" };
-        yield return new object[] { "user1", "agent1", null!, "User-agent session" };
-        yield return new object[] { "user1", "agent1", "run1", "Full session context" };
-        yield return new object[] { "user2", "agent2", "run2", "Different full session" };
-        yield return new object[] { "user1", null!, "run1", "User-run session (no agent)" };
+        yield return new object?[] { "user1", null, null, "User-only session" };
+        yield return new object?[] { "user1", "agent1", null, "User-agent session" };
+        yield return new object?[] { "user1", "agent1", "run1", "Full session context" };
+        yield return new object?[] { "user2", "agent2", "run2", "Different full session" };
+        yield return new object?[] { "user1", null, "run1", "User-run session (no agent)" };
     }
 
     /// <summary>
@@ -109,24 +109,24 @@ public static class MemoryTestDataFactory
     /// <summary>
     /// Generates test data for memory metadata scenarios.
     /// </summary>
-    public static IEnumerable<object[]> GetMetadataTestCases()
+    public static IEnumerable<object?[]> GetMetadataTestCases()
     {
         yield return new object?[] { 
             null, 
             "Null metadata" 
         };
         
-        yield return new object[] { 
+        yield return new object?[] { 
             new Dictionary<string, object>(), 
             "Empty metadata dictionary" 
         };
         
-        yield return new object[] { 
+        yield return new object?[] { 
             new Dictionary<string, object> { { "key1", "value1" } }, 
             "Single metadata entry" 
         };
         
-        yield return new object[] { 
+        yield return new object?[] { 
             new Dictionary<string, object> 
             { 
                 { "key1", "value1" }, 
@@ -136,7 +136,7 @@ public static class MemoryTestDataFactory
             "Multiple metadata entries with different types" 
         };
         
-        yield return new object[] { 
+        yield return new object?[] { 
             new Dictionary<string, object> 
             { 
                 { "source", "api" }, 
