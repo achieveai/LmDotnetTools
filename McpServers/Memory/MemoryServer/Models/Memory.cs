@@ -105,7 +105,8 @@ public class Memory
             CreatedAt = this.CreatedAt,
             UpdatedAt = this.UpdatedAt,
             Version = this.Version,
-            Score = score
+            Score = score,
+            Embedding = this.Embedding
         };
         return copy;
     }
