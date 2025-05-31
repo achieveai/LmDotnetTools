@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using ModelContextProtocol;
+using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -12,5 +13,5 @@ public class McpMiddlewareConfiguration
     /// Dictionary of MCP client configurations
     /// </summary>
     [JsonPropertyName("clients")]
-    public Dictionary<string, McpServerConfig> Clients { get; set; } = new();
+    public Dictionary<string, object> Clients { get; set; } = new();
 }

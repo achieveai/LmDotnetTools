@@ -1,10 +1,31 @@
 namespace MemoryServer.Models;
 
 /// <summary>
+/// MCP transport mode options.
+/// </summary>
+public enum TransportMode
+{
+    /// <summary>
+    /// Server-Sent Events (SSE) transport over HTTP.
+    /// </summary>
+    SSE,
+
+    /// <summary>
+    /// Standard Input/Output (STDIO) transport.
+    /// </summary>
+    STDIO
+}
+
+/// <summary>
 /// Configuration options for the Memory MCP Server.
 /// </summary>
 public class MemoryServerOptions
 {
+    /// <summary>
+    /// MCP transport configuration options.
+    /// </summary>
+    public TransportOptions Transport { get; set; } = new();
+
     /// <summary>
     /// Database configuration options.
     /// </summary>
@@ -29,6 +50,37 @@ public class MemoryServerOptions
     /// Session defaults configuration options.
     /// </summary>
     public SessionDefaultsOptions SessionDefaults { get; set; } = new();
+}
+
+/// <summary>
+/// MCP transport configuration options.
+/// </summary>
+public class TransportOptions
+{
+    /// <summary>
+    /// Transport mode to use (SSE or STDIO).
+    /// </summary>
+    public TransportMode Mode { get; set; } = TransportMode.SSE;
+
+    /// <summary>
+    /// Port to listen on for SSE transport.
+    /// </summary>
+    public int Port { get; set; } = 5000;
+
+    /// <summary>
+    /// Host to bind to for SSE transport.
+    /// </summary>
+    public string Host { get; set; } = "localhost";
+
+    /// <summary>
+    /// Whether to enable CORS for SSE transport.
+    /// </summary>
+    public bool EnableCors { get; set; } = true;
+
+    /// <summary>
+    /// CORS origins to allow for SSE transport.
+    /// </summary>
+    public string[] AllowedOrigins { get; set; } = ["http://localhost:3000", "http://127.0.0.1:3000"];
 }
 
 /// <summary>

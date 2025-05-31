@@ -11,7 +11,6 @@ using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol.Transport;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
@@ -34,50 +33,41 @@ public static class Program
 
         Console.WriteLine("Example Python MCP Client Demo");
 
-        // Create the MCP client to connect to the Python server
-        List<McpServerConfig> clientsConfigs = [
-            new McpServerConfig {
-                Id = "python-mcp",
-                Name = "Python MCP Server",
-                Arguments = [
-                    "--image",
-                    "pyexec:latest",
-                    "--code-dir",
-                    GetWorkspaceRootPath() + "/.code_workspace"
-                ],
-                Location = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
-                TransportType = TransportTypes.StdIo,
-                TransportOptions = new Dictionary<string, string> {
-                    ["command"] = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat --image pyexec:latest --code-dir {GetWorkspaceRootPath()}/.code_workspace"
-                }
-            },
-            new McpServerConfig {
-                Id = "thinking",
-                Name = "Sequential Thinking",
-                TransportType = TransportTypes.StdIo,
-                TransportOptions = new Dictionary<string, string> {
-                    ["command"] = "npx -y @modelcontextprotocol/server-sequential-thinking",
-                }
-            },
-            new McpServerConfig {
-                Id = "memory",
-                Name = "Memory",
-                TransportType = TransportTypes.StdIo,
-                TransportOptions = new Dictionary<string, string> {
-                    ["command"] = "npx -y @modelcontextprotocol/server-memory",
-                    ["env"] = JsonSerializer.Serialize(new Dictionary<string, string> {
-                        ["MEMORY_FILE_PATH"] = "analyst_memory.json"
-                    })
-                }
-            },
-        ];
+        // Create the MCP client to connect to the Python server using new 0.2.x API
+        var pythonTransport = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "python-mcp",
+            Command = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
+            Arguments = [
+                "--image",
+                "pyexec:latest",
+                "--code-dir",
+                GetWorkspaceRootPath() + "/.code_workspace"
+            ]
+        });
 
+        var thinkingTransport = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "thinking",
+            Command = "npx",
+            Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+        });
 
-        var pythonMcpClients = await Task.WhenAll(clientsConfigs.Select(client => McpClientFactory.CreateAsync(client)));
+        var memoryTransport = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "memory",
+            Command = "npx",
+            Arguments = ["-y", "@modelcontextprotocol/server-memory"]
+        });
+
+        var transports = new[] { pythonTransport, thinkingTransport, memoryTransport };
+        var clientIds = new[] { "python-mcp", "thinking", "memory" };
+
+        var pythonMcpClients = await Task.WhenAll(transports.Select(transport => McpClientFactory.CreateAsync(transport)));
 
         try
         {
-            var tools = await Task.WhenAll(pythonMcpClients.Select(client => client.ListToolsAsync()));
+            var tools = await Task.WhenAll(pythonMcpClients.Select(client => client.ListToolsAsync().AsTask()));
 
             foreach (var tool in tools.SelectMany(tools => tools))
             {
@@ -99,7 +89,7 @@ public static class Program
             var llmAgent = anthropicAgent;
 
             // Create the agent pipeline with MCP middleware
-            var mcpClientDictionary = clientsConfigs.Zip(pythonMcpClients.Zip(tools)).ToDictionary(pair => pair.First.Id, pair => pair.Second.First);
+            var mcpClientDictionary = clientIds.Zip(pythonMcpClients.Zip(tools)).ToDictionary(pair => pair.First, pair => pair.Second.First);
 
             // Create the middleware using the factory
             var mcpMiddlewareFactory = new McpMiddlewareFactory();

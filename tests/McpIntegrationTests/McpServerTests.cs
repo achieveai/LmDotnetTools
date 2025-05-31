@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol.Transport;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -21,20 +20,14 @@ public class McpServerTests
     [Fact]
     public async Task GreetingTool_SayHello_ReturnsGreeting()
     {
-        var serverOption = new McpServerConfig
+        var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
-            Id = "test-server",
-            Name = "Test Server",
-            TransportType = TransportTypes.StdIo,
-            Location = ServerLocation,
-            Arguments = [],
-            TransportOptions = new Dictionary<string, string>
-            {
-                ["command"] = ServerLocation
-            }
-        };
+            Name = "test-server",
+            Command = ServerLocation,
+            Arguments = Array.Empty<string>()
+        });
 
-        var client = await McpClientFactory.CreateAsync(serverOption);
+        var client = await McpClientFactory.CreateAsync(transport);
         try
         {
             // Create middleware with the mock client
@@ -100,21 +93,15 @@ public class McpServerTests
     [Fact]
     public async Task CalculatorTool_Add_ReturnsCorrectResult()
     {
-        // Create a mock client directly
-        var serverOption = new McpServerConfig
+        // Create a client using the new transport API
+        var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
-            Id = "test-server",
-            Name = "Test Server",
-            TransportType = TransportTypes.StdIo,
-            Location = ServerLocation,
-            Arguments = [],
-            TransportOptions = new Dictionary<string, string>
-            {
-                ["command"] = ServerLocation
-            }
-        };
+            Name = "test-server",
+            Command = ServerLocation,
+            Arguments = Array.Empty<string>()
+        });
 
-        var client = await McpClientFactory.CreateAsync(serverOption);
+        var client = await McpClientFactory.CreateAsync(transport);
         try
         {
             // Prepare arguments for the Add operation

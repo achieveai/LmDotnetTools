@@ -1,7 +1,7 @@
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol.Transport;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -35,20 +35,14 @@ public class MemoryMcpServerIntegrationTests : IDisposable
     {
         if (_client == null)
         {
-            var serverOption = new McpServerConfig
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
             {
-                Id = "memory-server",
-                Name = "Memory MCP Server",
-                TransportType = TransportTypes.StdIo,
-                Location = _serverLocation,
-                Arguments = [],
-                TransportOptions = new Dictionary<string, string>
-                {
-                    ["command"] = _serverLocation
-                }
-            };
+                Name = "memory-server",
+                Command = _serverLocation,
+                Arguments = Array.Empty<string>()
+            });
 
-            _client = await McpClientFactory.CreateAsync(serverOption);
+            _client = await McpClientFactory.CreateAsync(transport);
         }
         return _client;
     }
@@ -308,8 +302,8 @@ public class MemoryMcpServerIntegrationTests : IDisposable
         // Arrange
         var client = await GetClientAsync();
 
-        // Act & Assert - Expect McpClientException, not generic Exception
-        await Assert.ThrowsAsync<ModelContextProtocol.Client.McpClientException>(async () =>
+        // Act & Assert - Expect ModelContextProtocol.McpException which is what 0.2.x actually throws
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(async () =>
         {
             await client.CallToolAsync("invalid_tool_name", new Dictionary<string, object?>());
         });
@@ -334,8 +328,8 @@ public class MemoryMcpServerIntegrationTests : IDisposable
         Console.WriteLine($"DEBUG: missing params response: {responseText}");
         
         // The response should be a plain text error message from the MCP framework
-        Assert.Contains("Missing required parameter", responseText);
-        Assert.Contains("content", responseText);
+        Assert.Contains("An error occurred invoking", responseText);
+        Assert.Contains("memory_add", responseText);
     }
 
     [Fact]

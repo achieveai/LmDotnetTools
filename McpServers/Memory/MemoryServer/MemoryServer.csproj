@@ -13,7 +13,8 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.5" />
-    <PackageReference Include="ModelContextProtocol" Version="0.1.0-preview.4" />
+    <PackageReference Include="ModelContextProtocol" Version="0.2.0-preview.2" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.2.0-preview.2" />
     <PackageReference Include="sqlite-vec" Version="0.1.7-alpha.2.1" />
     <PackageReference Include="System.Text.Json" Version="9.0.5" />
   </ItemGroup>
@@ -22,7 +23,8 @@
     <ProjectReference Include="..\..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
-    <ProjectReference Include="..\..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
+    <!-- Temporarily removed McpMiddleware reference to fix build -->
+    <!-- <ProjectReference Include="..\..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" /> -->
   </ItemGroup>
 
 </Project>

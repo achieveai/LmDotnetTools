@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol.Transport;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -40,20 +39,14 @@ public class McpTransportIntegrationTests
     {
         // Arrange - Setup server and client
         using var cts = new CancellationTokenSource();
-        var serverOption = new McpServerConfig
+        var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
-            Id = "test-server",
-            Name = "Test Server",
-            TransportType = TransportTypes.StdIo,
-            Location = McpServerTests.ServerLocation,
-            Arguments = [],
-            TransportOptions = new Dictionary<string, string>
-            {
-                ["command"] = McpServerTests.ServerLocation
-            }
-        };
+            Name = "test-server",
+            Command = McpServerTests.ServerLocation,
+            Arguments = Array.Empty<string>()
+        });
 
-        var client = await McpClientFactory.CreateAsync(serverOption);
+        var client = await McpClientFactory.CreateAsync(transport);
 
         try
         {
@@ -97,20 +90,14 @@ public class McpTransportIntegrationTests
     {
         // Arrange - Setup server and client
         using var cts = new CancellationTokenSource();
-        var serverOption = new McpServerConfig
+        var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
-            Id = "test-server",
-            Name = "Test Server",
-            TransportType = TransportTypes.StdIo,
-            Location = McpServerTests.ServerLocation,
-            Arguments = [],
-            TransportOptions = new Dictionary<string, string>
-            {
-                ["command"] = McpServerTests.ServerLocation
-            }
-        };
+            Name = "test-server",
+            Command = McpServerTests.ServerLocation,
+            Arguments = Array.Empty<string>()
+        });
 
-        var client = await McpClientFactory.CreateAsync(serverOption);
+        var client = await McpClientFactory.CreateAsync(transport);
 
         try
         {

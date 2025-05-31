@@ -89,7 +89,7 @@ public class McpMiddleware : IStreamingMiddleware
             var client = kvp.Value;
 
             // Get available tools from this client asynchronously
-            var tools = await client.ListToolsAsync(cancellationToken);
+            var tools = await client.ListToolsAsync();
 
             foreach (var tool in tools)
             {
@@ -140,7 +140,7 @@ public class McpMiddleware : IStreamingMiddleware
 
         foreach (var kvp in mcpClients)
         {
-            var tools = await kvp.Value.ListToolsAsync(cancellationToken);
+            var tools = await kvp.Value.ListToolsAsync();
 
             foreach (var tool in tools)
             {
