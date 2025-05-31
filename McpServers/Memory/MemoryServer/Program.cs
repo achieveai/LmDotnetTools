@@ -10,12 +10,8 @@ using ModelContextProtocol.Server;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// Configure logging to stderr for MCP protocol
-builder.Logging.AddConsole(consoleLogOptions =>
-{
-    // Configure all logs to go to stderr so they don't interfere with MCP STDIO communication
-    consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
-});
+// Configure logging for production use
+builder.Logging.AddConsole();
 
 // Add services to the container
 builder.Services.AddMemoryCache();
@@ -62,7 +58,7 @@ builder.Services.AddScoped<SessionMcpTools>();
 // TODO: Register LLM providers (will be configured based on settings)
 // For now, we'll focus on basic memory and graph operations without LLM integration
 
-// Add MCP Server with tools
+// Add MCP Server with STDIO transport (reverting from SSE due to method not available)
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
@@ -78,16 +74,21 @@ try
 }
 catch (Exception ex)
 {
-    Console.Error.WriteLine($"❌ Database initialization failed: {ex.Message}");
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
+    logger.LogError(ex, "Database initialization failed: {Message}", ex.Message);
     throw;
 }
 
 try
 {
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
+    logger.LogInformation("🚀 Memory MCP Server starting with STDIO transport");
+    
     await app.RunAsync();
 }
 catch (Exception ex)
 {
-    Console.Error.WriteLine($"❌ Server failed to start: {ex.Message}");
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
+    logger.LogError(ex, "Server failed to start: {Message}", ex.Message);
     throw;
 } 

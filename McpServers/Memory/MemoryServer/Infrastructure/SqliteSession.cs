@@ -208,17 +208,19 @@ public class SqliteSession : ISqliteSession
 
     private async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
-        // Enable extensions for sqlite-vec
-        connection.EnableExtensions(true);
-        
+        // Load sqlite-vec extension (required for vector functionality)
         try
         {
+            connection.EnableExtensions(true);
+            
+            // Load sqlite-vec extension - this is required for vector functionality
             connection.LoadExtension("vec0");
-            _logger.LogDebug("sqlite-vec extension loaded successfully for session {SessionId}", SessionId);
+            _logger.LogInformation("sqlite-vec extension loaded successfully for session {SessionId}", SessionId);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to load sqlite-vec extension for session {SessionId}", SessionId);
+            _logger.LogError(ex, "Failed to load sqlite-vec extension for session {SessionId}. Vector functionality requires this extension.", SessionId);
+            throw new InvalidOperationException("sqlite-vec extension is required for vector functionality but could not be loaded. Ensure the sqlite-vec NuGet package is properly installed.", ex);
         }
 
         // Configure SQLite pragmas for optimal performance

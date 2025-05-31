@@ -230,24 +230,14 @@ public class SqliteManager : IDisposable
             // Enable extension loading
             connection.EnableExtensions(true);
             
-            // Try to load sqlite-vec extension
-            // Note: In production, you would need to have the sqlite-vec extension available
-            // For now, we'll implement a fallback vector storage approach
-            try
-            {
-                connection.LoadExtension("vec0");
-                _logger.LogInformation("SQLite-vec extension loaded successfully");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "SQLite-vec extension not available, using fallback vector storage");
-                // We'll implement vector storage using BLOB columns instead
-            }
+            // Load sqlite-vec extension - this is required for vector functionality
+            connection.LoadExtension("vec0");
+            _logger.LogInformation("sqlite-vec extension loaded successfully");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to configure SQLite extensions");
-            throw;
+            _logger.LogError(ex, "Failed to load sqlite-vec extension. Vector functionality requires this extension.");
+            throw new InvalidOperationException("sqlite-vec extension is required for vector functionality but could not be loaded. Ensure the sqlite-vec NuGet package is properly installed.", ex);
         }
     }
 
