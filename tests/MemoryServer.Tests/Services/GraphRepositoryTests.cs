@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
+using System.Collections.Concurrent;
 
 namespace MemoryServer.Tests.Services;
 
@@ -19,48 +20,29 @@ namespace MemoryServer.Tests.Services;
 [Collection("GraphRepository")]
 public class GraphRepositoryTests : IDisposable
 {
-    private readonly SqliteManager _sqliteManager;
+    private readonly TestSqliteSessionFactory _sessionFactory;
     private readonly GraphRepository _repository;
     private readonly Mock<ILogger<GraphRepository>> _mockLogger;
-    private readonly string _dbPath;
-    private static int _instanceCounter = 0;
+    private readonly Mock<ILoggerFactory> _mockLoggerFactory;
     private readonly int _instanceId;
+    private static int _instanceCounter = 0;
 
     public GraphRepositoryTests()
     {
         _instanceId = Interlocked.Increment(ref _instanceCounter);
         
-        // Use proper shared in-memory database URI format to eliminate file locking issues
-        var uniqueDbName = $"test_memory_{_instanceId}_{Guid.NewGuid():N}";
-        var connectionString = $"Data Source=file:{uniqueDbName}?mode=memory&cache=shared;";
-        _dbPath = $":memory:{uniqueDbName}"; // For logging purposes only
-
         _mockLogger = new Mock<ILogger<GraphRepository>>();
         
-        // Create mock options for SqliteManager
-        var mockOptions = new Mock<IOptions<DatabaseOptions>>();
-        mockOptions.Setup(o => o.Value).Returns(new DatabaseOptions 
-        { 
-            ConnectionString = connectionString,
-            MaxConnections = 10,
-            BusyTimeout = 5000,
-            EnableWAL = false, // Disable WAL for in-memory databases
-            CommandTimeout = 10
-        });
+        // Create a simple logger factory that returns NullLogger instances
+        _mockLoggerFactory = new Mock<ILoggerFactory>();
+        _mockLoggerFactory.Setup(f => f.CreateLogger(It.IsAny<string>()))
+            .Returns(new Mock<ILogger>().Object);
         
-        var mockSqliteLogger = new Mock<ILogger<SqliteManager>>();
+        // Create TestSqliteSessionFactory for proper test isolation
+        _sessionFactory = new TestSqliteSessionFactory(_mockLoggerFactory.Object);
         
-        _sqliteManager = new SqliteManager(mockOptions.Object, mockSqliteLogger.Object);
-        
-        // Initialize database schema
-        var initTask = _sqliteManager.InitializeDatabaseAsync();
-        
-        if (!initTask.Wait(TimeSpan.FromSeconds(30)))
-        {
-            throw new TimeoutException("Database initialization timed out after 30 seconds");
-        }
-        
-        _repository = new GraphRepository(_sqliteManager, _mockLogger.Object);
+        // Initialize the repository with session factory
+        _repository = new GraphRepository(_sessionFactory, _mockLogger.Object);
     }
 
     #region Entity CRUD Tests
@@ -239,65 +221,6 @@ public class GraphRepositoryTests : IDisposable
 
     #endregion
 
-    #region Basic Database Test
-
-    [Fact]
-    public async Task BasicDatabaseTest_InMemory_ShouldWork()
-    {
-        // Use in-memory database to avoid file locking issues
-        var uniqueDbName = $"basic_test_{Guid.NewGuid():N}";
-        var connectionString = $"Data Source=file:{uniqueDbName}?mode=memory&cache=shared;";
-        
-        SqliteManager? sqliteManager = null;
-        
-        try
-        {
-            // Create SqliteManager
-            var mockOptions = new Mock<IOptions<DatabaseOptions>>();
-            mockOptions.Setup(x => x.Value).Returns(new DatabaseOptions
-            {
-                ConnectionString = connectionString,
-                MaxConnections = 10,
-                BusyTimeout = 5000,
-                EnableWAL = false
-            });
-            
-            var mockLogger = new Mock<ILogger<SqliteManager>>();
-            sqliteManager = new SqliteManager(mockOptions.Object, mockLogger.Object);
-            
-            // Initialize database
-            await sqliteManager.InitializeDatabaseAsync();
-            
-            // Test connection pooling
-            using (var conn1 = await sqliteManager.GetConnectionAsync())
-            {
-                using var cmd = conn1.CreateCommand();
-                cmd.CommandText = "CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT)";
-                await cmd.ExecuteNonQueryAsync();
-                
-                using var insertCmd = conn1.CreateCommand();
-                insertCmd.CommandText = "INSERT INTO test_table (name) VALUES ('test')";
-                await insertCmd.ExecuteNonQueryAsync();
-            }
-            
-            // Test with second connection
-            using (var conn2 = await sqliteManager.GetConnectionAsync())
-            {
-                using var selectCmd = conn2.CreateCommand();
-                selectCmd.CommandText = "SELECT COUNT(*) FROM test_table";
-                var count = await selectCmd.ExecuteScalarAsync();
-                
-                Assert.Equal(1, Convert.ToInt32(count));
-            }
-        }
-        finally
-        {
-            sqliteManager?.Dispose();
-        }
-    }
-
-    #endregion
-
     #region Test Data
 
     public static IEnumerable<object[]> EntityTestCases => new List<object[]>
@@ -429,8 +352,8 @@ public class GraphRepositoryTests : IDisposable
     {
         try
         {
-            // Dispose the SqliteManager to close all its connections
-            _sqliteManager?.Dispose();
+            // Cleanup the TestSqliteSessionFactory to remove test database files
+            _sessionFactory?.Cleanup();
             
             // Force garbage collection to help release any remaining resources
             GC.Collect();

@@ -6,17 +6,18 @@ namespace MemoryServer.Infrastructure;
 /// <summary>
 /// Generates unique integer IDs for memories using a secure auto-incrementing sequence.
 /// Provides better LLM integration compared to UUIDs while maintaining uniqueness.
+/// Uses Database Session Pattern for reliable connection management.
 /// </summary>
 public class MemoryIdGenerator
 {
-    private readonly SqliteManager _sqliteManager;
+    private readonly ISqliteSessionFactory _sessionFactory;
     private readonly ILogger<MemoryIdGenerator> _logger;
     private readonly SemaphoreSlim _generationSemaphore;
 
-    public MemoryIdGenerator(SqliteManager sqliteManager, ILogger<MemoryIdGenerator> logger)
+    public MemoryIdGenerator(ISqliteSessionFactory sessionFactory, ILogger<MemoryIdGenerator> logger)
     {
-        _sqliteManager = sqliteManager;
-        _logger = logger;
+        _sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _generationSemaphore = new SemaphoreSlim(1, 1);
     }
 
@@ -30,10 +31,9 @@ public class MemoryIdGenerator
         
         try
         {
-            using var connection = await _sqliteManager.GetConnectionAsync(cancellationToken);
-            using var transaction = connection.BeginTransaction();
+            await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
             
-            try
+            return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
             {
                 using var command = connection.CreateCommand();
                 command.Transaction = transaction;
@@ -57,16 +57,9 @@ public class MemoryIdGenerator
                     _logger.LogWarning("Generated ID {Id} is approaching maximum integer value", id);
                 }
                 
-                transaction.Commit();
-                
                 _logger.LogDebug("Generated memory ID: {Id}", id);
                 return id;
-            }
-            catch
-            {
-                transaction.Rollback();
-                throw;
-            }
+            });
         }
         catch (Exception ex)
         {
@@ -94,10 +87,9 @@ public class MemoryIdGenerator
         
         try
         {
-            using var connection = await _sqliteManager.GetConnectionAsync(cancellationToken);
-            using var transaction = connection.BeginTransaction();
+            await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
             
-            try
+            return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
             {
                 var ids = new List<int>();
                 
@@ -120,16 +112,9 @@ public class MemoryIdGenerator
                     ids.Add(id);
                 }
                 
-                transaction.Commit();
-                
                 _logger.LogDebug("Generated {Count} memory IDs: {Ids}", count, string.Join(", ", ids));
                 return ids;
-            }
-            catch
-            {
-                transaction.Rollback();
-                throw;
-            }
+            });
         }
         catch (Exception ex)
         {
@@ -149,15 +134,18 @@ public class MemoryIdGenerator
     {
         try
         {
-            using var connection = await _sqliteManager.GetConnectionAsync(cancellationToken);
-            using var command = connection.CreateCommand();
+            await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
             
-            command.CommandText = @"
-                SELECT COUNT(*) FROM memory_id_sequence WHERE id <= @id";
-            command.Parameters.AddWithValue("@id", id);
-            
-            var count = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
-            return count > 0;
+            return await session.ExecuteAsync(async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+                    SELECT COUNT(*) FROM memory_id_sequence WHERE id <= @id";
+                command.Parameters.AddWithValue("@id", id);
+                
+                var count = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                return count > 0;
+            });
         }
         catch (Exception ex)
         {
@@ -173,13 +161,16 @@ public class MemoryIdGenerator
     {
         try
         {
-            using var connection = await _sqliteManager.GetConnectionAsync(cancellationToken);
-            using var command = connection.CreateCommand();
+            await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
             
-            command.CommandText = "SELECT COALESCE(MAX(id), 0) FROM memory_id_sequence";
-            
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-            return Convert.ToInt32(result);
+            return await session.ExecuteAsync(async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT COALESCE(MAX(id), 0) FROM memory_id_sequence";
+                
+                var result = await command.ExecuteScalarAsync(cancellationToken);
+                return Convert.ToInt32(result);
+            });
         }
         catch (Exception ex)
         {
@@ -195,30 +186,40 @@ public class MemoryIdGenerator
     {
         try
         {
-            using var connection = await _sqliteManager.GetConnectionAsync(cancellationToken);
-            using var command = connection.CreateCommand();
+            await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
             
-            command.CommandText = @"
-                SELECT 
-                    COUNT(*) as total_generated,
-                    MIN(id) as min_id,
-                    MAX(id) as max_id
-                FROM memory_id_sequence";
-            
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            
-            if (await reader.ReadAsync(cancellationToken))
+            return await session.ExecuteAsync(async connection =>
             {
-                return new IdGenerationStats
+                using var command = connection.CreateCommand();
+                command.CommandText = @"
+                    SELECT 
+                        COUNT(*) as total_generated,
+                        MIN(id) as min_id,
+                        MAX(id) as max_id
+                    FROM memory_id_sequence";
+                
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
                 {
-                    TotalGenerated = reader.GetInt32(0), // total_generated
-                    MinId = reader.IsDBNull(1) ? 0 : reader.GetInt32(1), // min_id
-                    MaxId = reader.IsDBNull(2) ? 0 : reader.GetInt32(2), // max_id
-                    RemainingCapacity = int.MaxValue - (reader.IsDBNull(2) ? 0 : reader.GetInt32(2))
-                };
-            }
-            
-            return new IdGenerationStats();
+                    var totalGeneratedOrdinal = reader.GetOrdinal("total_generated");
+                    var minIdOrdinal = reader.GetOrdinal("min_id");
+                    var maxIdOrdinal = reader.GetOrdinal("max_id");
+                    
+                    var totalGenerated = reader.GetInt32(totalGeneratedOrdinal);
+                    var minId = reader.IsDBNull(minIdOrdinal) ? 0 : reader.GetInt32(minIdOrdinal);
+                    var maxId = reader.IsDBNull(maxIdOrdinal) ? 0 : reader.GetInt32(maxIdOrdinal);
+                    
+                    return new IdGenerationStats
+                    {
+                        TotalGenerated = totalGenerated,
+                        MinId = minId,
+                        MaxId = maxId,
+                        RemainingCapacity = int.MaxValue - maxId
+                    };
+                }
+                
+                return new IdGenerationStats();
+            });
         }
         catch (Exception ex)
         {
@@ -249,12 +250,12 @@ public class IdGenerationStats
     public int MaxId { get; set; }
 
     /// <summary>
-    /// Remaining capacity before reaching integer limit.
+    /// Remaining capacity before reaching int.MaxValue.
     /// </summary>
     public long RemainingCapacity { get; set; }
 
     /// <summary>
-    /// Percentage of integer space used.
+    /// Percentage of integer range used.
     /// </summary>
     public double UsagePercentage => TotalGenerated > 0 ? (double)TotalGenerated / int.MaxValue * 100 : 0;
 } 

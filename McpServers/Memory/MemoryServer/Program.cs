@@ -15,8 +15,19 @@ builder.Services.Configure<DatabaseOptions>(
 builder.Services.Configure<MemoryServerOptions>(
     builder.Configuration.GetSection("MemoryServer"));
 
+// Register Database Session Pattern infrastructure
+if (builder.Environment.IsDevelopment() || builder.Environment.EnvironmentName == "Testing")
+{
+    // Use test session factory for development and testing
+    builder.Services.AddSingleton<ISqliteSessionFactory, TestSqliteSessionFactory>();
+}
+else
+{
+    // Use production session factory for production
+    builder.Services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
+}
+
 // Register core infrastructure
-builder.Services.AddSingleton<SqliteManager>();
 builder.Services.AddSingleton<MemoryIdGenerator>();
 
 // Register session management
@@ -57,12 +68,12 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors();
 
-// Initialize database with better error handling
+// Initialize database with better error handling using session pattern
 try
 {
-    var sqliteManager = app.Services.GetRequiredService<SqliteManager>();
-    await sqliteManager.InitializeDatabaseAsync();
-    Console.WriteLine("✅ Database initialized successfully");
+    var sessionFactory = app.Services.GetRequiredService<ISqliteSessionFactory>();
+    await sessionFactory.InitializeDatabaseAsync();
+    Console.WriteLine("✅ Database initialized successfully with session pattern");
 }
 catch (Exception ex)
 {
@@ -72,11 +83,11 @@ catch (Exception ex)
 }
 
 // Health check endpoint
-app.MapGet("/health", async (SqliteManager db) =>
+app.MapGet("/health", async (ISqliteSessionFactory sessionFactory) =>
 {
     try
     {
-        var isHealthy = await db.HealthCheckAsync();
+        var isHealthy = await sessionFactory.HealthCheckAsync();
         return isHealthy ? Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }) 
                          : Results.Problem("Database health check failed");
     }
@@ -495,113 +506,117 @@ app.MapPost("/test/memory", async (
 });
 
 // Debug endpoint for database inspection
-app.MapGet("/debug/database", async (SqliteManager sqliteManager) =>
+app.MapGet("/debug/database", async (ISqliteSessionFactory sessionFactory) =>
 {
     try
     {
-        using var connection = await sqliteManager.GetConnectionAsync();
-        var debugInfo = new
+        await using var session = await sessionFactory.CreateSessionAsync();
+        
+        return await session.ExecuteAsync(async connection =>
         {
-            tables = new List<object>(),
-            ftsTableInfo = new List<object>(),
-            ftsContent = new List<object>(),
-            memoriesContent = new List<object>(),
-            ftsTest = new List<object>()
-        };
-
-        // Get all tables
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name";
-            using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            var debugInfo = new
             {
-                debugInfo.tables.Add(new { name = reader.GetString(0), type = reader.GetString(1) });
-            }
-        }
+                tables = new List<object>(),
+                ftsTableInfo = new List<object>(),
+                ftsContent = new List<object>(),
+                memoriesContent = new List<object>(),
+                ftsTest = new List<object>()
+            };
 
-        // Get FTS table info
-        try
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA table_info(memory_fts)";
-            using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            // Get all tables
+            using (var command = connection.CreateCommand())
             {
-                debugInfo.ftsTableInfo.Add(new 
-                { 
-                    cid = reader.GetInt32(0),
-                    name = reader.GetString(1), 
-                    type = reader.GetString(2),
-                    notnull = reader.GetInt32(3),
-                    dflt_value = reader.IsDBNull(4) ? null : reader.GetString(4),
-                    pk = reader.GetInt32(5)
-                });
+                command.CommandText = "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name";
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    debugInfo.tables.Add(new { name = reader.GetString(0), type = reader.GetString(1) });
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            debugInfo.ftsTableInfo.Add(new { error = ex.Message });
-        }
 
-        // Get FTS content
-        try
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = "SELECT memory_id, content FROM memory_fts LIMIT 5";
-            using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            // Get FTS table info
+            try
             {
-                debugInfo.ftsContent.Add(new 
-                { 
-                    memory_id = reader.GetInt32(0),
-                    content = reader.GetString(1)
-                });
+                using var command = connection.CreateCommand();
+                command.CommandText = "PRAGMA table_info(memory_fts)";
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    debugInfo.ftsTableInfo.Add(new 
+                    { 
+                        cid = reader.GetInt32(0),
+                        name = reader.GetString(1), 
+                        type = reader.GetString(2),
+                        notnull = reader.GetInt32(3),
+                        dflt_value = reader.IsDBNull(4) ? null : reader.GetString(4),
+                        pk = reader.GetInt32(5)
+                    });
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            debugInfo.ftsContent.Add(new { error = ex.Message });
-        }
-
-        // Get memories content
-        try
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = "SELECT id, content, user_id FROM memories LIMIT 5";
-            using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            catch (Exception ex)
             {
-                debugInfo.memoriesContent.Add(new 
-                { 
-                    id = reader.GetInt32(0),
-                    content = reader.GetString(1),
-                    user_id = reader.GetString(2)
-                });
+                debugInfo.ftsTableInfo.Add(new { error = ex.Message });
             }
-        }
-        catch (Exception ex)
-        {
-            debugInfo.memoriesContent.Add(new { error = ex.Message });
-        }
 
-        // Test simple FTS query
-        try
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText = "SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'test' LIMIT 3";
-            using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            // Get FTS content
+            try
             {
-                debugInfo.ftsTest.Add(new { memory_id = reader.GetInt32(0) });
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT memory_id, content FROM memory_fts LIMIT 5";
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    debugInfo.ftsContent.Add(new 
+                    { 
+                        memory_id = reader.GetInt32(0),
+                        content = reader.GetString(1)
+                    });
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            debugInfo.ftsTest.Add(new { error = ex.Message });
-        }
+            catch (Exception ex)
+            {
+                debugInfo.ftsContent.Add(new { error = ex.Message });
+            }
 
-        return Results.Ok(debugInfo);
+            // Get memories content
+            try
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT id, content, user_id FROM memories LIMIT 5";
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    debugInfo.memoriesContent.Add(new 
+                    { 
+                        id = reader.GetInt32(0),
+                        content = reader.GetString(1),
+                        user_id = reader.GetString(2)
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                debugInfo.memoriesContent.Add(new { error = ex.Message });
+            }
+
+            // Test simple FTS query
+            try
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT memory_id FROM memory_fts WHERE memory_fts MATCH 'test' LIMIT 3";
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    debugInfo.ftsTest.Add(new { memory_id = reader.GetInt32(0) });
+                }
+            }
+            catch (Exception ex)
+            {
+                debugInfo.ftsTest.Add(new { error = ex.Message });
+            }
+
+            return Results.Ok(debugInfo);
+        });
     }
     catch (Exception ex)
     {

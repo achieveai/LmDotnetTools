@@ -13,3 +13,4 @@ __pycache__
 .csproj.user
 .code_workspace/
 kv_store
+*.db
