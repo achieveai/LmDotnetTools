@@ -36,7 +36,14 @@ else
 static async Task RunSseServerAsync(string[] args, MemoryServerOptions options)
 {
     var builder = WebApplication.CreateBuilder(args);
+    ConfigureSseServices(builder);
+    var app = builder.Build();
+    await ConfigureSseApplication(app);
+    await app.RunAsync();
+}
 
+static void ConfigureSseServices(WebApplicationBuilder builder)
+{
     // Configure logging for SSE transport
     builder.Logging.AddConsole();
 
@@ -121,25 +128,25 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options)
     // Add MCP Server with HTTP transport (SSE)
     builder.Services
         .AddMcpServer()
-        .WithToolsFromAssembly();
+        .WithHttpTransport()
+        .WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
 
-    // Configure CORS if enabled
-    if (options.Transport.EnableCors)
+    // Configure CORS for testing
+    builder.Services.AddCors(corsOptions =>
     {
-        builder.Services.AddCors(corsOptions =>
+        corsOptions.AddDefaultPolicy(policy =>
         {
-            corsOptions.AddDefaultPolicy(policy =>
-            {
-                policy.WithOrigins(options.Transport.AllowedOrigins)
-                      .AllowAnyMethod()
-                      .AllowAnyHeader()
-                      .AllowCredentials();
-            });
+            policy.AllowAnyOrigin()
+                  .AllowAnyMethod()
+                  .AllowAnyHeader();
         });
-    }
+    });
+}
 
-    var app = builder.Build();
-
+static async Task ConfigureSseApplication(WebApplication app)
+{
+    var appLogger = app.Services.GetRequiredService<ILogger<Program>>();
+    
     // Initialize database with better error handling using session pattern
     try
     {
@@ -148,37 +155,17 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options)
     }
     catch (Exception ex)
     {
-        var logger = app.Services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "Database initialization failed: {Message}", ex.Message);
+        appLogger.LogError(ex, "Database initialization failed: {Message}", ex.Message);
         throw;
     }
 
-    // Configure CORS if enabled
-    if (options.Transport.EnableCors)
-    {
-        app.UseCors();
-    }
+    // Configure CORS
+    app.UseCors();
 
     // Map MCP endpoints (this creates the /sse endpoint)
     app.MapMcp();
 
-    try
-    {
-        var logger = app.Services.GetRequiredService<ILogger<Program>>();
-        logger.LogInformation("🌐 Memory MCP Server starting with SSE transport on {Host}:{Port}", 
-            options.Transport.Host, options.Transport.Port);
-        
-        // Configure the server to listen on the specified host and port
-        app.Urls.Add($"http://{options.Transport.Host}:{options.Transport.Port}");
-        
-        await app.RunAsync();
-    }
-    catch (Exception ex)
-    {
-        var logger = app.Services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "SSE server failed to start: {Message}", ex.Message);
-        throw;
-    }
+    appLogger.LogInformation("🌐 Memory MCP Server configured for SSE transport");
 }
 
 static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options)
@@ -274,7 +261,7 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
     builder.Services
         .AddMcpServer()
         .WithStdioServerTransport()
-        .WithToolsFromAssembly();
+        .WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
 
     var app = builder.Build();
 
@@ -306,6 +293,100 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
 }
 
 public partial class Program { }
+
+// Startup class for WebApplicationFactory testing
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        // Add services to the container
+        services.AddMemoryCache();
+
+        // Configure options with default values for testing
+        services.Configure<DatabaseOptions>(options =>
+        {
+            options.ConnectionString = ":memory:";
+            options.EnableWAL = false;
+        });
+        
+        services.Configure<MemoryServerOptions>(options =>
+        {
+            options.Transport.Mode = TransportMode.SSE;
+            options.Transport.Port = 0;
+            options.Transport.Host = "localhost";
+            options.Transport.EnableCors = true;
+            options.Transport.AllowedOrigins = new[] { "http://localhost:3000", "http://127.0.0.1:3000" };
+        });
+
+        // Register Database Session Pattern infrastructure for testing
+        services.AddSingleton<ISqliteSessionFactory, TestSqliteSessionFactory>();
+
+        // Register core infrastructure
+        services.AddSingleton<MemoryIdGenerator>();
+
+        // Register session management
+        services.AddScoped<ISessionManager, SessionManager>();
+        services.AddScoped<ISessionContextResolver, SessionContextResolver>();
+
+        // Register memory services
+        services.AddScoped<IMemoryRepository, MemoryRepository>();
+        services.AddScoped<IMemoryService, MemoryService>();
+
+        // Register graph database services
+        services.AddScoped<IGraphRepository, GraphRepository>();
+        services.AddScoped<IGraphExtractionService, GraphExtractionService>();
+        services.AddScoped<IGraphDecisionEngine, GraphDecisionEngine>();
+        services.AddScoped<IGraphMemoryService, GraphMemoryService>();
+
+        // Register LLM services with mock agent for testing
+        services.AddScoped<IPromptReader>(provider =>
+        {
+            var promptsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prompts", "graph-extraction.yaml");
+            return new PromptReader(promptsPath);
+        });
+
+        // Use mock agent for testing
+        services.AddScoped<IAgent>(provider => new MockAgent("test-agent"));
+
+        // Register MCP tools
+        services.AddScoped<MemoryMcpTools>();
+        services.AddScoped<SessionMcpTools>();
+
+        // Add MCP Server with HTTP transport (SSE)
+        services
+            .AddMcpServer()
+            .WithHttpTransport()
+            .WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
+
+        // Configure CORS for testing
+        services.AddCors(corsOptions =>
+        {
+            corsOptions.AddDefaultPolicy(policy =>
+            {
+                policy.AllowAnyOrigin()
+                      .AllowAnyMethod()
+                      .AllowAnyHeader();
+            });
+        });
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        // Initialize database
+        var sessionFactory = app.ApplicationServices.GetRequiredService<ISqliteSessionFactory>();
+        sessionFactory.InitializeDatabaseAsync().GetAwaiter().GetResult();
+
+        // Configure CORS
+        app.UseCors();
+
+        // Map MCP endpoints (this creates the /sse endpoint)
+        app.UseRouting();
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapMcp();
+        });
+    }
+}
 
 // Simple mock agent for when API keys are not configured
 public class MockAgent : IAgent
