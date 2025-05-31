@@ -284,4 +284,40 @@ public class MemoryMcpToolsTests
 
         Debug.WriteLine("✅ MCP memory_get_stats tool test passed");
     }
+
+    [Fact]
+    public async Task AddMemoryAsync_WithoutConnectionId_AutoGeneratesConnectionId()
+    {
+        Debug.WriteLine("Testing MCP memory_add tool with auto-generated connection ID");
+
+        // Arrange
+        _mockRepository.Reset();
+
+        // Act - Call without providing connectionId
+        var result = await _mcpTools.AddMemoryAsync(
+            content: "Test memory without connection ID",
+            userId: "test_user");
+
+        Debug.WriteLine($"Result: {JsonSerializer.Serialize(result)}");
+
+        // Assert
+        Assert.NotNull(result);
+        var resultJson = JsonSerializer.Serialize(result);
+        var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
+        
+        Assert.True(resultObj.GetProperty("success").GetBoolean());
+        Assert.True(resultObj.GetProperty("memory").GetProperty("id").GetInt32() > 0);
+        Assert.Equal("Test memory without connection ID", resultObj.GetProperty("memory").GetProperty("content").GetString());
+        Assert.Equal("test_user", resultObj.GetProperty("memory").GetProperty("user_id").GetString());
+
+        // Verify the session resolver was called with a generated connection ID (not null)
+        _mockSessionResolver.Verify(x => x.ResolveSessionContextAsync(
+            It.Is<string>(connectionId => !string.IsNullOrEmpty(connectionId)),
+            "test_user",
+            null, 
+            null,
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        Debug.WriteLine("✅ MCP memory_add tool auto-generation test passed");
+    }
 } 

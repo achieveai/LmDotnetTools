@@ -563,7 +563,6 @@ public class TestSqliteSession : ISqliteSession
             )",
 
             @"CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-                memory_id UNINDEXED,
                 content,
                 metadata,
                 content='memories',
@@ -618,17 +617,17 @@ public class TestSqliteSession : ISqliteSession
             @"CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_relationships_session ON relationships(user_id, agent_id, run_id)",
 
-            // FTS5 triggers
+            // FTS5 triggers for automatic content indexing
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
-                INSERT INTO memory_fts(memory_id, content, metadata) VALUES (new.id, new.content, new.metadata);
+                INSERT INTO memory_fts(rowid, content, metadata) VALUES (new.id, new.content, new.metadata);
             END",
             
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
-                UPDATE memory_fts SET content = new.content, metadata = new.metadata WHERE memory_id = new.id;
+                UPDATE memory_fts SET content = new.content, metadata = new.metadata WHERE rowid = new.id;
             END",
             
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
-                DELETE FROM memory_fts WHERE memory_id = old.id;
+                DELETE FROM memory_fts WHERE rowid = old.id;
             END"
         };
     }

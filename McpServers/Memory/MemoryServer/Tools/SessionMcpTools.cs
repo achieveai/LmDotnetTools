@@ -40,11 +40,11 @@ public class SessionMcpTools
     /// <returns>Session initialization result with active defaults</returns>
     [McpServerTool(Name = "memory_init_session"), Description("Initializes session defaults for the MCP connection lifetime")]
     public async Task<object> InitializeSessionAsync(
-        [Description("Default user identifier for the session")] string userId,
-        [Description("Optional default agent identifier for the session")] string? agentId = null,
-        [Description("Optional default run identifier for the session")] string? runId = null,
-        [Description("Optional session metadata as JSON string")] string? metadata = null,
-        [Description("Optional connection identifier (auto-generated if not provided)")] string? connectionId = null)
+        [Description("Default user identifier for the session")] string? userId,
+        [Description("Optional default agent identifier for the session")] string? agentId = "",
+        [Description("Optional default run identifier for the session")] string? runId = "",
+        [Description("Optional session metadata as JSON string")] string? metadata = "",
+        [Description("Optional connection identifier (auto-generated if not provided)")] string? connectionId = "")
     {
         try
         {
@@ -54,11 +54,15 @@ public class SessionMcpTools
             }
 
             // Generate connection ID if not provided
-            connectionId ??= Guid.NewGuid().ToString();
+            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
+
+            // Convert empty strings to null for session management
+            var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
+            var runIdParam = string.IsNullOrWhiteSpace(runId) ? null : runId;
 
             // Parse metadata if provided
             Dictionary<string, object>? metadataDict = null;
-            if (!string.IsNullOrEmpty(metadata))
+            if (!string.IsNullOrWhiteSpace(metadata))
             {
                 try
                 {
@@ -75,8 +79,8 @@ public class SessionMcpTools
             await _sessionManager.UpdateSessionDefaultsAsync(
                 connectionId, 
                 userId, 
-                agentId, 
-                runId, 
+                agentIdParam, 
+                runIdParam, 
                 metadataDict);
 
             _logger.LogInformation("Initialized session defaults for connection {ConnectionId}: User={UserId}, Agent={AgentId}, Run={RunId}", 
@@ -110,7 +114,7 @@ public class SessionMcpTools
     /// <returns>Current session defaults</returns>
     [McpServerTool(Name = "memory_get_session"), Description("Gets the current session defaults for a connection")]
     public async Task<object> GetSessionDefaultsAsync(
-        [Description("Connection identifier to get defaults for")] string connectionId)
+        [Description("Connection identifier to get defaults for")] string? connectionId = "")
     {
         try
         {
@@ -161,11 +165,11 @@ public class SessionMcpTools
     /// <returns>Updated session defaults</returns>
     [McpServerTool(Name = "memory_update_session"), Description("Updates session defaults for an existing connection")]
     public async Task<object> UpdateSessionDefaultsAsync(
-        [Description("Connection identifier to update")] string connectionId,
-        [Description("Optional new user identifier")] string? userId = null,
-        [Description("Optional new agent identifier")] string? agentId = null,
-        [Description("Optional new run identifier")] string? runId = null,
-        [Description("Optional new metadata as JSON string")] string? metadata = null)
+        [Description("Connection identifier to update")] string? connectionId = "",
+        [Description("Optional new user identifier")] string? userId = "",
+        [Description("Optional new agent identifier")] string? agentId = "",
+        [Description("Optional new run identifier")] string? runId = "",
+        [Description("Optional new metadata as JSON string")] string? metadata = "")
     {
         try
         {
@@ -174,9 +178,14 @@ public class SessionMcpTools
                 return new { success = false, error = "Connection ID is required" };
             }
 
+            // Convert empty strings to null for session management
+            var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
+            var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
+            var runIdParam = string.IsNullOrWhiteSpace(runId) ? null : runId;
+
             // Parse metadata if provided
             Dictionary<string, object>? metadataDict = null;
-            if (!string.IsNullOrEmpty(metadata))
+            if (!string.IsNullOrWhiteSpace(metadata))
             {
                 try
                 {
@@ -192,9 +201,9 @@ public class SessionMcpTools
             // Update session defaults
             await _sessionManager.UpdateSessionDefaultsAsync(
                 connectionId, 
-                userId, 
-                agentId, 
-                runId, 
+                userIdParam, 
+                agentIdParam, 
+                runIdParam, 
                 metadataDict);
 
             // Get updated defaults to return
@@ -232,7 +241,7 @@ public class SessionMcpTools
     /// <returns>Removal result</returns>
     [McpServerTool(Name = "memory_clear_session"), Description("Removes session defaults for a connection")]
     public async Task<object> ClearSessionDefaultsAsync(
-        [Description("Connection identifier to remove defaults for")] string connectionId)
+        [Description("Connection identifier to remove defaults for")] string? connectionId = "")
     {
         try
         {
@@ -270,22 +279,27 @@ public class SessionMcpTools
     /// <returns>Resolved session context with precedence information</returns>
     [McpServerTool(Name = "memory_resolve_session"), Description("Resolves the effective session context for the current request")]
     public async Task<object> ResolveSessionContextAsync(
-        [Description("Optional explicit user identifier")] string? userId = null,
-        [Description("Optional explicit agent identifier")] string? agentId = null,
-        [Description("Optional explicit run identifier")] string? runId = null,
-        [Description("Optional connection identifier for defaults lookup")] string? connectionId = null)
+        [Description("Optional explicit user identifier")] string? userId = "",
+        [Description("Optional explicit agent identifier")] string? agentId = "",
+        [Description("Optional explicit run identifier")] string? runId = "",
+        [Description("Optional connection identifier for defaults lookup")] string? connectionId = "")
     {
         try
         {
             // Generate connection ID if not provided
-            connectionId ??= Guid.NewGuid().ToString();
+            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
 
-            // Resolve session context using the same logic as other tools
+            // Convert empty strings to null for session resolution
+            var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
+            var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
+            var runIdParam = string.IsNullOrWhiteSpace(runId) ? null : runId;
+
+            // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
                 connectionId,
-                userId,
-                agentId,
-                runId);
+                userIdParam,
+                agentIdParam,
+                runIdParam);
 
             _logger.LogDebug("Resolved session context: {SessionContext}", sessionContext);
 

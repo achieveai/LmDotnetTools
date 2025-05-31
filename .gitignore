@@ -14,3 +14,11 @@ __pycache__
 .code_workspace/
 kv_store
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db-trace
+*.db-lock
+*.db-journal
+*.db-journal
+*.db-journal

@@ -312,8 +312,8 @@ public class MemoryRepository : IMemoryRepository
             SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, m.created_at, m.updated_at, m.version,
                    fts.rank
             FROM memory_fts fts
-            JOIN memories m ON m.id = fts.memory_id
-            WHERE fts MATCH @query 
+            JOIN memories m ON m.id = fts.rowid
+            WHERE memory_fts MATCH @query 
               AND m.user_id = @userId";
 
         // Add session context filters
