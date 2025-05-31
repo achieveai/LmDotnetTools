@@ -576,6 +576,7 @@ public class TestSqliteSession : ISqliteSession
                 agent_id TEXT,
                 run_id TEXT,
                 metadata TEXT,
+                source INTEGER NOT NULL DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 

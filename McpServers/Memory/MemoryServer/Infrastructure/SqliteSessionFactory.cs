@@ -4,6 +4,7 @@ using MemoryServer.Models;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using Microsoft.Data.Sqlite;
 
 namespace MemoryServer.Infrastructure;
 
@@ -126,6 +127,9 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         }
     }
 
+    /// <summary>
+    /// Initializes the database schema and applies any necessary migrations.
+    /// </summary>
     public async Task InitializeDatabaseAsync(CancellationToken cancellationToken = default)
     {
         await _initializationSemaphore.WaitAsync(cancellationToken);
@@ -135,11 +139,22 @@ public class SqliteSessionFactory : ISqliteSessionFactory
 
             _logger.LogInformation("Initializing database schema...");
             
-            await using var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
+            // Create session directly without going through EnsureInitializedAsync to avoid circular dependency
+            var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
+            await using var _ = session;
             
             await session.ExecuteAsync(async connection =>
             {
-                await ExecuteSchemaScriptsAsync(connection, cancellationToken);
+                // Create all tables first
+                foreach (var script in GetSchemaScripts())
+                {
+                    using var command = connection.CreateCommand();
+                    command.CommandText = script;
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                // Apply migrations for existing databases
+                await ApplyMigrationsAsync(connection, cancellationToken);
             }, cancellationToken);
 
             _isInitialized = true;
@@ -148,6 +163,39 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         finally
         {
             _initializationSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Applies database migrations for schema updates.
+    /// </summary>
+    private async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        // Check if source column exists in session_defaults table
+        using var checkCommand = connection.CreateCommand();
+        checkCommand.CommandText = "PRAGMA table_info(session_defaults)";
+        
+        var hasSourceColumn = false;
+        using var reader = await checkCommand.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var columnName = reader.GetString(1); // Column name is at index 1
+            if (columnName == "source")
+            {
+                hasSourceColumn = true;
+                break;
+            }
+        }
+        reader.Close();
+
+        // Add source column if it doesn't exist
+        if (!hasSourceColumn)
+        {
+            _logger.LogInformation("Adding missing 'source' column to session_defaults table");
+            using var alterCommand = connection.CreateCommand();
+            alterCommand.CommandText = "ALTER TABLE session_defaults ADD COLUMN source INTEGER NOT NULL DEFAULT 0";
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+            _logger.LogInformation("Successfully added 'source' column to session_defaults table");
         }
     }
 
@@ -285,6 +333,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 agent_id TEXT,
                 run_id TEXT,
                 metadata TEXT, -- JSON
+                source INTEGER NOT NULL DEFAULT 0, -- SessionDefaultsSource enum
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 
