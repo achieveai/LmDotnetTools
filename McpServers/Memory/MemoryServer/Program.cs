@@ -163,7 +163,14 @@ static async Task ConfigureSseApplication(WebApplication app)
     app.UseCors();
 
     // Map MCP endpoints (this creates the /sse endpoint)
-    app.MapMcp();
+    app.UseRouting();
+    app.UseEndpoints(endpoints =>
+    {
+        // Add basic health check endpoint for testing
+        endpoints.MapGet("/health", () => "OK");
+        
+        endpoints.MapMcp();
+    });
 
     appLogger.LogInformation("🌐 Memory MCP Server configured for SSE transport");
 }
@@ -301,6 +308,9 @@ public class Startup
     {
         // Add services to the container
         services.AddMemoryCache();
+        
+        // Add routing services (required for UseRouting)
+        services.AddRouting();
 
         // Configure options with default values for testing
         services.Configure<DatabaseOptions>(options =>
@@ -383,6 +393,9 @@ public class Startup
         app.UseRouting();
         app.UseEndpoints(endpoints =>
         {
+            // Add basic health check endpoint for testing
+            endpoints.MapGet("/health", () => "OK");
+            
             endpoints.MapMcp();
         });
     }

@@ -7,6 +7,7 @@ using Xunit.Abstractions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using System.ComponentModel;
+using MemoryServer;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -87,16 +88,26 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
     }
 
     [Fact]
-    public void McpServerServices_ShouldBeRegistered()
+    public void MemoryServerServices_ShouldBeRegistered()
     {
         // Arrange
         var services = _fixture.GetServices();
 
-        // Act & Assert - Check that basic MCP services are available
+        // Act & Assert - Check that actual MemoryServer services are available
         Assert.NotNull(services);
         
-        // The fact that the server started successfully indicates SSE support is configured
-        _output.WriteLine($"✅ Server configured with SSE support (minimal MCP server setup)");
+        // Verify core MemoryServer services are registered (not just basic MCP)
+        var memoryService = services.GetService<MemoryServer.Services.IMemoryService>();
+        var sessionManager = services.GetService<MemoryServer.Services.ISessionManager>();
+        var memoryTools = services.GetService<MemoryServer.Tools.MemoryMcpTools>();
+        var sessionTools = services.GetService<MemoryServer.Tools.SessionMcpTools>();
+        
+        Assert.NotNull(memoryService);
+        Assert.NotNull(sessionManager);
+        Assert.NotNull(memoryTools);
+        Assert.NotNull(sessionTools);
+        
+        _output.WriteLine($"✅ MemoryServer services properly registered in SSE transport");
     }
 
     public void Dispose()
@@ -106,8 +117,9 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
 }
 
 /// <summary>
-/// Test fixture for SSE integration tests using ASP.NET Core TestServer.
-/// This fixture sets up a minimal MCP server with SSE transport for testing.
+/// Test fixture for SSE integration tests using the actual MemoryServer Startup class.
+/// This fixture uses the same configuration as production MemoryServer to ensure
+/// we're testing the real implementation, not a minimal mock.
 /// </summary>
 public class SseTestServerFixture : IDisposable
 {
@@ -118,40 +130,7 @@ public class SseTestServerFixture : IDisposable
     {
         var builder = new WebHostBuilder()
             .UseEnvironment("Testing")
-            .ConfigureServices(services =>
-            {
-                // Minimal setup for SSE MCP server
-                services.AddRouting();
-                services.AddCors();
-                
-                // Add MCP Server with HTTP transport (SSE)
-                services.AddMcpServer().WithHttpTransport();
-                
-                // Configure CORS for testing
-                services.AddCors(corsOptions =>
-                {
-                    corsOptions.AddDefaultPolicy(policy =>
-                    {
-                        policy.AllowAnyOrigin()
-                              .AllowAnyMethod()
-                              .AllowAnyHeader();
-                    });
-                });
-            })
-            .Configure(app =>
-            {
-                app.UseCors();
-                app.UseRouting();
-                app.UseEndpoints(endpoints =>
-                {
-                    // Add basic health check endpoint for testing
-                    endpoints.MapGet("/health", () => "OK");
-                    
-                    // Map MCP endpoints (creates /sse and /message endpoints)
-                    // Note: These are SSE endpoints, not regular HTTP endpoints
-                    endpoints.MapMcp();
-                });
-            });
+            .UseStartup<Startup>(); // Use MemoryServer's actual Startup class
 
         _server = new TestServer(builder);
         _services = _server.Services;
