@@ -179,7 +179,7 @@ public class Startup
         var builder = new ConfigurationBuilder();
         builder.AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["MemoryServer:Database:ConnectionString"] = ":memory:",
+            ["MemoryServer:Database:ConnectionString"] = "Data Source=:memory:",
             ["MemoryServer:Database:EnableWAL"] = "false",
             ["MemoryServer:Transport:Mode"] = "SSE",
             ["MemoryServer:Transport:Port"] = "0",
@@ -217,9 +217,8 @@ public class Startup
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
     {
-        // Initialize database using Task.Run to avoid deadlock
-        var sessionFactory = app.ApplicationServices.GetRequiredService<ISqliteSessionFactory>();
-        Task.Run(async () => await sessionFactory.InitializeDatabaseAsync()).Wait();
+        // Initialize database using our extension method to avoid deadlock
+        app.ApplicationServices.InitializeDatabaseSync();
 
         // Configure CORS
         app.UseCors();

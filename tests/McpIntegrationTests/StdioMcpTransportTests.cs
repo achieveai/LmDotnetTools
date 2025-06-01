@@ -42,7 +42,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
         {
             Name = "memory-server",
             Command = _serverExecutablePath,
-            Arguments = Array.Empty<string>()
+            Arguments = new[] { "--stdio" }
         });
 
         var client = await McpClientFactory.CreateAsync(transport);

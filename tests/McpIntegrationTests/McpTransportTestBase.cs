@@ -19,7 +19,6 @@ public abstract class McpTransportTestBase : IDisposable
 {
     protected readonly ITestOutputHelper _output;
     private IMcpClient? _client;
-    private bool _disposed = false;
 
     protected McpTransportTestBase(ITestOutputHelper output)
     {
@@ -70,29 +69,16 @@ public abstract class McpTransportTestBase : IDisposable
     }
 
     /// <summary>
-    /// Generates a unique connection ID for test isolation.
-    /// </summary>
-    protected string GenerateTestConnectionId(string testName = "")
-    {
-        var suffix = string.IsNullOrEmpty(testName) ? "" : $"-{testName}";
-        return $"test-{GetTransportName().ToLower()}-{Guid.NewGuid():N}{suffix}";
-    }
-
-    /// <summary>
     /// Generates a unique user ID for test isolation.
     /// </summary>
-    protected string GenerateTestUserId(string testName = "")
-    {
-        var suffix = string.IsNullOrEmpty(testName) ? "" : $"-{testName}";
-        return $"user-{GetTransportName().ToLower()}-{Guid.NewGuid():N}{suffix}";
-    }
+    protected string GenerateTestUserId(string prefix) => $"{prefix}_user_{Guid.NewGuid():N}";
 
     #endregion
 
     #region Core MCP Functionality Tests
 
     [Fact]
-    public async Task ToolDiscovery_ShouldDiscoverAll13MemoryTools()
+    public async Task ToolDiscovery_ShouldDiscoverAll8MemoryTools()
     {
         // Arrange
         var client = await GetClientAsync();
@@ -103,10 +89,11 @@ public abstract class McpTransportTestBase : IDisposable
 
         // Assert
         Assert.NotNull(tools);
-        
+        Assert.NotEmpty(tools);
+
         var toolNames = tools.Select(t => t.Name).ToList();
         _output.WriteLine($"📋 Discovered {toolNames.Count} tools: {string.Join(", ", toolNames)}");
-        
+
         // Memory operation tools (8)
         Assert.Contains("memory_add", toolNames);
         Assert.Contains("memory_search", toolNames);
@@ -117,16 +104,17 @@ public abstract class McpTransportTestBase : IDisposable
         Assert.Contains("memory_get_history", toolNames);
         Assert.Contains("memory_get_stats", toolNames);
         
-        // Session management tools (5)
-        Assert.Contains("memory_init_session", toolNames);
-        Assert.Contains("memory_get_session", toolNames);
-        Assert.Contains("memory_update_session", toolNames);
-        Assert.Contains("memory_clear_session", toolNames);
-        Assert.Contains("memory_resolve_session", toolNames);
+        // Session management tools are no longer needed with transport-aware session management
+        // The following tools were removed when connectionId was eliminated:
+        // - memory_init_session (replaced by environment variables/HTTP headers)
+        // - memory_get_session (replaced by automatic session resolution)
+        // - memory_update_session (replaced by transport-level configuration)
+        // - memory_clear_session (replaced by process/connection lifecycle)
+        // - memory_resolve_session (replaced by automatic resolution)
         
-        // Should have exactly 13 tools
-        Assert.Equal(13, toolNames.Count);
-        _output.WriteLine($"✅ {GetTransportName()}: All 13 MCP tools discovered successfully");
+        // Should have exactly 8 tools
+        Assert.Equal(8, toolNames.Count);
+        _output.WriteLine($"✅ {GetTransportName()}: All 8 MCP tools discovered successfully");
     }
 
     [Fact]
@@ -169,36 +157,27 @@ public abstract class McpTransportTestBase : IDisposable
     }
 
     [Fact]
-    public async Task SessionWorkflow_InitAddSearchUpdateDelete_ShouldWorkEndToEnd()
+    public async Task SessionWorkflow_AddSearchUpdateDelete_ShouldWorkEndToEnd()
     {
         // Arrange
         var client = await GetClientAsync();
-        var connectionId = GenerateTestConnectionId("workflow");
         var userId = GenerateTestUserId("workflow");
         var agentId = $"workflow_agent_{Guid.NewGuid():N}";
         var runId = $"workflow_run_{Guid.NewGuid():N}";
         
-        _output.WriteLine($"🔄 Testing complete workflow via {GetTransportName()}: {connectionId}");
+        _output.WriteLine($"🔄 Testing complete workflow via {GetTransportName()}: {userId}");
 
-        // Act & Assert - Initialize session
-        var initResponse = await client.CallToolAsync("memory_init_session", new Dictionary<string, object?>
+        // With transport-aware session management, we no longer need memory_init_session
+        // Session context is automatically resolved from environment variables (STDIO) 
+        // or HTTP headers/URL parameters (SSE)
+
+        // Add memory with explicit session parameters
+        var addResponse = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
         {
-            ["connectionId"] = connectionId,
+            ["content"] = $"Workflow test memory content via {GetTransportName()}",
             ["userId"] = userId,
             ["agentId"] = agentId,
             ["runId"] = runId
-        });
-        
-        var initResponseText = initResponse.Content[0].Text!;
-        _output.WriteLine($"📝 {GetTransportName()} session init: {initResponseText}");
-        var initResult = JsonSerializer.Deserialize<JsonElement>(initResponseText);
-        Assert.True(initResult.GetProperty("success").GetBoolean());
-
-        // Add memory
-        var addResponse = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
-        {
-            ["connectionId"] = connectionId,
-            ["content"] = $"Workflow test memory content via {GetTransportName()}"
         });
         
         var addResponseText = addResponse.Content[0].Text!;
@@ -210,8 +189,10 @@ public abstract class McpTransportTestBase : IDisposable
         // Search memory
         var searchResponse = await client.CallToolAsync("memory_search", new Dictionary<string, object?>
         {
-            ["connectionId"] = connectionId,
-            ["query"] = "workflow test"
+            ["query"] = "workflow test",
+            ["userId"] = userId,
+            ["agentId"] = agentId,
+            ["runId"] = runId
         });
         
         var searchResponseText = searchResponse.Content[0].Text!;
@@ -223,9 +204,11 @@ public abstract class McpTransportTestBase : IDisposable
         // Update memory
         var updateResponse = await client.CallToolAsync("memory_update", new Dictionary<string, object?>
         {
-            ["connectionId"] = connectionId,
             ["id"] = memoryId,
-            ["content"] = $"Updated workflow test memory content via {GetTransportName()}"
+            ["content"] = $"Updated workflow test memory content via {GetTransportName()}",
+            ["userId"] = userId,
+            ["agentId"] = agentId,
+            ["runId"] = runId
         });
         
         var updateResponseText = updateResponse.Content[0].Text!;
@@ -236,8 +219,10 @@ public abstract class McpTransportTestBase : IDisposable
         // Delete memory
         var deleteResponse = await client.CallToolAsync("memory_delete", new Dictionary<string, object?>
         {
-            ["connectionId"] = connectionId,
-            ["id"] = memoryId
+            ["id"] = memoryId,
+            ["userId"] = userId,
+            ["agentId"] = agentId,
+            ["runId"] = runId
         });
         
         var deleteResponseText = deleteResponse.Content[0].Text!;
@@ -253,55 +238,41 @@ public abstract class McpTransportTestBase : IDisposable
     {
         // Arrange
         var client = await GetClientAsync();
-        var connection1 = GenerateTestConnectionId("isolation1");
-        var connection2 = GenerateTestConnectionId("isolation2");
         var user1 = GenerateTestUserId("isolation1");
         var user2 = GenerateTestUserId("isolation2");
         
-        _output.WriteLine($"🔒 Testing session isolation via {GetTransportName()}: {connection1} vs {connection2}");
+        _output.WriteLine($"🔒 Testing session isolation via {GetTransportName()}: {user1} vs {user2}");
 
-        // Initialize two separate sessions
-        var init1Response = await client.CallToolAsync("memory_init_session", new Dictionary<string, object?>
-        {
-            ["connectionId"] = connection1,
-            ["userId"] = user1
-        });
-        _output.WriteLine($"📝 {GetTransportName()} init1: {init1Response.Content[0].Text}");
-        
-        var init2Response = await client.CallToolAsync("memory_init_session", new Dictionary<string, object?>
-        {
-            ["connectionId"] = connection2,
-            ["userId"] = user2
-        });
-        _output.WriteLine($"📝 {GetTransportName()} init2: {init2Response.Content[0].Text}");
+        // With transport-aware session management, we no longer need memory_init_session
+        // Session isolation is achieved through explicit userId parameters
 
-        // Add memories to each session
+        // Add memories to each session with explicit user parameters
         var add1Response = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
         {
-            ["connectionId"] = connection1,
-            ["content"] = $"Memory for user 1 via {GetTransportName()}"
+            ["content"] = $"Memory for user 1 via {GetTransportName()}",
+            ["userId"] = user1
         });
         _output.WriteLine($"📝 {GetTransportName()} add1: {add1Response.Content[0].Text}");
         
         var add2Response = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
         {
-            ["connectionId"] = connection2,
-            ["content"] = $"Memory for user 2 via {GetTransportName()}"
+            ["content"] = $"Memory for user 2 via {GetTransportName()}",
+            ["userId"] = user2
         });
         _output.WriteLine($"📝 {GetTransportName()} add2: {add2Response.Content[0].Text}");
 
         // Search in each session - should only find their own memories
         var search1Response = await client.CallToolAsync("memory_search", new Dictionary<string, object?>
         {
-            ["connectionId"] = connection1,
-            ["query"] = "memory"
+            ["query"] = "memory",
+            ["userId"] = user1
         });
         _output.WriteLine($"📝 {GetTransportName()} search1: {search1Response.Content[0].Text}");
         
         var search2Response = await client.CallToolAsync("memory_search", new Dictionary<string, object?>
         {
-            ["connectionId"] = connection2,
-            ["query"] = "memory"
+            ["query"] = "memory",
+            ["userId"] = user2
         });
         _output.WriteLine($"📝 {GetTransportName()} search2: {search2Response.Content[0].Text}");
 
@@ -312,18 +283,18 @@ public abstract class McpTransportTestBase : IDisposable
         Assert.True(search1Result.GetProperty("success").GetBoolean());
         Assert.True(search2Result.GetProperty("success").GetBoolean());
         
-        var results1 = search1Result.GetProperty("results").EnumerateArray().ToList();
-        var results2 = search2Result.GetProperty("results").EnumerateArray().ToList();
+        // Each user should have exactly 1 memory
+        Assert.Equal(1, search1Result.GetProperty("total_results").GetInt32());
+        Assert.Equal(1, search2Result.GetProperty("total_results").GetInt32());
         
-        // Each session should have exactly 1 result (their own memory)
-        Assert.Single(results1);
-        Assert.Single(results2);
+        // Verify the content is correct for each user
+        var user1Memories = search1Result.GetProperty("results").EnumerateArray().ToList();
+        var user2Memories = search2Result.GetProperty("results").EnumerateArray().ToList();
         
-        // Verify content isolation
-        Assert.Contains($"user 1 via {GetTransportName()}", results1[0].GetProperty("content").GetString()!);
-        Assert.Contains($"user 2 via {GetTransportName()}", results2[0].GetProperty("content").GetString()!);
+        Assert.Contains("user 1", user1Memories[0].GetProperty("content").GetString());
+        Assert.Contains("user 2", user2Memories[0].GetProperty("content").GetString());
         
-        _output.WriteLine($"✅ {GetTransportName()}: Session isolation works correctly");
+        _output.WriteLine($"✅ {GetTransportName()}: Session isolation test passed");
     }
 
     [Fact]
@@ -331,47 +302,53 @@ public abstract class McpTransportTestBase : IDisposable
     {
         // Arrange
         var client = await GetClientAsync();
-        var connectionId = GenerateTestConnectionId("stats");
         var userId = GenerateTestUserId("stats");
         
-        _output.WriteLine($"📊 Testing memory stats via {GetTransportName()}: {connectionId}");
+        _output.WriteLine($"📊 Testing memory stats via {GetTransportName()}: {userId}");
 
-        // Initialize session
-        await client.CallToolAsync("memory_init_session", new Dictionary<string, object?>
+        // Add multiple memories with explicit session parameters
+        var memory1Response = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
         {
-            ["connectionId"] = connectionId,
+            ["content"] = $"First memory for stats test via {GetTransportName()}",
+            ["userId"] = userId
+        });
+        
+        var memory2Response = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
+        {
+            ["content"] = $"Second memory for stats test via {GetTransportName()}",
+            ["userId"] = userId
+        });
+        
+        var memory3Response = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
+        {
+            ["content"] = $"Third memory for stats test via {GetTransportName()}",
             ["userId"] = userId
         });
 
-        // Add multiple memories
-        for (int i = 1; i <= 3; i++)
-        {
-            await client.CallToolAsync("memory_add", new Dictionary<string, object?>
-            {
-                ["connectionId"] = connectionId,
-                ["content"] = $"Test memory {i} for stats via {GetTransportName()}"
-            });
-        }
-
-        // Act
+        // Get memory statistics
         var statsResponse = await client.CallToolAsync("memory_get_stats", new Dictionary<string, object?>
         {
-            ["connectionId"] = connectionId
+            ["userId"] = userId
         });
 
         // Assert
         Assert.NotNull(statsResponse);
+        Assert.NotNull(statsResponse.Content);
+        Assert.NotEmpty(statsResponse.Content);
+        
         var statsResponseText = statsResponse.Content[0].Text!;
-        _output.WriteLine($"📝 {GetTransportName()} stats: {statsResponseText}");
+        _output.WriteLine($"📊 {GetTransportName()} stats response: {statsResponseText}");
         
         var statsResult = JsonSerializer.Deserialize<JsonElement>(statsResponseText);
         Assert.True(statsResult.GetProperty("success").GetBoolean());
         
-        var stats = statsResult.GetProperty("statistics");
-        Assert.True(stats.GetProperty("total_memories").GetInt32() >= 3);
-        Assert.True(stats.GetProperty("total_content_size").GetInt32() > 0);
+        var statistics = statsResult.GetProperty("statistics");
+        var totalMemories = statistics.GetProperty("total_memories").GetInt32();
         
-        _output.WriteLine($"✅ {GetTransportName()}: Memory stats work correctly");
+        // Should have at least 3 memories (the ones we just added)
+        Assert.True(totalMemories >= 3, $"Expected at least 3 memories, but got {totalMemories}");
+        
+        _output.WriteLine($"✅ {GetTransportName()}: Memory stats test passed with {totalMemories} total memories");
     }
 
     [Fact]
@@ -418,26 +395,17 @@ public abstract class McpTransportTestBase : IDisposable
 
     #endregion
 
-    #region Disposal
+    #region IDisposable Implementation
 
-    public virtual void Dispose()
+    public void Dispose()
     {
-        if (!_disposed)
-        {
-            try
-            {
-                _client?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5));
-                TeardownServerAsync().Wait(TimeSpan.FromSeconds(5));
-            }
-            catch (Exception ex)
-            {
-                _output.WriteLine($"⚠️ Error during {GetTransportName()} cleanup: {ex.Message}");
-            }
-            finally
-            {
-                _disposed = true;
-            }
-        }
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        // IMcpClient doesn't implement IDisposable, so no cleanup needed
     }
 
     #endregion

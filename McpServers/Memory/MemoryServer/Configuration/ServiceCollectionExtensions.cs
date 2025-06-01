@@ -150,4 +150,14 @@ public static class ServiceCollectionExtensions
 
     return services;
   }
+
+  public static void InitializeDatabaseSync(this IServiceProvider services)
+  {
+    var sessionFactory = services.GetRequiredService<ISqliteSessionFactory>();
+    
+    // For testing scenarios, we need to initialize synchronously
+    // Use a dedicated thread to avoid deadlock issues
+    var initTask = Task.Run(async () => await sessionFactory.InitializeDatabaseAsync());
+    initTask.Wait();
+  }
 } 
