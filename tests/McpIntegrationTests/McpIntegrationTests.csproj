@@ -30,7 +30,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\McpMiddleware\AchieveAi.LmDotnetTools.McpMiddleware.csproj" />
     <ProjectReference Include="..\..\src\McpSampleServer\AchieveAi.LmDotnetTools.McpSampleServer.csproj" />
-    <ProjectReference Include="..\..\McpServers\Memory\MemoryServer\MemoryServer.csproj" />
     <ProjectReference Include="..\TestUtils\AchieveAi.LmDotnetTools.TestUtils.csproj" />
   </ItemGroup>
 

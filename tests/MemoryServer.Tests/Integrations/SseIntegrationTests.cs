@@ -5,7 +5,7 @@ using Xunit.Abstractions;
 using Microsoft.AspNetCore.TestHost;
 using System.ComponentModel;
 
-namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
+namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
 /// Integration tests for the Memory MCP Server using SSE transport.

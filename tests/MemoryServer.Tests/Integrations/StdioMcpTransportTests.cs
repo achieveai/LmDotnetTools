@@ -1,7 +1,7 @@
 using ModelContextProtocol.Client;
 using Xunit.Abstractions;
 
-namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
+namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
 /// STDIO transport implementation of the MCP transport test suite.
@@ -14,7 +14,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
 
     public StdioMcpTransportTests(ITestOutputHelper output) : base(output)
     {
-        // Use the same server executable path as the existing STDIO tests
+        // Path to the Memory MCP Server executable
         var assemblyLocation = Path.GetDirectoryName(typeof(StdioMcpTransportTests).Assembly.Location)!;
         _serverExecutablePath = Path.Combine(assemblyLocation, "MemoryServer.exe");
         
@@ -23,7 +23,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
         {
             _serverExecutablePath = Path.Combine(
                 assemblyLocation,
-                "..", "..", "..", "..", "McpServers", "Memory", "MemoryServer", "bin", "Debug", "net9.0", "MemoryServer.exe");
+                "..", "..", "..", "McpServers", "Memory", "MemoryServer", "bin", "Debug", "net9.0", "MemoryServer.exe");
         }
     }
 

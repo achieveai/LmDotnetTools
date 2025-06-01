@@ -2,7 +2,7 @@ using System.Text.Json;
 using ModelContextProtocol.Client;
 using Xunit.Abstractions;
 
-namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
+namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
 /// Abstract base class for testing MCP functionality across different transports.
