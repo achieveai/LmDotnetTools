@@ -171,56 +171,34 @@ public partial class Program { }
 // Startup class for WebApplicationFactory testing
 public class Startup
 {
+    private readonly IConfiguration _configuration;
+
+    public Startup()
+    {
+        // Create a minimal configuration for testing
+        var builder = new ConfigurationBuilder();
+        builder.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["MemoryServer:Database:ConnectionString"] = ":memory:",
+            ["MemoryServer:Database:EnableWAL"] = "false",
+            ["MemoryServer:Transport:Mode"] = "SSE",
+            ["MemoryServer:Transport:Port"] = "0",
+            ["MemoryServer:Transport:Host"] = "localhost",
+            ["MemoryServer:Transport:EnableCors"] = "true"
+        });
+        _configuration = builder.Build();
+    }
+
     public void ConfigureServices(IServiceCollection services)
     {
         // Add routing services (required for UseRouting)
         services.AddRouting();
 
-        // Configure options with default values for testing
-        services.Configure<DatabaseOptions>(options =>
-        {
-            options.ConnectionString = ":memory:";
-            options.EnableWAL = false;
-        });
-        
-        services.Configure<MemoryServerOptions>(options =>
-        {
-            options.Transport.Mode = TransportMode.SSE;
-            options.Transport.Port = 0;
-            options.Transport.Host = "localhost";
-            options.Transport.EnableCors = true;
-            options.Transport.AllowedOrigins = new[] { "http://localhost:3000", "http://127.0.0.1:3000" };
-        });
+        // Use our extension methods for core services
+        services.AddMemoryServerCore(_configuration);
 
-        // Add memory cache
-        services.AddMemoryCache();
-
-        // Register Database Session Pattern infrastructure for testing
-        services.AddDatabaseServices();
-
-        // Register core infrastructure
-        services.AddSingleton<MemoryIdGenerator>();
-
-        // Register session management services
-        services.AddScoped<ISessionContextResolver, SessionContextResolver>();
-        services.AddScoped<ISessionManager, SessionManager>();
-        services.AddScoped<TransportSessionInitializer>();
-
-        // Register memory services
-        services.AddScoped<IMemoryRepository, MemoryRepository>();
-        services.AddScoped<IMemoryService, MemoryService>();
-
-        // Register graph database services
-        services.AddScoped<IGraphRepository, GraphRepository>();
-        services.AddScoped<IGraphExtractionService, GraphExtractionService>();
-        services.AddScoped<IGraphDecisionEngine, GraphDecisionEngine>();
-        services.AddScoped<IGraphMemoryService, GraphMemoryService>();
-
-        // Register LLM services with mock agent for testing
+        // Override with test-specific LLM services
         services.AddTestLlmServices();
-
-        // Register MCP tools
-        services.AddScoped<MemoryMcpTools>();
 
         // Add MCP services for SSE transport
         services.AddMcpServices(TransportMode.SSE);
@@ -239,9 +217,9 @@ public class Startup
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
     {
-        // Initialize database
+        // Initialize database using Task.Run to avoid deadlock
         var sessionFactory = app.ApplicationServices.GetRequiredService<ISqliteSessionFactory>();
-        sessionFactory.InitializeDatabaseAsync().GetAwaiter().GetResult();
+        Task.Run(async () => await sessionFactory.InitializeDatabaseAsync()).Wait();
 
         // Configure CORS
         app.UseCors();
