@@ -1,7 +1,8 @@
-using MemoryServer.Infrastructure;
+using MemoryServer.Configuration;
 using MemoryServer.Models;
-using MemoryServer.Services;
 using MemoryServer.Tools;
+using MemoryServer.Infrastructure;
+using MemoryServer.Services;
 using Microsoft.Extensions.Options;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -34,106 +35,28 @@ Console.WriteLine($"🚀 Starting Memory MCP Server with {transportMode} transpo
 
 if (transportMode == TransportMode.SSE)
 {
-    await RunSseServerAsync(commandLineArgs, memoryOptions);
+    await RunSseServerAsync(commandLineArgs, memoryOptions, configuration);
 }
 else
 {
-    await RunStdioServerAsync(commandLineArgs, memoryOptions);
+    await RunStdioServerAsync(commandLineArgs, memoryOptions, configuration);
 }
 
-static async Task RunSseServerAsync(string[] args, MemoryServerOptions options)
+static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, IConfiguration configuration)
 {
     var builder = WebApplication.CreateBuilder(args);
 
     // Configure logging for development
     builder.Logging.AddConsole();
 
-    // Add services to the container
-    builder.Services.AddMemoryCache();
-    
     // Add routing services (required for UseRouting)
     builder.Services.AddRouting();
 
-    // Configure options from appsettings
-    builder.Services.Configure<DatabaseOptions>(
-        builder.Configuration.GetSection("MemoryServer:Database"));
-    builder.Services.Configure<MemoryServerOptions>(
-        builder.Configuration.GetSection("MemoryServer"));
+    // Add core memory server services
+    builder.Services.AddMemoryServerCore(configuration, builder.Environment);
 
-    // Register Database Session Pattern infrastructure
-    if (builder.Environment.IsDevelopment() || builder.Environment.EnvironmentName == "Testing")
-    {
-        builder.Services.AddSingleton<ISqliteSessionFactory, TestSqliteSessionFactory>();
-    }
-    else
-    {
-        builder.Services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
-    }
-
-    // Register core infrastructure
-    builder.Services.AddSingleton<MemoryIdGenerator>();
-
-    // Register session management services
-    builder.Services.AddScoped<ISessionContextResolver, SessionContextResolver>();
-    builder.Services.AddScoped<ISessionManager, SessionManager>();
-    builder.Services.AddScoped<TransportSessionInitializer>();
-
-    // Register memory services
-    builder.Services.AddScoped<IMemoryRepository, MemoryRepository>();
-    builder.Services.AddScoped<IMemoryService, MemoryService>();
-
-    // Register graph database services
-    builder.Services.AddScoped<IGraphRepository, GraphRepository>();
-    builder.Services.AddScoped<IGraphExtractionService, GraphExtractionService>();
-    builder.Services.AddScoped<IGraphDecisionEngine, GraphDecisionEngine>();
-    builder.Services.AddScoped<IGraphMemoryService, GraphMemoryService>();
-
-    // Register LLM services
-    builder.Services.AddScoped<IPromptReader>(provider =>
-    {
-        var promptsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prompts", "graph-extraction.yaml");
-        return new PromptReader(promptsPath);
-    });
-
-    // Register LLM provider based on configuration
-    builder.Services.AddScoped<IAgent>(provider =>
-    {
-        var memoryOptions = provider.GetRequiredService<IOptions<MemoryServerOptions>>().Value;
-        var logger = provider.GetRequiredService<ILogger<IAgent>>();
-
-        if (memoryOptions.LLM.DefaultProvider.ToLower() == "anthropic")
-        {
-            var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? memoryOptions.LLM.Anthropic.ApiKey;
-            if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-            {
-                logger.LogWarning("Anthropic API key not configured. LLM features will be disabled.");
-                return new MockAgent("mock-anthropic");
-            }
-            var client = new AchieveAi.LmDotnetTools.AnthropicProvider.Agents.AnthropicClient(apiKey);
-            return new AnthropicAgent("memory-anthropic", client);
-        }
-        else
-        {
-            var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? memoryOptions.LLM.OpenAI.ApiKey;
-            var baseUrl = Environment.GetEnvironmentVariable("OPENAI_BASE_URL") ?? "https://api.openai.com/v1";
-            if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-            {
-                logger.LogWarning("OpenAI API key not configured. LLM features will be disabled.");
-                return new MockAgent("mock-openai");
-            }
-            var client = new AchieveAi.LmDotnetTools.OpenAIProvider.Agents.OpenClient(apiKey, baseUrl);
-            return new OpenClientAgent("memory-openai", client);
-        }
-    });
-
-    // Register MCP tools
-    builder.Services.AddScoped<MemoryMcpTools>();
-
-    // Add MCP Server with HTTP transport (SSE)
-    builder.Services
-        .AddMcpServer()
-        .WithHttpTransport()
-        .WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
+    // Add MCP services for SSE transport
+    builder.Services.AddMcpServices(TransportMode.SSE);
 
     // Configure CORS for testing
     builder.Services.AddCors(corsOptions =>
@@ -155,17 +78,8 @@ static async Task ConfigureSseApplication(WebApplication app)
 {
     var appLogger = app.Services.GetRequiredService<ILogger<Program>>();
     
-    // Initialize database with better error handling using session pattern
-    try
-    {
-        var sessionFactory = app.Services.GetRequiredService<ISqliteSessionFactory>();
-        await sessionFactory.InitializeDatabaseAsync();
-    }
-    catch (Exception ex)
-    {
-        appLogger.LogError(ex, "Database initialization failed: {Message}", ex.Message);
-        throw;
-    }
+    // Initialize database
+    await DatabaseInitializer.InitializeAsync(app.Services);
 
     // Configure CORS
     app.UseCors();
@@ -213,7 +127,7 @@ static async Task ConfigureSseApplication(WebApplication app)
     appLogger.LogInformation("🌐 Memory MCP Server configured for SSE transport");
 }
 
-static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options)
+static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options, IConfiguration configuration)
 {
     var builder = Host.CreateApplicationBuilder(args);
 
@@ -224,123 +138,19 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
         consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
     });
 
-    // Add services to the container
-    builder.Services.AddMemoryCache();
+    // Add core memory server services
+    builder.Services.AddMemoryServerCore(configuration, builder.Environment);
 
-    // Configure options from appsettings
-    builder.Services.Configure<DatabaseOptions>(
-        builder.Configuration.GetSection("MemoryServer:Database"));
-    builder.Services.Configure<MemoryServerOptions>(
-        builder.Configuration.GetSection("MemoryServer"));
-
-    // Register Database Session Pattern infrastructure
-    if (builder.Environment.IsDevelopment() || builder.Environment.EnvironmentName == "Testing")
-    {
-        builder.Services.AddSingleton<ISqliteSessionFactory, TestSqliteSessionFactory>();
-    }
-    else
-    {
-        builder.Services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
-    }
-
-    // Register core infrastructure
-    builder.Services.AddSingleton<MemoryIdGenerator>();
-
-    // Register session management services
-    builder.Services.AddScoped<ISessionContextResolver, SessionContextResolver>();
-    builder.Services.AddScoped<ISessionManager, SessionManager>();
-    builder.Services.AddScoped<TransportSessionInitializer>();
-
-    // Register memory services
-    builder.Services.AddScoped<IMemoryRepository, MemoryRepository>();
-    builder.Services.AddScoped<IMemoryService, MemoryService>();
-
-    // Register graph database services
-    builder.Services.AddScoped<IGraphRepository, GraphRepository>();
-    builder.Services.AddScoped<IGraphExtractionService, GraphExtractionService>();
-    builder.Services.AddScoped<IGraphDecisionEngine, GraphDecisionEngine>();
-    builder.Services.AddScoped<IGraphMemoryService, GraphMemoryService>();
-
-    // Register LLM services
-    builder.Services.AddScoped<IPromptReader>(provider =>
-    {
-        var promptsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prompts", "graph-extraction.yaml");
-        return new PromptReader(promptsPath);
-    });
-
-    // Register LLM provider based on configuration
-    builder.Services.AddScoped<IAgent>(provider =>
-    {
-        var memoryOptions = provider.GetRequiredService<IOptions<MemoryServerOptions>>().Value;
-        var logger = provider.GetRequiredService<ILogger<IAgent>>();
-
-        if (memoryOptions.LLM.DefaultProvider.ToLower() == "anthropic")
-        {
-            var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? memoryOptions.LLM.Anthropic.ApiKey;
-            if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-            {
-                logger.LogWarning("Anthropic API key not configured. LLM features will be disabled.");
-                return new MockAgent("mock-anthropic");
-            }
-            var client = new AchieveAi.LmDotnetTools.AnthropicProvider.Agents.AnthropicClient(apiKey);
-            return new AnthropicAgent("memory-anthropic", client);
-        }
-        else
-        {
-            var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? memoryOptions.LLM.OpenAI.ApiKey;
-            var baseUrl = Environment.GetEnvironmentVariable("OPENAI_BASE_URL") ?? "https://api.openai.com/v1";
-            if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-            {
-                logger.LogWarning("OpenAI API key not configured. LLM features will be disabled.");
-                return new MockAgent("mock-openai");
-            }
-            var client = new AchieveAi.LmDotnetTools.OpenAIProvider.Agents.OpenClient(apiKey, baseUrl);
-            return new OpenClientAgent("memory-openai", client);
-        }
-    });
-
-    // Register MCP tools
-    builder.Services.AddScoped<MemoryMcpTools>();
-
-    // Add MCP Server with STDIO transport
-    builder.Services
-        .AddMcpServer()
-        .WithStdioServerTransport()
-        .WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
+    // Add MCP services for STDIO transport
+    builder.Services.AddMcpServices(TransportMode.STDIO);
 
     var app = builder.Build();
 
-    // Initialize database with better error handling using session pattern
-    try
-    {
-        var sessionFactory = app.Services.GetRequiredService<ISqliteSessionFactory>();
-        await sessionFactory.InitializeDatabaseAsync();
-    }
-    catch (Exception ex)
-    {
-        var logger = app.Services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "Database initialization failed: {Message}", ex.Message);
-        throw;
-    }
+    // Initialize database
+    await DatabaseInitializer.InitializeAsync(app.Services);
 
     // Initialize STDIO session context from environment variables
-    try
-    {
-        using var scope = app.Services.CreateScope();
-        var sessionInitializer = scope.ServiceProvider.GetRequiredService<TransportSessionInitializer>();
-        var sessionDefaults = await sessionInitializer.InitializeStdioSessionAsync();
-        
-        if (sessionDefaults != null && sessionInitializer.ValidateSessionContext(sessionDefaults))
-        {
-            var logger = app.Services.GetRequiredService<ILogger<Program>>();
-            logger.LogInformation("STDIO session context initialized: {SessionDefaults}", sessionDefaults);
-        }
-    }
-    catch (Exception ex)
-    {
-        var logger = app.Services.GetRequiredService<ILogger<Program>>();
-        logger.LogWarning(ex, "Failed to initialize STDIO session context from environment variables");
-    }
+    await SessionContextInitializer.InitializeStdioSessionAsync(app.Services);
 
     try
     {
@@ -363,9 +173,6 @@ public class Startup
 {
     public void ConfigureServices(IServiceCollection services)
     {
-        // Add services to the container
-        services.AddMemoryCache();
-        
         // Add routing services (required for UseRouting)
         services.AddRouting();
 
@@ -385,8 +192,11 @@ public class Startup
             options.Transport.AllowedOrigins = new[] { "http://localhost:3000", "http://127.0.0.1:3000" };
         });
 
+        // Add memory cache
+        services.AddMemoryCache();
+
         // Register Database Session Pattern infrastructure for testing
-        services.AddSingleton<ISqliteSessionFactory, TestSqliteSessionFactory>();
+        services.AddDatabaseServices();
 
         // Register core infrastructure
         services.AddSingleton<MemoryIdGenerator>();
@@ -407,23 +217,13 @@ public class Startup
         services.AddScoped<IGraphMemoryService, GraphMemoryService>();
 
         // Register LLM services with mock agent for testing
-        services.AddScoped<IPromptReader>(provider =>
-        {
-            var promptsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prompts", "graph-extraction.yaml");
-            return new PromptReader(promptsPath);
-        });
-
-        // Use mock agent for testing
-        services.AddScoped<IAgent>(provider => new MockAgent("test-agent"));
+        services.AddTestLlmServices();
 
         // Register MCP tools
         services.AddScoped<MemoryMcpTools>();
 
-        // Add MCP Server with HTTP transport (SSE)
-        services
-            .AddMcpServer()
-            .WithHttpTransport()
-            .WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
+        // Add MCP services for SSE transport
+        services.AddMcpServices(TransportMode.SSE);
 
         // Configure CORS for testing
         services.AddCors(corsOptions =>
@@ -455,30 +255,5 @@ public class Startup
             
             endpoints.MapMcp();
         });
-    }
-}
-
-// Simple mock agent for when API keys are not configured
-public class MockAgent : IAgent
-{
-    private readonly string _name;
-    
-    public MockAgent(string name)
-    {
-        _name = name;
-    }
-    
-    public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-        IEnumerable<IMessage> messages,
-        GenerateReplyOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        var response = new TextMessage 
-        { 
-            Text = $"Mock response from {_name}. LLM features are disabled - API key not configured.",
-            Role = Role.Assistant,
-            FromAgent = _name
-        };
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { response });
     }
 } 
