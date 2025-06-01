@@ -1,6 +1,4 @@
-using System.Diagnostics;
 using ModelContextProtocol.Client;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;

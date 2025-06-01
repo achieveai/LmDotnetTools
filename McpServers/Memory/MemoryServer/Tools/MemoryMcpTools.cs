@@ -1,8 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
-using MemoryServer.Models;
 using MemoryServer.Services;
-using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 namespace MemoryServer.Tools;
@@ -35,7 +33,6 @@ public class MemoryMcpTools
     /// <param name="agentId">Optional agent identifier for session isolation</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="metadata">Optional additional metadata as JSON string</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Created memory with integer ID</returns>
     [McpServerTool(Name = "memory_add"), Description("Adds new memories from conversation messages or direct content")]
     public async Task<object> AddMemoryAsync(
@@ -43,8 +40,7 @@ public class MemoryMcpTools
         [Description("User identifier for session isolation")] string? userId = "",
         [Description("Agent identifier for session isolation")] string? agentId = "",
         [Description("Run identifier for session isolation")] string? runId = "",
-        [Description("Additional metadata as JSON string")] string? metadata = "",
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Additional metadata as JSON string")] string? metadata = "")
     {
         try
         {
@@ -53,9 +49,6 @@ public class MemoryMcpTools
                 return new { success = false, error = "Content is required" };
             }
 
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
-
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
             var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
@@ -63,10 +56,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Parse metadata if provided
             Dictionary<string, object>? metadataDict = null;
@@ -99,6 +91,8 @@ public class MemoryMcpTools
                     agent_id = memory.AgentId,
                     run_id = memory.RunId,
                     created_at = memory.CreatedAt,
+                    updated_at = memory.UpdatedAt,
+                    version = memory.Version,
                     metadata = memory.Metadata
                 }
             };
@@ -119,7 +113,6 @@ public class MemoryMcpTools
     /// <param name="runId">Optional run identifier for session filtering</param>
     /// <param name="limit">Maximum number of results (default: 10, max: 100)</param>
     /// <param name="scoreThreshold">Minimum similarity score threshold (default: 0.0)</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Array of relevant memory objects with relevance scores</returns>
     [McpServerTool(Name = "memory_search"), Description("Searches for relevant memories using semantic similarity and full-text search")]
     public async Task<object> SearchMemoriesAsync(
@@ -128,8 +121,7 @@ public class MemoryMcpTools
         [Description("Agent identifier for session filtering")] string? agentId = "",
         [Description("Run identifier for session filtering")] string? runId = "",
         [Description("Maximum number of results (default: 10, max: 100)")] int limit = 10,
-        [Description("Minimum similarity score threshold (default: 0.0)")] float scoreThreshold = 0.0f,
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Minimum similarity score threshold (default: 0.0)")] float scoreThreshold = 0.0f)
     {
         try
         {
@@ -142,9 +134,6 @@ public class MemoryMcpTools
             limit = Math.Min(Math.Max(limit, 1), 100);
             scoreThreshold = Math.Max(scoreThreshold, 0.0f);
 
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
-
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
             var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
@@ -152,10 +141,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Search memories
             var results = await _memoryService.SearchMemoriesAsync(query, sessionContext, limit, scoreThreshold);
@@ -197,7 +185,6 @@ public class MemoryMcpTools
     /// <param name="runId">Optional run identifier for session filtering</param>
     /// <param name="limit">Maximum number of results (default: 100, max: 1000)</param>
     /// <param name="offset">Offset for pagination (default: 0)</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Array of memory objects</returns>
     [McpServerTool(Name = "memory_get_all"), Description("Retrieves all memories for a specific session")]
     public async Task<object> GetAllMemoriesAsync(
@@ -205,17 +192,13 @@ public class MemoryMcpTools
         [Description("Agent identifier for session filtering")] string? agentId = "",
         [Description("Run identifier for session filtering")] string? runId = "",
         [Description("Maximum number of results (default: 100, max: 1000)")] int limit = 100,
-        [Description("Offset for pagination (default: 0)")] int offset = 0,
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Offset for pagination (default: 0)")] int offset = 0)
     {
         try
         {
             // Apply limits
             limit = Math.Min(Math.Max(limit, 1), 1000);
             offset = Math.Max(offset, 0);
-
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
 
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
@@ -224,10 +207,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Get all memories
             var memories = await _memoryService.GetAllMemoriesAsync(sessionContext, limit, offset);
@@ -271,7 +253,6 @@ public class MemoryMcpTools
     /// <param name="agentId">Optional agent identifier for session isolation</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="metadata">Optional additional metadata as JSON string</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Updated memory object</returns>
     [McpServerTool(Name = "memory_update"), Description("Updates an existing memory by ID")]
     public async Task<object> UpdateMemoryAsync(
@@ -280,8 +261,7 @@ public class MemoryMcpTools
         [Description("User identifier for session isolation")] string? userId = "",
         [Description("Agent identifier for session isolation")] string? agentId = "",
         [Description("Run identifier for session isolation")] string? runId = "",
-        [Description("Additional metadata as JSON string")] string? metadata = "",
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Additional metadata as JSON string")] string? metadata = "")
     {
         try
         {
@@ -295,9 +275,6 @@ public class MemoryMcpTools
                 return new { success = false, error = "Valid memory ID is required" };
             }
 
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
-
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
             var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
@@ -305,10 +282,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Parse metadata if provided
             Dictionary<string, object>? metadataDict = null;
@@ -366,15 +342,13 @@ public class MemoryMcpTools
     /// <param name="userId">Optional user identifier for session isolation</param>
     /// <param name="agentId">Optional agent identifier for session isolation</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Deletion result</returns>
     [McpServerTool(Name = "memory_delete"), Description("Deletes a memory by ID")]
     public async Task<object> DeleteMemoryAsync(
         [Description("Memory ID to delete")] int id,
         [Description("User identifier for session isolation")] string? userId = "",
         [Description("Agent identifier for session isolation")] string? agentId = "",
-        [Description("Run identifier for session isolation")] string? runId = "",
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Run identifier for session isolation")] string? runId = "")
     {
         try
         {
@@ -383,9 +357,6 @@ public class MemoryMcpTools
                 return new { success = false, error = "Valid memory ID is required" };
             }
 
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
-
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
             var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
@@ -393,10 +364,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Delete memory
             var deleted = await _memoryService.DeleteMemoryAsync(id, sessionContext);
@@ -427,20 +397,15 @@ public class MemoryMcpTools
     /// <param name="userId">Optional user identifier for session isolation</param>
     /// <param name="agentId">Optional agent identifier for session isolation</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Deletion result with count</returns>
     [McpServerTool(Name = "memory_delete_all"), Description("Deletes all memories for a session")]
     public async Task<object> DeleteAllMemoriesAsync(
         [Description("User identifier for session isolation")] string? userId = "",
         [Description("Agent identifier for session isolation")] string? agentId = "",
-        [Description("Run identifier for session isolation")] string? runId = "",
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Run identifier for session isolation")] string? runId = "")
     {
         try
         {
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
-
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
             var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
@@ -448,10 +413,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Delete all memories
             var deletedCount = await _memoryService.DeleteAllMemoriesAsync(sessionContext);
@@ -480,7 +444,6 @@ public class MemoryMcpTools
     /// <param name="agentId">Optional agent identifier for session isolation</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="limit">Maximum number of history entries (default: 50, max: 100)</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Array of memory history entries</returns>
     [McpServerTool(Name = "memory_get_history"), Description("Gets memory history for a specific memory ID")]
     public async Task<object> GetMemoryHistoryAsync(
@@ -488,8 +451,7 @@ public class MemoryMcpTools
         [Description("User identifier for session isolation")] string? userId = "",
         [Description("Agent identifier for session isolation")] string? agentId = "",
         [Description("Run identifier for session isolation")] string? runId = "",
-        [Description("Maximum number of history entries (default: 50, max: 100)")] int limit = 50,
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Maximum number of history entries (default: 50, max: 100)")] int limit = 50)
     {
         try
         {
@@ -501,9 +463,6 @@ public class MemoryMcpTools
             // Apply limits
             limit = Math.Min(Math.Max(limit, 1), 100);
 
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
-
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
             var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
@@ -511,10 +470,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Get memory history
             var history = await _memoryService.GetMemoryHistoryAsync(id, sessionContext);
@@ -548,20 +506,15 @@ public class MemoryMcpTools
     /// <param name="userId">Optional user identifier for session filtering</param>
     /// <param name="agentId">Optional agent identifier for session filtering</param>
     /// <param name="runId">Optional run identifier for session filtering</param>
-    /// <param name="connectionId">Optional connection identifier for session defaults</param>
     /// <returns>Memory count statistics, storage usage, and performance metrics</returns>
     [McpServerTool(Name = "memory_get_stats"), Description("Provides memory usage statistics and analytics")]
     public async Task<object> GetMemoryStatsAsync(
         [Description("User identifier for session filtering")] string? userId = "",
         [Description("Agent identifier for session filtering")] string? agentId = "",
-        [Description("Run identifier for session filtering")] string? runId = "",
-        [Description("Connection identifier for session defaults")] string? connectionId = "")
+        [Description("Run identifier for session filtering")] string? runId = "")
     {
         try
         {
-            // Generate connection ID if not provided
-            connectionId = string.IsNullOrWhiteSpace(connectionId) ? Guid.NewGuid().ToString() : connectionId;
-
             // Convert empty strings to null for session resolution
             var userIdParam = string.IsNullOrWhiteSpace(userId) ? null : userId;
             var agentIdParam = string.IsNullOrWhiteSpace(agentId) ? null : agentId;
@@ -569,10 +522,9 @@ public class MemoryMcpTools
 
             // Resolve session context
             var sessionContext = await _sessionResolver.ResolveSessionContextAsync(
-                connectionId,
-                userIdParam,
-                agentIdParam,
-                runIdParam);
+                explicitUserId: userIdParam,
+                explicitAgentId: agentIdParam,
+                explicitRunId: runIdParam);
 
             // Get memory statistics
             var stats = await _memoryService.GetMemoryStatsAsync(sessionContext);

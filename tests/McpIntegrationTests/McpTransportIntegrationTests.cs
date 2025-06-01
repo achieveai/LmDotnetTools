@@ -3,7 +3,6 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
-using ModelContextProtocol;
 using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;

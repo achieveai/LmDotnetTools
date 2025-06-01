@@ -1,7 +1,6 @@
 using System.Data;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 

@@ -1,9 +1,7 @@
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MemoryServer.Models;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace MemoryServer.Infrastructure;
@@ -84,7 +82,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         }
     }
 
-    public async Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default)
+    public Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(connectionString))
             throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
@@ -112,7 +110,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             _logger.LogDebug("Created session {SessionId} with custom connection string in {ElapsedMs}ms", 
                 session.SessionId, stopwatch.ElapsedMilliseconds);
             
-            return new TrackedSqliteSession(session, this);
+            return Task.FromResult<ISqliteSession>(new TrackedSqliteSession(session, this));
         }
         catch (Exception ex)
         {
@@ -169,37 +167,13 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     /// <summary>
     /// Applies database migrations for schema updates.
     /// </summary>
-    private async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    private Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
-        // Check if source column exists in session_defaults table
-        using var checkCommand = connection.CreateCommand();
-        checkCommand.CommandText = "PRAGMA table_info(session_defaults)";
-        
-        var hasSourceColumn = false;
-        using var reader = await checkCommand.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var columnName = reader.GetString(1); // Column name is at index 1
-            if (columnName == "source")
-            {
-                hasSourceColumn = true;
-                break;
-            }
-        }
-        reader.Close();
-
-        // Add source column if it doesn't exist
-        if (!hasSourceColumn)
-        {
-            _logger.LogInformation("Adding missing 'source' column to session_defaults table");
-            using var alterCommand = connection.CreateCommand();
-            alterCommand.CommandText = "ALTER TABLE session_defaults ADD COLUMN source INTEGER NOT NULL DEFAULT 0";
-            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
-            _logger.LogInformation("Successfully added 'source' column to session_defaults table");
-        }
+        // No migrations needed after removing session_defaults table
+        return Task.CompletedTask;
     }
 
-    public async Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
+    public Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
     {
         lock (_metricsLock)
         {
@@ -222,7 +196,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 metrics.AverageSessionLifetimeMs = _sessionLifetimes.Average();
             }
 
-            return metrics;
+            return Task.FromResult(metrics);
         }
     }
 
@@ -325,17 +299,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 content_rowid='id'
             )",
 
-            // Session defaults storage
-            @"CREATE TABLE IF NOT EXISTS session_defaults (
-                connection_id TEXT PRIMARY KEY,
-                user_id TEXT,
-                agent_id TEXT,
-                run_id TEXT,
-                metadata TEXT, -- JSON
-                source INTEGER NOT NULL DEFAULT 0, -- SessionDefaultsSource enum
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )",
-
             // Graph entities table
             @"CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY,
@@ -376,7 +339,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             @"CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)",
             @"CREATE INDEX IF NOT EXISTS idx_relationships_session ON relationships(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_relationships_entities ON relationships(source_entity_name, target_entity_name)",
-            @"CREATE INDEX IF NOT EXISTS idx_session_defaults_created ON session_defaults(created_at DESC)",
 
             // FTS5 triggers for automatic content indexing
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN

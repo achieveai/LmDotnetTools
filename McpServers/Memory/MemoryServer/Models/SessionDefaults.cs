@@ -1,173 +1,150 @@
 namespace MemoryServer.Models;
 
 /// <summary>
-/// Stores default session parameters that can be set via HTTP headers or session initialization.
-/// Provides precedence hierarchy: Explicit Parameters > HTTP Headers > Session Init > System Defaults.
+/// Session defaults for MCP connections with transport-aware context.
 /// </summary>
 public class SessionDefaults
 {
     /// <summary>
-    /// Unique connection identifier for this session.
+    /// MCP connection identifier
     /// </summary>
     public string ConnectionId { get; set; } = string.Empty;
-
+    
     /// <summary>
-    /// Default user ID for operations in this session.
+    /// Default user identifier
     /// </summary>
-    public string? DefaultUserId { get; set; }
-
+    public string? UserId { get; set; }
+    
     /// <summary>
-    /// Default agent ID for operations in this session.
+    /// Default agent identifier
     /// </summary>
-    public string? DefaultAgentId { get; set; }
-
+    public string? AgentId { get; set; }
+    
     /// <summary>
-    /// Default run ID for operations in this session.
+    /// Default run identifier
     /// </summary>
-    public string? DefaultRunId { get; set; }
-
+    public string? RunId { get; set; }
+    
     /// <summary>
-    /// Additional session metadata.
+    /// Default metadata
     /// </summary>
-    public Dictionary<string, object>? Metadata { get; set; }
-
+    public Dictionary<string, object> Metadata { get; set; } = new();
+    
     /// <summary>
-    /// When these defaults were created.
+    /// Source of the session defaults
+    /// </summary>
+    public SessionDefaultsSource Source { get; set; } = SessionDefaultsSource.SystemDefaults;
+    
+    /// <summary>
+    /// When the session defaults were created
     /// </summary>
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
-    /// Source of these defaults (Headers, SessionInit, System).
+    /// Creates session defaults from environment variables (STDIO transport).
     /// </summary>
-    public SessionDefaultsSource Source { get; set; } = SessionDefaultsSource.System;
-
-    /// <summary>
-    /// Resolves session context using precedence rules.
-    /// </summary>
-    public SessionContext ResolveSessionContext(
-        string? explicitUserId = null,
-        string? explicitAgentId = null,
-        string? explicitRunId = null,
-        string? systemDefaultUserId = null)
-    {
-        return new SessionContext
-        {
-            UserId = explicitUserId ?? DefaultUserId ?? systemDefaultUserId ?? "default_user",
-            AgentId = explicitAgentId ?? DefaultAgentId,
-            RunId = explicitRunId ?? DefaultRunId
-        };
-    }
-
-    /// <summary>
-    /// Creates session defaults from HTTP headers.
-    /// </summary>
-    public static SessionDefaults FromHeaders(
-        string connectionId,
-        string? userIdHeader = null,
-        string? agentIdHeader = null,
-        string? runIdHeader = null)
+    /// <returns>SessionDefaults populated from environment variables</returns>
+    public static SessionDefaults FromEnvironmentVariables()
     {
         return new SessionDefaults
         {
-            ConnectionId = connectionId,
-            DefaultUserId = userIdHeader,
-            DefaultAgentId = agentIdHeader,
-            DefaultRunId = runIdHeader,
-            Source = SessionDefaultsSource.Headers,
+            ConnectionId = "stdio-env",
+            UserId = Environment.GetEnvironmentVariable("MCP_MEMORY_USER_ID"),
+            AgentId = Environment.GetEnvironmentVariable("MCP_MEMORY_AGENT_ID"),
+            RunId = Environment.GetEnvironmentVariable("MCP_MEMORY_RUN_ID"),
+            Source = SessionDefaultsSource.EnvironmentVariables,
             CreatedAt = DateTime.UtcNow
         };
     }
 
     /// <summary>
-    /// Creates session defaults from session initialization.
+    /// Creates session defaults from URL parameters (SSE transport).
     /// </summary>
-    public static SessionDefaults FromSessionInit(
-        string connectionId,
-        string? userId = null,
-        string? agentId = null,
-        string? runId = null,
-        Dictionary<string, object>? metadata = null)
+    /// <param name="queryParameters">URL query parameters</param>
+    /// <returns>SessionDefaults populated from URL parameters</returns>
+    public static SessionDefaults FromUrlParameters(IDictionary<string, string> queryParameters)
     {
-        return new SessionDefaults
+        var defaults = new SessionDefaults
         {
-            ConnectionId = connectionId,
-            DefaultUserId = userId,
-            DefaultAgentId = agentId,
-            DefaultRunId = runId,
-            Metadata = metadata,
-            Source = SessionDefaultsSource.SessionInit,
+            ConnectionId = "sse-url",
+            Source = SessionDefaultsSource.UrlParameters,
             CreatedAt = DateTime.UtcNow
         };
-    }
 
-    /// <summary>
-    /// Creates system default session defaults.
-    /// </summary>
-    public static SessionDefaults SystemDefaults(string connectionId, string systemUserId)
-    {
-        return new SessionDefaults
-        {
-            ConnectionId = connectionId,
-            DefaultUserId = systemUserId,
-            Source = SessionDefaultsSource.System,
-            CreatedAt = DateTime.UtcNow
-        };
-    }
-
-    /// <summary>
-    /// Updates the defaults with new values, preserving higher precedence.
-    /// </summary>
-    public SessionDefaults UpdateWith(SessionDefaults other)
-    {
-        // Only update if the other source has higher or equal precedence
-        if (other.Source >= this.Source)
-        {
-            return new SessionDefaults
-            {
-                ConnectionId = this.ConnectionId,
-                DefaultUserId = other.DefaultUserId ?? this.DefaultUserId,
-                DefaultAgentId = other.DefaultAgentId ?? this.DefaultAgentId,
-                DefaultRunId = other.DefaultRunId ?? this.DefaultRunId,
-                Metadata = other.Metadata ?? this.Metadata,
-                Source = other.Source,
-                CreatedAt = DateTime.UtcNow
-            };
-        }
+        if (queryParameters.TryGetValue("user_id", out var userId))
+            defaults.UserId = userId;
         
-        return this;
+        if (queryParameters.TryGetValue("agent_id", out var agentId))
+            defaults.AgentId = agentId;
+        
+        if (queryParameters.TryGetValue("run_id", out var runId))
+            defaults.RunId = runId;
+
+        return defaults;
     }
 
     /// <summary>
-    /// Gets a string representation for logging.
+    /// Creates session defaults from HTTP headers (SSE transport).
+    /// </summary>
+    /// <param name="headers">HTTP headers</param>
+    /// <returns>SessionDefaults populated from HTTP headers</returns>
+    public static SessionDefaults FromHttpHeaders(IDictionary<string, string> headers)
+    {
+        var defaults = new SessionDefaults
+        {
+            ConnectionId = "sse-headers",
+            Source = SessionDefaultsSource.HttpHeaders,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        if (headers.TryGetValue("X-Memory-User-ID", out var userId))
+            defaults.UserId = userId;
+        
+        if (headers.TryGetValue("X-Memory-Agent-ID", out var agentId))
+            defaults.AgentId = agentId;
+        
+        if (headers.TryGetValue("X-Memory-Run-ID", out var runId))
+            defaults.RunId = runId;
+
+        return defaults;
+    }
+
+    /// <summary>
+    /// Returns a string representation of the session defaults.
     /// </summary>
     public override string ToString()
     {
-        var parts = new List<string> { $"Connection:{ConnectionId}", $"Source:{Source}" };
-        if (!string.IsNullOrEmpty(DefaultUserId)) parts.Add($"User:{DefaultUserId}");
-        if (!string.IsNullOrEmpty(DefaultAgentId)) parts.Add($"Agent:{DefaultAgentId}");
-        if (!string.IsNullOrEmpty(DefaultRunId)) parts.Add($"Run:{DefaultRunId}");
-        return string.Join(", ", parts);
+        return $"SessionDefaults(UserId={UserId}, AgentId={AgentId}, RunId={RunId}, Source={Source})";
     }
 }
 
 /// <summary>
-/// Defines the source of session defaults with precedence ordering.
-/// Higher values have higher precedence.
+/// Source of session defaults information.
 /// </summary>
 public enum SessionDefaultsSource
 {
     /// <summary>
-    /// System defaults (lowest precedence).
+    /// System default values
     /// </summary>
-    System = 0,
+    SystemDefaults = 0,
     
     /// <summary>
-    /// Session initialization defaults (medium precedence).
+    /// Set during session initialization
     /// </summary>
-    SessionInit = 1,
+    SessionInitialization = 1,
     
     /// <summary>
-    /// HTTP header defaults (highest precedence).
+    /// From environment variables (STDIO transport)
     /// </summary>
-    Headers = 2
+    EnvironmentVariables = 2,
+    
+    /// <summary>
+    /// From URL parameters (SSE transport)
+    /// </summary>
+    UrlParameters = 3,
+    
+    /// <summary>
+    /// From HTTP headers (SSE transport)
+    /// </summary>
+    HttpHeaders = 4
 } 

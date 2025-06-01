@@ -459,11 +459,20 @@ public class MemoryIdGenerator
 ```csharp
 public record SessionContext
 {
-    public string? UserId { get; init; }
-    public string? AgentId { get; init; }
-    public string? RunId { get; init; }
-    public SessionType Type { get; init; }
-    public Dictionary<string, object>? Metadata { get; init; }
+    /// <summary>
+    /// Required user identifier for data isolation.
+    /// </summary>
+    public string UserId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional agent identifier for multi-agent scenarios.
+    /// </summary>
+    public string? AgentId { get; set; }
+
+    /// <summary>
+    /// Optional run identifier for conversation/workflow isolation.
+    /// </summary>
+    public string? RunId { get; set; }
 }
 
 public record SessionDefaults

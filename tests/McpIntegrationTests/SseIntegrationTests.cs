@@ -1,13 +1,9 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
-using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Server;
-using Xunit;
 using Xunit.Abstractions;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
 using System.ComponentModel;
-using MemoryServer;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -98,14 +94,12 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         
         // Verify core MemoryServer services are registered (not just basic MCP)
         var memoryService = services.GetService<MemoryServer.Services.IMemoryService>();
-        var sessionManager = services.GetService<MemoryServer.Services.ISessionManager>();
+        var sessionResolver = services.GetService<MemoryServer.Services.ISessionContextResolver>();
         var memoryTools = services.GetService<MemoryServer.Tools.MemoryMcpTools>();
-        var sessionTools = services.GetService<MemoryServer.Tools.SessionMcpTools>();
         
         Assert.NotNull(memoryService);
-        Assert.NotNull(sessionManager);
+        Assert.NotNull(sessionResolver);
         Assert.NotNull(memoryTools);
-        Assert.NotNull(sessionTools);
         
         _output.WriteLine($"✅ MemoryServer services properly registered in SSE transport");
     }

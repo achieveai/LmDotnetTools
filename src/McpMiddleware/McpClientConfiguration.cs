@@ -1,6 +1,4 @@
 using System.Text.Json.Serialization;
-using ModelContextProtocol;
-using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 

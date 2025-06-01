@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using MemoryServer.Models;
 using MemoryServer.Services;
@@ -8,14 +7,12 @@ using MemoryServer.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.Tests.Tools;
 
 public class MemoryMcpToolsTests
 {
     private readonly MockMemoryRepository _mockRepository;
-    private readonly Mock<ISessionManager> _mockSessionManager;
     private readonly Mock<ISessionContextResolver> _mockSessionResolver;
     private readonly Mock<ILogger<MemoryMcpTools>> _mockLogger;
     private readonly MemoryMcpTools _mcpTools;
@@ -24,7 +21,6 @@ public class MemoryMcpToolsTests
     public MemoryMcpToolsTests()
     {
         _mockRepository = new MockMemoryRepository();
-        _mockSessionManager = new Mock<ISessionManager>();
         _mockSessionResolver = new Mock<ISessionContextResolver>();
         _mockLogger = new Mock<ILogger<MemoryMcpTools>>();
 
@@ -50,9 +46,8 @@ public class MemoryMcpToolsTests
                 It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .Returns<string, string?, string?, string?, CancellationToken>((connectionId, userId, agentId, runId, ct) =>
+            .Returns<string?, string?, string?, CancellationToken>((userId, agentId, runId, ct) =>
                 Task.FromResult(new SessionContext
                 {
                     UserId = userId ?? "default_user",
@@ -94,7 +89,6 @@ public class MemoryMcpToolsTests
 
         // Verify the session resolver was called correctly
         _mockSessionResolver.Verify(x => x.ResolveSessionContextAsync(
-            It.IsAny<string>(),
             "test_user",
             "test_agent", 
             "test_run",
@@ -312,7 +306,6 @@ public class MemoryMcpToolsTests
 
         // Verify the session resolver was called with a generated connection ID (not null)
         _mockSessionResolver.Verify(x => x.ResolveSessionContextAsync(
-            It.Is<string>(connectionId => !string.IsNullOrEmpty(connectionId)),
             "test_user",
             null, 
             null,

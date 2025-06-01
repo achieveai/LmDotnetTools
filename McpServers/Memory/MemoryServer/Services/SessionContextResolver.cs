@@ -1,58 +1,47 @@
 using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Resolves session context using precedence rules and session defaults.
+/// Resolves session context using precedence rules and transport context.
 /// </summary>
 public class SessionContextResolver : ISessionContextResolver
 {
-    private readonly ISessionManager _sessionManager;
     private readonly ILogger<SessionContextResolver> _logger;
     private readonly SessionDefaultsOptions _options;
 
     public SessionContextResolver(
-        ISessionManager sessionManager,
         ILogger<SessionContextResolver> logger,
         IOptions<MemoryServerOptions> options)
     {
-        _sessionManager = sessionManager;
         _logger = logger;
         _options = options.Value.SessionDefaults;
     }
 
     /// <summary>
     /// Resolves session context using precedence hierarchy.
-    /// Precedence: Explicit Parameters > HTTP Headers > Session Init > System Defaults
+    /// Precedence: Explicit Parameters > Transport Context > System Defaults
     /// </summary>
-    public async Task<SessionContext> ResolveSessionContextAsync(
-        string connectionId,
+    public Task<SessionContext> ResolveSessionContextAsync(
         string? explicitUserId = null,
         string? explicitAgentId = null,
         string? explicitRunId = null,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Resolving session context for connection {ConnectionId}", connectionId);
+        _logger.LogDebug("Resolving session context with explicit parameters: UserId={UserId}, AgentId={AgentId}, RunId={RunId}", 
+            explicitUserId, explicitAgentId, explicitRunId);
 
-        // Get session defaults for this connection
-        var sessionDefaults = await _sessionManager.GetSessionDefaultsAsync(connectionId, cancellationToken);
-
-        // Resolve using precedence hierarchy
-        var sessionContext = sessionDefaults?.ResolveSessionContext(
-            explicitUserId,
-            explicitAgentId,
-            explicitRunId,
-            _options.DefaultUserId) ?? new SessionContext
+        var sessionContext = new SessionContext
         {
-            UserId = explicitUserId ?? _options.DefaultUserId,
-            AgentId = explicitAgentId,
-            RunId = explicitRunId
+            // Start with explicit parameters (highest precedence)
+            UserId = explicitUserId ?? GetFromTransportContext("userId") ?? _options.DefaultUserId,
+            AgentId = explicitAgentId ?? GetFromTransportContext("agentId"),
+            RunId = explicitRunId ?? GetFromTransportContext("runId") ?? GenerateDefaultRunId()
         };
 
-        _logger.LogDebug("Resolved session context for connection {ConnectionId}: {SessionContext}", connectionId, sessionContext);
-        return sessionContext;
+        _logger.LogDebug("Resolved session context: {SessionContext}", sessionContext);
+        return Task.FromResult(sessionContext);
     }
 
     /// <summary>
@@ -85,18 +74,51 @@ public class SessionContextResolver : ISessionContextResolver
             return Task.FromResult(false);
         }
 
-        // Additional validation rules can be added here
-        // For example, checking against allowed user lists, etc.
-
         _logger.LogDebug("Session context validation passed for {SessionContext}", sessionContext);
         return Task.FromResult(true);
     }
 
     /// <summary>
-    /// Gets the effective session context for a connection without explicit parameters.
+    /// Gets the default session context based on transport context and system defaults.
     /// </summary>
-    public async Task<SessionContext> GetEffectiveSessionContextAsync(string connectionId, CancellationToken cancellationToken = default)
+    public Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default)
     {
-        return await ResolveSessionContextAsync(connectionId, cancellationToken: cancellationToken);
+        return ResolveSessionContextAsync(cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets session context from transport-specific sources.
+    /// </summary>
+    private string? GetFromTransportContext(string parameterName)
+    {
+        // Try environment variables first (STDIO transport)
+        var envValue = parameterName.ToLowerInvariant() switch
+        {
+            "userid" => Environment.GetEnvironmentVariable("MCP_MEMORY_USER_ID"),
+            "agentid" => Environment.GetEnvironmentVariable("MCP_MEMORY_AGENT_ID"),
+            "runid" => Environment.GetEnvironmentVariable("MCP_MEMORY_RUN_ID"),
+            _ => null
+        };
+
+        if (!string.IsNullOrWhiteSpace(envValue))
+        {
+            _logger.LogDebug("Found {ParameterName} in environment variables: {Value}", parameterName, envValue);
+            return envValue;
+        }
+
+        // TODO: Add support for HTTP headers and URL parameters when available in context
+        // This will be implemented when we update the transport layer
+
+        return null;
+    }
+
+    /// <summary>
+    /// Generates a default runId based on current date.
+    /// </summary>
+    private string GenerateDefaultRunId()
+    {
+        var defaultRunId = DateTime.UtcNow.ToString("yyyyMMdd");
+        _logger.LogDebug("Generated default runId: {RunId}", defaultRunId);
+        return defaultRunId;
     }
 } 

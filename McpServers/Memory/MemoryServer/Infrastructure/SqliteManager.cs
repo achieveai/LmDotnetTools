@@ -1,5 +1,4 @@
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text;
 using MemoryServer.Models;
@@ -304,18 +303,6 @@ public class SqliteManager : IDisposable
                 content_rowid='id'
             );");
         
-        // Session defaults storage
-        schema.AppendLine(@"
-            CREATE TABLE IF NOT EXISTS session_defaults (
-                connection_id TEXT PRIMARY KEY,
-                user_id TEXT,
-                agent_id TEXT,
-                run_id TEXT,
-                metadata TEXT, -- JSON
-                source INTEGER NOT NULL DEFAULT 0, -- SessionDefaultsSource enum
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );");
-        
         // Graph database tables for entities and relationships
         
         // Entities table for knowledge graph
@@ -371,7 +358,6 @@ public class SqliteManager : IDisposable
             CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_session_defaults_created ON session_defaults(created_at DESC);
             
             -- Graph database indexes
             CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(user_id, agent_id, run_id);

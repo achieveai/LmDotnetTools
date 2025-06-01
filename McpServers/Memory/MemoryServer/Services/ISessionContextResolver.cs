@@ -3,16 +3,15 @@ using MemoryServer.Models;
 namespace MemoryServer.Services;
 
 /// <summary>
-/// Resolves session context using precedence rules and session defaults.
+/// Resolves session context using precedence rules and transport context.
 /// </summary>
 public interface ISessionContextResolver
 {
     /// <summary>
     /// Resolves session context using precedence hierarchy.
-    /// Precedence: Explicit Parameters > HTTP Headers > Session Init > System Defaults
+    /// Precedence: Explicit Parameters > Transport Context > System Defaults
     /// </summary>
     Task<SessionContext> ResolveSessionContextAsync(
-        string connectionId,
         string? explicitUserId = null,
         string? explicitAgentId = null,
         string? explicitRunId = null,
@@ -24,7 +23,7 @@ public interface ISessionContextResolver
     Task<bool> ValidateSessionContextAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Gets the effective session context for a connection without explicit parameters.
+    /// Gets the default session context based on transport context and system defaults.
     /// </summary>
-    Task<SessionContext> GetEffectiveSessionContextAsync(string connectionId, CancellationToken cancellationToken = default);
+    Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default);
 } 

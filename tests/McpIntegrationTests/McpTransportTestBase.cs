@@ -1,7 +1,5 @@
 using System.Text.Json;
-using ModelContextProtocol;
 using ModelContextProtocol.Client;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;

@@ -1,5 +1,4 @@
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 using System.Data;
 using System.Diagnostics;
 
@@ -108,7 +107,7 @@ public class SqliteSession : ISqliteSession
         }, cancellationToken);
     }
 
-    public async Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
+    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
     {
         var health = new SessionHealthStatus
         {
@@ -128,7 +127,7 @@ public class SqliteSession : ISqliteSession
             health.ErrorMessage = $"Connection is in {_connection.State} state";
         }
 
-        return health;
+        return Task.FromResult(health);
     }
 
     public async ValueTask DisposeAsync()

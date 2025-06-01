@@ -1,5 +1,4 @@
 using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Services;

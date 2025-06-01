@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Microsoft.Extensions.Logging;
 using MemoryServer.Models;
 
 namespace MemoryServer.Services;

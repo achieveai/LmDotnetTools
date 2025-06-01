@@ -1,4 +1,3 @@
-using MemoryServer.Models;
 using MemoryServer.Tests.TestUtilities;
 
 namespace MemoryServer.Tests.Models;

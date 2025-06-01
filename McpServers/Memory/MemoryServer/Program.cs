@@ -3,52 +3,56 @@ using MemoryServer.Models;
 using MemoryServer.Services;
 using MemoryServer.Tools;
 using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Server;
-using ModelContextProtocol.AspNetCore;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
-// Read configuration to determine transport mode
-var tempBuilder = Host.CreateApplicationBuilder(args);
-tempBuilder.Services.Configure<MemoryServerOptions>(
-    tempBuilder.Configuration.GetSection("MemoryServer"));
-var tempServices = tempBuilder.Services.BuildServiceProvider();
-var memoryServerOptions = tempServices.GetRequiredService<IOptions<MemoryServerOptions>>().Value;
-var transportMode = memoryServerOptions.Transport.Mode;
+var commandLineArgs = Environment.GetCommandLineArgs();
+
+// Parse command line arguments for transport mode
+var transportMode = TransportMode.SSE; // Default to SSE
+if (commandLineArgs.Contains("--stdio"))
+{
+    transportMode = TransportMode.STDIO;
+}
+
+// Load configuration
+var configuration = new ConfigurationBuilder()
+    .SetBasePath(Directory.GetCurrentDirectory())
+    .AddJsonFile("appsettings.json", optional: true)
+    .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
+    .AddEnvironmentVariables()
+    .Build();
+
+var memoryOptions = new MemoryServerOptions();
+configuration.GetSection("MemoryServer").Bind(memoryOptions);
+memoryOptions.Transport.Mode = transportMode;
 
 Console.WriteLine($"🚀 Starting Memory MCP Server with {transportMode} transport");
 
 if (transportMode == TransportMode.SSE)
 {
-    await RunSseServerAsync(args, memoryServerOptions);
+    await RunSseServerAsync(commandLineArgs, memoryOptions);
 }
 else
 {
-    await RunStdioServerAsync(args, memoryServerOptions);
+    await RunStdioServerAsync(commandLineArgs, memoryOptions);
 }
 
 static async Task RunSseServerAsync(string[] args, MemoryServerOptions options)
 {
     var builder = WebApplication.CreateBuilder(args);
-    ConfigureSseServices(builder);
-    var app = builder.Build();
-    await ConfigureSseApplication(app);
-    await app.RunAsync();
-}
 
-static void ConfigureSseServices(WebApplicationBuilder builder)
-{
-    // Configure logging for SSE transport
+    // Configure logging for development
     builder.Logging.AddConsole();
 
     // Add services to the container
     builder.Services.AddMemoryCache();
+    
+    // Add routing services (required for UseRouting)
+    builder.Services.AddRouting();
 
     // Configure options from appsettings
     builder.Services.Configure<DatabaseOptions>(
@@ -69,9 +73,10 @@ static void ConfigureSseServices(WebApplicationBuilder builder)
     // Register core infrastructure
     builder.Services.AddSingleton<MemoryIdGenerator>();
 
-    // Register session management
-    builder.Services.AddScoped<ISessionManager, SessionManager>();
+    // Register session management services
     builder.Services.AddScoped<ISessionContextResolver, SessionContextResolver>();
+    builder.Services.AddScoped<ISessionManager, SessionManager>();
+    builder.Services.AddScoped<TransportSessionInitializer>();
 
     // Register memory services
     builder.Services.AddScoped<IMemoryRepository, MemoryRepository>();
@@ -104,7 +109,7 @@ static void ConfigureSseServices(WebApplicationBuilder builder)
                 logger.LogWarning("Anthropic API key not configured. LLM features will be disabled.");
                 return new MockAgent("mock-anthropic");
             }
-            var client = new AnthropicClient(apiKey);
+            var client = new AchieveAi.LmDotnetTools.AnthropicProvider.Agents.AnthropicClient(apiKey);
             return new AnthropicAgent("memory-anthropic", client);
         }
         else
@@ -116,14 +121,13 @@ static void ConfigureSseServices(WebApplicationBuilder builder)
                 logger.LogWarning("OpenAI API key not configured. LLM features will be disabled.");
                 return new MockAgent("mock-openai");
             }
-            var client = new OpenClient(apiKey, baseUrl);
+            var client = new AchieveAi.LmDotnetTools.OpenAIProvider.Agents.OpenClient(apiKey, baseUrl);
             return new OpenClientAgent("memory-openai", client);
         }
     });
 
     // Register MCP tools
     builder.Services.AddScoped<MemoryMcpTools>();
-    builder.Services.AddScoped<SessionMcpTools>();
 
     // Add MCP Server with HTTP transport (SSE)
     builder.Services
@@ -141,6 +145,10 @@ static void ConfigureSseServices(WebApplicationBuilder builder)
                   .AllowAnyHeader();
         });
     });
+
+    var app = builder.Build();
+    await ConfigureSseApplication(app);
+    await app.RunAsync();
 }
 
 static async Task ConfigureSseApplication(WebApplication app)
@@ -162,15 +170,45 @@ static async Task ConfigureSseApplication(WebApplication app)
     // Configure CORS
     app.UseCors();
 
-    // Map MCP endpoints (this creates the /sse endpoint)
-    app.UseRouting();
-    app.UseEndpoints(endpoints =>
+    // Add middleware to extract URL parameters and headers for session context
+    app.Use(async (context, next) =>
     {
-        // Add basic health check endpoint for testing
-        endpoints.MapGet("/health", () => "OK");
-        
-        endpoints.MapMcp();
+        try
+        {
+            // Extract URL parameters
+            var queryParameters = context.Request.Query
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
+
+            // Extract HTTP headers
+            var headers = context.Request.Headers
+                .Where(h => h.Key.StartsWith("X-Memory-"))
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
+
+            // Initialize SSE session context if we have relevant parameters or headers
+            if (queryParameters.Any(kvp => kvp.Key.EndsWith("_id")) || headers.Any())
+            {
+                var sessionInitializer = context.RequestServices.GetRequiredService<TransportSessionInitializer>();
+                var sessionDefaults = await sessionInitializer.InitializeSseSessionAsync(queryParameters, headers);
+                
+                if (sessionDefaults != null && sessionInitializer.ValidateSessionContext(sessionDefaults))
+                {
+                    appLogger.LogInformation("SSE session context initialized: {SessionDefaults}", sessionDefaults);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            appLogger.LogWarning(ex, "Failed to initialize SSE session context from request");
+        }
+
+        await next();
     });
+
+    // Add basic health check endpoint for testing
+    app.MapGet("/health", () => "OK");
+    
+    // Map MCP endpoints (this creates the /sse endpoint)
+    app.MapMcp();
 
     appLogger.LogInformation("🌐 Memory MCP Server configured for SSE transport");
 }
@@ -208,9 +246,10 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
     // Register core infrastructure
     builder.Services.AddSingleton<MemoryIdGenerator>();
 
-    // Register session management
-    builder.Services.AddScoped<ISessionManager, SessionManager>();
+    // Register session management services
     builder.Services.AddScoped<ISessionContextResolver, SessionContextResolver>();
+    builder.Services.AddScoped<ISessionManager, SessionManager>();
+    builder.Services.AddScoped<TransportSessionInitializer>();
 
     // Register memory services
     builder.Services.AddScoped<IMemoryRepository, MemoryRepository>();
@@ -243,7 +282,7 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
                 logger.LogWarning("Anthropic API key not configured. LLM features will be disabled.");
                 return new MockAgent("mock-anthropic");
             }
-            var client = new AnthropicClient(apiKey);
+            var client = new AchieveAi.LmDotnetTools.AnthropicProvider.Agents.AnthropicClient(apiKey);
             return new AnthropicAgent("memory-anthropic", client);
         }
         else
@@ -255,14 +294,13 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
                 logger.LogWarning("OpenAI API key not configured. LLM features will be disabled.");
                 return new MockAgent("mock-openai");
             }
-            var client = new OpenClient(apiKey, baseUrl);
+            var client = new AchieveAi.LmDotnetTools.OpenAIProvider.Agents.OpenClient(apiKey, baseUrl);
             return new OpenClientAgent("memory-openai", client);
         }
     });
 
     // Register MCP tools
     builder.Services.AddScoped<MemoryMcpTools>();
-    builder.Services.AddScoped<SessionMcpTools>();
 
     // Add MCP Server with STDIO transport
     builder.Services
@@ -283,6 +321,25 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
         var logger = app.Services.GetRequiredService<ILogger<Program>>();
         logger.LogError(ex, "Database initialization failed: {Message}", ex.Message);
         throw;
+    }
+
+    // Initialize STDIO session context from environment variables
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        var sessionInitializer = scope.ServiceProvider.GetRequiredService<TransportSessionInitializer>();
+        var sessionDefaults = await sessionInitializer.InitializeStdioSessionAsync();
+        
+        if (sessionDefaults != null && sessionInitializer.ValidateSessionContext(sessionDefaults))
+        {
+            var logger = app.Services.GetRequiredService<ILogger<Program>>();
+            logger.LogInformation("STDIO session context initialized: {SessionDefaults}", sessionDefaults);
+        }
+    }
+    catch (Exception ex)
+    {
+        var logger = app.Services.GetRequiredService<ILogger<Program>>();
+        logger.LogWarning(ex, "Failed to initialize STDIO session context from environment variables");
     }
 
     try
@@ -334,9 +391,10 @@ public class Startup
         // Register core infrastructure
         services.AddSingleton<MemoryIdGenerator>();
 
-        // Register session management
-        services.AddScoped<ISessionManager, SessionManager>();
+        // Register session management services
         services.AddScoped<ISessionContextResolver, SessionContextResolver>();
+        services.AddScoped<ISessionManager, SessionManager>();
+        services.AddScoped<TransportSessionInitializer>();
 
         // Register memory services
         services.AddScoped<IMemoryRepository, MemoryRepository>();
@@ -360,7 +418,6 @@ public class Startup
 
         // Register MCP tools
         services.AddScoped<MemoryMcpTools>();
-        services.AddScoped<SessionMcpTools>();
 
         // Add MCP Server with HTTP transport (SSE)
         services

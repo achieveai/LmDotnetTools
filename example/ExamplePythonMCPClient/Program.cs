@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -9,7 +8,6 @@ using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using ModelContextProtocol;
 using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;

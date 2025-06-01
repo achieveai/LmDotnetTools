@@ -1,7 +1,6 @@
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
 namespace MemoryServer.Services;

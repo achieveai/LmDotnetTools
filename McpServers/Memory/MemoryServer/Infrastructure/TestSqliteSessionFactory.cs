@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using Microsoft.Data.Sqlite;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -89,7 +88,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         }
     }
 
-    public async Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default)
+    public Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(connectionString))
             throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
@@ -120,7 +119,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
             _logger.LogDebug("Created test session {SessionId} with custom connection string in {ElapsedMs}ms", 
                 session.SessionId, stopwatch.ElapsedMilliseconds);
             
-            return new TrackedTestSqliteSession(session, this);
+            return Task.FromResult<ISqliteSession>(new TrackedTestSqliteSession(session, this));
         }
         catch (Exception ex)
         {
@@ -142,7 +141,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         return Task.CompletedTask;
     }
 
-    public async Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
+    public Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
     {
         lock (_metricsLock)
         {
@@ -165,7 +164,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 metrics.AverageSessionLifetimeMs = _sessionLifetimes.Average();
             }
 
-            return metrics;
+            return Task.FromResult(metrics);
         }
     }
 
@@ -358,7 +357,7 @@ public class TestSqliteSession : ISqliteSession
         }, cancellationToken);
     }
 
-    public async Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
+    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
     {
         var health = new SessionHealthStatus
         {
@@ -378,7 +377,7 @@ public class TestSqliteSession : ISqliteSession
             health.ErrorMessage = $"Connection is in {_connection.State} state";
         }
 
-        return health;
+        return Task.FromResult(health);
     }
 
     public async ValueTask DisposeAsync()
@@ -567,16 +566,6 @@ public class TestSqliteSession : ISqliteSession
                 metadata,
                 content='memories',
                 content_rowid='id'
-            )",
-
-            @"CREATE TABLE IF NOT EXISTS session_defaults (
-                connection_id TEXT PRIMARY KEY,
-                user_id TEXT,
-                agent_id TEXT,
-                run_id TEXT,
-                metadata TEXT,
-                source INTEGER NOT NULL DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 
             @"CREATE TABLE IF NOT EXISTS entities (

@@ -1,6 +1,4 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using ModelContextProtocol;
 using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
