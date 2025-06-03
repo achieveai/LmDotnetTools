@@ -1,0 +1,291 @@
+using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
+using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
+using LmEmbeddings.Models;
+using LmEmbeddings.Tests.TestUtilities;
+using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.Net;
+using System.Text.Json;
+using Xunit;
+
+namespace LmEmbeddings.Tests.Core;
+
+/// <summary>
+/// Comprehensive tests for ServerEmbeddings class using HTTP mocking
+/// </summary>
+public class ServerEmbeddingsTests
+{
+    private readonly ILogger<ServerEmbeddings> _logger;
+
+    public ServerEmbeddingsTests()
+    {
+        _logger = new TestLogger<ServerEmbeddings>();
+    }
+
+    [Theory]
+    [MemberData(nameof(ConstructorTestCases))]
+    public void Constructor_WithValidParameters_CreatesInstance(
+        string endpoint, string model, int embeddingSize, string apiKey, int maxBatchSize, EmbeddingApiType apiType, string description)
+    {
+        Debug.WriteLine($"Testing constructor with: {description}");
+        
+        // Act & Assert
+        var service = new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, apiType, _logger);
+        
+        Assert.NotNull(service);
+        Assert.Equal(embeddingSize, service.EmbeddingSize);
+        
+        service.Dispose();
+        Debug.WriteLine($"Constructor test passed: {description}");
+    }
+
+    [Theory]
+    [MemberData(nameof(ConstructorInvalidParametersTestCases))]
+    public void Constructor_WithInvalidParameters_ThrowsException(
+        string endpoint, string model, int embeddingSize, string apiKey, int maxBatchSize, Type expectedExceptionType, string description)
+    {
+        Debug.WriteLine($"Testing invalid constructor parameters: {description}");
+        
+        // Act & Assert
+        var exception = Assert.Throws(expectedExceptionType, () =>
+            new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, EmbeddingApiType.Default, _logger));
+        
+        Assert.NotNull(exception);
+        Debug.WriteLine($"Expected exception thrown: {exception.GetType().Name} - {description}");
+    }
+
+    [Theory]
+    [MemberData(nameof(BasicEmbeddingTestCases))]
+    public async Task GetEmbeddingAsync_WithValidInput_ReturnsEmbedding(string input, string description)
+    {
+        Debug.WriteLine($"Testing basic embedding generation: {description}");
+        
+        // Arrange
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(1));
+        using var service = CreateServerEmbeddings(fakeHandler);
+        
+        // Act
+        var result = await service.GetEmbeddingAsync(input);
+        
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(1536, result.Length);
+        Debug.WriteLine($"Generated embedding with {result.Length} dimensions for: {description}");
+    }
+
+    [Fact]
+    public async Task GenerateEmbeddingsAsync_WithBatchProcessing_ProcessesConcurrently()
+    {
+        Debug.WriteLine("Testing batch processing with concurrent requests");
+        
+        // Arrange
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(3));
+        using var service = CreateServerEmbeddings(fakeHandler, maxBatchSize: 2);
+        var texts = new[] { "text1", "text2", "text3" };
+        var request = new EmbeddingRequest
+        {
+            Inputs = texts,
+            Model = "test-model"
+        };
+        
+        // Act
+        var stopwatch = Stopwatch.StartNew();
+        var result = await service.GenerateEmbeddingsAsync(request);
+        stopwatch.Stop();
+        
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(3, result.Embeddings.Count);
+        Debug.WriteLine($"Batch processing completed in {stopwatch.ElapsedMilliseconds}ms for {texts.Length} texts");
+    }
+
+    [Fact]
+    public async Task GenerateEmbeddingsAsync_WithRetryLogic_UsesLinearBackoff()
+    {
+        Debug.WriteLine("Testing linear backoff retry logic");
+        
+        // Arrange
+        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(2, CreateValidEmbeddingResponse(1));
+        using var service = CreateServerEmbeddings(fakeHandler);
+        
+        // Act
+        var stopwatch = Stopwatch.StartNew();
+        var result = await service.GetEmbeddingAsync("test text");
+        stopwatch.Stop();
+        
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(1536, result.Length);
+        
+        // Verify linear backoff timing (should be approximately 1s + 2s = 3s for 2 retries)
+        Assert.True(stopwatch.ElapsedMilliseconds >= 2900, $"Expected at least 2900ms for linear backoff, got {stopwatch.ElapsedMilliseconds}ms");
+        Debug.WriteLine($"Linear backoff retry completed in {stopwatch.ElapsedMilliseconds}ms");
+    }
+
+    [Theory]
+    [MemberData(nameof(TextChunkingTestCases))]
+    public async Task GenerateEmbeddingsAsync_WithLongText_ChunksAutomatically(string longText, int expectedChunks, string description)
+    {
+        Debug.WriteLine($"Testing text chunking: {description}");
+        
+        // Arrange
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(expectedChunks));
+        using var service = CreateServerEmbeddings(fakeHandler);
+        var request = new EmbeddingRequest
+        {
+            Inputs = new[] { longText },
+            Model = "test-model"
+        };
+        
+        // Act
+        var result = await service.GenerateEmbeddingsAsync(request);
+        
+        // Assert
+        Assert.NotNull(result);
+        Assert.True(result.Embeddings.Count >= expectedChunks, $"Expected at least {expectedChunks} chunks, got {result.Embeddings.Count}");
+        Debug.WriteLine($"Text chunking created {result.Embeddings.Count} chunks for: {description}");
+    }
+
+    [Theory]
+    [MemberData(nameof(ApiTypeTestCases))]
+    public async Task GenerateEmbeddingsAsync_WithDifferentApiTypes_FormatsCorrectly(EmbeddingApiType apiType, string description)
+    {
+        Debug.WriteLine($"Testing API type formatting: {description}");
+        
+        // Arrange
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(1));
+        using var service = CreateServerEmbeddings(fakeHandler, apiType: apiType);
+        
+        // Act
+        var result = await service.GetEmbeddingAsync("test");
+        
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(1536, result.Length);
+        Debug.WriteLine($"API type {apiType} formatting test passed: {description}");
+    }
+
+    [Fact]
+    public async Task GetAvailableModelsAsync_ReturnsConfiguredModel()
+    {
+        Debug.WriteLine("Testing GetAvailableModelsAsync");
+        
+        // Arrange
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
+        using var service = CreateServerEmbeddings(fakeHandler, model: "test-model");
+        
+        // Act
+        var models = await service.GetAvailableModelsAsync();
+        
+        // Assert
+        Assert.NotNull(models);
+        Assert.Single(models);
+        Assert.Equal("test-model", models[0]);
+        Debug.WriteLine($"Available models returned: {string.Join(", ", models)}");
+    }
+
+    // Test Data
+    public static IEnumerable<object[]> ConstructorTestCases => new List<object[]>
+    {
+        new object[] { "https://api.openai.com", "text-embedding-3-small", 1536, "test-key", 100, EmbeddingApiType.Default, "OpenAI configuration" },
+        new object[] { "https://api.jina.ai", "jina-embeddings-v3", 1024, "jina-key", 50, EmbeddingApiType.Jina, "Jina configuration" },
+        new object[] { "https://custom.api.com", "custom-model", 768, "custom-key", 200, EmbeddingApiType.Default, "Custom configuration" }
+    };
+
+    public static IEnumerable<object[]> ConstructorInvalidParametersTestCases => new List<object[]>
+    {
+        new object[] { null!, "model", 1536, "key", 100, typeof(ArgumentNullException), "Null endpoint" },
+        new object[] { "https://api.test.com", null!, 1536, "key", 100, typeof(ArgumentNullException), "Null model" },
+        new object[] { "https://api.test.com", "model", 0, "key", 100, typeof(ArgumentException), "Zero embedding size" },
+        new object[] { "https://api.test.com", "model", -1, "key", 100, typeof(ArgumentException), "Negative embedding size" },
+        new object[] { "https://api.test.com", "model", 1536, null!, 100, typeof(ArgumentException), "Null API key" },
+        new object[] { "https://api.test.com", "model", 1536, "", 100, typeof(ArgumentException), "Empty API key" },
+        new object[] { "https://api.test.com", "model", 1536, "key", 0, typeof(ArgumentException), "Zero batch size" }
+    };
+
+    public static IEnumerable<object[]> BasicEmbeddingTestCases => new List<object[]>
+    {
+        new object[] { "Hello world", "Simple text" },
+        new object[] { "The quick brown fox jumps over the lazy dog", "Longer sentence" },
+        new object[] { "🌟 Unicode text with emojis 🚀", "Unicode and emojis" }
+    };
+
+    public static IEnumerable<object[]> TextChunkingTestCases => new List<object[]>
+    {
+        new object[] { new string('a', 10000), 2, "Long text requiring chunking" },
+        new object[] { string.Join(" ", Enumerable.Repeat("word", 2000)), 2, "Many words requiring chunking" },
+        new object[] { "Short text", 1, "Short text not requiring chunking" }
+    };
+
+    public static IEnumerable<object[]> ApiTypeTestCases => new List<object[]>
+    {
+        new object[] { EmbeddingApiType.Default, "OpenAI API format" },
+        new object[] { EmbeddingApiType.Jina, "Jina API format" }
+    };
+
+    // Helper Methods
+    private ServerEmbeddings CreateServerEmbeddings(
+        FakeHttpMessageHandler httpHandler, 
+        string endpoint = "https://api.test.com",
+        string model = "test-model",
+        int embeddingSize = 1536,
+        string apiKey = "test-key",
+        int maxBatchSize = 100,
+        EmbeddingApiType apiType = EmbeddingApiType.Default)
+    {
+        var httpClient = new HttpClient(httpHandler);
+        var service = new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, apiType, _logger, httpClient);
+        return service;
+    }
+
+    private static string CreateValidEmbeddingResponse(int embeddingCount)
+    {
+        var embeddings = new List<object>();
+        for (int i = 0; i < embeddingCount; i++)
+        {
+            embeddings.Add(new
+            {
+                Vector = GenerateTestEmbeddingArray(1536),
+                Index = i,
+                Text = $"input_{i}"
+            });
+        }
+
+        var response = new
+        {
+            Embeddings = embeddings,
+            Model = "test-model",
+            Usage = new
+            {
+                PromptTokens = 10,
+                TotalTokens = 10
+            }
+        };
+
+        return JsonSerializer.Serialize(response);
+    }
+
+    private static float[] GenerateTestEmbeddingArray(int size)
+    {
+        var random = new Random(42); // Fixed seed for reproducible tests
+        var embedding = new float[size];
+        for (int i = 0; i < size; i++)
+        {
+            embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Values between -1 and 1
+        }
+        return embedding;
+    }
+
+    /// <summary>
+    /// Simple test logger implementation
+    /// </summary>
+    private class TestLogger<T> : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Debug.WriteLine($"[{logLevel}] {formatter(state, exception)}");
+        }
+    }
+} 

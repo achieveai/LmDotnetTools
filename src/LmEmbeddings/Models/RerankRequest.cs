@@ -1,37 +1,43 @@
+using System.Collections.Immutable;
+using System.Text.Json.Serialization;
+
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 
 /// <summary>
-/// Represents a request to rerank documents based on a query
+/// Represents a request to the Cohere rerank API
 /// </summary>
-public class RerankRequest
+public record RerankRequest
 {
     /// <summary>
-    /// The query to rank documents against
+    /// The identifier of the model to use (e.g., "rerank-v3.5")
     /// </summary>
-    public required string Query { get; init; }
-
-    /// <summary>
-    /// The documents to rerank
-    /// </summary>
-    public required IReadOnlyList<string> Documents { get; init; }
-
-    /// <summary>
-    /// The model to use for reranking
-    /// </summary>
+    [JsonPropertyName("model")]
     public required string Model { get; init; }
 
     /// <summary>
-    /// Maximum number of documents to return (top-k)
+    /// The search query to rank documents against
     /// </summary>
-    public int? TopK { get; init; }
+    [JsonPropertyName("query")]
+    public required string Query { get; init; }
 
     /// <summary>
-    /// Whether to return the document text in the response
+    /// A list of documents to be ranked. For optimal performance, 
+    /// avoid sending more than 1,000 documents in a single request.
     /// </summary>
-    public bool ReturnDocuments { get; init; } = true;
+    [JsonPropertyName("documents")]
+    public required ImmutableList<string> Documents { get; init; }
 
     /// <summary>
-    /// Additional provider-specific options
+    /// Limits the number of returned rerank results to the specified value. 
+    /// If not specified, all rerank results will be returned.
     /// </summary>
-    public Dictionary<string, object>? AdditionalOptions { get; init; }
+    [JsonPropertyName("top_n")]
+    public int? TopN { get; init; }
+
+    /// <summary>
+    /// Maximum tokens per document. Defaults to 4096 in the API.
+    /// Long documents will be automatically truncated to this number of tokens.
+    /// </summary>
+    [JsonPropertyName("max_tokens_per_doc")]
+    public int? MaxTokensPerDoc { get; init; }
 } 

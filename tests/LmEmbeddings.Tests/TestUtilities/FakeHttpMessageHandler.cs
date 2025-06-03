@@ -25,6 +25,20 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
+    /// Creates a simple fake handler with a custom response function
+    /// </summary>
+    /// <param name="responseFunc">Function to generate responses</param>
+    /// <returns>A configured fake handler</returns>
+    public static FakeHttpMessageHandler CreateSimpleHandler(
+        Func<HttpRequestMessage, HttpResponseMessage> responseFunc)
+    {
+        return new FakeHttpMessageHandler((request, cancellationToken) =>
+        {
+            return Task.FromResult(responseFunc(request));
+        });
+    }
+
+    /// <summary>
     /// Creates a simple fake handler that returns a successful response with JSON content
     /// </summary>
     /// <param name="jsonResponse">The JSON response to return</param>
@@ -112,6 +126,47 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 });
             }
 
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(successResponse, Encoding.UTF8, "application/json")
+            });
+        });
+    }
+
+    /// <summary>
+    /// Creates a fake handler that returns a sequence of status codes followed by success
+    /// </summary>
+    /// <param name="statusCodes">Sequence of status codes to return</param>
+    /// <param name="successResponse">The successful response to return after all status codes</param>
+    /// <returns>A configured fake handler for status code sequence testing</returns>
+    public static FakeHttpMessageHandler CreateStatusCodeSequenceHandler(
+        HttpStatusCode[] statusCodes,
+        string successResponse)
+    {
+        var attemptCount = 0;
+        
+        return new FakeHttpMessageHandler((request, cancellationToken) =>
+        {
+            if (attemptCount < statusCodes.Length)
+            {
+                var statusCode = statusCodes[attemptCount];
+                attemptCount++;
+                
+                if (statusCode == HttpStatusCode.OK)
+                {
+                    return Task.FromResult(new HttpResponseMessage(statusCode)
+                    {
+                        Content = new StringContent(successResponse, Encoding.UTF8, "application/json")
+                    });
+                }
+                
+                return Task.FromResult(new HttpResponseMessage(statusCode)
+                {
+                    Content = new StringContent($"Error {(int)statusCode}", Encoding.UTF8, "text/plain")
+                });
+            }
+
+            // If we've exhausted the sequence, return success
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(successResponse, Encoding.UTF8, "application/json")

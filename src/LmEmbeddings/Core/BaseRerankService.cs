@@ -1,6 +1,7 @@
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
+using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
@@ -34,9 +35,9 @@ public abstract class BaseRerankService : IRerankService
         var request = new RerankRequest
         {
             Query = query,
-            Documents = documents,
+            Documents = documents.ToImmutableList(),
             Model = model,
-            TopK = topK
+            TopN = topK
         };
 
         return await RerankAsync(request, cancellationToken);
@@ -63,8 +64,8 @@ public abstract class BaseRerankService : IRerankService
             throw new ArgumentException("Model cannot be null or empty", nameof(request));
         if (request.Documents.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentException("All documents must be non-empty", nameof(request));
-        if (request.TopK.HasValue && request.TopK.Value <= 0)
-            throw new ArgumentException("TopK must be positive", nameof(request));
+        if (request.TopN.HasValue && request.TopN.Value <= 0)
+            throw new ArgumentException("TopN must be positive", nameof(request));
     }
 
     /// <summary>

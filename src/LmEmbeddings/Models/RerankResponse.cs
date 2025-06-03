@@ -1,59 +1,94 @@
+using System.Collections.Immutable;
+using System.Text.Json.Serialization;
+
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 
 /// <summary>
-/// Represents the response from a reranking request
+/// Represents a response from the Cohere rerank API
 /// </summary>
-public class RerankResponse
+public record RerankResponse
 {
     /// <summary>
-    /// The reranked documents with relevance scores
+    /// An ordered list of ranked documents
     /// </summary>
-    public required IReadOnlyList<RerankResult> Results { get; init; }
+    [JsonPropertyName("results")]
+    public required ImmutableList<RerankResult> Results { get; init; }
 
     /// <summary>
-    /// The model used for reranking
+    /// Unique identifier for the rerank request
     /// </summary>
-    public required string Model { get; init; }
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
 
     /// <summary>
-    /// Usage statistics for the request
+    /// Metadata about the rerank response
     /// </summary>
-    public RerankUsage? Usage { get; init; }
-
-    /// <summary>
-    /// Additional metadata from the provider
-    /// </summary>
-    public Dictionary<string, object>? Metadata { get; init; }
+    [JsonPropertyName("meta")]
+    public RerankMeta? Meta { get; init; }
 }
 
 /// <summary>
-/// Represents a single reranked document result
+/// Represents a single ranked document result
 /// </summary>
-public class RerankResult
+public record RerankResult
 {
-    /// <summary>
-    /// The relevance score (higher is more relevant)
-    /// </summary>
-    public required double RelevanceScore { get; init; }
-
     /// <summary>
     /// The original index of this document in the input list
     /// </summary>
+    [JsonPropertyName("index")]
     public required int Index { get; init; }
 
     /// <summary>
-    /// The document text (if requested)
+    /// The relevance score (0.0 to 1.0, higher values indicate higher relevance)
     /// </summary>
-    public string? Document { get; init; }
+    [JsonPropertyName("relevance_score")]
+    public required double RelevanceScore { get; init; }
 }
 
 /// <summary>
-/// Usage statistics for reranking requests
+/// Metadata information from the rerank API response
 /// </summary>
-public class RerankUsage
+public record RerankMeta
 {
     /// <summary>
-    /// Number of search units used
+    /// API version information
     /// </summary>
-    public int SearchUnits { get; init; }
+    [JsonPropertyName("api_version")]
+    public RerankApiVersion? ApiVersion { get; init; }
+
+    /// <summary>
+    /// Billing usage information
+    /// </summary>
+    [JsonPropertyName("billed_units")]
+    public RerankUsage? BilledUnits { get; init; }
+}
+
+/// <summary>
+/// API version information
+/// </summary>
+public record RerankApiVersion
+{
+    /// <summary>
+    /// The API version string
+    /// </summary>
+    [JsonPropertyName("version")]
+    public required string Version { get; init; }
+
+    /// <summary>
+    /// Whether this API version is experimental
+    /// </summary>
+    [JsonPropertyName("is_experimental")]
+    public bool? IsExperimental { get; init; }
+}
+
+/// <summary>
+/// Usage and billing information
+/// </summary>
+public record RerankUsage
+{
+    /// <summary>
+    /// Number of search units consumed
+    /// </summary>
+    [JsonPropertyName("search_units")]
+    public required int SearchUnits { get; init; }
 } 
