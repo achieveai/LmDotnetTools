@@ -4,7 +4,7 @@
 
 This document outlines the implementation plan for the unified LMConfig system, breaking down the comprehensive design into manageable phases and work items. The implementation is structured to maintain backward compatibility while incrementally adding new capabilities.
 
-**Total Estimated Effort**: 12-15 weeks  
+**Total Estimated Effort**: 13-16 weeks  
 **Team Size**: 2-3 developers  
 **Target Completion**: Q2 2024  
 
@@ -27,7 +27,7 @@ This document outlines the implementation plan for the unified LMConfig system, 
 | Phase | Duration | Focus | Key Deliverables |
 |-------|----------|-------|------------------|
 | Phase 1 | 3 weeks | Foundation | Model capabilities, basic LMConfig |
-| Phase 2 | 3 weeks | Provider Integration | Enhanced selection, provider configs |
+| Phase 2 | 4 weeks | Provider Integration | Enhanced selection, provider configs, connection management |
 | Phase 3 | 2 weeks | Cost Management | Cost estimation, budget constraints |
 | Phase 4 | 3 weeks | Advanced Features | Auto-adaptation, cross-model support |
 | Phase 5 | 2 weeks | Testing & Docs | Complete test coverage, migration guides |
@@ -167,10 +167,10 @@ Establish the core model capabilities system and basic LMConfig infrastructure.
 
 ---
 
-## Phase 2: Provider Integration (3 weeks)
+## Phase 2: Provider Integration (4 weeks)
 
 ### Objective
-Integrate the new configuration system with existing provider infrastructure and implement capability-aware provider selection.
+Integrate the new configuration system with existing provider infrastructure, implement capability-aware provider selection, and enhance provider connection management.
 
 ### Work Items
 
@@ -282,10 +282,393 @@ Integrate the new configuration system with existing provider infrastructure and
 - Tags: `["economic", "multimodal", "long-context", "openai-compatible"]`
 - Models: Gemini-2.0-Flash, Gemini-2.5-Pro, Gemini-2.5-Flash
 
-#### 2.3 Enhanced DynamicProviderAgent
+#### 2.2.2 Free Models Research and Integration
+**Priority**: Should Have  
+**Effort**: 2 days  
+**Dependencies**: 2.1  
+
+**Description**: Research and add OpenRouter free models to expand development and testing options.
+
+**Tasks**:
+- [ ] Research comprehensive list of OpenRouter free models (models ending with `:free`)
+- [ ] Document model capabilities and characteristics for each free model
+- [ ] Add free model configurations to appsettings-example.json
+- [ ] Assign appropriate tags including "free" tag for all free models
+- [ ] Create capability definitions for free models
+- [ ] Validate free model functionality through testing
+
+**Acceptance Criteria**:
+- [ ] All major OpenRouter free models are documented and configured
+- [ ] Free models have accurate capability definitions
+- [ ] Free models are properly tagged for easy selection
+- [ ] Configuration examples work with free models
+- [ ] Documentation includes free model usage examples
+
+**Free Models Identified**:
+- `meta-llama/llama-4-maverick:free` - 400B total, 17B active, multimodal
+- `meta-llama/llama-4-scout:free` - 109B total, 17B active, long context
+- `google/gemini-2.5-pro-exp-03-25:free` - Large model, 1M context, multimodal
+- `deepseek/deepseek-r1:free` - Reasoning model with 163K context
+- `qwen/qwen3-30b-a3b:free` - MoE architecture, 40K context
+- And 10+ additional free models
+
+**Testing Requirements**:
+- [ ] Free model functionality tests
+- [ ] Tag-based selection tests for free models
+- [ ] Cost tracking verification (should be $0.00)
+- [ ] Provider availability tests
+
+#### 2.3 Provider Connection Configuration Enhancement
+**Priority**: Must Have  
+**Effort**: 3 days  
+**Dependencies**: 2.1, 2.2, 2.4  
+
+**Description**: Enhance LMConfig to include provider connection details (endpoint, API key environment variable) for better encapsulation and flexibility.
+
+**Tasks**:
+- [ ] Create `ProviderConnectionConfig` record for connection details
+- [ ] Add provider connection properties to LMConfig
+- [ ] Add provider registry reference properties to LMConfig (preferred provider name, fallback provider names)
+- [ ] Implement connection configuration in LMConfigBuilder
+- [ ] Update provider selection logic to use connection config from LMConfig or resolve from registry
+- [ ] Add validation for provider connection configurations
+- [ ] Create provider connection configuration examples
+- [ ] Update existing code to support both legacy env var patterns and new config
+
+**Design Details**:
+```csharp
+public record ProviderConnectionConfig
+{
+    public required string EndpointUrl { get; init; }
+    public required string ApiKeyEnvironmentVariable { get; init; }
+    public ProviderCompatibility Compatibility { get; init; } = ProviderCompatibility.OpenAI;
+    public Dictionary<string, string>? Headers { get; init; }
+    public TimeSpan? Timeout { get; init; }
+}
+
+public enum ProviderCompatibility
+{
+    OpenAI,          // OpenAI API compatible
+    Anthropic,       // Anthropic API format
+    Custom           // Custom provider format
+}
+```
+
+**Acceptance Criteria**:
+- [ ] LMConfig can specify provider connection details directly or reference by name from registry
+- [ ] Provider registry takes precedence over hardcoded connection details
+- [ ] Connection config takes precedence over environment variable defaults
+- [ ] Backward compatibility maintained with existing environment variable approach
+- [ ] Validation prevents invalid connection configurations
+- [ ] Multiple provider connections can be configured for fallback scenarios
+
+**Testing Requirements**:
+- [ ] Provider connection configuration tests
+- [ ] Provider registry integration tests
+- [ ] Backward compatibility tests with environment variables
+- [ ] Connection validation tests
+- [ ] Multi-provider connection tests
+
+#### 2.4 Provider Registry Implementation  
 **Priority**: Must Have  
 **Effort**: 4 days  
-**Dependencies**: 2.1, 2.2  
+**Dependencies**: None  
+
+**Description**: Implement infrastructure-level provider registry that maps provider names to connection details, allowing centralized configuration of provider endpoints and API keys.
+
+**Tasks**:
+- [ ] Create `ProviderRegistryConfig` and `ProviderConnectionInfo` records
+- [ ] Implement `IProviderRegistry` interface and `ProviderRegistry` service
+- [ ] Add ProviderRegistry section to appsettings.json schema
+- [ ] Configure all major providers in appsettings-example.json (OpenAI, Anthropic, OpenRouter, DeepInfra, Groq, Cerebras, GoogleGemini)
+- [ ] Add provider registry validation for environment variables
+- [ ] Integrate registry with dependency injection
+- [ ] Create provider registry configuration examples
+- [ ] Add registry-based provider resolution to ModelConfigurationService
+
+**Provider Registry Design**:
+```csharp
+public record ProviderRegistryConfig
+{
+    public required Dictionary<string, ProviderConnectionInfo> Providers { get; init; }
+}
+
+public record ProviderConnectionInfo
+{
+    public required string EndpointUrl { get; init; }
+    public required string ApiKeyEnvironmentVariable { get; init; }
+    public ProviderCompatibility Compatibility { get; init; } = ProviderCompatibility.OpenAI;
+    public Dictionary<string, string>? Headers { get; init; }
+    public TimeSpan? Timeout { get; init; }
+    public int MaxRetries { get; init; } = 3;
+    public string? Description { get; init; }
+}
+
+public interface IProviderRegistry
+{
+    ProviderConnectionInfo? GetProviderConnection(string providerName);
+    IReadOnlyList<string> GetRegisteredProviders();
+    bool IsProviderRegistered(string providerName);
+    ValidationResult ValidateEnvironmentVariables();
+}
+```
+
+**Acceptance Criteria**:
+- [ ] Provider registry loads from appsettings.json configuration
+- [ ] All major providers are pre-configured with correct endpoints and environment variable names
+- [ ] Provider registry validates environment variable availability
+- [ ] Registry supports custom headers and timeouts per provider
+- [ ] Provider lookup by name works correctly
+- [ ] Registry validation provides clear feedback on missing environment variables
+- [ ] Registry integrates with dependency injection container
+
+**Testing Requirements**:
+- [ ] Provider registry configuration loading tests
+- [ ] Provider lookup and resolution tests
+- [ ] Environment variable validation tests
+- [ ] Provider registry service integration tests
+- [ ] Configuration schema validation tests
+
+**Detailed Test Cases**:
+
+```csharp
+// Test Case 1: Provider Registry Configuration Loading
+[Test]
+public void ProviderRegistry_LoadsFromConfiguration_Successfully()
+{
+    var configuration = new ConfigurationBuilder()
+        .AddJsonFile("appsettings.test.json")
+        .Build();
+    
+    var registryConfig = configuration.GetSection("ProviderRegistry").Get<ProviderRegistryConfig>();
+    
+    Assert.IsNotNull(registryConfig);
+    Assert.IsTrue(registryConfig.Providers.ContainsKey("OpenAI"));
+    Assert.IsTrue(registryConfig.Providers.ContainsKey("OpenRouter"));
+    Assert.AreEqual("https://api.openai.com/v1", registryConfig.Providers["OpenAI"].EndpointUrl);
+    Assert.AreEqual("OPENAI_API_KEY", registryConfig.Providers["OpenAI"].ApiKeyEnvironmentVariable);
+}
+
+// Test Case 2: Provider Lookup and Resolution
+[Test]
+public void ProviderRegistry_GetProviderConnection_ReturnsCorrectProvider()
+{
+    var registry = CreateTestProviderRegistry();
+    
+    var openAIConnection = registry.GetProviderConnection("OpenAI");
+    
+    Assert.IsNotNull(openAIConnection);
+    Assert.AreEqual("https://api.openai.com/v1", openAIConnection.EndpointUrl);
+    Assert.AreEqual("OPENAI_API_KEY", openAIConnection.ApiKeyEnvironmentVariable);
+    Assert.AreEqual(ProviderCompatibility.OpenAI, openAIConnection.Compatibility);
+}
+
+// Test Case 3: Environment Variable Validation
+[Test]
+public void ProviderRegistry_ValidateEnvironmentVariables_DetectsMissingKeys()
+{
+    Environment.SetEnvironmentVariable("OPENAI_API_KEY", "test-key");
+    Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null); // Missing
+    
+    var registry = CreateTestProviderRegistry();
+    var validation = registry.ValidateEnvironmentVariables();
+    
+    Assert.IsFalse(validation.IsValid);
+    Assert.IsTrue(validation.Warnings.Any(w => w.Contains("OPENROUTER_API_KEY")));
+}
+
+// Test Case 4: Provider Registry Service Integration
+[Test]
+public void ProviderRegistry_IntegratesWithDependencyInjection_Successfully()
+{
+    var services = new ServiceCollection();
+    var configuration = CreateTestConfiguration();
+    
+    services.Configure<ProviderRegistryConfig>(configuration.GetSection("ProviderRegistry"));
+    services.AddSingleton<IProviderRegistry, ProviderRegistry>();
+    
+    var serviceProvider = services.BuildServiceProvider();
+    var registry = serviceProvider.GetRequiredService<IProviderRegistry>();
+    
+    Assert.IsNotNull(registry);
+    Assert.IsTrue(registry.IsProviderRegistered("OpenAI"));
+}
+
+// Test Case 5: Free Provider Selection with Tags
+[Test]
+public async Task ModelConfigurationService_SelectsFreeProviderr_WhenFreeTagRequired()
+{
+    var config = new LMConfigBuilder()
+        .WithModel("deepseek-r1-distill-llama-70b")
+        .RequireTags("free")
+        .Build();
+    
+    var selectedProvider = await modelConfigService.SelectProviderForModel(config);
+    
+    Assert.IsNotNull(selectedProvider);
+    Assert.IsTrue(selectedProvider.Tags.Contains("free"));
+    Assert.AreEqual(0.0, selectedProvider.Pricing.PromptPerMillion);
+    Assert.AreEqual(0.0, selectedProvider.Pricing.CompletionPerMillion);
+}
+
+// Test Case 6: Provider Fallback Chain
+[Test]
+public async Task LMConfigBuilder_WithProviderFallbacks_CreatesCorrectFallbackChain()
+{
+    var config = new LMConfigBuilder()
+        .WithModel("gpt-4")
+        .WithProvider("OpenAI", "OpenRouter", "DeepInfra")
+        .Build();
+    
+    Assert.AreEqual("OpenAI", config.PreferredProviderName);
+    Assert.IsNotNull(config.FallbackProviderNames);
+    Assert.AreEqual(2, config.FallbackProviderNames.Count);
+    Assert.Contains("OpenRouter", config.FallbackProviderNames);
+    Assert.Contains("DeepInfra", config.FallbackProviderNames);
+}
+
+// Test Case 7: Provider Connection Info Validation
+[Test]
+public void ProviderConnectionInfo_Validate_CatchesInvalidConfiguration()
+{
+    var invalidConnection = new ProviderConnectionInfo
+    {
+        EndpointUrl = "invalid-url",  // Invalid URL
+        ApiKeyEnvironmentVariable = "", // Empty env var
+        MaxRetries = -1 // Invalid retry count
+    };
+    
+    var validation = invalidConnection.Validate();
+    
+    Assert.IsFalse(validation.IsValid);
+    Assert.IsTrue(validation.Errors.Any(e => e.Contains("EndpointUrl")));
+    Assert.IsTrue(validation.Errors.Any(e => e.Contains("ApiKeyEnvironmentVariable")));
+    Assert.IsTrue(validation.Errors.Any(e => e.Contains("MaxRetries")));
+}
+
+// Test Case 8: Provider Health Check
+[Test]
+public async Task ProviderHealthService_CheckProviderHealth_ReturnsCorrectStatus()
+{
+    Environment.SetEnvironmentVariable("OPENAI_API_KEY", "test-key");
+    Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
+    
+    var healthService = new ProviderHealthService(CreateTestProviderRegistry());
+    var healthResults = await healthService.CheckProviderHealth();
+    
+    Assert.IsTrue(healthResults["OpenAI"]);    // Has API key
+    Assert.IsFalse(healthResults["OpenRouter"]); // Missing API key
+}
+
+// Test Case 9: Configuration Schema Validation
+[Test]
+public void ProviderRegistryConfig_DeserializesFromJson_WithAllProperties()
+{
+    var json = @"{
+        ""ProviderRegistry"": {
+            ""OpenAI"": {
+                ""EndpointUrl"": ""https://api.openai.com/v1"",
+                ""ApiKeyEnvironmentVariable"": ""OPENAI_API_KEY"",
+                ""Compatibility"": ""OpenAI"",
+                ""Headers"": {
+                    ""X-Custom"": ""value""
+                },
+                ""Timeout"": ""00:01:00"",
+                ""MaxRetries"": 3,
+                ""Description"": ""OpenAI API""
+            }
+        }
+    }";
+    
+    var configuration = new ConfigurationBuilder()
+        .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+        .Build();
+    
+    var registryConfig = configuration.GetSection("ProviderRegistry").Get<ProviderRegistryConfig>();
+    var openAI = registryConfig.Providers["OpenAI"];
+    
+    Assert.AreEqual("https://api.openai.com/v1", openAI.EndpointUrl);
+    Assert.AreEqual("OPENAI_API_KEY", openAI.ApiKeyEnvironmentVariable);
+    Assert.AreEqual(ProviderCompatibility.OpenAI, openAI.Compatibility);
+    Assert.IsNotNull(openAI.Headers);
+    Assert.AreEqual("value", openAI.Headers["X-Custom"]);
+    Assert.AreEqual(TimeSpan.FromMinutes(1), openAI.Timeout);
+    Assert.AreEqual(3, openAI.MaxRetries);
+    Assert.AreEqual("OpenAI API", openAI.Description);
+}
+
+// Test Case 10: Tag-Based Provider Selection Performance
+[Test]
+public void ModelConfigurationService_TagBasedSelection_PerformsWithinAcceptableTime()
+{
+    var stopwatch = Stopwatch.StartNew();
+    
+    for (int i = 0; i < 1000; i++)
+    {
+        var config = new LMConfigBuilder()
+            .WithModel("gpt-4")
+            .RequireTags("economic", "fast")
+            .PreferTags("reliable")
+            .Build();
+        
+        var provider = modelConfigService.SelectProviderForModel(config);
+    }
+    
+    stopwatch.Stop();
+    Assert.Less(stopwatch.ElapsedMilliseconds, 1000); // Should complete in under 1 second
+}
+
+// Helper Methods
+private IProviderRegistry CreateTestProviderRegistry()
+{
+    var config = new ProviderRegistryConfig
+    {
+        Providers = new Dictionary<string, ProviderConnectionInfo>
+        {
+            ["OpenAI"] = new ProviderConnectionInfo
+            {
+                EndpointUrl = "https://api.openai.com/v1",
+                ApiKeyEnvironmentVariable = "OPENAI_API_KEY",
+                Compatibility = ProviderCompatibility.OpenAI,
+                Timeout = TimeSpan.FromMinutes(1),
+                MaxRetries = 3
+            },
+            ["OpenRouter"] = new ProviderConnectionInfo
+            {
+                EndpointUrl = "https://openrouter.ai/api/v1",
+                ApiKeyEnvironmentVariable = "OPENROUTER_API_KEY",
+                Compatibility = ProviderCompatibility.OpenAI,
+                Timeout = TimeSpan.FromMinutes(2),
+                MaxRetries = 3
+            }
+        }
+    };
+    
+    var options = Options.Create(config);
+    return new ProviderRegistry(options);
+}
+
+private IConfiguration CreateTestConfiguration()
+{
+    var json = @"{
+        ""ProviderRegistry"": {
+            ""OpenAI"": {
+                ""EndpointUrl"": ""https://api.openai.com/v1"",
+                ""ApiKeyEnvironmentVariable"": ""OPENAI_API_KEY"",
+                ""Compatibility"": ""OpenAI""
+            }
+        }
+    }";
+    
+    return new ConfigurationBuilder()
+        .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+        .Build();
+}
+
+#### 2.5 Enhanced DynamicProviderAgent
+**Priority**: Must Have  
+**Effort**: 4 days  
+**Dependencies**: 2.1, 2.2, 2.3  
 
 **Description**: Enhance DynamicProviderAgent to work with LMConfig and capability-aware selection.
 
@@ -293,6 +676,7 @@ Integrate the new configuration system with existing provider infrastructure and
 - [ ] Add LMConfig overload to GenerateReplyAsync
 - [ ] Implement capability-aware provider selection
 - [ ] Add configuration adaptation logic
+- [ ] Integrate provider connection configuration support
 - [ ] Maintain backward compatibility with GenerateReplyOptions
 - [ ] Add comprehensive logging for provider selection decisions
 
@@ -300,45 +684,17 @@ Integrate the new configuration system with existing provider infrastructure and
 - [ ] Both LMConfig and GenerateReplyOptions work seamlessly
 - [ ] Provider selection considers capabilities and preferences
 - [ ] Configuration adaptation happens transparently
+- [ ] Provider connections work with both env vars and config
 - [ ] Logging provides clear insight into selection decisions
 
 **Testing Requirements**:
 - [ ] Backward compatibility tests
 - [ ] Provider selection tests
 - [ ] Configuration adaptation tests
+- [ ] Connection configuration tests
 - [ ] Logging verification tests
 
-#### 2.4 Provider-Specific Builder Extensions
-**Priority**: Should Have  
-**Effort**: 3 days  
-**Dependencies**: 1.5, 2.2  
-
-**Description**: Add provider-specific configuration methods to LMConfigBuilder.
-
-**Tasks**:
-- [ ] Implement `WithOpenRouter()` configuration method
-- [ ] Implement `WithAnthropic()` configuration method
-- [ ] Implement `WithOpenAI()` configuration method
-- [ ] Implement `WithDeepInfra()` configuration method
-- [ ] Implement `WithCerebras()` configuration method
-- [ ] Implement `WithGroq()` configuration method
-- [ ] Implement `WithGoogleGemini()` configuration method
-- [ ] Create provider-specific builder classes
-- [ ] Add validation for provider-specific configurations
-
-**Acceptance Criteria**:
-- [ ] Provider-specific methods are intuitive and well-documented
-- [ ] Builder validates provider-specific configurations
-- [ ] Provider configs integrate seamlessly with main configuration
-- [ ] Error messages guide users to correct configurations
-- [ ] OpenAI-compatible providers inherit common OpenAI configuration patterns
-
-**Testing Requirements**:
-- [ ] Provider-specific builder tests
-- [ ] Configuration validation tests
-- [ ] Integration tests with main builder
-
-#### 2.5 Capability Validation System
+#### 2.6 Capability Validation System
 **Priority**: Must Have  
 **Effort**: 3 days  
 **Dependencies**: 2.1  
@@ -362,6 +718,39 @@ Integrate the new configuration system with existing provider infrastructure and
 - [ ] Comprehensive validation scenario tests
 - [ ] Error message quality tests
 - [ ] Validation performance tests
+
+#### 2.7 Provider-Specific Builder Extensions
+**Priority**: Should Have  
+**Effort**: 3 days  
+**Dependencies**: 1.5, 2.2, 2.3  
+
+**Description**: Add provider-specific configuration methods to LMConfigBuilder.
+
+**Tasks**:
+- [ ] Implement `WithOpenRouter()` configuration method
+- [ ] Implement `WithAnthropic()` configuration method
+- [ ] Implement `WithOpenAI()` configuration method
+- [ ] Implement `WithDeepInfra()` configuration method
+- [ ] Implement `WithCerebras()` configuration method
+- [ ] Implement `WithGroq()` configuration method
+- [ ] Implement `WithGoogleGemini()` configuration method
+- [ ] Add `WithProviderConnection()` method for connection config
+- [ ] Create provider-specific builder classes
+- [ ] Add validation for provider-specific configurations
+
+**Acceptance Criteria**:
+- [ ] Provider-specific methods are intuitive and well-documented
+- [ ] Builder validates provider-specific configurations
+- [ ] Provider configs integrate seamlessly with main configuration
+- [ ] Connection configuration works with provider-specific methods
+- [ ] Error messages guide users to correct configurations
+- [ ] OpenAI-compatible providers inherit common OpenAI configuration patterns
+
+**Testing Requirements**:
+- [ ] Provider-specific builder tests
+- [ ] Configuration validation tests
+- [ ] Connection configuration integration tests
+- [ ] Integration tests with main builder
 
 ---
 

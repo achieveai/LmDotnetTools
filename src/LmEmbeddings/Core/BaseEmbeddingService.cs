@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
@@ -8,31 +9,102 @@ using System.Text.Json;
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
 /// <summary>
-/// Base class for embedding services providing common functionality
+/// Base class for embedding services providing common functionality for text-to-vector conversion.
+/// This abstract class implements the core embedding service interface and provides standardized
+/// request validation, payload formatting, and error handling patterns.
 /// </summary>
-public abstract class BaseEmbeddingService : IEmbeddingService
+/// <remarks>
+/// <para>
+/// This class serves as the foundation for all embedding service implementations, ensuring
+/// consistent behavior across different providers (OpenAI, Jina, etc.). It handles:
+/// </para>
+/// <list type="bullet">
+/// <item><description>Request validation and sanitization</description></item>
+/// <item><description>API-specific payload formatting</description></item>
+/// <item><description>Standardized error handling and exception patterns</description></item>
+/// <item><description>Disposal pattern implementation</description></item>
+/// </list>
+/// <para>
+/// Derived classes must implement the abstract methods to provide provider-specific functionality
+/// while inheriting the common validation and formatting logic.
+/// </para>
+/// </remarks>
+/// <example>
+/// <code>
+/// public class MyEmbeddingService : BaseEmbeddingService
+/// {
+///     public MyEmbeddingService(ILogger&lt;MyEmbeddingService&gt; logger, HttpClient httpClient)
+///         : base(logger, httpClient)
+///     {
+///     }
+///
+///     public override int EmbeddingSize =&gt; 1536;
+///
+///     public override async Task&lt;EmbeddingResponse&gt; GenerateEmbeddingsAsync(
+///         EmbeddingRequest request, 
+///         CancellationToken cancellationToken = default)
+///     {
+///         // Implementation specific to your provider
+///         return await CallProviderApiAsync(request, cancellationToken);
+///     }
+///
+///     public override async Task&lt;IReadOnlyList&lt;string&gt;&gt; GetAvailableModelsAsync(
+///         CancellationToken cancellationToken = default)
+///     {
+///         // Return available models for your provider
+///         return new[] { "model-1", "model-2" };
+///     }
+/// }
+/// </code>
+/// </example>
+public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
 {
-    protected readonly ILogger Logger;
-    protected readonly HttpClient HttpClient;
-    private bool _disposed = false;
-
-    protected BaseEmbeddingService(ILogger logger, HttpClient httpClient)
+    /// <summary>
+    /// Initializes a new instance of the <see cref="BaseEmbeddingService"/> class.
+    /// </summary>
+    /// <param name="logger">The logger instance for diagnostic and error logging</param>
+    /// <param name="httpClient">The HTTP client for making API requests</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="logger"/> or <paramref name="httpClient"/> is null</exception>
+    protected BaseEmbeddingService(ILogger logger, HttpClient httpClient) 
+        : base(logger, httpClient)
     {
-        Logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        HttpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// This property should return the dimensionality of the embedding vectors produced by this service.
+    /// Common sizes include 1536 (OpenAI text-embedding-3-small), 3072 (OpenAI text-embedding-3-large),
+    /// and 768 (many BERT-based models).
+    /// </remarks>
     public abstract int EmbeddingSize { get; }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// This is a simplified API that automatically selects the first available model and returns
+    /// only the embedding vector. For more control over the embedding process, use
+    /// <see cref="GenerateEmbeddingsAsync(EmbeddingRequest, CancellationToken)"/> instead.
+    /// </para>
+    /// <para>
+    /// The method performs the following steps:
+    /// </para>
+    /// <list type="number">
+    /// <item><description>Validates the input sentence</description></item>
+    /// <item><description>Retrieves available models</description></item>
+    /// <item><description>Uses the first available model to generate embeddings</description></item>
+    /// <item><description>Returns the first embedding vector</description></item>
+    /// </list>
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// var embedding = await service.GetEmbeddingAsync("Hello, world!");
+    /// Console.WriteLine($"Embedding size: {embedding.Length}");
+    /// </code>
+    /// </example>
     public virtual async Task<float[]> GetEmbeddingAsync(string sentence, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(sentence))
-            throw new ArgumentException("Sentence cannot be null or empty", nameof(sentence));
-
-        if (_disposed)
-            throw new ObjectDisposedException(GetType().Name);
+        ValidationHelper.ValidateNotNullOrWhiteSpace(sentence);
+        ThrowIfDisposed();
 
         // Use the first available model as default for the simple API
         var availableModels = await GetAvailableModelsAsync(cancellationToken);
@@ -49,18 +121,46 @@ public abstract class BaseEmbeddingService : IEmbeddingService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// This is the primary method that derived classes must implement to provide embedding functionality.
+    /// The base class handles request validation through <see cref="ValidateRequest(EmbeddingRequest)"/>
+    /// before this method is called.
+    /// </para>
+    /// <para>
+    /// Implementations should:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>Format the request using <see cref="FormatRequestPayload(EmbeddingRequest)"/></description></item>
+    /// <item><description>Make the HTTP request to the provider's API</description></item>
+    /// <item><description>Parse the response and return a standardized <see cref="EmbeddingResponse"/></description></item>
+    /// <item><description>Handle provider-specific errors appropriately</description></item>
+    /// </list>
+    /// </remarks>
     public abstract Task<EmbeddingResponse> GenerateEmbeddingsAsync(EmbeddingRequest request, CancellationToken cancellationToken = default);
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// This is a convenience method that wraps a single text input into an <see cref="EmbeddingRequest"/>
+    /// and calls <see cref="GenerateEmbeddingsAsync(EmbeddingRequest, CancellationToken)"/>.
+    /// </para>
+    /// <para>
+    /// For batch processing multiple texts, use <see cref="GenerateEmbeddingsAsync(EmbeddingRequest, CancellationToken)"/>
+    /// directly with multiple inputs for better performance.
+    /// </para>
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// var response = await service.GenerateEmbeddingAsync("Hello, world!", "text-embedding-3-small");
+    /// var embedding = response.Embeddings.First().Vector;
+    /// </code>
+    /// </example>
     public virtual async Task<EmbeddingResponse> GenerateEmbeddingAsync(string text, string model, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(text))
-            throw new ArgumentException("Text cannot be null or empty", nameof(text));
-        if (string.IsNullOrWhiteSpace(model))
-            throw new ArgumentException("Model cannot be null or empty", nameof(model));
-
-        if (_disposed)
-            throw new ObjectDisposedException(GetType().Name);
+        ValidationHelper.ValidateNotNullOrWhiteSpace(text);
+        ValidationHelper.ValidateNotNullOrWhiteSpace(model);
+        ThrowIfDisposed();
 
         var request = new EmbeddingRequest
         {
@@ -72,13 +172,50 @@ public abstract class BaseEmbeddingService : IEmbeddingService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// This method should return the list of embedding models supported by the provider.
+    /// The returned models can be used in <see cref="EmbeddingRequest.Model"/> to specify
+    /// which model to use for embedding generation.
+    /// </para>
+    /// <para>
+    /// For services that support only a single model, this method should return a list
+    /// containing that single model identifier.
+    /// </para>
+    /// </remarks>
     public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Formats the request payload based on the API type
+    /// Formats the request payload based on the API type specified in the request.
+    /// This method provides a unified interface for different API formats while delegating
+    /// the actual formatting to API-specific methods.
     /// </summary>
-    /// <param name="request">The embedding request</param>
-    /// <returns>The formatted request payload as a dictionary</returns>
+    /// <param name="request">The embedding request containing the API type and parameters</param>
+    /// <returns>A dictionary representing the formatted request payload ready for JSON serialization</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="request"/> is null</exception>
+    /// <exception cref="ArgumentException">Thrown when the request contains invalid data or unsupported API type</exception>
+    /// <remarks>
+    /// <para>
+    /// This method automatically validates the request using <see cref="ValidateRequest(EmbeddingRequest)"/>
+    /// before formatting. The formatting is delegated to API-specific methods:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><see cref="EmbeddingApiType.Default"/> → <see cref="FormatOpenAIRequest(EmbeddingRequest)"/></description></item>
+    /// <item><description><see cref="EmbeddingApiType.Jina"/> → <see cref="FormatJinaRequest(EmbeddingRequest)"/></description></item>
+    /// </list>
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// var request = new EmbeddingRequest
+    /// {
+    ///     Inputs = new[] { "Hello", "World" },
+    ///     Model = "text-embedding-3-small",
+    ///     ApiType = EmbeddingApiType.Default
+    /// };
+    /// var payload = FormatRequestPayload(request);
+    /// var json = JsonSerializer.Serialize(payload);
+    /// </code>
+    /// </example>
     protected virtual Dictionary<string, object> FormatRequestPayload(EmbeddingRequest request)
     {
         ValidateRequest(request);
@@ -87,15 +224,30 @@ public abstract class BaseEmbeddingService : IEmbeddingService
         {
             EmbeddingApiType.Jina => FormatJinaRequest(request),
             EmbeddingApiType.Default => FormatOpenAIRequest(request),
-            _ => throw new ArgumentException($"Unsupported API type: {request.ApiType}")
+            _ => throw new ArgumentException($"Unsupported API type: {request.ApiType}", nameof(request))
         };
     }
 
     /// <summary>
-    /// Formats a request for the Jina AI API
+    /// Formats a request for the Jina AI API format.
+    /// This method creates a payload dictionary with Jina-specific parameters and naming conventions.
     /// </summary>
-    /// <param name="request">The embedding request</param>
-    /// <returns>The formatted request payload</returns>
+    /// <param name="request">The embedding request to format</param>
+    /// <returns>A dictionary containing the Jina API formatted request</returns>
+    /// <remarks>
+    /// <para>
+    /// The Jina API format includes the following specific features:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><c>normalized</c> - Controls whether embeddings are L2 normalized</description></item>
+    /// <item><description><c>embedding_type</c> - Specifies the encoding format (maps from <see cref="EmbeddingRequest.EncodingFormat"/>)</description></item>
+    /// <item><description>Support for binary and base64 encoding formats</description></item>
+    /// </list>
+    /// <para>
+    /// Standard parameters like <c>input</c>, <c>model</c>, and <c>dimensions</c> are included,
+    /// along with any additional options specified in <see cref="EmbeddingRequest.AdditionalOptions"/>.
+    /// </para>
+    /// </remarks>
     protected virtual Dictionary<string, object> FormatJinaRequest(EmbeddingRequest request)
     {
         var payload = new Dictionary<string, object>
@@ -127,10 +279,25 @@ public abstract class BaseEmbeddingService : IEmbeddingService
     }
 
     /// <summary>
-    /// Formats a request for the OpenAI API
+    /// Formats a request for the OpenAI API format.
+    /// This method creates a payload dictionary with OpenAI-specific parameters and naming conventions.
     /// </summary>
-    /// <param name="request">The embedding request</param>
-    /// <returns>The formatted request payload</returns>
+    /// <param name="request">The embedding request to format</param>
+    /// <returns>A dictionary containing the OpenAI API formatted request</returns>
+    /// <remarks>
+    /// <para>
+    /// The OpenAI API format includes the following specific features:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><c>encoding_format</c> - Specifies how embeddings are encoded (float, base64)</description></item>
+    /// <item><description><c>user</c> - Optional user identifier for tracking and abuse monitoring</description></item>
+    /// <item><description><c>dimensions</c> - Optional parameter to reduce embedding dimensionality</description></item>
+    /// </list>
+    /// <para>
+    /// Standard parameters like <c>input</c> and <c>model</c> are included,
+    /// along with any additional options specified in <see cref="EmbeddingRequest.AdditionalOptions"/>.
+    /// </para>
+    /// </remarks>
     protected virtual Dictionary<string, object> FormatOpenAIRequest(EmbeddingRequest request)
     {
         var payload = new Dictionary<string, object>
@@ -161,33 +328,55 @@ public abstract class BaseEmbeddingService : IEmbeddingService
     }
 
     /// <summary>
-    /// Validates an embedding request
+    /// Validates an embedding request for correctness and completeness.
+    /// This method performs comprehensive validation of all request parameters and throws
+    /// standardized exceptions for any validation failures.
     /// </summary>
     /// <param name="request">The request to validate</param>
-    /// <exception cref="ArgumentNullException">Thrown when request is null</exception>
-    /// <exception cref="ArgumentException">Thrown when request is invalid</exception>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="request"/> is null</exception>
+    /// <exception cref="ArgumentException">Thrown when request properties are invalid</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the service has been disposed</exception>
+    /// <remarks>
+    /// <para>
+    /// This method validates the following aspects of the request:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>Request object is not null</description></item>
+    /// <item><description>Inputs collection is not null or empty</description></item>
+    /// <item><description>Model name is not null or empty</description></item>
+    /// <item><description>All input texts are non-empty</description></item>
+    /// <item><description>Service is not disposed</description></item>
+    /// <item><description>API-specific parameters are valid (via <see cref="ValidateApiSpecificParameters(EmbeddingRequest)"/>)</description></item>
+    /// </list>
+    /// <para>
+    /// This method is automatically called by <see cref="FormatRequestPayload(EmbeddingRequest)"/>
+    /// and should be called by derived classes before processing requests.
+    /// </para>
+    /// </remarks>
     protected virtual void ValidateRequest(EmbeddingRequest request)
     {
-        if (request == null)
-            throw new ArgumentNullException(nameof(request));
-        if (request.Inputs == null || !request.Inputs.Any())
-            throw new ArgumentException("Inputs cannot be null or empty", nameof(request));
-        if (string.IsNullOrWhiteSpace(request.Model))
-            throw new ArgumentException("Model cannot be null or empty", nameof(request));
-        if (request.Inputs.Any(string.IsNullOrWhiteSpace))
-            throw new ArgumentException("All input texts must be non-empty", nameof(request));
-
-        if (_disposed)
-            throw new ObjectDisposedException(GetType().Name);
+        ValidationHelper.ValidateEmbeddingRequest(request);
+        ThrowIfDisposed();
 
         // Validate API-specific parameters
         ValidateApiSpecificParameters(request);
     }
 
     /// <summary>
-    /// Validates API-specific parameters
+    /// Validates API-specific parameters based on the request's API type.
+    /// This method delegates validation to the appropriate API-specific validation method.
     /// </summary>
-    /// <param name="request">The request to validate</param>
+    /// <param name="request">The request containing API-specific parameters to validate</param>
+    /// <exception cref="ArgumentException">Thrown when API-specific parameters are invalid</exception>
+    /// <remarks>
+    /// <para>
+    /// This method routes validation to the appropriate API-specific validator:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><see cref="EmbeddingApiType.Jina"/> → <see cref="ValidateJinaParameters(EmbeddingRequest)"/></description></item>
+    /// <item><description><see cref="EmbeddingApiType.Default"/> → <see cref="ValidateOpenAIParameters(EmbeddingRequest)"/></description></item>
+    /// </list>
+    /// </remarks>
     protected virtual void ValidateApiSpecificParameters(EmbeddingRequest request)
     {
         switch (request.ApiType)
@@ -202,206 +391,59 @@ public abstract class BaseEmbeddingService : IEmbeddingService
     }
 
     /// <summary>
-    /// Validates Jina AI specific parameters
+    /// Validates Jina AI specific parameters in the embedding request.
+    /// This method ensures that Jina-specific parameters conform to the API's requirements.
     /// </summary>
-    /// <param name="request">The request to validate</param>
+    /// <param name="request">The request containing Jina-specific parameters</param>
+    /// <exception cref="ArgumentException">Thrown when Jina-specific parameters are invalid</exception>
+    /// <remarks>
+    /// <para>
+    /// Jina AI supports the following encoding formats:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><c>float</c> - Standard floating-point array</description></item>
+    /// <item><description><c>binary</c> - Binary encoded embeddings</description></item>
+    /// <item><description><c>base64</c> - Base64 encoded embeddings</description></item>
+    /// </list>
+    /// <para>
+    /// The validation is case-insensitive and will throw a descriptive exception
+    /// listing the valid formats if an invalid format is provided.
+    /// </para>
+    /// </remarks>
     protected virtual void ValidateJinaParameters(EmbeddingRequest request)
     {
         if (!string.IsNullOrEmpty(request.EncodingFormat))
         {
             var validFormats = new[] { "float", "binary", "base64" };
-            if (!validFormats.Contains(request.EncodingFormat, StringComparer.OrdinalIgnoreCase))
-            {
-                throw new ArgumentException($"Invalid encoding format for Jina API: {request.EncodingFormat}. Valid formats: {string.Join(", ", validFormats)}");
-            }
+            ValidationHelper.ValidateAllowedValues(request.EncodingFormat, validFormats);
         }
     }
 
     /// <summary>
-    /// Validates OpenAI specific parameters
+    /// Validates OpenAI specific parameters in the embedding request.
+    /// This method ensures that OpenAI-specific parameters conform to the API's requirements.
     /// </summary>
-    /// <param name="request">The request to validate</param>
+    /// <param name="request">The request containing OpenAI-specific parameters</param>
+    /// <exception cref="ArgumentException">Thrown when OpenAI-specific parameters are invalid</exception>
+    /// <remarks>
+    /// <para>
+    /// OpenAI supports the following encoding formats:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description><c>float</c> - Standard floating-point array</description></item>
+    /// <item><description><c>base64</c> - Base64 encoded embeddings (default)</description></item>
+    /// </list>
+    /// <para>
+    /// The validation is case-insensitive and will throw a descriptive exception
+    /// listing the valid formats if an invalid format is provided.
+    /// </para>
+    /// </remarks>
     protected virtual void ValidateOpenAIParameters(EmbeddingRequest request)
     {
         if (!string.IsNullOrEmpty(request.EncodingFormat))
         {
             var validFormats = new[] { "float", "base64" };
-            if (!validFormats.Contains(request.EncodingFormat, StringComparer.OrdinalIgnoreCase))
-            {
-                throw new ArgumentException($"Invalid encoding format for OpenAI API: {request.EncodingFormat}. Valid formats: {string.Join(", ", validFormats)}");
-            }
+            ValidationHelper.ValidateAllowedValues(request.EncodingFormat, validFormats);
         }
-
-        if (request.Normalized.HasValue)
-        {
-            Logger.LogWarning("Normalized parameter is not supported by OpenAI API and will be ignored");
-        }
-    }
-
-    /// <summary>
-    /// Executes an operation with retry logic and exponential backoff
-    /// </summary>
-    /// <typeparam name="T">The return type</typeparam>
-    /// <param name="operation">The operation to execute</param>
-    /// <param name="maxRetries">Maximum number of retries</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>The result of the operation</returns>
-    protected async Task<T> ExecuteWithRetryAsync<T>(
-        Func<Task<T>> operation,
-        int maxRetries = 3,
-        CancellationToken cancellationToken = default)
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(GetType().Name);
-
-        var attempt = 0;
-        while (true)
-        {
-            try
-            {
-                return await operation();
-            }
-            catch (HttpRequestException ex) when (attempt < maxRetries && IsRetryableError(ex))
-            {
-                attempt++;
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
-                Logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt, maxRetries + 1, delay.TotalMilliseconds, ex.Message);
-                
-                await Task.Delay(delay, cancellationToken);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Executes an HTTP operation with retry logic and exponential backoff
-    /// This version handles HttpResponseMessage status codes directly
-    /// </summary>
-    /// <typeparam name="T">The return type</typeparam>
-    /// <param name="httpOperation">The HTTP operation that returns HttpResponseMessage</param>
-    /// <param name="responseProcessor">Function to process successful responses</param>
-    /// <param name="maxRetries">Maximum number of retries</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>The result of the operation</returns>
-    protected async Task<T> ExecuteHttpWithRetryAsync<T>(
-        Func<Task<HttpResponseMessage>> httpOperation,
-        Func<HttpResponseMessage, Task<T>> responseProcessor,
-        int maxRetries = 3,
-        CancellationToken cancellationToken = default)
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(GetType().Name);
-
-        var attempt = 0;
-        while (true)
-        {
-            try
-            {
-                var response = await httpOperation();
-                
-                if (response.IsSuccessStatusCode)
-                {
-                    return await responseProcessor(response);
-                }
-                
-                // Check if this is a retryable status code
-                if (attempt < maxRetries && IsRetryableStatusCode(response.StatusCode))
-                {
-                    attempt++;
-                    var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
-                    Logger.LogWarning("HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                        response.StatusCode, attempt, maxRetries + 1, delay.TotalMilliseconds);
-                    
-                    response.Dispose(); // Clean up the failed response
-                    await Task.Delay(delay, cancellationToken);
-                    continue;
-                }
-                
-                // Not retryable or max retries exceeded, throw
-                response.EnsureSuccessStatusCode();
-                return default(T)!; // This line should never be reached
-            }
-            catch (HttpRequestException ex) when (attempt < maxRetries && IsRetryableError(ex))
-            {
-                attempt++;
-                var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
-                Logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt, maxRetries + 1, delay.TotalMilliseconds, ex.Message);
-                
-                await Task.Delay(delay, cancellationToken);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Determines if an HTTP status code is retryable
-    /// </summary>
-    /// <param name="statusCode">The HTTP status code</param>
-    /// <returns>True if the status code indicates a retryable error</returns>
-    protected virtual bool IsRetryableStatusCode(HttpStatusCode statusCode)
-    {
-        // Retry on server errors (5xx)
-        return (int)statusCode >= 500 && (int)statusCode < 600;
-    }
-
-    /// <summary>
-    /// Determines if an HTTP error is retryable
-    /// </summary>
-    /// <param name="exception">The HTTP exception</param>
-    /// <returns>True if the error is retryable</returns>
-    protected virtual bool IsRetryableError(HttpRequestException exception)
-    {
-        // Retry on network errors, timeouts, and server errors (5xx)
-        var message = exception.Message;
-        
-        // Check for network/timeout errors
-        if (message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("network", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        
-        // Check for HTTP 5xx status codes in the exception message
-        // EnsureSuccessStatusCode() creates messages like "Response status code does not indicate success: 500 (Internal Server Error)"
-        if (message.Contains("500", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("501", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("502", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("503", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("504", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Internal Server Error", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Bad Gateway", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Service Unavailable", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Gateway Timeout", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        
-        return false;
-    }
-
-    /// <summary>
-    /// Releases the unmanaged resources used by the service and optionally releases the managed resources
-    /// </summary>
-    /// <param name="disposing">true to release both managed and unmanaged resources; false to release only unmanaged resources</param>
-    protected virtual void Dispose(bool disposing)
-    {
-        if (!_disposed)
-        {
-            if (disposing)
-            {
-                // Dispose managed resources
-                // Note: HttpClient is typically managed by DI container, so we don't dispose it here
-                Logger.LogDebug("Disposing embedding service");
-            }
-
-            _disposed = true;
-        }
-    }
-
-    /// <inheritdoc />
-    public void Dispose()
-    {
-        Dispose(disposing: true);
-        GC.SuppressFinalize(this);
     }
 } 

@@ -21,7 +21,7 @@ public class BaseEmbeddingServiceApiTypeTests
 
     public BaseEmbeddingServiceApiTypeTests()
     {
-        _logger = new TestLogger<TestEmbeddingService>();
+        _logger = TestLoggerFactory.CreateLogger<TestEmbeddingService>();
     }
 
     [Theory]
@@ -41,7 +41,7 @@ public class BaseEmbeddingServiceApiTypeTests
             capturedRequest = httpRequest;
             
             // Return a valid response
-            var response = CreateValidEmbeddingResponse(request.Inputs.Count);
+            var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json")
@@ -91,7 +91,7 @@ public class BaseEmbeddingServiceApiTypeTests
         {
             capturedRequest = httpRequest;
             
-            var response = CreateValidEmbeddingResponse(request.Inputs.Count);
+            var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json")
@@ -138,7 +138,7 @@ public class BaseEmbeddingServiceApiTypeTests
         
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            CreateValidEmbeddingResponse(request.Inputs.Count));
+            EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count));
         
         var httpClient = new HttpClient(fakeHandler)
         {
@@ -205,7 +205,7 @@ public class BaseEmbeddingServiceApiTypeTests
         Debug.WriteLine($"Failure count: {failureCount}, Status: {failureStatus}");
         
         // Arrange
-        var successResponse = CreateValidEmbeddingResponse(request.Inputs.Count);
+        var successResponse = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount, successResponse, failureStatus);
         
@@ -272,7 +272,7 @@ public class BaseEmbeddingServiceApiTypeTests
         {
             capturedRequest = httpRequest;
             
-            var response = CreateValidEmbeddingResponse(request.Inputs.Count);
+            var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json")
@@ -304,42 +304,88 @@ public class BaseEmbeddingServiceApiTypeTests
         Debug.WriteLine($"✓ All {expectedKeys.Length} expected keys found in HTTP payload");
     }
 
-    private static string CreateValidEmbeddingResponse(int embeddingCount)
+    /// <summary>
+    /// Test implementation of BaseEmbeddingService for HTTP testing
+    /// </summary>
+    private class TestEmbeddingService : BaseEmbeddingService
     {
-        var embeddings = new List<object>();
-        for (int i = 0; i < embeddingCount; i++)
+        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient) 
+            : base(logger, httpClient) { }
+
+        public override int EmbeddingSize => 1536;
+
+        public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(EmbeddingRequest request, CancellationToken cancellationToken = default)
         {
-            embeddings.Add(new
-            {
-                vector = GenerateTestEmbeddingArray(1536),
-                index = i,
-                text = $"input_{i}"
-            });
+            ValidateRequest(request);
+
+            return await ExecuteHttpWithRetryAsync(
+                async () =>
+                {
+                    var requestPayload = FormatRequestPayload(request);
+                    var json = JsonSerializer.Serialize(requestPayload);
+                    var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+                    return await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
+                },
+                async (response) =>
+                {
+                    var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                    var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseJson);
+
+                    if (embeddingResponse?.Embeddings == null)
+                        throw new InvalidOperationException("Invalid response from API");
+
+                    return new EmbeddingResponse
+                    {
+                        Embeddings = embeddingResponse.Embeddings.Select(e => new EmbeddingItem
+                        {
+                            Vector = e.Vector,
+                            Index = e.Index,
+                            Text = e.Text
+                        }).ToArray(),
+                        Model = embeddingResponse.Model,
+                        Usage = embeddingResponse.Usage != null ? new EmbeddingUsage
+                        {
+                            PromptTokens = embeddingResponse.Usage.PromptTokens,
+                            TotalTokens = embeddingResponse.Usage.TotalTokens
+                        } : null
+                    };
+                },
+                cancellationToken: cancellationToken);
         }
 
-        var response = new
+        public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
         {
-            embeddings = embeddings,
-            model = "test-model",
-            usage = new
-            {
-                prompt_tokens = 10,
-                total_tokens = 10
-            }
-        };
-
-        return JsonSerializer.Serialize(response);
-    }
-
-    private static float[] GenerateTestEmbeddingArray(int size)
-    {
-        var random = new Random(42); // Fixed seed for consistent tests
-        var embedding = new float[size];
-        for (int i = 0; i < size; i++)
-        {
-            embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Range [-1, 1]
+            return Task.FromResult<IReadOnlyList<string>>(new[] { "test-model" });
         }
-        return embedding;
+
+        private class TestEmbeddingResponse
+        {
+            [JsonPropertyName("Embeddings")]
+            public TestEmbeddingItem[] Embeddings { get; set; } = Array.Empty<TestEmbeddingItem>();
+            [JsonPropertyName("Model")]
+            public string Model { get; set; } = "";
+            [JsonPropertyName("Usage")]
+            public TestUsage? Usage { get; set; }
+        }
+
+        private class TestEmbeddingItem
+        {
+            [JsonPropertyName("Vector")]
+            public float[] Vector { get; set; } = Array.Empty<float>();
+            [JsonPropertyName("Index")]
+            public int Index { get; set; }
+            [JsonPropertyName("Text")]
+            public string? Text { get; set; }
+        }
+
+        private class TestUsage
+        {
+            [JsonPropertyName("PromptTokens")]
+            public int PromptTokens { get; set; }
+            [JsonPropertyName("TotalTokens")]
+            public int TotalTokens { get; set; }
+        }
     }
 
     public static IEnumerable<object[]> OpenAIRequestFormattingTestCases => new List<object[]>
@@ -447,7 +493,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 EncodingFormat = "binary"
             },
             false,
-            "Invalid encoding format for OpenAI API",
+            "Invalid value 'binary'. Allowed values: float, base64",
             "Invalid OpenAI request with binary encoding"
         },
         new object[]
@@ -473,7 +519,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 EncodingFormat = "invalid"
             },
             false,
-            "Invalid encoding format for Jina API",
+            "Invalid value 'invalid'. Allowed values: float, binary, base64",
             "Invalid Jina request with unsupported encoding"
         }
     };
@@ -570,101 +616,4 @@ public class BaseEmbeddingServiceApiTypeTests
             "Jina request with additional options"
         }
     };
-
-    /// <summary>
-    /// Test implementation of BaseEmbeddingService for HTTP testing
-    /// </summary>
-    private class TestEmbeddingService : BaseEmbeddingService
-    {
-        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient) 
-            : base(logger, httpClient) { }
-
-        public override int EmbeddingSize => 1536;
-
-        public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(EmbeddingRequest request, CancellationToken cancellationToken = default)
-        {
-            ValidateRequest(request);
-
-            return await ExecuteHttpWithRetryAsync(
-                async () =>
-                {
-                    var requestPayload = FormatRequestPayload(request);
-                    var json = JsonSerializer.Serialize(requestPayload);
-                    var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-                    return await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
-                },
-                async (response) =>
-                {
-                    var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-                    var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseJson);
-
-                    if (embeddingResponse?.Embeddings == null)
-                        throw new InvalidOperationException("Invalid response from API");
-
-                    return new EmbeddingResponse
-                    {
-                        Embeddings = embeddingResponse.Embeddings.Select(e => new EmbeddingItem
-                        {
-                            Vector = e.Vector,
-                            Index = e.Index,
-                            Text = e.Text
-                        }).ToArray(),
-                        Model = embeddingResponse.Model,
-                        Usage = embeddingResponse.Usage != null ? new EmbeddingUsage
-                        {
-                            PromptTokens = embeddingResponse.Usage.PromptTokens,
-                            TotalTokens = embeddingResponse.Usage.TotalTokens
-                        } : null
-                    };
-                },
-                cancellationToken: cancellationToken);
-        }
-
-        public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IReadOnlyList<string>>(new[] { "test-model" });
-        }
-
-        private class TestEmbeddingResponse
-        {
-            [JsonPropertyName("embeddings")]
-            public TestEmbeddingItem[] Embeddings { get; set; } = Array.Empty<TestEmbeddingItem>();
-            [JsonPropertyName("model")]
-            public string Model { get; set; } = "";
-            [JsonPropertyName("usage")]
-            public TestUsage? Usage { get; set; }
-        }
-
-        private class TestEmbeddingItem
-        {
-            [JsonPropertyName("vector")]
-            public float[] Vector { get; set; } = Array.Empty<float>();
-            [JsonPropertyName("index")]
-            public int Index { get; set; }
-            [JsonPropertyName("text")]
-            public string? Text { get; set; }
-        }
-
-        private class TestUsage
-        {
-            [JsonPropertyName("prompt_tokens")]
-            public int PromptTokens { get; set; }
-            [JsonPropertyName("total_tokens")]
-            public int TotalTokens { get; set; }
-        }
-    }
-
-    /// <summary>
-    /// Test logger implementation
-    /// </summary>
-    private class TestLogger<T> : ILogger<T>
-    {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            Debug.WriteLine($"[{logLevel}] {formatter(state, exception)}");
-        }
-    }
 } 

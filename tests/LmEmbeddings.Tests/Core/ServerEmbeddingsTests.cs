@@ -19,7 +19,7 @@ public class ServerEmbeddingsTests
 
     public ServerEmbeddingsTests()
     {
-        _logger = new TestLogger<ServerEmbeddings>();
+        _logger = TestLoggerFactory.CreateLogger<ServerEmbeddings>();
     }
 
     [Theory]
@@ -61,7 +61,7 @@ public class ServerEmbeddingsTests
         Debug.WriteLine($"Testing basic embedding generation: {description}");
         
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(1));
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1));
         using var service = CreateServerEmbeddings(fakeHandler);
         
         // Act
@@ -79,7 +79,7 @@ public class ServerEmbeddingsTests
         Debug.WriteLine("Testing batch processing with concurrent requests");
         
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(3));
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(3));
         using var service = CreateServerEmbeddings(fakeHandler, maxBatchSize: 2);
         var texts = new[] { "text1", "text2", "text3" };
         var request = new EmbeddingRequest
@@ -105,7 +105,7 @@ public class ServerEmbeddingsTests
         Debug.WriteLine("Testing linear backoff retry logic");
         
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(2, CreateValidEmbeddingResponse(1));
+        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(2, EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1));
         using var service = CreateServerEmbeddings(fakeHandler);
         
         // Act
@@ -129,7 +129,7 @@ public class ServerEmbeddingsTests
         Debug.WriteLine($"Testing text chunking: {description}");
         
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(expectedChunks));
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(expectedChunks));
         using var service = CreateServerEmbeddings(fakeHandler);
         var request = new EmbeddingRequest
         {
@@ -153,7 +153,7 @@ public class ServerEmbeddingsTests
         Debug.WriteLine($"Testing API type formatting: {description}");
         
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidEmbeddingResponse(1));
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1));
         using var service = CreateServerEmbeddings(fakeHandler, apiType: apiType);
         
         // Act
@@ -236,56 +236,5 @@ public class ServerEmbeddingsTests
         var httpClient = new HttpClient(httpHandler);
         var service = new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, apiType, _logger, httpClient);
         return service;
-    }
-
-    private static string CreateValidEmbeddingResponse(int embeddingCount)
-    {
-        var embeddings = new List<object>();
-        for (int i = 0; i < embeddingCount; i++)
-        {
-            embeddings.Add(new
-            {
-                Vector = GenerateTestEmbeddingArray(1536),
-                Index = i,
-                Text = $"input_{i}"
-            });
-        }
-
-        var response = new
-        {
-            Embeddings = embeddings,
-            Model = "test-model",
-            Usage = new
-            {
-                PromptTokens = 10,
-                TotalTokens = 10
-            }
-        };
-
-        return JsonSerializer.Serialize(response);
-    }
-
-    private static float[] GenerateTestEmbeddingArray(int size)
-    {
-        var random = new Random(42); // Fixed seed for reproducible tests
-        var embedding = new float[size];
-        for (int i = 0; i < size; i++)
-        {
-            embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Values between -1 and 1
-        }
-        return embedding;
-    }
-
-    /// <summary>
-    /// Simple test logger implementation
-    /// </summary>
-    private class TestLogger<T> : ILogger<T>
-    {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            Debug.WriteLine($"[{logLevel}] {formatter(state, exception)}");
-        }
     }
 } 

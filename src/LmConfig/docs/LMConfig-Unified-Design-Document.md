@@ -118,6 +118,174 @@ public record PricingConfig
 }
 ```
 
+#### ProviderRegistry (from appsettings.json)
+```csharp
+/// <summary>
+/// Infrastructure-level provider connection registry - maps provider names to connection details
+/// </summary>
+public record ProviderRegistryConfig
+{
+    public required Dictionary<string, ProviderConnectionInfo> Providers { get; init; }
+}
+
+/// <summary>
+/// Connection information for a provider, configured at infrastructure level
+/// </summary>
+public record ProviderConnectionInfo
+{
+    /// <summary>
+    /// Base URL for the provider's API endpoint
+    /// </summary>
+    public required string EndpointUrl { get; init; }
+    
+    /// <summary>
+    /// Name of the environment variable containing the API key
+    /// </summary>
+    public required string ApiKeyEnvironmentVariable { get; init; }
+    
+    /// <summary>
+    /// Provider compatibility type for API format
+    /// </summary>
+    public ProviderCompatibility Compatibility { get; init; } = ProviderCompatibility.OpenAI;
+    
+    /// <summary>
+    /// Optional custom headers to include in requests
+    /// </summary>
+    public Dictionary<string, string>? Headers { get; init; }
+    
+    /// <summary>
+    /// Request timeout for this provider
+    /// </summary>
+    public TimeSpan? Timeout { get; init; }
+    
+    /// <summary>
+    /// Maximum retry attempts for this provider
+    /// </summary>
+    public int MaxRetries { get; init; } = 3;
+    
+    /// <summary>
+    /// Human-readable description of the provider
+    /// </summary>
+    public string? Description { get; init; }
+    
+    /// <summary>
+    /// Validate the connection configuration
+    /// </summary>
+    public ValidationResult Validate()
+    {
+        var result = new ValidationResult();
+        
+        if (string.IsNullOrWhiteSpace(EndpointUrl))
+            result.AddError("EndpointUrl is required");
+        else if (!Uri.TryCreate(EndpointUrl, UriKind.Absolute, out _))
+            result.AddError("EndpointUrl must be a valid absolute URL");
+            
+        if (string.IsNullOrWhiteSpace(ApiKeyEnvironmentVariable))
+            result.AddError("ApiKeyEnvironmentVariable is required");
+            
+        if (Timeout.HasValue && Timeout.Value <= TimeSpan.Zero)
+            result.AddError("Timeout must be positive");
+            
+        if (MaxRetries < 0)
+            result.AddError("MaxRetries cannot be negative");
+            
+        return result;
+    }
+    
+    /// <summary>
+    /// Get the API key from the environment variable
+    /// </summary>
+    public string? GetApiKey()
+    {
+        return Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable);
+    }
+    
+    /// <summary>
+    /// Convert to request-level connection config
+    /// </summary>
+    public ProviderConnectionConfig ToConnectionConfig()
+    {
+        return new ProviderConnectionConfig
+        {
+            EndpointUrl = EndpointUrl,
+            ApiKeyEnvironmentVariable = ApiKeyEnvironmentVariable,
+            Compatibility = Compatibility,
+            Headers = Headers,
+            Timeout = Timeout,
+            MaxRetries = MaxRetries
+        };
+    }
+}
+
+/// <summary>
+/// Service for resolving provider connections from the registry
+/// </summary>
+public interface IProviderRegistry
+{
+    /// <summary>
+    /// Get connection info for a provider by name
+    /// </summary>
+    ProviderConnectionInfo? GetProviderConnection(string providerName);
+    
+    /// <summary>
+    /// Get all registered provider names
+    /// </summary>
+    IReadOnlyList<string> GetRegisteredProviders();
+    
+    /// <summary>
+    /// Check if a provider is registered
+    /// </summary>
+    bool IsProviderRegistered(string providerName);
+    
+    /// <summary>
+    /// Validate that all required environment variables are set
+    /// </summary>
+    ValidationResult ValidateEnvironmentVariables();
+}
+
+public class ProviderRegistry : IProviderRegistry
+{
+    private readonly ProviderRegistryConfig _config;
+    
+    public ProviderRegistry(IOptions<ProviderRegistryConfig> config)
+    {
+        _config = config.Value;
+    }
+    
+    public ProviderConnectionInfo? GetProviderConnection(string providerName)
+    {
+        return _config.Providers.TryGetValue(providerName, out var connectionInfo) 
+            ? connectionInfo 
+            : null;
+    }
+    
+    public IReadOnlyList<string> GetRegisteredProviders()
+    {
+        return _config.Providers.Keys.ToList();
+    }
+    
+    public bool IsProviderRegistered(string providerName)
+    {
+        return _config.Providers.ContainsKey(providerName);
+    }
+    
+    public ValidationResult ValidateEnvironmentVariables()
+    {
+        var result = new ValidationResult();
+        
+        foreach (var provider in _config.Providers)
+        {
+            var apiKey = provider.Value.GetApiKey();
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                result.AddWarning($"Environment variable '{provider.Value.ApiKeyEnvironmentVariable}' for provider '{provider.Key}' is not set");
+            }
+        }
+        
+        return result;
+    }
+}
+
 #### ModelConfigurationService
 - Resolves model IDs to available providers
 - Implements priority-based selection with fallbacks
@@ -239,9 +407,181 @@ public class LMConfig
     // Performance preferences
     public TimeSpan? MaxLatency { get; set; }                    // Max acceptable response time
     
+    // Provider connection configuration (NEW)
+    public ProviderConnectionConfig? ProviderConnection { get; set; }
+    public List<ProviderConnectionConfig>? FallbackConnections { get; set; }
+    
+    // Provider registry reference (NEW) - simpler than full connection config
+    public string? PreferredProviderName { get; set; }           // Reference provider by name from registry
+    public List<string>? FallbackProviderNames { get; set; }    // Fallback providers by name
+    
     // Validation and conversion
     public GenerateReplyOptions ToGenerateReplyOptions();
     public void Validate();
+}
+```
+
+#### Provider Connection Configuration (NEW)
+```csharp
+/// <summary>
+/// Configuration for provider connection details including endpoint and authentication
+/// </summary>
+public record ProviderConnectionConfig
+{
+    /// <summary>
+    /// Base URL for the provider's API endpoint
+    /// </summary>
+    public required string EndpointUrl { get; init; }
+    
+    /// <summary>
+    /// Name of the environment variable containing the API key
+    /// </summary>
+    public required string ApiKeyEnvironmentVariable { get; init; }
+    
+    /// <summary>
+    /// Provider compatibility type for API format
+    /// </summary>
+    public ProviderCompatibility Compatibility { get; init; } = ProviderCompatibility.OpenAI;
+    
+    /// <summary>
+    /// Optional custom headers to include in requests
+    /// </summary>
+    public Dictionary<string, string>? Headers { get; init; }
+    
+    /// <summary>
+    /// Request timeout for this provider
+    /// </summary>
+    public TimeSpan? Timeout { get; init; }
+    
+    /// <summary>
+    /// Provider name for identification and logging
+    /// </summary>
+    public string? ProviderName { get; init; }
+    
+    /// <summary>
+    /// Maximum retry attempts for this provider
+    /// </summary>
+    public int MaxRetries { get; init; } = 3;
+    
+    /// <summary>
+    /// Validate the connection configuration
+    /// </summary>
+    public ValidationResult Validate()
+    {
+        var result = new ValidationResult();
+        
+        if (string.IsNullOrWhiteSpace(EndpointUrl))
+            result.AddError("EndpointUrl is required");
+        else if (!Uri.TryCreate(EndpointUrl, UriKind.Absolute, out _))
+            result.AddError("EndpointUrl must be a valid absolute URL");
+            
+        if (string.IsNullOrWhiteSpace(ApiKeyEnvironmentVariable))
+            result.AddError("ApiKeyEnvironmentVariable is required");
+            
+        if (Timeout.HasValue && Timeout.Value <= TimeSpan.Zero)
+            result.AddError("Timeout must be positive");
+            
+        if (MaxRetries < 0)
+            result.AddError("MaxRetries cannot be negative");
+            
+        return result;
+    }
+    
+    /// <summary>
+    /// Get the API key from the environment variable
+    /// </summary>
+    public string? GetApiKey()
+    {
+        return Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable);
+    }
+}
+
+/// <summary>
+/// Provider API compatibility types
+/// </summary>
+public enum ProviderCompatibility
+{
+    /// <summary>
+    /// OpenAI-compatible API format (most common)
+    /// </summary>
+    OpenAI,
+    
+    /// <summary>
+    /// Anthropic-specific API format
+    /// </summary>
+    Anthropic,
+    
+    /// <summary>
+    /// Custom provider format requiring special handling
+    /// </summary>
+    Custom
+}
+
+/// <summary>
+/// Predefined provider connection configurations for common providers
+/// </summary>
+public static class WellKnownProviders
+{
+    public static readonly ProviderConnectionConfig OpenAI = new()
+    {
+        EndpointUrl = "https://api.openai.com/v1",
+        ApiKeyEnvironmentVariable = "OPENAI_API_KEY",
+        Compatibility = ProviderCompatibility.OpenAI,
+        ProviderName = "OpenAI"
+    };
+    
+    public static readonly ProviderConnectionConfig Anthropic = new()
+    {
+        EndpointUrl = "https://api.anthropic.com",
+        ApiKeyEnvironmentVariable = "ANTHROPIC_API_KEY",
+        Compatibility = ProviderCompatibility.Anthropic,
+        ProviderName = "Anthropic"
+    };
+    
+    public static readonly ProviderConnectionConfig OpenRouter = new()
+    {
+        EndpointUrl = "https://openrouter.ai/api/v1",
+        ApiKeyEnvironmentVariable = "OPENROUTER_API_KEY",
+        Compatibility = ProviderCompatibility.OpenAI,
+        ProviderName = "OpenRouter",
+        Headers = new Dictionary<string, string>
+        {
+            ["HTTP-Referer"] = "https://github.com/your-org/your-app",
+            ["X-Title"] = "LMConfig Application"
+        }
+    };
+    
+    public static readonly ProviderConnectionConfig DeepInfra = new()
+    {
+        EndpointUrl = "https://api.deepinfra.com/v1/openai",
+        ApiKeyEnvironmentVariable = "DEEPINFRA_API_KEY",
+        Compatibility = ProviderCompatibility.OpenAI,
+        ProviderName = "DeepInfra"
+    };
+    
+    public static readonly ProviderConnectionConfig Groq = new()
+    {
+        EndpointUrl = "https://api.groq.com/openai/v1",
+        ApiKeyEnvironmentVariable = "GROQ_API_KEY",
+        Compatibility = ProviderCompatibility.OpenAI,
+        ProviderName = "Groq"
+    };
+    
+    public static readonly ProviderConnectionConfig Cerebras = new()
+    {
+        EndpointUrl = "https://api.cerebras.ai/v1",
+        ApiKeyEnvironmentVariable = "CEREBRAS_API_KEY",
+        Compatibility = ProviderCompatibility.OpenAI,
+        ProviderName = "Cerebras"
+    };
+    
+    public static readonly ProviderConnectionConfig GoogleGemini = new()
+    {
+        EndpointUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
+        ApiKeyEnvironmentVariable = "GEMINI_API_KEY",
+        Compatibility = ProviderCompatibility.OpenAI,
+        ProviderName = "GoogleGemini"
+    };
 }
 ```
 
@@ -338,6 +678,75 @@ public class LMConfigBuilder
         return this;
     }
     
+    // Provider connection configuration (NEW)
+    public LMConfigBuilder WithProviderConnection(ProviderConnectionConfig connection)
+    {
+        _config.ProviderConnection = connection;
+        return this;
+    }
+    
+    public LMConfigBuilder WithProviderConnection(string endpointUrl, string apiKeyEnvVar, ProviderCompatibility compatibility = ProviderCompatibility.OpenAI)
+    {
+        _config.ProviderConnection = new ProviderConnectionConfig
+        {
+            EndpointUrl = endpointUrl,
+            ApiKeyEnvironmentVariable = apiKeyEnvVar,
+            Compatibility = compatibility
+        };
+        return this;
+    }
+    
+    public LMConfigBuilder WithWellKnownProvider(ProviderConnectionConfig providerConfig)
+    {
+        _config.ProviderConnection = providerConfig;
+        return this;
+    }
+    
+    public LMConfigBuilder WithFallbackConnections(params ProviderConnectionConfig[] connections)
+    {
+        _config.FallbackConnections = connections.ToList();
+        return this;
+    }
+    
+    // Provider registry methods (NEW) - reference providers by name
+    public LMConfigBuilder WithProvider(string providerName)
+    {
+        _config.PreferredProviderName = providerName;
+        return this;
+    }
+    
+    public LMConfigBuilder WithProviderFallbacks(params string[] providerNames)
+    {
+        _config.FallbackProviderNames = providerNames.ToList();
+        return this;
+    }
+    
+    public LMConfigBuilder WithProvider(string primaryProvider, params string[] fallbackProviders)
+    {
+        _config.PreferredProviderName = primaryProvider;
+        _config.FallbackProviderNames = fallbackProviders.ToList();
+        return this;
+    }
+    
+    public LMConfigBuilder WithOpenRouterConnection(string? httpReferer = null, string? xTitle = null)
+    {
+        var headers = new Dictionary<string, string>();
+        if (!string.IsNullOrEmpty(httpReferer))
+            headers["HTTP-Referer"] = httpReferer;
+        if (!string.IsNullOrEmpty(xTitle))
+            headers["X-Title"] = xTitle;
+            
+        _config.ProviderConnection = new ProviderConnectionConfig
+        {
+            EndpointUrl = WellKnownProviders.OpenRouter.EndpointUrl,
+            ApiKeyEnvironmentVariable = WellKnownProviders.OpenRouter.ApiKeyEnvironmentVariable,
+            Compatibility = WellKnownProviders.OpenRouter.Compatibility,
+            ProviderName = WellKnownProviders.OpenRouter.ProviderName,
+            Headers = headers.Any() ? headers : null
+        };
+        return this;
+    }
+    
     // Provider-specific configuration
     public LMConfigBuilder WithOpenRouter(Action<OpenRouterFeatureConfigBuilder> configure)
     {
@@ -393,133 +802,643 @@ public interface IModelConfigurationService
 }
 ```
 
-## Enhanced Usage Examples
+## Enhanced Usage Examples with Provider Registry
+
+### Using Provider Registry (Recommended Approach)
+
+```csharp
+// Simple provider selection by name - connection details resolved from registry
+var config = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProvider("OpenAI")                    // References ProviderRegistry["OpenAI"]
+    .PreferHighQuality()
+    .Build();
+
+var response = await agent.GenerateReplyAsync(messages, config);
+```
+
+### Free Models with Provider Registry
+
+```csharp
+// Use OpenRouter for free models - connection details from registry
+var freeConfig = new LMConfigBuilder()
+    .WithModel("deepseek-r1-free")
+    .WithProvider("OpenRouter")                // Uses registry configuration for OpenRouter
+    .RequireTags("free")
+    .Build();
+
+var response = await agent.GenerateReplyAsync(messages, freeConfig);
+```
+
+### Provider Fallback Chain with Registry
+
+```csharp
+// Primary provider with automatic fallbacks using registry
+var robustConfig = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProvider("OpenAI", "OpenRouter", "DeepInfra")  // Primary + fallbacks from registry
+    .WithBudgetLimit(0.50m)
+    .Build();
+
+// System will try: OpenAI -> OpenRouter -> DeepInfra (all connection details from registry)
+var response = await agent.GenerateReplyAsync(messages, robustConfig);
+```
+
+### Ultra-Fast Provider Selection
+
+```csharp
+// Use Groq for ultra-fast inference - connection details from registry
+var fastConfig = new LMConfigBuilder()
+    .WithModel("llama-3.1-70b-instruct")
+    .WithProvider("Groq")                      // Registry resolves to https://api.groq.com/openai/v1
+    .PreferFast()
+    .WithMaxLatency(TimeSpan.FromSeconds(3))
+    .Build();
+
+var response = await agent.GenerateReplyAsync(messages, fastConfig);
+```
 
 ### Economic Provider Selection
+
 ```csharp
-// Prefer the most economical provider for gpt-4
-var config = new LMConfigBuilder()
-    .WithModel("gpt-4")
-    .PreferEconomic()                    // Prefer providers tagged as "economic"
-    .WithBudgetLimit(0.10m)              // Max $0.10 per request
-    .WithCostEstimation(true)            // Get cost estimate before execution
+// Use DeepInfra for cost-effective requests - connection details from registry
+var economicConfig = new LMConfigBuilder()
+    .WithModel("gpt-4o-mini")
+    .WithProvider("DeepInfra")                 // Registry resolves connection details
+    .PreferEconomic()
+    .WithBudgetLimit(0.10m)
     .Build();
 
-// Get cost estimation
-var estimation = await modelConfigService.EstimateCostAsync(config, estimatedPromptTokens: 1000);
-Console.WriteLine($"Estimated cost: ${estimation.TotalEstimatedCost:F4} using {estimation.SelectedProvider}");
+var response = await agent.GenerateReplyAsync(messages, economicConfig);
+```
 
-var agent = new EnhancedDynamicProviderAgent(modelConfigService, serviceProvider, logger);
+### Environment-Specific Configuration
+
+```csharp
+// Different providers for different environments
+var providerName = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") switch
+{
+    "Development" => "OpenRouter",  // Free models for dev
+    "Testing" => "DeepInfra",       // Economic for testing
+    "Production" => "OpenAI",       // High-quality for prod
+    _ => "OpenRouter"
+};
+
+var config = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProvider(providerName)               // Provider resolved from registry
+    .Build();
+```
+
+### Custom Provider Override (when needed)
+
+```csharp
+// Override registry with custom connection for special cases
+var customConfig = new LMConfigBuilder()
+    .WithModel("custom-model")
+    .WithProviderConnection(
+        endpointUrl: "https://api.internal-company.com/llm/v1",
+        apiKeyEnvVar: "INTERNAL_LLM_API_KEY")
+    .Build();
+
+// This bypasses the registry for custom endpoints
+var response = await agent.GenerateReplyAsync(messages, customConfig);
+```
+
+### Validating Provider Registry Setup
+
+```csharp
+// Check that all required environment variables are configured
+public async Task<bool> ValidateProviderSetup(IProviderRegistry registry)
+{
+    var validation = registry.ValidateEnvironmentVariables();
+    
+    if (!validation.IsValid)
+    {
+        foreach (var error in validation.Errors)
+        {
+            Console.WriteLine($"❌ {error}");
+        }
+        return false;
+    }
+    
+    foreach (var warning in validation.Warnings)
+    {
+        Console.WriteLine($"⚠️ {warning}");
+    }
+    
+    var providers = registry.GetRegisteredProviders();
+    Console.WriteLine($"✅ Provider registry configured with: {string.Join(", ", providers)}");
+    
+    return true;
+}
+```
+
+## Provider Registry Configuration Guide
+
+### Overview
+
+The Provider Registry is an infrastructure-level configuration system that maps provider names to their connection details. This allows you to:
+
+- **Centralize provider configuration** in `appsettings.json`
+- **Reference providers by name** in your code
+- **Manage API keys via environment variables**
+- **Configure provider-specific settings** (timeouts, headers, etc.)
+- **Easily switch between providers** without code changes
+
+### Configuration Structure
+
+#### appsettings.json Structure
+```json
+{
+  "AppConfig": {
+    "Models": [
+      // Model configurations with provider references
+    ]
+  },
+  "ProviderRegistry": {
+    "OpenAI": {
+      "EndpointUrl": "https://api.openai.com/v1",
+      "ApiKeyEnvironmentVariable": "OPENAI_API_KEY",
+      "Compatibility": "OpenAI",
+      "Timeout": "00:01:00",
+      "MaxRetries": 3,
+      "Description": "Official OpenAI API endpoint"
+    },
+    "OpenRouter": {
+      "EndpointUrl": "https://openrouter.ai/api/v1",
+      "ApiKeyEnvironmentVariable": "OPENROUTER_API_KEY",
+      "Compatibility": "OpenAI",
+      "Headers": {
+        "HTTP-Referer": "https://github.com/your-org/lm-dotnet-tools",
+        "X-Title": "LMConfig Application"
+      },
+      "Timeout": "00:02:00",
+      "MaxRetries": 3,
+      "Description": "OpenRouter aggregator with multiple provider fallback"
+    }
+  }
+}
+```
+
+#### Environment Variables (.env file)
+```bash
+# Provider API Keys
+OPENAI_API_KEY=sk-your-openai-key-here
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+OPENROUTER_API_KEY=sk-or-your-openrouter-key-here
+DEEPINFRA_API_KEY=your-deepinfra-key-here
+GROQ_API_KEY=gsk_your-groq-key-here
+CEREBRAS_API_KEY=your-cerebras-key-here
+GEMINI_API_KEY=your-gemini-key-here
+```
+
+### Usage Patterns
+
+#### 1. Simple Provider Selection by Name
+```csharp
+// Use OpenAI - connection details resolved from registry
+var config = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProvider("OpenAI")
+    .Build();
+
 var response = await agent.GenerateReplyAsync(messages, config);
 ```
 
-### Fast Provider Selection
+#### 2. Free Provider Selection with Tags
 ```csharp
-// Prefer the fastest provider for real-time applications
-var config = new LMConfigBuilder()
-    .WithModel("claude-3-sonnet")
-    .PreferFast()                        // Prefer providers tagged as "fast"
-    .WithMaxLatency(TimeSpan.FromSeconds(5))  // Max 5 second response time
-    .RequireTags(ProviderTags.Reliable)  // Must be reliable
+// Use the same model but select free provider
+var freeConfig = new LMConfigBuilder()
+    .WithModel("deepseek-r1-distill-llama-70b")  // Same model ID
+    .RequireTags("free")                         // Select free provider
     .Build();
 
-var response = await agent.GenerateReplyAsync(messages, config);
+// This will automatically select the OpenRouter free provider for this model
+var response = await agent.GenerateReplyAsync(messages, freeConfig);
 ```
 
-### High-Quality Provider Selection
+#### 2a. Alternative Free Models for Different Use Cases
 ```csharp
-// Prefer highest quality for important tasks, cost is secondary
-var config = new LMConfigBuilder()
-    .WithModel("gpt-4")
-    .PreferHighQuality()                 // Prefer providers tagged as "high-quality"
-    .RequireTags(ProviderTags.Reasoning) // Must support reasoning
-    .WithCostTracking(true)              // Track actual costs for analysis
+// High-performance free reasoning model
+var reasoningConfig = new LMConfigBuilder()
+    .WithModel("deepseek-r1-distill-llama-70b")
+    .RequireTags("free", "reasoning")
     .Build();
 
-var response = await agent.GenerateReplyAsync(messages, config);
+// Multimodal free model for image processing  
+var multimodalConfig = new LMConfigBuilder()
+    .WithModel("gpt-4o")                        // Same model ID as paid version
+    .RequireTags("free", "multimodal")          // Select free multimodal provider
+    .Build();
+
+// Ultra-fast free model for simple tasks
+var fastConfig = new LMConfigBuilder()
+    .WithModel("llama-3.1-70b-instruct")
+    .RequireTags("free", "ultra-fast")
+    .Build();
+
+// All of these use the same model IDs but select different providers based on tags
 ```
 
-### Balanced Selection with Budget Constraints
+#### 3. Provider Fallback Chain
 ```csharp
-// Balance cost and performance with budget constraints
+// Primary provider with automatic fallbacks
+var robustConfig = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProvider("OpenAI", "OpenRouter", "DeepInfra")  // Fallback chain
+    .Build();
+
+// System tries: OpenAI → OpenRouter → DeepInfra (all from registry)
+var response = await agent.GenerateReplyAsync(messages, robustConfig);
+```
+
+#### 4. Environment-Specific Provider Selection
+```csharp
+// Different providers for different environments
+var providerName = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") switch
+{
+    "Development" => "OpenRouter",  // Free models for development
+    "Testing" => "DeepInfra",       // Economic for testing
+    "Production" => "OpenAI",       // High-quality for production
+    _ => "OpenRouter"
+};
+
 var config = new LMConfigBuilder()
     .WithModel("gpt-4")
-    .PreferBalanced()                    // Balance cost and performance
-    .WithBudgetLimit(0.25m)              // Max $0.25 per request
-    .PreferTags(ProviderTags.Fast, ProviderTags.Reliable)  // Prefer fast and reliable
+    .WithProvider(providerName)     // Provider resolved from registry
+    .Build();
+```
+
+#### 5. Tag-Based Provider Selection
+```csharp
+// Select provider based on requirements, not specific provider name
+var economicConfig = new LMConfigBuilder()
+    .WithModel("llama-3.1-70b-instruct")
+    .RequireTags("free")            // Must be free
+    .PreferTags("ultra-fast")       // Prefer fast if available
+    .Build();
+
+// This will select the best free provider for this model
+var response = await agent.GenerateReplyAsync(messages, economicConfig);
+```
+
+### Provider Registry Validation
+
+#### Startup Validation
+```csharp
+public class Startup
+{
+    public void ConfigureServices(IServiceCollection services)
+    {
+        // Register provider registry
+        services.Configure<ProviderRegistryConfig>(Configuration.GetSection("ProviderRegistry"));
+        services.AddSingleton<IProviderRegistry, ProviderRegistry>();
+        
+        // Validate on startup
+        var serviceProvider = services.BuildServiceProvider();
+        var registry = serviceProvider.GetRequiredService<IProviderRegistry>();
+        
+        var validation = registry.ValidateEnvironmentVariables();
+        if (!validation.IsValid)
+        {
+            foreach (var error in validation.Errors)
+            {
+                Console.WriteLine($"❌ {error}");
+            }
+            throw new InvalidOperationException("Provider registry validation failed");
+        }
+        
+        foreach (var warning in validation.Warnings)
+        {
+            Console.WriteLine($"⚠️ {warning}");
+        }
+        
+        var providers = registry.GetRegisteredProviders();
+        Console.WriteLine($"✅ Provider registry configured with: {string.Join(", ", providers)}");
+    }
+}
+```
+
+#### Runtime Validation
+```csharp
+public class ProviderHealthService
+{
+    private readonly IProviderRegistry _registry;
+    
+    public ProviderHealthService(IProviderRegistry registry)
+    {
+        _registry = registry;
+    }
+    
+    public async Task<Dictionary<string, bool>> CheckProviderHealth()
+    {
+        var results = new Dictionary<string, bool>();
+        var providers = _registry.GetRegisteredProviders();
+        
+        foreach (var providerName in providers)
+        {
+            var connectionInfo = _registry.GetProviderConnection(providerName);
+            if (connectionInfo == null)
+            {
+                results[providerName] = false;
+                continue;
+            }
+            
+            // Check if API key is available
+            var apiKey = connectionInfo.GetApiKey();
+            if (string.IsNullOrEmpty(apiKey))
+            {
+                results[providerName] = false;
+                continue;
+            }
+            
+            // Optionally: Make a test API call to verify connectivity
+            results[providerName] = true;
+        }
+        
+        return results;
+    }
+}
+```
+
+### Advanced Configuration Scenarios
+
+#### Custom Provider with Special Headers
+```csharp
+// Add custom provider to registry (via configuration)
+{
+  "ProviderRegistry": {
+    "CompanyInternal": {
+      "EndpointUrl": "https://api.company.com/llm/v1",
+      "ApiKeyEnvironmentVariable": "COMPANY_LLM_API_KEY",
+      "Compatibility": "OpenAI",
+      "Headers": {
+        "X-Company-App": "LMConfig Integration",
+        "X-Version": "1.0.0",
+        "X-Department": "Engineering"
+      },
+      "Timeout": "00:02:00",
+      "MaxRetries": 5,
+      "Description": "Company internal LLM service"
+    }
+  }
+}
+
+// Use in code
+var config = new LMConfigBuilder()
+    .WithModel("company-gpt-4")
+    .WithProvider("CompanyInternal")
+    .Build();
+```
+
+#### Provider-Specific Timeouts and Retries
+```csharp
+// Different providers with different performance characteristics
+{
+  "ProviderRegistry": {
+    "Groq": {
+      "EndpointUrl": "https://api.groq.com/openai/v1",
+      "ApiKeyEnvironmentVariable": "GROQ_API_KEY",
+      "Compatibility": "OpenAI",
+      "Timeout": "00:00:30",    // Fast timeout for ultra-fast provider
+      "MaxRetries": 2,          // Fewer retries since it's fast
+      "Description": "Groq ultra-fast inference platform"
+    },
+    "OpenRouter": {
+      "EndpointUrl": "https://openrouter.ai/api/v1",
+      "ApiKeyEnvironmentVariable": "OPENROUTER_API_KEY",
+      "Compatibility": "OpenAI",
+      "Timeout": "00:02:00",    // Longer timeout for aggregator
+      "MaxRetries": 3,          // More retries for reliability
+      "Description": "OpenRouter aggregator with multiple provider fallback"
+    }
+  }
+}
+```
+
+### Migration from Hardcoded Providers
+
+#### Before (Hardcoded)
+```csharp
+// Old approach - hardcoded connection details
+var config = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProviderConnection(
+        endpointUrl: "https://api.openai.com/v1",
+        apiKeyEnvVar: "OPENAI_API_KEY")
+    .Build();
+```
+
+#### After (Registry-Based)
+```csharp
+// New approach - provider by name from registry
+var config = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProvider("OpenAI")     // Connection details from registry
+    .Build();
+```
+
+#### Hybrid Approach (Override when needed)
+```csharp
+// Use registry by default, override for special cases
+var config = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithProvider("OpenAI")     // Default from registry
+    .WithProviderConnection(    // Override for this request
+        endpointUrl: "https://api.special-endpoint.com/v1",
+        apiKeyEnvVar: "SPECIAL_API_KEY")
+    .Build();
+```
+
+### Best Practices
+
+#### 1. Environment Variable Naming
+- Use consistent naming: `{PROVIDER_NAME}_API_KEY`
+- Use uppercase for environment variables
+- Include provider name for clarity
+
+#### 2. Provider Configuration
+- Set appropriate timeouts based on provider characteristics
+- Configure retry counts based on provider reliability
+- Include descriptive names for documentation
+
+#### 3. Security
+- Never store API keys in configuration files
+- Use environment variables or secure key management
+- Validate environment variables on startup
+
+#### 4. Monitoring
+- Log provider selection decisions
+- Monitor provider health and availability
+- Track provider performance metrics
+
+#### 5. Testing
+- Use free providers for development and testing
+- Validate provider configurations in CI/CD
+- Test provider fallback scenarios
+
+This Provider Registry system provides a clean separation between infrastructure concerns (provider connections) and application concerns (model selection and configuration), making your LLM applications more maintainable and flexible.
+
+## Enhanced Usage Examples with Provider Connection Configuration
+
+### Using Well-Known Provider Connections
+
+```csharp
+// Use OpenRouter with free models
+var freeModelConfig = new LMConfigBuilder()
+    .WithModel("deepseek-r1-free")
+    .WithWellKnownProvider(WellKnownProviders.OpenRouter)
+    .WithOpenRouterConnection(
+        httpReferer: "https://myapp.example.com",
+        xTitle: "My LLM Application")
+    .RequireTags("free")
+    .Build();
+
+var response = await agent.GenerateReplyAsync(messages, freeModelConfig);
+```
+
+### Custom Provider Connection
+
+```csharp
+// Configure a custom provider endpoint
+var customConfig = new LMConfigBuilder()
+    .WithModel("custom-model")
+    .WithProviderConnection(
+        endpointUrl: "https://api.custom-provider.com/v1",
+        apiKeyEnvVar: "CUSTOM_PROVIDER_API_KEY",
+        compatibility: ProviderCompatibility.OpenAI)
+    .Build();
+
+var response = await agent.GenerateReplyAsync(messages, customConfig);
+```
+
+### Multiple Provider Fallback Configuration
+
+```csharp
+// Configure primary provider with automatic fallbacks
+var fallbackConfig = new LMConfigBuilder()
+    .WithModel("gpt-4")
+    .WithWellKnownProvider(WellKnownProviders.OpenAI)  // Primary
+    .WithFallbackConnections(
+        WellKnownProviders.OpenRouter,                  // First fallback
+        WellKnownProviders.DeepInfra)                   // Second fallback
     .WithCostEstimation(true)
     .Build();
 
-// Check if request fits budget
-var estimation = await modelConfigService.EstimateCostAsync(config, estimatedPromptTokens: 2000);
-if (estimation.TotalEstimatedCost <= config.BudgetLimit)
-{
-    var response = await agent.GenerateReplyAsync(messages, config);
-}
-else
-{
-    Console.WriteLine($"Request exceeds budget: ${estimation.TotalEstimatedCost:F4} > ${config.BudgetLimit:F2}");
-}
+// The system will automatically try fallbacks if primary provider fails
+var response = await agent.GenerateReplyAsync(messages, fallbackConfig);
 ```
 
-### Multi-Modal with Cost Tracking
+### Free Models with Provider Selection
+
 ```csharp
-// Multi-modal request with comprehensive cost tracking
-var config = new LMConfigBuilder()
-    .WithModel("gpt-4-vision")
-    .RequireTags(ProviderTags.Multimodal) // Must support images
-    .PreferTags(ProviderTags.HighQuality) // Prefer high quality
-    .WithCostEstimation(true)
+// Use free models for development and testing
+var developmentConfig = new LMConfigBuilder()
+    .WithModel("llama-4-maverick-free")
+    .WithWellKnownProvider(WellKnownProviders.OpenRouter)
+    .RequireTags("free", "multimodal")
+    .WithMaxLatency(TimeSpan.FromSeconds(10))
+    .Build();
+
+// Cost tracking will show $0.00 for free models
+var response = await agent.GenerateReplyAsync(messages, developmentConfig);
+```
+
+### OpenRouter Free Models for Different Use Cases
+
+```csharp
+// High-performance free model for coding
+var codingConfig = new LMConfigBuilder()
+    .WithModel("llama-4-scout-free")
+    .WithWellKnownProvider(WellKnownProviders.OpenRouter)
+    .RequireTags("free", "long-context")
+    .WithFunctions(codeAnalysisFunction)
+    .Build();
+
+// Lightweight free model for simple tasks
+var lightweightConfig = new LMConfigBuilder()
+    .WithModel("qwen3-0.6b-free")
+    .WithWellKnownProvider(WellKnownProviders.OpenRouter)
+    .RequireTags("free", "ultra-fast")
+    .WithBudgetLimit(0.001m)  // Will enforce free models
+    .Build();
+
+// Reasoning free model for complex problems
+var reasoningConfig = new LMConfigBuilder()
+    .WithModel("deepseek-r1-free")
+    .WithWellKnownProvider(WellKnownProviders.OpenRouter)
+    .RequireTags("free", "reasoning")
+    .WithThinking(budgetTokens: 2048)
+    .Build();
+```
+
+### Environment-Specific Provider Configuration
+
+```csharp
+// Development environment - use free models
+var devConfig = new LMConfigBuilder()
+    .WithModel("gemini-2.5-pro-exp-free")
+    .WithWellKnownProvider(WellKnownProviders.OpenRouter)
+    .RequireTags("free", "experimental")
     .WithCostTracking(true)
     .Build();
 
-var response = await agent.GenerateReplyAsync(messages, config);
-
-// Get cost report after execution
-var costReport = await modelConfigService.TrackCostAsync(
-    response.First().FromAgent, 
-    config.ModelId, 
-    promptTokens: 1500, 
-    completionTokens: 300);
-    
-Console.WriteLine($"Actual cost: ${costReport.TotalActualCost:F4}");
-```
-
-### Provider Selection by Specific Tags
-```csharp
-// Select provider for coding tasks with specific requirements
-var config = new LMConfigBuilder()
-    .WithModel("claude-3-sonnet")
-    .RequireTags(ProviderTags.Coding, ProviderTags.Fast)  // Must be good for coding and fast
-    .PreferTags(ProviderTags.Economic)                    // Prefer economical if available
-    .WithBudgetLimit(0.15m)
+// Production environment - use paid, reliable providers
+var prodConfig = new LMConfigBuilder()
+    .WithModel("gpt-4o")
+    .WithWellKnownProvider(WellKnownProviders.OpenAI)
+    .WithFallbackConnections(WellKnownProviders.OpenRouter)
+    .PreferHighQuality()
+    .WithBudgetLimit(0.50m)
     .Build();
 
-var response = await agent.GenerateReplyAsync(messages, config);
+// Select configuration based on environment
+var config = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "Development" 
+    ? devConfig 
+    : prodConfig;
 ```
 
-### Cost Analysis and Reporting
+### Ultra-Fast Provider Configuration
+
 ```csharp
-// Get cost history for analysis
-var costHistory = await modelConfigService.GetCostHistoryAsync(
-    DateTime.Today.AddDays(-30), 
-    DateTime.Today);
+// Configure Groq for ultra-fast inference
+var groqConfig = new LMConfigBuilder()
+    .WithModel("llama-3.1-70b-instruct")
+    .WithWellKnownProvider(WellKnownProviders.Groq)
+    .PreferFast()
+    .WithMaxLatency(TimeSpan.FromSeconds(2))
+    .Build();
 
-var totalCost = costHistory.Sum(c => c.TotalActualCost);
-var avgCostPerRequest = costHistory.Average(c => c.TotalActualCost);
+// Configure Cerebras for high-performance tasks
+var cerebrasConfig = new LMConfigBuilder()
+    .WithModel("llama-4-scout-17b-16e-instruct")
+    .WithWellKnownProvider(WellKnownProviders.Cerebras)
+    .RequireTags("ultra-fast", "high-performance")
+    .Build();
+```
 
-Console.WriteLine($"Last 30 days: ${totalCost:F2} total, ${avgCostPerRequest:F4} average per request");
+### Provider Connection with Custom Headers and Timeout
 
-// Group by provider to see cost distribution
-var costByProvider = costHistory
-    .GroupBy(c => c.Provider)
-    .Select(g => new { Provider = g.Key, TotalCost = g.Sum(c => c.TotalActualCost) })
-    .OrderByDescending(x => x.TotalCost);
-
-foreach (var item in costByProvider)
-{
-    Console.WriteLine($"{item.Provider}: ${item.TotalCost:F2}");
-}
+```csharp
+// Custom provider with specific headers and timeout
+var customProviderConfig = new LMConfigBuilder()
+    .WithModel("custom-model")
+    .WithProviderConnection(new ProviderConnectionConfig
+    {
+        EndpointUrl = "https://api.mycompany.com/llm/v1",
+        ApiKeyEnvironmentVariable = "COMPANY_LLM_API_KEY",
+        Compatibility = ProviderCompatibility.OpenAI,
+        ProviderName = "Company Internal LLM",
+        Headers = new Dictionary<string, string>
+        {
+            ["X-Company-App"] = "LMConfig Integration",
+            ["X-Version"] = "1.0.0"
+        },
+        Timeout = TimeSpan.FromSeconds(30),
+        MaxRetries = 5
+    })
+    .Build();
 ```
 
 ## Enhanced Usage Examples with Model Capabilities
