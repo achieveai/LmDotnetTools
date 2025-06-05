@@ -28,6 +28,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
     <ProjectReference Include="..\TestUtils\AchieveAi.LmDotnetTools.TestUtils.csproj" />
   </ItemGroup>
 
