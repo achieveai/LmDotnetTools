@@ -1,5 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Http;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils;
+using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
