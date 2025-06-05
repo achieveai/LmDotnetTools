@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;

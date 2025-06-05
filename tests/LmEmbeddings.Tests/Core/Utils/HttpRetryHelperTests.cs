@@ -1,4 +1,4 @@
-using AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils;
+using AchieveAi.LmDotnetTools.LmCore.Http;
 using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;

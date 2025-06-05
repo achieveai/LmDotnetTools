@@ -1,7 +1,6 @@
-using AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils;
 using Microsoft.Extensions.Logging;
 
-namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
+namespace AchieveAi.LmDotnetTools.LmCore.Http;
 
 /// <summary>
 /// Base class for HTTP-based services providing common infrastructure

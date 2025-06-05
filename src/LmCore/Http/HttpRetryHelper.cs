@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using System.Net;
 
-namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils;
+namespace AchieveAi.LmDotnetTools.LmCore.Http;
 
 /// <summary>
 /// Utility class for HTTP retry logic with exponential backoff
