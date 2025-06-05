@@ -1,9 +1,10 @@
 using System.Runtime.CompilerServices;
 
-namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils;
+namespace AchieveAi.LmDotnetTools.LmCore.Validation;
 
 /// <summary>
-/// Provides standardized validation methods for consistent error handling across the LmEmbeddings library
+/// Provides standardized validation methods for consistent error handling across all LmDotnetTools libraries
+/// Extracted from LmEmbeddings and enhanced for OpenAI, Anthropic, and other provider implementations
 /// </summary>
 public static class ValidationHelper
 {
@@ -196,39 +197,52 @@ public static class ValidationHelper
     }
 
     /// <summary>
-    /// Validates an embedding request for common requirements
+    /// Validates API key format and throws ArgumentException if invalid.
+    /// Added for provider-specific validation needs.
     /// </summary>
-    /// <param name="request">The embedding request to validate</param>
-    /// <exception cref="ArgumentNullException">Thrown when request is null</exception>
-    /// <exception cref="ArgumentException">Thrown when request properties are invalid</exception>
-    public static void ValidateEmbeddingRequest(Models.EmbeddingRequest? request)
+    /// <param name="apiKey">The API key to validate</param>
+    /// <param name="parameterName">The parameter name for exception</param>
+    public static void ValidateApiKey(string? apiKey, [CallerArgumentExpression(nameof(apiKey))] string? parameterName = null)
     {
-        ValidateNotNull(request);
-        ValidateNotNullOrWhiteSpace(request!.Model);
-        ValidateStringCollectionElements(request.Inputs);
-
-        if (request.Dimensions.HasValue)
+        ValidateNotNullOrWhiteSpace(apiKey, parameterName);
+        
+        if (apiKey!.Length < 10)
         {
-            ValidatePositive(request.Dimensions.Value);
+            throw new ArgumentException("API key appears to be too short", parameterName);
         }
     }
 
     /// <summary>
-    /// Validates a rerank request for common requirements
+    /// Validates base URL format for provider requests.
+    /// Added for provider-specific validation needs.
     /// </summary>
-    /// <param name="request">The rerank request to validate</param>
-    /// <exception cref="ArgumentNullException">Thrown when request is null</exception>
-    /// <exception cref="ArgumentException">Thrown when request properties are invalid</exception>
-    public static void ValidateRerankRequest(Models.RerankRequest? request)
+    /// <param name="baseUrl">The base URL to validate</param>
+    /// <param name="parameterName">The parameter name for exception</param>
+    public static void ValidateBaseUrl(string? baseUrl, [CallerArgumentExpression(nameof(baseUrl))] string? parameterName = null)
     {
-        ValidateNotNull(request);
-        ValidateNotNullOrWhiteSpace(request!.Query);
-        ValidateNotNullOrWhiteSpace(request.Model);
-        ValidateStringCollectionElements(request.Documents);
-
-        if (request.TopN.HasValue)
+        ValidateNotNullOrWhiteSpace(baseUrl, parameterName);
+        
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) || 
+            (uri.Scheme != "http" && uri.Scheme != "https"))
         {
-            ValidatePositive(request.TopN.Value);
+            throw new ArgumentException("Base URL must be a valid HTTP or HTTPS URL", parameterName);
+        }
+    }
+
+    /// <summary>
+    /// Validates chat messages array for provider requests.
+    /// Added for provider-specific validation needs.
+    /// </summary>
+    /// <param name="messages">The messages to validate</param>
+    /// <param name="parameterName">The parameter name for exception</param>
+    public static void ValidateMessages<T>(IEnumerable<T>? messages, [CallerArgumentExpression(nameof(messages))] string? parameterName = null)
+        where T : class
+    {
+        ValidateNotNullOrEmpty(messages, parameterName);
+        
+        if (!messages!.Any())
+        {
+            throw new ArgumentException("At least one message is required", parameterName);
         }
     }
 
@@ -245,4 +259,114 @@ public static class ValidationHelper
         var allowedList = string.Join(", ", allowedValues);
         return new ArgumentException($"Invalid {parameterName} for {apiType} API: '{parameterValue}'. Valid values: {allowedList}", parameterName);
     }
-} 
+
+    /// <summary>
+    /// Validates an embedding request object using reflection for common requirements.
+    /// This method works with any object that has Model, Inputs, and optionally Dimensions properties.
+    /// </summary>
+    /// <param name="request">The embedding request to validate</param>
+    /// <exception cref="ArgumentNullException">Thrown when request is null</exception>
+    /// <exception cref="ArgumentException">Thrown when request properties are invalid</exception>
+    public static void ValidateEmbeddingRequest(object? request)
+    {
+        ValidateNotNull(request);
+
+        var requestType = request!.GetType();
+        
+        // Validate Model property
+        var modelProperty = requestType.GetProperty("Model");
+        if (modelProperty != null)
+        {
+            var modelValue = modelProperty.GetValue(request) as string;
+            ValidateNotNullOrWhiteSpace(modelValue, "Model");
+        }
+
+        // Validate Inputs property
+        var inputsProperty = requestType.GetProperty("Inputs");
+        if (inputsProperty != null)
+        {
+            var inputsValue = inputsProperty.GetValue(request) as IEnumerable<string>;
+            ValidateStringCollectionElements(inputsValue, "Inputs");
+        }
+
+        // Validate Dimensions property if present and has value
+        var dimensionsProperty = requestType.GetProperty("Dimensions");
+        if (dimensionsProperty != null)
+        {
+            var dimensionsValue = dimensionsProperty.GetValue(request);
+            if (dimensionsValue is int dimensions)
+            {
+                ValidatePositive(dimensions, "Dimensions");
+            }
+            else if (dimensionsValue != null && dimensionsValue.GetType().IsGenericType &&
+                     dimensionsValue.GetType().GetGenericTypeDefinition() == typeof(Nullable<>) &&
+                     dimensionsValue.GetType().GetGenericArguments()[0] == typeof(int))
+            {
+                var nullableInt = (int?)dimensionsValue;
+                if (nullableInt.HasValue)
+                {
+                    ValidatePositive(nullableInt.Value, "Dimensions");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validates a rerank request object using reflection for common requirements.
+    /// This method works with any object that has Query, Model, Documents, and optionally TopN properties.
+    /// </summary>
+    /// <param name="request">The rerank request to validate</param>
+    /// <exception cref="ArgumentNullException">Thrown when request is null</exception>
+    /// <exception cref="ArgumentException">Thrown when request properties are invalid</exception>
+    public static void ValidateRerankRequest(object? request)
+    {
+        ValidateNotNull(request);
+
+        var requestType = request!.GetType();
+        
+        // Validate Query property
+        var queryProperty = requestType.GetProperty("Query");
+        if (queryProperty != null)
+        {
+            var queryValue = queryProperty.GetValue(request) as string;
+            ValidateNotNullOrWhiteSpace(queryValue, "Query");
+        }
+
+        // Validate Model property
+        var modelProperty = requestType.GetProperty("Model");
+        if (modelProperty != null)
+        {
+            var modelValue = modelProperty.GetValue(request) as string;
+            ValidateNotNullOrWhiteSpace(modelValue, "Model");
+        }
+
+        // Validate Documents property
+        var documentsProperty = requestType.GetProperty("Documents");
+        if (documentsProperty != null)
+        {
+            var documentsValue = documentsProperty.GetValue(request) as IEnumerable<string>;
+            ValidateStringCollectionElements(documentsValue, "Documents");
+        }
+
+        // Validate TopN property if present and has value
+        var topNProperty = requestType.GetProperty("TopN");
+        if (topNProperty != null)
+        {
+            var topNValue = topNProperty.GetValue(request);
+            if (topNValue is int topN)
+            {
+                ValidatePositive(topN, "TopN");
+            }
+            else if (topNValue != null && topNValue.GetType().IsGenericType &&
+                     topNValue.GetType().GetGenericTypeDefinition() == typeof(Nullable<>) &&
+                     topNValue.GetType().GetGenericArguments()[0] == typeof(int))
+            {
+                var nullableInt = (int?)topNValue;
+                if (nullableInt.HasValue)
+                {
+                    ValidatePositive(nullableInt.Value, "TopN");
+                }
+            }
+        }
+    }
+}
