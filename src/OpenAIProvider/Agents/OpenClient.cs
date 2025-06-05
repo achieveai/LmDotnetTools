@@ -136,22 +136,26 @@ public class OpenClient : BaseHttpService, IOpenClient
     {
         try
         {
-            var response = await ExecuteWithRetryAsync(async () =>
-            {
-                var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions");
-                var jsonContent = JsonSerializer.Serialize(chatCompletionRequest, S_jsonSerializerOptions);
-                request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-                return await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            }, cancellationToken: cancellationToken);
-
-            response.EnsureSuccessStatusCode();
-            var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var streamResponse = await ExecuteHttpWithRetryAsync(
+                async () =>
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions");
+                    var jsonContent = JsonSerializer.Serialize(chatCompletionRequest, S_jsonSerializerOptions);
+                    request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+                    return await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                },
+                async (httpResponse) =>
+                {
+                    var stream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken);
+                    return (httpResponse, stream);
+                },
+                cancellationToken: cancellationToken);
             
             // Track successful setup
             var successMetrics = metrics.Complete(statusCode: 200);
             _performanceTracker.TrackRequest(successMetrics);
             
-            return ProcessStreamingResponseAsync(stream, response, cancellationToken);
+            return ProcessStreamingResponseAsync(streamResponse.stream, streamResponse.httpResponse, cancellationToken);
         }
         catch (Exception ex)
         {

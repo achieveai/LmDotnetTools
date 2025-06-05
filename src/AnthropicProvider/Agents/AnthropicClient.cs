@@ -3,6 +3,11 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Net.ServerSentEvents;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmCore.Validation;
+using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
@@ -10,26 +15,55 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 /// <summary>
 /// Client for interacting with the Anthropic API.
 /// </summary>
-public class AnthropicClient : IAnthropicClient
+public class AnthropicClient : BaseHttpService, IAnthropicClient
 {
-    private readonly HttpClient _httpClient;
     private const string BaseUrl = "https://api.anthropic.com/v1";
+    private const string ProviderName = "Anthropic";
     private readonly JsonSerializerOptions _jsonOptions;
-    private bool _disposed = false;
+    private readonly IPerformanceTracker _performanceTracker;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AnthropicClient"/> class.
     /// </summary>
     /// <param name="apiKey">The API key to use for authentication.</param>
     /// <param name="httpClient">Optional custom HTTP client to use.</param>
-    public AnthropicClient(string apiKey, HttpClient? httpClient = null)
+    /// <param name="performanceTracker">Optional performance tracker for monitoring requests.</param>
+    /// <param name="logger">Optional logger for diagnostic information.</param>
+    public AnthropicClient(string apiKey, HttpClient? httpClient = null, IPerformanceTracker? performanceTracker = null, ILogger? logger = null)
+        : base(logger ?? NullLogger.Instance, httpClient ?? CreateHttpClient(apiKey))
     {
-        _httpClient = httpClient ?? new HttpClient();
-        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        _httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
-        _httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
+        ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
+        
+        _performanceTracker = performanceTracker ?? new PerformanceTracker();
+        _jsonOptions = CreateJsonSerializerOptions();
+    }
 
-        _jsonOptions = new JsonSerializerOptions
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AnthropicClient"/> class with a pre-configured HTTP client.
+    /// </summary>
+    /// <param name="httpClient">Pre-configured HTTP client with authentication headers.</param>
+    /// <param name="performanceTracker">Optional performance tracker for monitoring requests.</param>
+    /// <param name="logger">Optional logger for diagnostic information.</param>
+    public AnthropicClient(HttpClient httpClient, IPerformanceTracker? performanceTracker = null, ILogger? logger = null)
+        : base(logger ?? NullLogger.Instance, httpClient)
+    {
+        _performanceTracker = performanceTracker ?? new PerformanceTracker();
+        _jsonOptions = CreateJsonSerializerOptions();
+    }
+
+    private static HttpClient CreateHttpClient(string apiKey)
+    {
+        var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
+        httpClient.Timeout = TimeSpan.FromMinutes(5);
+        return httpClient;
+    }
+
+    private static JsonSerializerOptions CreateJsonSerializerOptions()
+    {
+        return new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
@@ -38,64 +72,144 @@ public class AnthropicClient : IAnthropicClient
 
     /// <inheritdoc/>
     public async Task<AnthropicResponse> CreateChatCompletionsAsync(
-      AnthropicRequest request,
-      CancellationToken cancellationToken = default)
+        AnthropicRequest request,
+        CancellationToken cancellationToken = default)
     {
-        var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
-        var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-
-        var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
+        var metrics = RequestMetrics.StartNew(ProviderName, request.Model, "ChatCompletion");
+        
+        try
         {
-            Content = content
-        };
+            ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
+            
+            var response = await ExecuteHttpWithRetryAsync(
+                async () =>
+                {
+                    var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
+                    var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
-        var response = await _httpClient.SendAsync(requestMessage, cancellationToken);
-        response.EnsureSuccessStatusCode();
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
+                    {
+                        Content = content
+                    };
 
-        var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
-        return JsonSerializer.Deserialize<AnthropicResponse>(responseContent, _jsonOptions)
-          ?? throw new InvalidOperationException("Failed to deserialize Anthropic API response");
+                    Logger.LogDebug("Sending Anthropic chat completion request for model {Model}", request.Model);
+                    return await HttpClient.SendAsync(requestMessage, cancellationToken);
+                },
+                async (httpResponse) =>
+                {
+                    httpResponse.EnsureSuccessStatusCode();
+                    var responseContent = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+                    var anthropicResponse = JsonSerializer.Deserialize<AnthropicResponse>(responseContent, _jsonOptions)
+                        ?? throw new InvalidOperationException("Failed to deserialize Anthropic API response");
+                    
+                    Logger.LogDebug("Received Anthropic response with {ContentCount} content blocks", 
+                        anthropicResponse.Content?.Count ?? 0);
+                    
+                    return anthropicResponse;
+                },
+                cancellationToken: cancellationToken);
+
+            // Track successful request metrics
+            var completedMetrics = metrics.Complete(
+                statusCode: 200,
+                usage: response.Usage != null ? new AchieveAi.LmDotnetTools.LmCore.Core.Usage
+                {
+                    PromptTokens = response.Usage.InputTokens,
+                    CompletionTokens = response.Usage.OutputTokens,
+                    TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
+                } : null);
+            
+            _performanceTracker.TrackRequest(completedMetrics);
+            
+            return response;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error in Anthropic chat completion request for model {Model}", request.Model);
+            
+            // Track failed request metrics
+            var completedMetrics = metrics.Complete(
+                statusCode: 0,
+                errorMessage: ex.Message,
+                exceptionType: ex.GetType().Name);
+            
+            _performanceTracker.TrackRequest(completedMetrics);
+            throw;
+        }
     }
 
     /// <inheritdoc/>
     public async Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
-      AnthropicRequest request,
-      CancellationToken cancellationToken = default)
+        AnthropicRequest request,
+        CancellationToken cancellationToken = default)
     {
-        // Set the streaming flag
-        request = request with { Stream = true };
-
-        var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
-        var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-
-        var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
-        {
-            Content = content
-        };
-
-        var response = await _httpClient.SendAsync(
-          requestMessage,
-          HttpCompletionOption.ResponseHeadersRead,
-          cancellationToken);
-
+        var metrics = RequestMetrics.StartNew(ProviderName, request.Model, "StreamingChatCompletion");
+        
         try
         {
-            response.EnsureSuccessStatusCode();
+            ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
+            
+            // Set the streaming flag
+            request = request with { Stream = true };
+
+            var streamResponse = await ExecuteHttpWithRetryAsync(
+                async () =>
+                {
+                    var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
+                    var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
+                    {
+                        Content = content
+                    };
+
+                    Logger.LogDebug("Sending Anthropic streaming chat completion request for model {Model}", request.Model);
+                    return await HttpClient.SendAsync(
+                        requestMessage,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        cancellationToken);
+                },
+                async (httpResponse) =>
+                {
+                    return httpResponse.Content;
+                },
+                cancellationToken: cancellationToken);
+            
+            // Track successful setup
+            var successMetrics = metrics.Complete(statusCode: 200);
+            _performanceTracker.TrackRequest(successMetrics);
+            
+            Logger.LogDebug("Successfully established streaming connection for model {Model}", request.Model);
+            
+            return StreamData(streamResponse, cancellationToken);
         }
         catch (Exception ex)
         {
-            var error = await response.Content.ReadAsStringAsync();
-            throw new InvalidProgramException(
-                $"Error processing request:\n{requestJson}\nResponse:\n{error}",
-                ex);
+            Logger.LogError(ex, "Error in Anthropic streaming chat completion request for model {Model}", request.Model);
+            
+            // Track failed streaming request metrics
+            var completedMetrics = metrics.Complete(
+                statusCode: 0,
+                errorMessage: ex.Message,
+                exceptionType: ex.GetType().Name);
+            
+            _performanceTracker.TrackRequest(completedMetrics);
+            
+            var error = ex.Data.Contains("ResponseContent") ? ex.Data["ResponseContent"]?.ToString() : null;
+            if (!string.IsNullOrEmpty(error))
+            {
+                throw new InvalidOperationException(
+                    $"Error processing Anthropic streaming request for model {request.Model}. Response: {error}",
+                    ex);
+            }
+            
+            throw;
         }
-
-        return StreamData(response.Content, cancellationToken);
     }
 
     private async IAsyncEnumerable<AnthropicStreamEvent> StreamData(
-      HttpContent content,
-      [EnumeratorCancellation] CancellationToken cancellationToken)
+        HttpContent content,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var stream = await content.ReadAsStreamAsync(cancellationToken);
 
@@ -136,7 +250,7 @@ public class AnthropicClient : IAnthropicClient
             catch (JsonException ex)
             {
                 // Log exception and continue
-                Console.Error.WriteLine($"Error parsing SSE data: {ex.Message}");
+                Logger.LogWarning(ex, "Error parsing SSE data: {Data}", sseItem.Data);
                 continue;
             }
 
@@ -145,32 +259,6 @@ public class AnthropicClient : IAnthropicClient
             {
                 yield return eventData;
             }
-        }
-    }
-
-    /// <summary>
-    /// Disposes the HTTP client.
-    /// </summary>
-    public void Dispose()
-    {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-
-    /// <summary>
-    /// Disposes the HTTP client.
-    /// </summary>
-    /// <param name="disposing">Whether to dispose managed resources.</param>
-    protected virtual void Dispose(bool disposing)
-    {
-        if (!_disposed)
-        {
-            if (disposing)
-            {
-                _httpClient.Dispose();
-            }
-
-            _disposed = true;
         }
     }
 }
