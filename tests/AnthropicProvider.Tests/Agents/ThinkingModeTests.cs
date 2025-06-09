@@ -56,7 +56,7 @@ public class ThinkingModeTests
     {
         Console.WriteLine("Starting ThinkingMode_ShouldBeIncludedInRequest test");
         
-        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
             .RespondWithAnthropicMessage("This is a mock response for testing.", 
                 "claude-3-7-sonnet-20250219", 10, 20)
@@ -109,7 +109,7 @@ public class ThinkingModeTests
     {
         TestLogger.Log("Starting ThinkingWithExecutePythonTool_ShouldBeIncludedInRequest test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
             .RespondWithAnthropicMessage("This is a mock response for testing.", 
                 "claude-3-7-sonnet-20250219", 10, 20)

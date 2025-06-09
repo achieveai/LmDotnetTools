@@ -27,7 +27,7 @@ public class DataDrivenFunctionToolTests
         var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.OpenAI);
         Debug.WriteLine($"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions");
 
-        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "TestData", "OpenAI", $"{testName}.json");
@@ -151,7 +151,7 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages, options);
 
-        // 2. Create client with record/playback functionality (replaces DatabasedClientWrapper)
+        // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "TestData", "OpenAI", $"{testName}.json");
@@ -239,7 +239,7 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages, options);
 
-        // 2. Create client with record/playback functionality (replaces DatabasedClientWrapper)
+        // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "TestData", "OpenAI", $"{testName}.json");
