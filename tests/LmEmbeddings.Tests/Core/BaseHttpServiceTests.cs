@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
@@ -158,6 +159,7 @@ public class BaseHttpServiceTests
     }
 
     [Fact]
+    [Trait("Category", "Resiliency")]
     public async Task ExecuteWithRetryAsync_WithRetryableFailure_RetriesAndSucceeds()
     {
         Debug.WriteLine("Testing ExecuteWithRetryAsync with retryable failure then success");
@@ -214,6 +216,7 @@ public class BaseHttpServiceTests
     }
 
     [Fact]
+    [Trait("Category", "Resiliency")]
     public async Task ExecuteHttpWithRetryAsync_WithRetryableHttpFailure_RetriesAndSucceeds()
     {
         Debug.WriteLine("Testing ExecuteHttpWithRetryAsync with retryable HTTP failure then success");

@@ -5,11 +5,12 @@ using System.Collections.Immutable;
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
+
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using Xunit;
 
 public class ThinkingModeTests
@@ -54,8 +55,17 @@ public class ThinkingModeTests
     public async Task ThinkingMode_ShouldBeIncludedInRequest()
     {
         Console.WriteLine("Starting ThinkingMode_ShouldBeIncludedInRequest test");
-        // Arrange
-        var captureClient = new CaptureAnthropicClient();
+        
+        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+                "claude-3-7-sonnet-20250219", 10, 20)
+            .CaptureRequests(out var requestCapture)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        
         var thinking = new AnthropicThinking(2048);
         Console.WriteLine($"Created thinking with budget: {thinking.BudgetTokens}");
 
@@ -78,15 +88,20 @@ public class ThinkingModeTests
         Console.WriteLine($"Created request with thinking: {request.Thinking?.BudgetTokens}");
 
         // Act - async call with proper await
-        await captureClient.CreateChatCompletionsAsync(request);
-        Console.WriteLine($"After API call - CapturedThinking: {captureClient.CapturedThinking?.BudgetTokens ?? -1}");
+        await anthropicClient.CreateChatCompletionsAsync(request);
+        Console.WriteLine($"After API call - Captured thinking from request");
 
-        // Assert using the direct captured properties
-        Assert.NotNull(captureClient.CapturedThinking);
-        Assert.Equal(2048, captureClient.CapturedThinking.BudgetTokens);
+        // Assert using the RequestCapture API
+        Assert.Equal(1, requestCapture.RequestCount);
+        
+        var capturedRequest = requestCapture.GetAnthropicRequest();
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Thinking);
+        Assert.Equal(2048, capturedRequest.Thinking.BudgetTokens);
+        Console.WriteLine($"Verified thinking budget: {capturedRequest.Thinking.BudgetTokens}");
 
         // Also verify that the request was captured correctly
-        Assert.NotNull(captureClient.CapturedRequest);
+        Assert.Equal("claude-3-7-sonnet-20250219", capturedRequest.Model);
     }
 
     [Fact]
@@ -94,9 +109,16 @@ public class ThinkingModeTests
     {
         TestLogger.Log("Starting ThinkingWithExecutePythonTool_ShouldBeIncludedInRequest test");
 
-        // Arrange
-        var captureClient = new CaptureAnthropicClient();
-        var agent = new AnthropicAgent("TestAgent", captureClient);
+        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+                "claude-3-7-sonnet-20250219", 10, 20)
+            .CaptureRequests(out var requestCapture)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
         var messages = new[]
@@ -141,20 +163,26 @@ public class ThinkingModeTests
         var response = await agent.GenerateReplyAsync(messages, options);
         TestLogger.Log("After GenerateReplyAsync call");
 
-        // Assert
-        Assert.NotNull(captureClient.CapturedRequest);
-        Assert.NotNull(captureClient.CapturedRequest.Thinking);
-        Assert.Equal("enabled", captureClient.CapturedRequest.Thinking!.Type);
-        Assert.Equal(1024, captureClient.CapturedRequest.Thinking!.BudgetTokens);
+        // Assert using RequestCapture API
+        Assert.Equal(1, requestCapture.RequestCount);
+        
+        var capturedRequest = requestCapture.GetAnthropicRequest();
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Thinking);
+        Assert.Equal(1024, capturedRequest.Thinking.BudgetTokens);
 
         // Check system prompt handling
-        Assert.NotNull(captureClient.CapturedRequest.System);
+        Assert.NotNull(capturedRequest.System);
         Assert.Equal("You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool.",
-          captureClient.CapturedRequest.System);
+          capturedRequest.System);
 
-        // Check tool configuration
-        Assert.NotNull(captureClient.CapturedRequest.Tools);
-        Assert.Single(captureClient.CapturedRequest.Tools!);
-        Assert.Equal("python_mcp-execute_python_in_container", captureClient.CapturedRequest.Tools![0].Name);
+        // Check tool configuration using structured data
+        var tools = capturedRequest.Tools.ToList();
+        Assert.Single(tools);
+        Assert.Equal("python_mcp-execute_python_in_container", tools[0].Name);
+        Assert.NotNull(tools[0].Description);
+        Assert.NotNull(tools[0].InputSchema);
+        
+        TestLogger.Log($"Thinking budget verified: {capturedRequest.Thinking.BudgetTokens}");
     }
 }

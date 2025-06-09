@@ -1,37 +1,51 @@
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
+using AchieveAi.LmDotnetTools.LmTestUtils;
+using dotenv.net;
+using Xunit;
+using Microsoft.VisualStudio.TestPlatform.CoreUtilities.Helpers;
 
 namespace AchieveAi.LmDotnetTools.TestUtils.Tests;
 
 public class DatabasedClientWrapperTests
 {
     [Fact]
-    public async Task DatabasedClientWrapper_ShouldHandleNewTestData()
+    public async Task MockHttpHandlerBuilder_RecordPlayback_ShouldHandleNewTestData()
     {
         // Arrange
         string testDataPath = Path.Combine(Path.GetTempPath(), $"test_data_{Guid.NewGuid()}.json");
 
-        // Create a mock OpenClient
-        var mockClient = new MockOpenClient();
+        // Create MockHttpHandlerBuilder with record/playback and OpenAI response
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataPath, allowAdditional: true)
+            .ForwardToApi(
+                LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL"),
+                LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY"))
+            .Build();
 
-        // Create the wrapper
-        var wrapper = new DatabasedClientWrapper(mockClient, testDataPath);
+        // Create HttpClient with our mock handler
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
 
         // Create a simple request
         var messages = new IMessage[]
         {
-      new TextMessage
-      {
-        Role = Role.User,
-        Text = "test message"
-      }
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "test message"
+            }
         };
 
         var options = new GenerateReplyOptions
         {
-            ModelId = "test-model",
+            ModelId = "meta-llama/llama-4-maverick:free",
             Temperature = 0.7f,
             MaxToken = 100
         };
@@ -39,11 +53,22 @@ public class DatabasedClientWrapperTests
         var request = ChatCompletionRequest.FromMessages(messages, options);
 
         // Act
-        var response = await wrapper.CreateChatCompletionsAsync(request);
+        var response = await client.CreateChatCompletionsAsync(request);
 
         // Assert
         Assert.NotNull(response);
-        Assert.Equal("test-response-id", response.Id);
+        Assert.Equal("meta-llama/llama-4-maverick:free", response.Model);
+        Assert.NotNull(response.Choices);
+        Assert.NotEmpty(response.Choices);
+        var requestedContent = response.Choices[0].Message!.Content?.Get<string>();
+        var realResponse = response;
+
+        response = await client.CreateChatCompletionsAsync(request);
+        Assert.NotNull(response);
+        Assert.Equal("meta-llama/llama-4-maverick:free", response.Model);
+        Assert.NotNull(response.Choices);
+        Assert.NotEmpty(response.Choices);
+        Assert.Equal(requestedContent, response.Choices[0].Message!.Content?.Get<string>());
 
         // Clean up
         if (File.Exists(testDataPath))
@@ -52,43 +77,23 @@ public class DatabasedClientWrapperTests
         }
     }
 
-    // Simple mock client for testing
-    private class MockOpenClient : IOpenClient
+    /// <summary>
+    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiKeyFromEnv()
     {
-        public Task<ChatCompletionResponse> CreateChatCompletionsAsync(
-          ChatCompletionRequest chatCompletionRequest,
-          System.Threading.CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(new ChatCompletionResponse
-            {
-                Id = "test-response-id",
-                Model = "test-model",
-                Created = 12345,
-                Choices = new System.Collections.Generic.List<Choice>
-        {
-          new Choice
-          {
-            Index = 0,
-            Message = new ChatMessage
-            {
-              Role = ChatMessage.ToRoleEnum(Role.Assistant),
-              Content = ChatMessage.CreateContent("test response")
-            }
-          }
-        }
-            });
-        }
+        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", 
+            new[] { "LLM_API_KEY" }, 
+            "test-api-key");
+    }
 
-        public System.Collections.Generic.IAsyncEnumerable<ChatCompletionResponse> StreamingChatCompletionsAsync(
-          ChatCompletionRequest chatCompletionRequest,
-          System.Threading.CancellationToken cancellationToken = default)
-        {
-            throw new NotImplementedException("Streaming not implemented in mock");
-        }
-
-        public void Dispose()
-        {
-            // Nothing to dispose
-        }
+    /// <summary>
+    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiBaseUrlFromEnv()
+    {
+        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", 
+            new[] { "LLM_API_BASE_URL" }, 
+            "https://api.openai.com/v1");
     }
 }

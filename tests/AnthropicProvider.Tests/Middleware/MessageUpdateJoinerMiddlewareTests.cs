@@ -1,6 +1,12 @@
-using AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmTestUtils;
+using System.Collections.Immutable;
 using System.Reflection;
+using System.Text.Json;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
@@ -56,17 +62,23 @@ public class MessageUpdateJoinerMiddlewareTests
             throw new FileNotFoundException($"Expected output file not found: {expectedOutputPath}");
         }
 
-        // Create the mock client that reads from the file
-        var mockClient = new StreamingFileAnthropicClient(streamingResponsePath);
+        // Create the mock HTTP handler that reads from the file using MockHttpHandlerBuilder
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithStreamingFile(streamingResponsePath)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
 
         // Create the Anthropic agent
-        var agent = new AnthropicAgent("TestAgent", mockClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
         // Create the middleware
         var middleware = new MessageUpdateJoinerMiddleware();
 
-        // Set up middleware context with empty messages (we don't care about input for this test)
-        var context = new MiddlewareContext(Array.Empty<IMessage>(), new GenerateReplyOptions());
+        // Set up middleware context with a dummy message (required for validation, but content doesn't matter for this test)
+        var dummyMessage = new TextMessage { Text = "Test message", Role = Role.User };
+        var context = new MiddlewareContext(new[] { dummyMessage }, new GenerateReplyOptions());
 
         // Read the expected output from the JSON file and directly parse the JSON array
         var expectedJson = await File.ReadAllTextAsync(expectedOutputPath);

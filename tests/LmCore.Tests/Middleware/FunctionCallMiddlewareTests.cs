@@ -1,11 +1,26 @@
+using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmTestUtils;
+using static AchieveAi.LmDotnetTools.LmTestUtils.ChatCompletionTestData;
+using static AchieveAi.LmDotnetTools.LmTestUtils.FakeHttpMessageHandler;
+using AchieveAi.LmDotnetTools.McpSampleServer;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
 using AchieveAi.LmDotnetTools.McpMiddleware;
-using AchieveAi.LmDotnetTools.McpSampleServer;
-using AchieveAi.LmDotnetTools.TestUtils;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using dotenv.net;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -678,6 +693,9 @@ public class FunctionCallMiddlewareTests
     [Fact]
     public async Task FunctionCallMiddleware_ShouldReturnToolAggregateMessage_Streaming_WithJoin()
     {
+        EnvironmentHelper.LoadEnvIfNeeded();
+        System.Diagnostics.Debug.WriteLine("=== TEST START ===");
+        
         // Arrange
         var functionContracts = new[]
         {
@@ -705,6 +723,8 @@ public class FunctionCallMiddlewareTests
             }
         };
 
+        System.Diagnostics.Debug.WriteLine("Function contracts created");
+
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
             ["getWeather"] = async argsJson =>
@@ -714,7 +734,11 @@ public class FunctionCallMiddlewareTests
             }
         };
 
+        System.Diagnostics.Debug.WriteLine("Function map created");
+
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
+
+        System.Diagnostics.Debug.WriteLine("Middleware created");
 
         var messages = new List<IMessage>
         {
@@ -722,31 +746,68 @@ public class FunctionCallMiddlewareTests
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
         };
 
+        System.Diagnostics.Debug.WriteLine("Messages created");
+
         var options = new GenerateReplyOptions
         {
             ModelId = "gpt-4",
             Functions = functionContracts
         };
 
+        System.Diagnostics.Debug.WriteLine("Options created");
+
         var context = new MiddlewareContext(messages, options);
 
-        var client = OpenClientFactory.CreateDatabasedClient(
-            "FunctionToolCall_ShouldReturnToolMessage_streaming",
-            null,
-            false);
+        System.Diagnostics.Debug.WriteLine("Context created");
+
+        // Create HTTP client with streaming response that includes tool calls (replaces record/playback)
+        var toolCallStreamingResponse = CreateToolCallStreamingResponse();
+        var handler = CreateRetryHandler(
+            failureCount: 0, // No failures, just success
+            successResponse: toolCallStreamingResponse);
+
+        System.Diagnostics.Debug.WriteLine("Handler created");
+
+        var httpClient = new HttpClient(handler);
+        
+        System.Diagnostics.Debug.WriteLine("HttpClient created");
+
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+
+        System.Diagnostics.Debug.WriteLine("OpenClient created");
 
         var agent = new OpenClientAgent("TestAgent", client);
 
+        System.Diagnostics.Debug.WriteLine("Agent created");
+
+        System.Diagnostics.Debug.WriteLine("=== MIDDLEWARE TEST DEBUG ===");
+        System.Diagnostics.Debug.WriteLine($"Context messages count: {context.Messages.Count()}");
+        System.Diagnostics.Debug.WriteLine($"Last message type: {context.Messages.Last().GetType().Name}");
+        System.Diagnostics.Debug.WriteLine($"Agent type: {agent.GetType().Name}");
+
         // Act
+        System.Diagnostics.Debug.WriteLine("Calling middleware.InvokeStreamingAsync...");
         var responseStream = await middleware.InvokeStreamingAsync(context, agent);
+        System.Diagnostics.Debug.WriteLine("Got response stream, iterating...");
 
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
+            System.Diagnostics.Debug.WriteLine($"Response received: {response.GetType().Name}, Role: {response.Role}");
+            if (response is ToolsCallMessage toolsCall)
+            {
+                System.Diagnostics.Debug.WriteLine($"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}");
+            }
             responses.Add(response);
         }
 
         // Assert
+        System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
+        foreach (var response in responses)
+        {
+            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+        }
+        System.Diagnostics.Debug.WriteLine("=== END DEBUG ===");
         Assert.NotEmpty(responses);
 
         var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
@@ -761,6 +822,8 @@ public class FunctionCallMiddlewareTests
     [Fact]
     public async Task FunctionCallMiddleware_ShouldReturnMultipleToolAggregateMessages_Streaming()
     {
+        EnvironmentHelper.LoadEnvIfNeeded();
+
         // Arrange
         var functionContracts = new[]
         {
@@ -897,10 +960,46 @@ public class FunctionCallMiddlewareTests
 
         var context = new MiddlewareContext(messages, options);
 
-        var client = OpenClientFactory.CreateDatabasedClient(
-            "FunctionToolCall_MultipleToolCalls_streaming",
-            null,
-            false);
+        // Create HTTP client with mock response that includes multiple tool calls (replaces record/playback)
+        var jsonResponse = @"
+        {
+            ""id"": ""chatcmpl-test"",
+            ""object"": ""chat.completion"",
+            ""created"": 1234567890,
+            ""model"": ""meta-llama/llama-4-maverick"",
+            ""choices"": [{
+                ""index"": 0,
+                ""message"": {
+                    ""role"": ""assistant"",
+                    ""content"": """",
+                    ""tool_calls"": [{
+                        ""id"": ""call_test123"",
+                        ""type"": ""function"",
+                        ""function"": {
+                            ""name"": ""python-mcp.list_directory"",
+                            ""arguments"": ""{\""relative_path\"": \""\""}\""}""
+                        }
+                    }, {
+                        ""id"": ""call_test456"",
+                        ""type"": ""function"",
+                        ""function"": {
+                            ""name"": ""python-mcp.list_directory"",
+                            ""arguments"": ""{\""relative_path\"": \""code\""}""
+                        }
+                    }]
+                },
+                ""finish_reason"": ""tool_calls""
+            }],
+            ""usage"": {
+                ""prompt_tokens"": 150,
+                ""completion_tokens"": 50,
+                ""total_tokens"": 200
+            }
+        }";
+        var handler = CreateSimpleSseStreamHandler([ jsonResponse ]);
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
 
         var agent = new OpenClientAgent("TestAgent", client);
 
@@ -910,10 +1009,16 @@ public class FunctionCallMiddlewareTests
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
+            System.Diagnostics.Debug.WriteLine($"Response received: {response.GetType().Name}");
             responses.Add(response);
         }
 
         // Assert
+        System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
+        foreach (var response in responses)
+        {
+            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+        }
         Assert.NotEmpty(responses);
 
         var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
@@ -985,5 +1090,257 @@ public class FunctionCallMiddlewareTests
         // Verify the sum is correct
         Assert.Equal(expectedSum, resultValue);
         Assert.Equal(11111111101.11, resultValue, 5); // Compare with 5 decimal precision
+    }
+
+    [Fact]
+    public void DiagnosticTest_CheckBasicSetup()
+    {
+        try
+        {
+            System.Diagnostics.Debug.WriteLine("=== DIAGNOSTIC TEST START ===");
+            
+            // Test environment loading
+            EnvironmentHelper.LoadEnvIfNeeded();
+            var apiKey = GetApiKeyFromEnv();
+            var baseUrl = GetApiBaseUrlFromEnv();
+            System.Diagnostics.Debug.WriteLine($"API Key: {apiKey}");
+            System.Diagnostics.Debug.WriteLine($"Base URL: {baseUrl}");
+            
+            // Test MockHttpHandlerBuilder
+            var handler = MockHttpHandlerBuilder.Create()
+                .RespondWithJson("{\"test\": \"value\"}")
+                .Build();
+            System.Diagnostics.Debug.WriteLine("Handler created successfully");
+            
+            // Test HttpClient
+            var httpClient = new HttpClient(handler);
+            System.Diagnostics.Debug.WriteLine("HttpClient created successfully");
+            
+            // Test OpenClient
+            var client = new OpenClient(httpClient, baseUrl);
+            System.Diagnostics.Debug.WriteLine("OpenClient created successfully");
+            
+            // Test OpenClientAgent
+            var agent = new OpenClientAgent("TestAgent", client);
+            System.Diagnostics.Debug.WriteLine("OpenClientAgent created successfully");
+            
+            System.Diagnostics.Debug.WriteLine("=== DIAGNOSTIC TEST COMPLETE ===");
+            
+            Assert.True(true); // If we get here, basic setup works
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Exception in diagnostic test: {ex}");
+            throw;
+        }
+    }
+
+    [Fact]
+    public async Task DiagnosticTest_CheckAgentStreaming()
+    {
+        try
+        {
+            System.Diagnostics.Debug.WriteLine("=== AGENT STREAMING TEST START ===");
+            
+            // Use the exact same pattern as the working OpenAI streaming test
+            var streamingResponse = CreateStreamingResponse();
+            var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
+                failureCount: 0, // No failures, just success
+                successResponse: streamingResponse);
+
+            var httpClient = new HttpClient(fakeHandler);
+            var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+            var agent = new OpenClientAgent("TestAgent", client);
+
+            var messages = new List<IMessage>
+            {
+                new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
+                new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+            };
+
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "gpt-4",
+                Functions = new[]
+                {
+                    new FunctionContract
+                    {
+                        Name = "getWeather",
+                        Description = "Get current weather for a location",
+                        Parameters = new List<FunctionParameterContract>
+                        {
+                            new FunctionParameterContract
+                            {
+                                Name = "location",
+                                Description = "City name",
+                                ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                                IsRequired = true
+                            }
+                        }
+                    }
+                }
+            };
+
+            System.Diagnostics.Debug.WriteLine("Calling agent.GenerateReplyStreamingAsync...");
+            
+            // Test the agent directly
+            var streamingResponse2 = await agent.GenerateReplyStreamingAsync(messages, options);
+            
+            System.Diagnostics.Debug.WriteLine("Got streaming response, iterating...");
+            
+            var responses = new List<IMessage>();
+            await foreach (var response in streamingResponse2)
+            {
+                System.Diagnostics.Debug.WriteLine($"Agent response: {response.GetType().Name}, Role: {response.Role}");
+                responses.Add(response);
+            }
+
+            System.Diagnostics.Debug.WriteLine($"Total agent responses: {responses.Count}");
+            
+            Assert.True(responses.Count > 0, "Agent should return at least one response");
+            
+            System.Diagnostics.Debug.WriteLine("=== AGENT STREAMING TEST COMPLETE ===");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Exception in agent streaming test: {ex}");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiKeyFromEnv()
+    {
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", 
+            new[] { "LLM_API_KEY" }, 
+            "test-api-key");
+    }
+
+    /// <summary>
+    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiBaseUrlFromEnv()
+    {
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", 
+            new[] { "LLM_API_BASE_URL" }, 
+            "https://api.openai.com/v1");
+    }
+
+    /// <summary>
+    /// Creates a streaming response that contains tool calls for testing middleware
+    /// </summary>
+    private static string CreateToolCallStreamingResponse()
+    {
+        var chunks = new List<string>
+        {
+            // Start with role
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test123",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "gpt-4",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new {
+                            role = "assistant",
+                            content = string.Empty
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+            
+            // Tool call start
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test123",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "gpt-4",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new
+                        {
+                            tool_calls = new[]
+                            {
+                                new
+                                {
+                                    index = 0,
+                                    id = "call_test123",
+                                    type = "function",
+                                    function = new
+                                    {
+                                        name = "getWeather",
+                                        arguments = ""
+                                    }
+                                }
+                            }
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+            
+            // Tool call arguments
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test123",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "gpt-4",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new
+                        {
+                            tool_calls = new[]
+                            {
+                                new
+                                {
+                                    index = 0,
+                                    function = new
+                                    {
+                                        arguments = "{\"location\": \"San Francisco\"}"
+                                    }
+                                }
+                            }
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+            
+            // End with tool_calls finish reason
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test123",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "gpt-4",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new { },
+                        finish_reason = "tool_calls"
+                    }
+                }
+            })
+        };
+
+        var sseResponse = string.Join("\n\n", chunks.Select(chunk => $"data: {chunk}"));
+        return sseResponse + "\n\ndata: [DONE]\n\n";
     }
 }

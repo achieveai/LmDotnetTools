@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Models;
 using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
@@ -195,6 +196,7 @@ public class BaseEmbeddingServiceApiTypeTests
 
     [Theory]
     [MemberData(nameof(RetryLogicTestCases))]
+    [Trait("Category", "Resiliency")]
     public async Task GenerateEmbeddingsAsync_RetryLogic_RetriesOnFailure(
         EmbeddingRequest request,
         int failureCount,

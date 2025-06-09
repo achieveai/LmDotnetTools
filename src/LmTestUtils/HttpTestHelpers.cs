@@ -73,6 +73,64 @@ public static class HttpTestHelpers
     }
 
     /// <summary>
+    /// Creates an HttpClient with OpenAI-formatted response for testing
+    /// </summary>
+    /// <param name="content">The response content text</param>
+    /// <param name="model">The model name</param>
+    /// <param name="promptTokens">Number of prompt tokens</param>
+    /// <param name="completionTokens">Number of completion tokens</param>
+    /// <param name="baseAddress">Base address for the client</param>
+    /// <returns>HttpClient configured with OpenAI response</returns>
+    public static HttpClient CreateOpenAITestHttpClient(
+        string content = "Hello! How can I help you today?",
+        string model = "gpt-4",
+        int promptTokens = 10,
+        int completionTokens = 20,
+        string baseAddress = "https://api.openai.com/v1")
+    {
+        var handler = FakeHttpMessageHandler.CreateOpenAIResponseHandler(content, model, promptTokens, completionTokens);
+        return CreateTestHttpClient(handler, baseAddress);
+    }
+
+    /// <summary>
+    /// Creates an HttpClient with Anthropic-formatted response for testing
+    /// </summary>
+    /// <param name="content">The response content text</param>
+    /// <param name="model">The model name</param>
+    /// <param name="inputTokens">Number of input tokens</param>
+    /// <param name="outputTokens">Number of output tokens</param>
+    /// <param name="baseAddress">Base address for the client</param>
+    /// <returns>HttpClient configured with Anthropic response</returns>
+    public static HttpClient CreateAnthropicTestHttpClient(
+        string content = "Hello! How can I help you today?",
+        string model = "claude-3-sonnet-20240229",
+        int inputTokens = 10,
+        int outputTokens = 20,
+        string baseAddress = "https://api.anthropic.com/v1")
+    {
+        var handler = FakeHttpMessageHandler.CreateAnthropicResponseHandler(content, model, inputTokens, outputTokens);
+        return CreateTestHttpClient(handler, baseAddress);
+    }
+
+    /// <summary>
+    /// Creates an HttpClient with request capture capability for testing
+    /// </summary>
+    /// <param name="responseJson">JSON response to return</param>
+    /// <param name="capturedRequest">Out parameter to receive captured request</param>
+    /// <param name="statusCode">HTTP status code to return</param>
+    /// <param name="baseAddress">Base address for the client</param>
+    /// <returns>HttpClient configured with request capture</returns>
+    public static HttpClient CreateRequestCaptureHttpClient(
+        string responseJson,
+        out CapturedRequestContainer capturedRequest,
+        HttpStatusCode statusCode = HttpStatusCode.OK,
+        string baseAddress = "https://api.test.com")
+    {
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(responseJson, out capturedRequest, statusCode);
+        return CreateTestHttpClient(handler, baseAddress);
+    }
+
+    /// <summary>
     /// Creates HTTP content from a string with JSON content type
     /// </summary>
     /// <param name="content">String content</param>

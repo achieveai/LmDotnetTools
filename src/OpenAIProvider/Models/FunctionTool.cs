@@ -20,6 +20,14 @@ public sealed record FunctionTool
     public FunctionDefinition Function { get; init; }
 
     /// <summary>
+    /// Parameterless constructor for JSON deserialization
+    /// </summary>
+    public FunctionTool()
+    {
+        Function = new FunctionDefinition();
+    }
+
+    /// <summary>
     /// Creates a new function tool with the specified function definition
     /// </summary>
     /// <param name="definition">The function definition</param>

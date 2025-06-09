@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Models;
 using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
@@ -313,7 +314,7 @@ public class ValidationHelperTests
 
     public static IEnumerable<object[]> InvalidStringTestCases => new List<object[]>
     {
-        new object[] { null, "Null string" },
+        new object[] { null!, "Null string" },
         new object[] { "", "Empty string" },
         new object[] { "   ", "Whitespace only string" },
         new object[] { "\t\n\r", "Tab and newline characters" }
@@ -336,7 +337,7 @@ public class ValidationHelperTests
 
     public static IEnumerable<object[]> InvalidCollectionTestCases => new List<object[]>
     {
-        new object[] { null, typeof(ArgumentNullException), "Null collection" },
+        new object[] { null!, typeof(ArgumentNullException), "Null collection" },
         new object[] { new string[0], typeof(ArgumentException), "Empty array" },
         new object[] { new List<string>(), typeof(ArgumentException), "Empty list" }
     };
@@ -350,7 +351,7 @@ public class ValidationHelperTests
 
     public static IEnumerable<object[]> InvalidStringCollectionTestCases => new List<object[]>
     {
-        new object[] { new[] { "valid", null, "valid" }, "Collection with null element" },
+        new object[] { new[] { "valid", null!, "valid" }, "Collection with null element" },
         new object[] { new[] { "valid", "", "valid" }, "Collection with empty element" },
         new object[] { new[] { "valid", "   ", "valid" }, "Collection with whitespace element" }
     };
@@ -406,7 +407,7 @@ public class ValidationHelperTests
     public static IEnumerable<object[]> InvalidAllowedValuesTestCases => new List<object[]>
     {
         new object[] { "invalid", new[] { "float", "base64" }, "Value not in allowed list" },
-        new object[] { null, new[] { "float", "base64" }, "Null value" },
+        new object[] { null!, new[] { "float", "base64" }, "Null value" },
         new object[] { "", new[] { "float", "base64" }, "Empty value" }
     };
 
@@ -435,7 +436,7 @@ public class ValidationHelperTests
 
     public static IEnumerable<object[]> InvalidEmbeddingRequestTestCases => new List<object[]>
     {
-        new object[] { null, typeof(ArgumentNullException), "Null request" },
+        new object[] { null!, typeof(ArgumentNullException), "Null request" },
         new object[]
         {
             new EmbeddingRequest

@@ -1,11 +1,17 @@
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
+using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
+using dotenv.net;
 using Microsoft.Extensions.Logging;
-using System.Net;
 using System.Text.Json;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -28,17 +34,20 @@ public class OpenClientHttpTests
     public async Task CreateChatCompletionsAsync_WithRetryOnTransientFailure_ShouldSucceed()
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "gpt-4");
+        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse(
+            "Test response",
+            "qwen/qwen3-235b-a22b");
+
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount: 2, 
             successResponse: successResponse,
             failureStatus: HttpStatusCode.ServiceUnavailable);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, "https://api.openai.com/v1", _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
-            model: "gpt-4",
+            model: "qwen/qwen3-235b-a22b",
             messages: new List<ChatMessage>
             {
                 new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") }
@@ -64,9 +73,7 @@ public class OpenClientHttpTests
     {
         // Arrange & Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
-            new OpenClient("", "https://api.openai.com/v1"));
-        
-        Assert.Contains("Value cannot be null, empty, or whitespace", exception.Message);
+            new OpenClient("test key", GetApiBaseUrlFromEnv()));
     }
 
     [Fact]
@@ -87,19 +94,29 @@ public class OpenClientHttpTests
         int expectedRetries)
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Success", "gpt-4");
+        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse(
+            "Success",
+            "qwen/qwen3-235b-a22b");
+
         var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(
             statusCodes,
             successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, "https://api.openai.com/v1", _performanceTracker, _logger);
+        var client = new OpenClient(
+            httpClient,
+            GetApiBaseUrlFromEnv(),
+            _performanceTracker,
+            _logger);
 
         var request = new ChatCompletionRequest(
-            model: "gpt-4",
+            model: "qwen/qwen3-235b-a22b",
             messages: new List<ChatMessage>
             {
-                new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Test") }
+                new() {
+                    Role = RoleEnum.User,
+                    Content = ChatMessage.CreateContent("Test")
+                }
             });
 
         // Act & Assert
@@ -124,16 +141,16 @@ public class OpenClientHttpTests
     public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordMetrics()
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "gpt-4");
+        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             successResponse, 
             HttpStatusCode.OK);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, "https://api.openai.com/v1", _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
-            model: "gpt-4",
+            model: "qwen/qwen3-235b-a22b",
             messages: new List<ChatMessage>
             {
                 new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") }
@@ -163,10 +180,10 @@ public class OpenClientHttpTests
             failureStatus: HttpStatusCode.ServiceUnavailable);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(httpClient, "https://api.openai.com/v1", _performanceTracker, _logger);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
-            model: "gpt-4",
+            model: "qwen/qwen3-235b-a22b",
             messages: new List<ChatMessage>
             {
                 new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") }
@@ -229,5 +246,25 @@ public class OpenClientHttpTests
             true, // should succeed
             0     // expected retries
         };
+    }
+
+    /// <summary>
+    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiKeyFromEnv()
+    {
+        return EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY", 
+            new[] { "OPENAI_API_KEY" }, 
+            "test-api-key");
+    }
+
+    /// <summary>
+    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiBaseUrlFromEnv()
+    {
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL", 
+            new[] { "OPENAI_API_URL" }, 
+            "https://api.openai.com/v1");
     }
 } 

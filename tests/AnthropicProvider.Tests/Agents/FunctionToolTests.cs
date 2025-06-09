@@ -2,11 +2,12 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
+
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.TestUtils.MockTools;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using Xunit;
 
 public class FunctionToolTests
@@ -16,9 +17,16 @@ public class FunctionToolTests
     {
         TestLogger.Log("Starting RequestFormat_FunctionTools test");
 
-        // Arrange
-        var captureClient = new CaptureAnthropicClient();
-        var agent = new AnthropicAgent("TestAgent", captureClient);
+        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+                "claude-3-7-sonnet-20250219", 10, 20)
+            .CaptureRequests(out var requestCapture)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
         var messages = new[]
@@ -45,33 +53,27 @@ public class FunctionToolTests
         var response = await agent.GenerateReplyAsync(messages, options);
         TestLogger.Log("After GenerateReplyAsync call");
 
-        // Log captured data
-        TestLogger.Log($"CapturedRequest: {(captureClient.CapturedRequest != null ? "not null" : "null")}");
-        if (captureClient.CapturedRequest?.Tools != null)
-        {
-            TestLogger.Log($"Tools count: {captureClient.CapturedRequest.Tools.Count}");
-            foreach (var t in captureClient.CapturedRequest.Tools)
-            {
-                TestLogger.Log($"Tool - Name: {t.Name}, Description: {(t.Description ?? "null")}");
-            }
-        }
-        else
-        {
-            TestLogger.Log("No tools captured in request");
-        }
-
-        // Assert with safe null checks
-        Assert.NotNull(captureClient.CapturedRequest);
-
-        // Some implementations might not set the Tools property if there are no tools
-        Assert.NotNull(captureClient.CapturedRequest.Tools);
-        Assert.NotEmpty(captureClient.CapturedRequest.Tools);
-
-        // Check the first tool's properties with safe null checks
-        var tool = captureClient.CapturedRequest.Tools[0];
-        Assert.Equal("getWeather", tool.Name);
-        Assert.NotNull(tool.InputSchema);
-        Assert.NotNull(tool.Description);
+        // Assert using structured RequestCapture API
+        Assert.Equal(1, requestCapture.RequestCount);
+        
+        var capturedRequest = requestCapture.GetAnthropicRequest();
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("claude-3-7-sonnet-20250219", capturedRequest.Model);
+        
+        // Assert on tools using structured data instead of string inspection
+        var tools = capturedRequest.Tools.ToList();
+        Assert.NotEmpty(tools);
+        
+        var weatherTool = tools.First();
+        Assert.Equal("getWeather", weatherTool.Name);
+        Assert.NotNull(weatherTool.Description);
+        Assert.NotNull(weatherTool.InputSchema);
+        
+        // Verify the tool has the expected input properties
+        Assert.True(weatherTool.HasInputProperty("location"));
+        Assert.Equal("string", weatherTool.GetInputPropertyType("location"));
+        
+        TestLogger.Log($"Successfully validated tool: {weatherTool.Name} with {tools.Count} tools total");
     }
 
     [Fact]
@@ -79,9 +81,16 @@ public class FunctionToolTests
     {
         TestLogger.Log("Starting MultipleTools_ShouldBeCorrectlyConfigured test");
 
-        // Arrange
-        var captureClient = new CaptureAnthropicClient();
-        var agent = new AnthropicAgent("TestAgent", captureClient);
+        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+                "claude-3-7-sonnet-20250219", 10, 20)
+            .CaptureRequests(out var requestCapture)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
         TestLogger.Log("Created agent and capture client");
 
         var messages = new[]
@@ -147,20 +156,33 @@ public class FunctionToolTests
         var response = await agent.GenerateReplyAsync(messages, options);
         TestLogger.Log("After GenerateReplyAsync call");
 
-        // Assert
-        Assert.NotNull(captureClient.CapturedRequest);
-        Assert.NotNull(captureClient.CapturedRequest.Tools);
-        Assert.Equal(4, captureClient.CapturedRequest.Tools!.Count);
-
-        // Verify that all tools were properly configured
-        var toolNames = captureClient.CapturedRequest.Tools!
-          .Select(t => t.Name)
-          .ToList();
-
+        // Assert using structured RequestCapture API
+        Assert.Equal(1, requestCapture.RequestCount);
+        
+        var capturedRequest = requestCapture.GetAnthropicRequest();
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("claude-3-7-sonnet-20250219", capturedRequest.Model);
+        
+        // Assert on tools using structured data instead of string inspection
+        var tools = capturedRequest.Tools.ToList();
+        Assert.Equal(4, tools.Count);
+        
+        // Verify that all expected tools are present
+        var toolNames = tools.Select(t => t.Name).ToList();
         Assert.Contains("python_mcp-list_directory", toolNames);
         Assert.Contains("python_mcp-delete_file", toolNames);
         Assert.Contains("python_mcp-get_directory_tree", toolNames);
         Assert.Contains("python_mcp-cleanup_code_directory", toolNames);
+        
+        // Verify each tool has proper structure
+        foreach (var tool in tools)
+        {
+            Assert.NotNull(tool.Name);
+            Assert.NotNull(tool.Description);
+            Assert.NotNull(tool.InputSchema);
+        }
+        
+        TestLogger.Log($"Successfully validated all {tools.Count} tools with structured data");
     }
 
     [Fact]
@@ -168,10 +190,18 @@ public class FunctionToolTests
     {
         TestLogger.Log("Starting ToolUseResponse_ShouldBeCorrectlyParsed test");
 
-        // Arrange - create a special mock that returns a tool use response
-        var mockClient = new ToolResponseMockClient();
-        var agent = new AnthropicAgent("TestAgent", mockClient);
-        TestLogger.Log("Created agent and mock client for tool use response");
+        // Arrange - Using MockHttpHandlerBuilder with tool use response instead of ToolResponseMockClient
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithToolUse("python_mcp-list_directory", 
+                new { relative_path = "." },
+                "I'll help you list the files in the root directory. Let me do this for you by using the list_directory function.")
+            .CaptureRequests(out var requestCapture)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
+        TestLogger.Log("Created agent and mock handler for tool use response");
 
         var messages = new[]
         {
@@ -209,10 +239,17 @@ public class FunctionToolTests
         var textResponse = (TextMessage)response.First();
         Assert.Contains("I'll help you list the files", textResponse.Text);
 
-        // Check that the mock client received the right request
-        Assert.NotNull(mockClient.LastRequest);
-        Assert.NotNull(mockClient.LastRequest.Tools);
-        Assert.Single(mockClient.LastRequest.Tools!);
-        Assert.Equal("python_mcp-list_directory", mockClient.LastRequest.Tools![0].Name);
+        // Check that the request was captured correctly using RequestCapture API
+        Assert.Equal(1, requestCapture.RequestCount);
+        
+        var capturedRequest = requestCapture.GetAnthropicRequest();
+        Assert.NotNull(capturedRequest);
+        Assert.NotNull(capturedRequest.Tools);
+        
+        var tools = capturedRequest.Tools.ToList();
+        Assert.Single(tools);
+        Assert.Equal("python_mcp-list_directory", tools[0].Name);
+        
+        TestLogger.Log($"Successfully validated tool use response with tool: {tools[0].Name}");
     }
 }

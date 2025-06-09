@@ -1,9 +1,14 @@
 using System.Diagnostics;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
+using dotenv.net;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -22,10 +27,20 @@ public class DataDrivenFunctionToolTests
         var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.OpenAI);
         Debug.WriteLine($"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions");
 
-        // Use the DatabasedClientWrapper to record or replay the API interaction
-        using var client = OpenClientFactory.CreateDatabasedClient(Path.Combine("OpenAI", testName), EnvTestPath, false);
+        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "TestData", "OpenAI", $"{testName}.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
         var agent = new OpenClientAgent("TestAgent", client);
-        Debug.WriteLine("Created agent with client wrapper");
+        Debug.WriteLine("Created agent with MockHttpHandlerBuilder record/playback");
 
         // Act
         var response = await agent.GenerateReplyAsync(messages, options);
@@ -136,8 +151,18 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages, options);
 
-        // 2. Create a client to capture request/response
-        using var client = OpenClientFactory.CreateDatabasedClient(testName, EnvTestPath, true);
+        // 2. Create client with record/playback functionality (replaces DatabasedClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "TestData", "OpenAI", $"{testName}.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
         var agent = new OpenClientAgent("TestAgent", client);
 
         // 3. Generate response
@@ -214,8 +239,18 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages, options);
 
-        // 2. Create a client to capture request/response
-        using var client = OpenClientFactory.CreateDatabasedClient(testName, EnvTestPath, true);
+        // 2. Create client with record/playback functionality (replaces DatabasedClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "TestData", "OpenAI", $"{testName}.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
         var agent = new OpenClientAgent("TestAgent", client);
 
         // 3. Generate response
@@ -223,5 +258,25 @@ public class DataDrivenFunctionToolTests
 
         // 4. Save final response
         _testDataManager.SaveFinalResponse(testName, ProviderType.OpenAI, response);
+    }
+
+    /// <summary>
+    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiKeyFromEnv()
+    {
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", 
+            new[] { "LLM_API_KEY" }, 
+            "test-api-key");
+    }
+
+    /// <summary>
+    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiBaseUrlFromEnv()
+    {
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", 
+            new[] { "LLM_API_BASE_URL" }, 
+            "https://api.openai.com/v1");
     }
 }

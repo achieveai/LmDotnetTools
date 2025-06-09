@@ -10,6 +10,18 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
 public record ChatCompletionRequest
 {
+    /// <summary>
+    /// Parameterless constructor for JSON deserialization
+    /// </summary>
+    public ChatCompletionRequest()
+    {
+        Model = string.Empty;
+        Messages = new List<ChatMessage>();
+        Temperature = 0.7;
+        MaxTokens = 4096;
+        AdditionalParameters = ImmutableDictionary<string, object>.Empty;
+    }
+
     public ChatCompletionRequest(
         string model,
         IEnumerable<ChatMessage> messages,
@@ -89,7 +101,7 @@ public record ChatCompletionRequest
     public ImmutableDictionary<string, object> AdditionalParameters { get; init; } = ImmutableDictionary<string, object>.Empty;
 
     [JsonPropertyName("messages")]
-    public List<ChatMessage> Messages { get; private set; }
+    public List<ChatMessage> Messages { get; set; }
 
     public static ChatCompletionRequest FromMessages(
         IEnumerable<IMessage> messages,
