@@ -2,7 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-// Note: MockAnthropicClient.Tests.Mocks removed - using MockHttpHandlerBuilder instead
+// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.TestUtils;
 using Xunit;
@@ -42,7 +42,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
     [Fact]
     public async Task MockHttpHandlerBuilder_RecordPlayback_NonStreaming_WorksCorrectly()
     {
-        // Arrange - Using MockHttpHandlerBuilder with record/playback (replaces AnthropicClientWrapper)
+        // Arrange - Using MockHttpHandlerBuilder with record/playback functionality
         var testName = "RecordPlaybackNonStreaming";
         var testDataPath = Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
@@ -112,7 +112,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
     [Fact]
     public async Task MockHttpHandlerBuilder_RecordPlayback_Streaming_WorksCorrectly()
     {
-        // Arrange - Using MockHttpHandlerBuilder with streaming file response (replaces AnthropicClientWrapper)
+        // Arrange - Using MockHttpHandlerBuilder with streaming file response
         var testFilesPath = GetTestFilesPath();
         var streamingFilePath = Path.Combine(testFilesPath, "example_streaming_response2.txt");
         

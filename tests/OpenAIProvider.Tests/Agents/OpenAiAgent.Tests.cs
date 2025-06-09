@@ -21,7 +21,7 @@ public class OpenAiAgentTests
     [Fact]
     public async Task SimpleConversation_ShouldReturnResponse()
     {
-        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        // Create HTTP client with record/playback functionality
         string testCaseName = "SimpleConversation_ShouldReturnResponse";
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
@@ -88,7 +88,7 @@ public class OpenAiAgentTests
             ResponseFormat = ResponseFormat.JSON,
         };
 
-        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
@@ -156,7 +156,7 @@ public class OpenAiAgentTests
         }
         };
 
-        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", "FunctionToolCall_ShouldReturnToolMessage.json");
@@ -238,7 +238,7 @@ public class OpenAiAgentTests
             }
         };
 
-        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "TestData", "FunctionToolCall_ShouldReturnToolMessage_streaming.json");
@@ -333,7 +333,7 @@ public class OpenAiAgentTests
             }
         };
 
-        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", "FunctionToolCall_ShouldReturnToolMessage_Streaming_WithJoin.json");

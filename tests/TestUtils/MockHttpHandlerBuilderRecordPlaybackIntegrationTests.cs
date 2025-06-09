@@ -13,7 +13,7 @@ using Microsoft.VisualStudio.TestPlatform.CoreUtilities.Helpers;
 
 namespace AchieveAi.LmDotnetTools.TestUtils.Tests;
 
-public class DatabasedClientWrapperTests
+public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
 {
     [Fact]
     public async Task MockHttpHandlerBuilder_RecordPlayback_ShouldHandleNewTestData()

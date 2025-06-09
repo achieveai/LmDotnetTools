@@ -1697,7 +1697,7 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
 
 /// <summary>
 /// Fluent builder for creating sophisticated HTTP message handlers for testing
-/// Replaces all specialized mock clients with a unified, powerful API
+/// Provides a unified, powerful API for HTTP mocking
 /// </summary>
 public class MockHttpHandlerBuilder
 {
@@ -1719,7 +1719,7 @@ public class MockHttpHandlerBuilder
     #region Request Handling
 
     /// <summary>
-    /// Captures requests for detailed inspection (replaces CaptureAnthropicClient)
+    /// Captures requests for detailed inspection
     /// </summary>
     /// <param name="capture">Output parameter that receives the capture object</param>
     public MockHttpHandlerBuilder CaptureRequests(out RequestCapture capture)
@@ -1742,7 +1742,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Enables record/playback functionality (replaces DatabasedClientWrapper)
+    /// Enables record/playback functionality
     /// </summary>
     /// <param name="filePath">Path to test data file</param>
     /// <param name="allowAdditional">Allow additional requests beyond recorded ones</param>
@@ -1826,7 +1826,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with an Anthropic-formatted message (replaces MockAnthropicClient)
+    /// Responds with an Anthropic-formatted message
     /// </summary>
     public MockHttpHandlerBuilder RespondWithAnthropicMessage(
         string content = "Hello! How can I help you?",
@@ -1901,7 +1901,7 @@ public class MockHttpHandlerBuilder
     #region Tool Response Methods
 
     /// <summary>
-    /// Responds with tool use (replaces ToolResponseMockClient)
+    /// Responds with tool use
     /// </summary>
     public MockHttpHandlerBuilder RespondWithToolUse(string toolName, object inputData)
     {
@@ -1909,7 +1909,7 @@ public class MockHttpHandlerBuilder
     }
 
     /// <summary>
-    /// Responds with tool use with custom text (replaces ToolResponseMockClient)
+    /// Responds with tool use with custom text
     /// </summary>
     public MockHttpHandlerBuilder RespondWithToolUse(string toolName, object inputData, string textContent)
     {
@@ -2060,7 +2060,7 @@ public class MockHttpHandlerBuilder
     #region Streaming Methods
 
     /// <summary>
-    /// Responds with streaming data from a file (replaces StreamingFileAnthropicClient)
+    /// Responds with streaming data from a file
     /// </summary>
     public MockHttpHandlerBuilder RespondWithStreamingFile(string filePath)
     {

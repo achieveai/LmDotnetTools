@@ -2,7 +2,7 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-// Note: MockAnthropicClient removed - using MockHttpHandlerBuilder instead
+// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -17,7 +17,7 @@ public class BasicConversationTests
     {
         TestLogger.Log("Starting SimpleConversation_ShouldCreateProperRequest test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
             .RespondWithAnthropicMessage("This is a mock response for testing.", 
                 "claude-3-7-sonnet-20250219", 10, 20)
@@ -108,7 +108,7 @@ public class BasicConversationTests
     [Fact]
     public async Task ResponseFormat_BasicTextResponse()
     {
-        // Arrange - Using MockHttpHandlerBuilder instead of MockAnthropicClient
+        // Arrange - Using MockHttpHandlerBuilder for response testing
         var handler = MockHttpHandlerBuilder.Create()
             .RespondWithAnthropicMessage("Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?", 
                 "claude-3-7-sonnet-20250219", 10, 20)

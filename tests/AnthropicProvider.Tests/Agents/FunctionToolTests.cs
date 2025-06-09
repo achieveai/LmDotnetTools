@@ -17,7 +17,7 @@ public class FunctionToolTests
     {
         TestLogger.Log("Starting RequestFormat_FunctionTools test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
             .RespondWithAnthropicMessage("This is a mock response for testing.", 
                 "claude-3-7-sonnet-20250219", 10, 20)
@@ -81,7 +81,7 @@ public class FunctionToolTests
     {
         TestLogger.Log("Starting MultipleTools_ShouldBeCorrectlyConfigured test");
 
-        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
             .RespondWithAnthropicMessage("This is a mock response for testing.", 
                 "claude-3-7-sonnet-20250219", 10, 20)
@@ -190,7 +190,7 @@ public class FunctionToolTests
     {
         TestLogger.Log("Starting ToolUseResponse_ShouldBeCorrectlyParsed test");
 
-        // Arrange - Using MockHttpHandlerBuilder with tool use response instead of ToolResponseMockClient
+        // Arrange - Using MockHttpHandlerBuilder with tool use response
         var handler = MockHttpHandlerBuilder.Create()
             .RespondWithToolUse("python_mcp-list_directory", 
                 new { relative_path = "." },

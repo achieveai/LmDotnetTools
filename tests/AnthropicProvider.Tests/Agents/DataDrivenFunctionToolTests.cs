@@ -27,7 +27,7 @@ public class DataDrivenFunctionToolTests
 
         Debug.WriteLine($"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions");
 
-        // Create HTTP client with record/playback functionality (replaces AnthropicClientWrapper)
+        // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "TestData", "Anthropic", $"{testName}.json");
@@ -153,7 +153,7 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.Anthropic, messages, options);
 
-        // 2. Create client with record/playback functionality (replaces AnthropicClientWrapper)
+        // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "TestData", "Anthropic", $"{testName}.json");
@@ -241,7 +241,7 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.Anthropic, messages, options);
 
-        // 2. Create client with record/playback functionality (replaces AnthropicClientWrapper)
+        // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
             AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests", "TestData", "Anthropic", $"{testName}.json");
