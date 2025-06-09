@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Models;
 using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
@@ -116,6 +117,7 @@ public class OpenAIEmbeddingServiceHttpTests
 
     [Theory]
     [MemberData(nameof(RetryScenarioTestCases))]
+    [Trait("Category", "Resiliency")]
     public async Task GenerateEmbeddingsAsync_RetryScenarios_RetriesCorrectly(
         EmbeddingRequest request,
         int failureCount,

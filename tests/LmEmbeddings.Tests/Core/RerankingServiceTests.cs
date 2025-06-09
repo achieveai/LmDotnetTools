@@ -1,6 +1,6 @@
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
-using LmEmbeddings.Tests.TestUtilities;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Net;
@@ -82,6 +82,7 @@ public class RerankingServiceTests
     }
 
     [Fact]
+    [Trait("Category", "Resiliency")]
     public async Task RerankAsync_WithRetryLogic_Uses500msLinearBackoff()
     {
         Debug.WriteLine("Testing 500ms linear backoff retry logic");
@@ -173,6 +174,7 @@ public class RerankingServiceTests
     }
 
     [Fact]
+    [Trait("Category", "Resiliency")]
     public async Task RerankAsync_WithMaxRetries_RespectsRetryLimit()
     {
         Debug.WriteLine("Testing maximum retry limit (2 retries)");

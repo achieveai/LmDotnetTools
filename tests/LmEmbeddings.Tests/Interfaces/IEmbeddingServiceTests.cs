@@ -197,6 +197,7 @@ public class IEmbeddingServiceTests
 
     [Theory]
     [MemberData(nameof(GenerateEmbeddingsTestCases))]
+    [Trait("Category", "Performance")]
     public async Task GenerateEmbeddingsAsync_ValidInputs_ReturnsExpectedResponse(
         string[] inputs, 
         string model, 
@@ -325,6 +326,7 @@ public class IEmbeddingServiceTests
     }
 
     [Fact]
+    [Trait("Category", "Resiliency")]
     public async Task GetEmbeddingAsync_AfterDispose_ThrowsObjectDisposedException()
     {
         // Arrange

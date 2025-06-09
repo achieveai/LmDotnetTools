@@ -12,19 +12,29 @@ public sealed record FunctionDefinition
     /// The name of the function
     /// </summary>
     [JsonPropertyName("name")]
-    public string Name { get; init; }
+    public string Name { get; set; }
 
     /// <summary>
     /// A description of what the function does
     /// </summary>
     [JsonPropertyName("description")]
-    public string Description { get; init; }
+    public string Description { get; set; }
 
     /// <summary>
     /// The parameters the function accepts, defined as a JSON Schema object
     /// </summary>
     [JsonPropertyName("parameters")]
-    public JsonSchemaObject Parameters { get; init; }
+    public JsonSchemaObject Parameters { get; set; }
+
+    /// <summary>
+    /// Parameterless constructor for JSON deserialization
+    /// </summary>
+    public FunctionDefinition()
+    {
+        Name = string.Empty;
+        Description = string.Empty;
+        Parameters = JsonSchemaObject.Create().Build();
+    }
 
     /// <summary>
     /// Creates a new function definition

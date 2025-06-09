@@ -22,3 +22,4 @@ kv_store
 *.db-journal
 *.db-journal
 *.db-journal
+.fake

@@ -70,3 +70,60 @@ namespace MyCompany.MyProduct
    b. If can't fix the issue, then analyze what may be fundamentally broken and address it (or consider a different approach).
 
 These rules will help you maintain consistent and readable C# code in your IDE with the namespace declared as a statement rather than a block header, while ensuring proper test coverage for all functionality changes.
+
+## Markdown graphics and flowcharts
+
+Always mermaid for info graphics in mark tool. Also use appropiate tools for flow charts and charts.
+
+## Command line use
+
+We use powershell as our shell, and you should prefer powershell commands over bash commands.
+
+## Code builds Excellence.
+
+1. We should always have 0 errors and 0 warnings
+2. We should always have all the tests passing.
+3. All the tests should be completing in milliseconds, not seconds.
+4. Tests that take time should be marked as such, and we should be able to exclude them using a filter.
+
+## Work item implementation template
+
+When starting work item implementation analyze what needs to be done. Organize your thoughts using `sequential-thinking`. Only when you've understood all the requirements and what needs to be worked on start the work.
+
+As you make progress make sure builds are working after every milestone, also make sure all the tests are PASSING. If you're stuck on tests, use problem solving template to solve the issue.
+
+Finally ALWAYS update the tracking document with work that you've completed, and update the future plan if you've learned something new.
+
+## Problem Solving Template
+
+When ever solving problem, break down the process in multiple steps
+
+### Step 1:
+
+Analyze the problem. Collect any information that's related to the problem. Make a theory on how to address the problem.
+
+### Step 2:
+
+Validate the theory is correct, try to counter it with any evidence you can find. If the theory still stand move to next step or go back to Step 1.
+
+### Step 3:
+
+Design solution around the theory.
+
+### Step 4:
+
+Plan implementation for the design.
+
+### Step 5:
+
+Execute the plan (hopefully multistep plan).
+
+### Step 6:
+
+Validate we've solved the problem, and provide summary of the solution and steps taken.
+
+## Code Excellence
+
+1. Code should always have 0 build errors and 0 warnings.
+2. All Unit tests are fast
+3. Resiliency, Parformance etc tests need to be marked in a way that normal runs don't run them.

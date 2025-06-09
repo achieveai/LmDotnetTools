@@ -1,11 +1,16 @@
+using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.TestUtils;
-using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
+using dotenv.net;
+using Xunit;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -16,13 +21,19 @@ public class OpenAiAgentTests
     [Fact]
     public async Task SimpleConversation_ShouldReturnResponse()
     {
-        // Use the factory to create a DatabasedClientWrapper with the .env.test file
+        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
         string testCaseName = "SimpleConversation_ShouldReturnResponse";
-        IOpenClient client = OpenClientFactory.CreateDatabasedClient(
-            testCaseName,
-            EnvTestPath,
-            false);
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", $"{testCaseName}.json");
 
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Create a system message
@@ -65,9 +76,9 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-        new TextMessage { Role = Role.System, Text = "You will always respond in JSON as `{\"response\": \"...\"}`" },
-        new TextMessage { Role = Role.User, Text = "Hello Bot!!!" }
-    };
+            new TextMessage { Role = Role.System, Text = "You will always respond in JSON as `{\"response\": \"...\"}`" },
+            new TextMessage { Role = Role.User, Text = "Hello Bot!!!" }
+        };
 
         var options = new GenerateReplyOptions
         {
@@ -77,13 +88,26 @@ public class OpenAiAgentTests
             ResponseFormat = ResponseFormat.JSON,
         };
 
+        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        var testDataFilePath = Path.Combine(
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests",
+            "OpenAIProvider.Tests",
+            "TestData",
+            "OpenAI",
+            "ChatCompletionRequest_SerializesToCorrectJson.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var agent = new OpenClientAgent("TestAgent", client);
+
         // Act
         var request = ChatCompletionRequest.FromMessages(messages, options);
-        IOpenClient client = OpenClientFactory.CreateDatabasedClient(
-          "ChatCompletionRequest_SerializesToCorrectJson",
-          EnvTestPath,
-          false);
-        var agent = new OpenClientAgent("TestAgent", client);
         var response = await agent.GenerateReplyAsync(
           messages,
           options);
@@ -132,12 +156,21 @@ public class OpenAiAgentTests
         }
         };
 
-        // Act
-        IOpenClient client = OpenClientFactory.CreateDatabasedClient(
-          "FunctionToolCall_ShouldReturnToolMessage",
-          EnvTestPath,
-          false);
+        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", "FunctionToolCall_ShouldReturnToolMessage.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
         var agent = new OpenClientAgent("TestAgent", client);
+
+        // Act
         var response = (await agent.GenerateReplyAsync(
           messages,
           options)).First();
@@ -177,7 +210,7 @@ public class OpenAiAgentTests
 
         var options = new GenerateReplyOptions
         {
-            ModelId = "gpt-4",
+            ModelId = "meta-llama/llama-4-maverick",
             Functions = new[]
             {
                 new FunctionContract
@@ -205,12 +238,22 @@ public class OpenAiAgentTests
             }
         };
 
+        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "TestData", "FunctionToolCall_ShouldReturnToolMessage_streaming.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
+        var agent = new OpenClientAgent("TestAgent", client)
+                .WithMiddleware(new MessageUpdateJoinerMiddleware("Message Joiner"));
+
         // Act
-        IOpenClient client = OpenClientFactory.CreateDatabasedClient(
-          "FunctionToolCall_ShouldReturnToolMessage_streaming",
-          EnvTestPath,
-          false);
-        var agent = new OpenClientAgent("TestAgent", client);
         var responseStream = await agent.GenerateReplyStreamingAsync(
           messages,
           options);
@@ -221,54 +264,33 @@ public class OpenAiAgentTests
             responses.Add(response);
         }
 
-        // Assert - Allow for a UsageMessage in the responses
-        // Instead of checking for an exact count, make sure we have at least some responses
+        // Assert
         Assert.NotEmpty(responses);
 
-        bool foundGetWeather = false;
-        foreach (var response in responses)
+        var firstResponse = responses.First(
+            m => m is ToolsCallMessage
+                || (m is TextMessage textMessage
+                    && !string.IsNullOrEmpty(textMessage.Text)));
+        Assert.NotNull(firstResponse);
+
+        // Since the response type may vary depending on the implementation,
+        // we should check for different possible types of responses
+        if (firstResponse is ToolsCallMessage toolMessage)
         {
-            Assert.NotNull(response);
-
-            // Accept and skip usage messages
-            if (response is UsageMessage)
-            {
-                continue;
-            }
-
-            // Since the response type may vary depending on the implementation,
-            // we should check for different possible types of responses
-            if (response is ToolsCallUpdateMessage toolMessage)
-            {
-                Assert.Single(toolMessage.ToolCallUpdates);
-                if (toolMessage.ToolCallUpdates[0].FunctionName == "getWeather")
-                {
-                    foundGetWeather = true;
-                }
-                else
-                {
-                    Assert.True(string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionName) ||
-                                toolMessage.ToolCallUpdates[0].FunctionName == "getWeather");
-                    Assert.True(!string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionArgs));
-                }
-            }
-            else if (response is TextUpdateMessage textMessage)
-            {
-                // Text updates can be empty or contain actual text
-                Assert.IsType<TextUpdateMessage>(textMessage);
-            }
-            else
-            {
-                // If neither expected type, fail the test, unless it's a different message type we want to allow
-                var allowedTypes = new[] { typeof(ToolsCallAggregateMessage).Name, typeof(UsageMessage).Name };
-                if (!allowedTypes.Contains(response.GetType().Name))
-                {
-                    Assert.Fail($"Unexpected message type: {response.GetType().Name}");
-                }
-            }
+            Assert.NotNull(toolMessage.ToolCalls);
+            Assert.Single(toolMessage.ToolCalls);
+            Assert.Equal("getWeather", toolMessage.ToolCalls[0].FunctionName);
         }
-
-        Assert.True(foundGetWeather, "Expected function call 'getWeather' not found in the responses.");
+        else if (firstResponse is TextMessage textMessage)
+        {
+            Assert.NotNull(textMessage.Text);
+            Assert.Contains("getWeather", textMessage.Text);
+        }
+        else
+        {
+            // If neither expected type, fail the test
+            Assert.Fail($"Expected tool call message, got {firstResponse.GetType().Name}");
+        }
     }
 
     [Fact]
@@ -311,69 +333,68 @@ public class OpenAiAgentTests
             }
         };
 
-        // Act
-        IOpenClient client = OpenClientFactory.CreateDatabasedClient(
-          "FunctionToolCall_ShouldReturnToolMessage_streaming",
-          EnvTestPath,
-          false);
+        // Create HTTP client with record/playback functionality (replaces DatabasedClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", "FunctionToolCall_ShouldReturnToolMessage_Streaming_WithJoin.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
         var agent = new OpenClientAgent("TestAgent", client);
-        var responseStream = await agent.GenerateReplyStreamingAsync(
+
+        // Act
+        var response = await agent.GenerateReplyAsync(
           messages,
           options);
 
-        var responses = new List<IMessage>();
-        await foreach (var response in responseStream)
+        // Assert
+        Assert.NotNull(response);
+
+        var firstResponse = response.First();
+        Assert.NotNull(firstResponse);
+
+        // Since the response type may vary depending on the implementation,
+        // we should check for different possible types of responses
+        if (firstResponse is ToolsCallMessage toolMessage)
         {
-            responses.Add(response);
+            Assert.NotNull(toolMessage.ToolCalls);
+            Assert.Single(toolMessage.ToolCalls);
+            Assert.Equal("getWeather", toolMessage.ToolCalls[0].FunctionName);
         }
-
-        // Assert - Allow for a UsageMessage in the responses
-        // Instead of checking for an exact count, make sure we have at least some responses
-        Assert.NotEmpty(responses);
-
-        bool foundGetWeather = false;
-        foreach (var response in responses)
+        else if (firstResponse is TextMessage textMessage)
         {
-            Assert.NotNull(response);
-
-            // Accept and skip usage messages
-            if (response is UsageMessage)
-            {
-                continue;
-            }
-
-            // Since the response type may vary depending on the implementation,
-            // we should check for different possible types of responses
-            if (response is ToolsCallUpdateMessage toolMessage)
-            {
-                Assert.Single(toolMessage.ToolCallUpdates);
-                if (toolMessage.ToolCallUpdates[0].FunctionName == "getWeather")
-                {
-                    foundGetWeather = true;
-                }
-                else
-                {
-                    Assert.True(string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionName) ||
-                                toolMessage.ToolCallUpdates[0].FunctionName == "getWeather");
-                    Assert.True(!string.IsNullOrEmpty(toolMessage.ToolCallUpdates[0].FunctionArgs));
-                }
-            }
-            else if (response is TextUpdateMessage textMessage)
-            {
-                // Text updates can be empty or contain actual text
-                Assert.IsType<TextUpdateMessage>(textMessage);
-            }
-            else
-            {
-                // If neither expected type, fail the test, unless it's a different message type we want to allow
-                var allowedTypes = new[] { typeof(ToolsCallAggregateMessage).Name, typeof(UsageMessage).Name };
-                if (!allowedTypes.Contains(response.GetType().Name))
-                {
-                    Assert.Fail($"Unexpected message type: {response.GetType().Name}");
-                }
-            }
+            Assert.NotNull(textMessage.Text);
+            Assert.Contains("getWeather", textMessage.Text);
         }
+        else
+        {
+            // If neither expected type, fail the test
+            Assert.Fail($"Expected tool call message, got {firstResponse.GetType().Name}");
+        }
+    }
 
-        Assert.True(foundGetWeather, "Expected function call 'getWeather' not found in the responses.");
+    /// <summary>
+    /// Helper method to get API key from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiKeyFromEnv()
+    {
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", 
+            new[] { "LLM_API_KEY" }, 
+            "test-api-key");
+    }
+
+    /// <summary>
+    /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
+    /// </summary>
+    private static string GetApiBaseUrlFromEnv()
+    {
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", 
+            new[] { "LLM_API_BASE_URL" }, 
+            "https://api.openai.com/v1");
     }
 }

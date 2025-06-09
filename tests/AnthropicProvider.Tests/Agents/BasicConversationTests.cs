@@ -2,10 +2,11 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Mocks;
+// Note: MockAnthropicClient removed - using MockHttpHandlerBuilder instead
 using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using Xunit;
 using System.Linq;
 
@@ -16,10 +17,17 @@ public class BasicConversationTests
     {
         TestLogger.Log("Starting SimpleConversation_ShouldCreateProperRequest test");
 
-        // Arrange
-        var captureClient = new CaptureAnthropicClient();
-        var agent = new AnthropicAgent("TestAgent", captureClient);
-        TestLogger.Log("Created agent and capture client");
+        // Arrange - Using MockHttpHandlerBuilder with request capture instead of CaptureAnthropicClient
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+                "claude-3-7-sonnet-20250219", 10, 20)
+            .CaptureRequests(out var requestCapture)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
+        TestLogger.Log("Created agent with mock HTTP handler and request capture");
 
         // Create a simple conversation
         var messages = new[]
@@ -54,43 +62,36 @@ public class BasicConversationTests
         }
         TestLogger.Log($"Response: Role={response?.Role}, Text={responseText ?? "null"}");
 
-        // Log what was captured
-        TestLogger.Log($"CapturedRequest is {(captureClient.CapturedRequest != null ? "not null" : "null")}");
-        if (captureClient.CapturedRequest != null)
-        {
-            var req = captureClient.CapturedRequest;
-            TestLogger.Log($"Model: {req.Model}");
-            TestLogger.Log($"System prompt: {req.System ?? "null"}");
-            TestLogger.Log($"Messages count: {req.Messages?.Count ?? 0}");
+        // Log what was captured using new RequestCapture API
+        TestLogger.Log($"Captured requests count: {requestCapture.RequestCount}");
+        Assert.Equal(1, requestCapture.RequestCount);
+        
+        var capturedRequest = requestCapture.GetAnthropicRequest();
+        Assert.NotNull(capturedRequest);
+        TestLogger.Log($"Model: {capturedRequest.Model}");
+        TestLogger.Log($"System prompt: {capturedRequest.System ?? "null"}");
+        
+        var messagesList = capturedRequest.Messages.ToList();
+        TestLogger.Log($"Messages count: {messagesList.Count}");
 
-            if (req.Messages != null)
-            {
-                foreach (var msg in req.Messages)
-                {
-                    TestLogger.Log($"Captured message - Role: {msg.Role}, Content items: {msg.Content?.Count ?? 0}");
-                    foreach (var content in msg.Content ?? System.Linq.Enumerable.Empty<AnthropicProvider.Models.AnthropicContent>())
-                    {
-                        TestLogger.Log($"  Content - Type: {content.Type}, Text: {content.Text ?? "null"}");
-                    }
-                }
-            }
+        foreach (var msg in messagesList)
+        {
+            TestLogger.Log($"Captured message - Role: {msg.Role}, Content: {msg.Content ?? "null"}");
         }
 
-        // Assert with safe null checks
-        Assert.NotNull(captureClient.CapturedRequest);
-        Assert.Equal("claude-3-7-sonnet-20250219", captureClient.CapturedRequest.Model);
+        // Assert with new RequestCapture API
+        Assert.Equal("claude-3-7-sonnet-20250219", capturedRequest.Model);
 
         // Safe handling of Messages collection
-        Assert.NotNull(captureClient.CapturedRequest.Messages);
-        Assert.NotEmpty(captureClient.CapturedRequest.Messages!);
+        Assert.NotEmpty(messagesList);
 
         // This is where most tests fail - let's check what we have instead of just asserting
-        var messagesCount = captureClient.CapturedRequest.Messages!.Count;
+        var messagesCount = messagesList.Count;
         TestLogger.Log($"Expected 2 messages, got {messagesCount}");
 
         // Try a more flexible assertion approach
         // System message might be handled differently (as system property in the request)
-        if (captureClient.CapturedRequest.System != null)
+        if (capturedRequest.System != null)
         {
             // If System is set, we should have 1 message (the user message)
             TestLogger.Log("System message was moved to System property, checking for 1 message");
@@ -107,9 +108,15 @@ public class BasicConversationTests
     [Fact]
     public async Task ResponseFormat_BasicTextResponse()
     {
-        // Arrange
-        var mockClient = new MockAnthropicClient();
-        var agent = new AnthropicAgent("TestAgent", mockClient);
+        // Arrange - Using MockHttpHandlerBuilder instead of MockAnthropicClient
+        var handler = MockHttpHandlerBuilder.Create()
+            .RespondWithAnthropicMessage("Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?", 
+                "claude-3-7-sonnet-20250219", 10, 20)
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
+        var agent = new AnthropicAgent("TestAgent", anthropicClient);
 
         var messages = new[]
         {

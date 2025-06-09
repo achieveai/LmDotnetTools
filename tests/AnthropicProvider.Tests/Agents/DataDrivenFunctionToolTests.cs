@@ -1,5 +1,10 @@
 using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmTestUtils;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.TestUtils;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -16,20 +21,35 @@ public class DataDrivenFunctionToolTests
         Debug.WriteLine($"Starting test for {testName}");
 
         // Arrange - Load data from test files
-        var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.Anthropic);
+        var (messages, options) = _testDataManager.LoadLmCoreRequest(
+            testName,
+            ProviderType.Anthropic);
+
         Debug.WriteLine($"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions");
 
-        // Use the AnthropicClientWrapper to record or replay the API interaction
-        using var client = AnthropicClientFactory.CreateDatabasedClient(testName, EnvTestPath, false);
+        // Create HTTP client with record/playback functionality (replaces AnthropicClientWrapper)
+        var testDataFilePath = Path.Combine(
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "TestData", "Anthropic", $"{testName}.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: false)
+            .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
-        Debug.WriteLine("Created agent with client wrapper");
+        Debug.WriteLine("Created agent with MockHttpHandlerBuilder record/playback");
 
         // Act
         var response = await agent.GenerateReplyAsync(messages, options);
         Debug.WriteLine($"Generated response: {response?.GetType().Name}");
 
         // Assert - Compare with expected response
-        var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.Anthropic);
+        var expectedResponses = _testDataManager.LoadFinalResponse(
+            testName,
+            ProviderType.Anthropic)!;
         if (expectedResponses == null)
         {
             _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response);
@@ -133,8 +153,18 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.Anthropic, messages, options);
 
-        // 2. Create a client to capture request/response
-        using var client = AnthropicClientFactory.CreateDatabasedClient(testName, EnvTestPath, true);
+        // 2. Create client with record/playback functionality (replaces AnthropicClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "TestData", "Anthropic", $"{testName}.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -211,8 +241,18 @@ public class DataDrivenFunctionToolTests
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.Anthropic, messages, options);
 
-        // 2. Create a client to capture request/response
-        using var client = AnthropicClientFactory.CreateDatabasedClient(testName, EnvTestPath, true);
+        // 2. Create client with record/playback functionality (replaces AnthropicClientWrapper)
+        var testDataFilePath = Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            "tests", "TestData", "Anthropic", $"{testName}.json");
+
+        var handler = MockHttpHandlerBuilder.Create()
+            .WithRecordPlayback(testDataFilePath, allowAdditional: true)
+            .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
+            .Build();
+
+        var httpClient = new HttpClient(handler);
+        var client = new AnthropicClient(GetApiKeyFromEnv(), httpClient: httpClient);
         var agent = new AnthropicAgent("TestAgent", client);
 
         // 3. Generate response
@@ -220,5 +260,14 @@ public class DataDrivenFunctionToolTests
 
         // 4. Save final response
         _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response);
+    }
+
+    /// <summary>
+    /// Helper method to get API key from environment
+    /// </summary>
+    private static string GetApiKeyFromEnv()
+    {
+        EnvironmentHelper.LoadEnvIfNeeded();
+        return Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "test-api-key";
     }
 }

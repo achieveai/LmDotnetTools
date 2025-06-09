@@ -2,7 +2,7 @@
   "Interactions": [
     {
       "SerializedRequest": {
-        "model": "gpt-4",
+        "model": "meta-llama/llama-4-maverick",
         "temperature": 0,
         "max_tokens": 4096,
         "stream": true,
@@ -39,318 +39,223 @@
           {
             "role": "system",
             "index": 0,
-            "content": "You're a helpful AI Agent that can use tools"
+            "content": "You\u0027re a helpful AI Agent that can use tools"
           },
           {
             "role": "user",
             "index": 0,
-            "content": "What's the weather in San Francisco?"
+            "content": "What\u0027s the weather in San Francisco?"
           }
         ]
       },
-      "SerializedResponse": {},
       "SerializedResponseFragments": [
         {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
           "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
+          "created": 1749407910,
           "choices": [
             {
               "index": 0,
               "delta": {
                 "role": "assistant",
-                "index": 0,
-                "tool_calls": [
-                  {
-                    "id": "call_ZHnQBSEB8pXz3YR5WuQzjbR8",
-                    "index": 0,
-                    "type": "function",
-                    "function": {
-                      "name": "getWeather",
-                      "arguments": ""
-                    }
-                  }
-                ]
-              }
+                "content": ""
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
             }
           ]
         },
         {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
           "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
+          "created": 1749407910,
           "choices": [
             {
               "index": 0,
               "delta": {
-                "index": 0,
+                "role": "assistant",
+                "content": null,
                 "tool_calls": [
                   {
+                    "id": "chatcmpl-tool-e2ef01daa40746bd9fc0a650e8e2f83e",
                     "type": "function",
+                    "index": 0,
                     "function": {
-                      "arguments": "{\n"
+                      "name": "getWeather"
                     }
                   }
                 ]
-              }
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
             }
           ]
         },
         {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
           "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
+          "created": 1749407910,
           "choices": [
             {
               "index": 0,
               "delta": {
-                "index": 0,
+                "role": "assistant",
+                "content": null,
                 "tool_calls": [
                   {
                     "index": 0,
-                    "type": "function",
                     "function": {
-                      "arguments": " "
-                    }
+                      "arguments": "{\u0022location\u0022: \u0022"
+                    },
+                    "type": "function"
                   }
                 ]
-              }
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
             }
           ]
         },
         {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
           "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
+          "created": 1749407910,
           "choices": [
             {
               "index": 0,
               "delta": {
-                "index": 0,
+                "role": "assistant",
+                "content": null,
                 "tool_calls": [
                   {
                     "index": 0,
-                    "type": "function",
-                    "function": {
-                      "arguments": " \""
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
-          "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
-          "choices": [
-            {
-              "index": 0,
-              "delta": {
-                "index": 0,
-                "tool_calls": [
-                  {
-                    "index": 0,
-                    "type": "function",
-                    "function": {
-                      "arguments": "location"
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
-          "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
-          "choices": [
-            {
-              "index": 0,
-              "delta": {
-                "index": 0,
-                "tool_calls": [
-                  {
-                    "index": 0,
-                    "type": "function",
-                    "function": {
-                      "arguments": "\":"
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
-          "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
-          "choices": [
-            {
-              "index": 0,
-              "delta": {
-                "index": 0,
-                "tool_calls": [
-                  {
-                    "index": 0,
-                    "type": "function",
-                    "function": {
-                      "arguments": " \""
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
-          "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
-          "choices": [
-            {
-              "index": 0,
-              "delta": {
-                "index": 0,
-                "tool_calls": [
-                  {
-                    "index": 0,
-                    "type": "function",
                     "function": {
                       "arguments": "San"
-                    }
+                    },
+                    "type": "function"
                   }
                 ]
-              }
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
             }
           ]
         },
         {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
           "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
+          "created": 1749407910,
           "choices": [
             {
               "index": 0,
               "delta": {
-                "index": 0,
+                "role": "assistant",
+                "content": null,
                 "tool_calls": [
                   {
                     "index": 0,
-                    "type": "function",
                     "function": {
-                      "arguments": " Francisco"
-                    }
+                      "arguments": " Francisco\u0022}"
+                    },
+                    "type": "function"
                   }
                 ]
-              }
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
             }
           ]
         },
         {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
           "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
+          "created": 1749407910,
           "choices": [
             {
               "index": 0,
               "delta": {
-                "index": 0,
+                "role": "assistant",
+                "content": null,
                 "tool_calls": [
                   {
                     "index": 0,
-                    "type": "function",
                     "function": {
-                      "arguments": "\"\n"
-                    }
+                      "arguments": ""
+                    },
+                    "type": "function"
                   }
                 ]
-              }
-            }
-          ]
-        },
-        {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
-          "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
-          "choices": [
-            {
-              "index": 0,
-              "delta": {
-                "index": 0,
-                "tool_calls": [
-                  {
-                    "index": 0,
-                    "type": "function",
-                    "function": {
-                      "arguments": "}"
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
-          "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
-          "choices": [
-            {
+              },
               "finish_reason": "tool_calls",
-              "index": 0,
-              "delta": {
-                "role": "assistant",
-                "index": 0,
-                "content": ""
-              }
+              "native_finish_reason": "tool_calls",
+              "logprobs": null
             }
           ]
         },
         {
-          "id": "gen-1744322098-wUuuO5Ck9kfxr9HvNAya",
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
           "object": "chat.completion.chunk",
-          "created": 1744322098,
-          "model": "openai/gpt-4",
+          "created": 1749407910,
           "choices": [
             {
               "index": 0,
               "delta": {
                 "role": "assistant",
-                "index": 0,
                 "content": ""
-              }
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1749407910-2wgjY6jEuf8zNbZDoQRi",
+          "provider": "Lambda",
+          "model": "meta-llama/llama-4-maverick",
+          "object": "chat.completion.chunk",
+          "created": 1749407910,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
             }
           ],
           "usage": {
-            "prompt_tokens": 83,
-            "completion_tokens": 17,
-            "total_tokens": 100,
-            "completion_tokens_details": {
-              "reasoning_tokens": 0
-            },
-            "prompt_tokens_details": {
-              "cached_tokens": 0
-            }
+            "prompt_tokens": 234,
+            "completion_tokens": 24,
+            "total_tokens": 258
           }
         }
       ],
-      "IsStreaming": true
+      "IsStreaming": true,
+      "RecordedAt": "2025-06-08T18:38:32.6090183Z",
+      "Provider": "OpenAI"
     }
   ]
 }

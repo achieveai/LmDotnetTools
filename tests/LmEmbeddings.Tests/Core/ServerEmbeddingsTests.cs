@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Models;
 using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
@@ -74,6 +75,7 @@ public class ServerEmbeddingsTests
     }
 
     [Fact]
+    [Trait("Category", "Performance")]
     public async Task GenerateEmbeddingsAsync_WithBatchProcessing_ProcessesConcurrently()
     {
         Debug.WriteLine("Testing batch processing with concurrent requests");
@@ -100,6 +102,7 @@ public class ServerEmbeddingsTests
     }
 
     [Fact]
+    [Trait("Category", "Resiliency")]
     public async Task GenerateEmbeddingsAsync_WithRetryLogic_UsesLinearBackoff()
     {
         Debug.WriteLine("Testing linear backoff retry logic");

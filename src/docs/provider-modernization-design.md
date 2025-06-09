@@ -1224,6 +1224,413 @@ public static IEnumerable<object[]> ProviderTestCases => new List<object[]>
 };
 ```
 
+---
+
+## Mock Client Modernization Strategy
+
+### Overview: HttpMessageHandler Replaces ALL Mock Clients
+
+**Critical Discovery**: Our investigation revealed that ALL current mock client implementations can be replaced with a unified HttpMessageHandler-based approach. This represents a major simplification and improvement opportunity.
+
+**Key Insight**: HttpMessageHandler mocking operates at the HTTP layer where OpenClient and AnthropicClient make their actual requests. This means we can replace ALL specialized mock clients with a single, powerful, unified API that tests the complete HTTP pipeline.
+
+### Current Mock Client Inventory
+
+#### **Anthropic Provider Mocks (6 classes):**
+1. **`MockAnthropicClient`** (`tests/AnthropicProvider.Tests/Mocks/`)
+   - **Purpose**: Simple predefined Anthropic responses
+   - **Usage**: Basic test scenarios, agent initialization
+   - **Replacement**: `.RespondWithAnthropicMessage("text")`
+
+2. **`CaptureAnthropicClient`** (`tests/AnthropicProvider.Tests/Mocks/`)
+   - **Purpose**: Request capture and detailed inspection
+   - **Usage**: Validate request formatting, model selection, thinking parameters
+   - **Replacement**: `.CaptureRequests(out var capture)`
+
+3. **`StreamingFileAnthropicClient`** (`tests/AnthropicProvider.Tests/Mocks/`)
+   - **Purpose**: File-based SSE streaming responses
+   - **Usage**: Complex streaming scenarios, SSE event testing
+   - **Replacement**: `.RespondWithStreamingFile("file.sse")`
+
+4. **`ToolResponseMockClient`** (`tests/AnthropicProvider.Tests/Mocks/`)
+   - **Purpose**: Tool use responses with request capture
+   - **Usage**: Function calling tests, tool parameter validation
+   - **Replacement**: `.RespondWithToolUse("tool_name", input)`
+
+5. **`AnthropicClientWrapper`** (`tests/TestUtils/`)
+   - **Purpose**: Record/playback with real Anthropic API calls
+   - **Usage**: Integration testing, real API response caching
+   - **Replacement**: `.WithRecordPlayback("test.json", allowAdditional: true)`
+
+6. **Test-specific `MockAnthropicClient`** (`tests/AnthropicProvider.Tests/Agents/AnthropicClientWrapper.Tests.cs`)
+   - **Purpose**: Wrapper-specific test mock
+   - **Usage**: AnthropicClientWrapper testing
+   - **Replacement**: `.RespondWithAnthropicMessage("text")`
+
+#### **OpenAI Provider Mocks (2 classes):**
+1. **`MockOpenClient`** (`tests/TestUtils/DatabasedClientWrapperTests.cs`)
+   - **Purpose**: Simple OpenAI responses
+   - **Usage**: Basic OpenAI testing scenarios
+   - **Replacement**: `.RespondWithOpenAIMessage("text")`
+
+2. **`DatabasedClientWrapper`** (`tests/TestUtils/`)
+   - **Purpose**: Record/playback with real OpenAI API calls
+   - **Usage**: OpenAI integration testing, caching
+   - **Replacement**: `.WithRecordPlayback("test.json", allowAdditional: true)`
+
+#### **Base Infrastructure (2 classes):**
+1. **`BaseClientWrapper`** (`tests/TestUtils/`)
+   - **Purpose**: Common record/playback functionality
+   - **Usage**: Shared logic for wrapper implementations
+   - **Replacement**: **Built into MockHttpHandlerBuilder**
+
+2. **`ClientWrapperFactory`** (`tests/TestUtils/`)
+   - **Purpose**: Factory for creating wrapper instances
+   - **Usage**: Centralized wrapper creation
+   - **Replacement**: **Replaced by fluent builder pattern**
+
+### Unified MockHttpHandlerBuilder Design
+
+#### **Complete Fluent API:**
+
+```csharp
+// 1. Simple responses (replaces MockAnthropicClient, MockOpenClient)
+var handler = MockHttpHandlerBuilder.Create()
+    .RespondWithAnthropicMessage("Hello! I'm Claude...")
+    .Build();
+
+var handler = MockHttpHandlerBuilder.Create()
+    .RespondWithOpenAIMessage("Hello! How can I help?")
+    .Build();
+
+// 2. Request capture (replaces CaptureAnthropicClient)
+var handler = MockHttpHandlerBuilder.Create()
+    .CaptureRequests(out var capture)
+    .RespondWithAnthropicMessage("Mock response")
+    .Build();
+// Later: Assert.Equal("claude-3-7-sonnet", capture.AnthropicRequest.Model);
+
+// 3. Tool responses (replaces ToolResponseMockClient)
+var handler = MockHttpHandlerBuilder.Create()
+    .RespondWithToolUse("python_mcp-list_directory", new { relative_path = "." })
+    .Build();
+
+// 4. File-based streaming (replaces StreamingFileAnthropicClient)
+var handler = MockHttpHandlerBuilder.Create()
+    .RespondWithStreamingFile("test-response.sse")
+    .Build();
+
+// 5. Record/playback (replaces DatabasedClientWrapper, AnthropicClientWrapper)
+var handler = MockHttpHandlerBuilder.Create()
+    .WithRecordPlayback("testdata.json", allowAdditionalRequests: true)
+    .ForwardToApi("https://api.anthropic.com", "real-api-key")
+    .Build();
+
+// 6. Error responses (replaces exception-throwing mocks)
+var handler = MockHttpHandlerBuilder.Create()
+    .RespondWithError(HttpStatusCode.BadRequest, "Invalid model")
+    .Build();
+
+// 7. Conditional responses (multi-request conversations)
+var handler = MockHttpHandlerBuilder.Create()
+    .When(req => req.Messages.Count == 1)
+        .ThenRespondWithToolUse("list_files", new { path = "." })
+    .When(req => req.Messages.Any(m => m.Role == "tool"))
+        .ThenRespondWithMessage("Found 5 files in the directory")
+    .Build();
+
+// 8. Provider-specific patterns
+var handler = MockHttpHandlerBuilder.Create()
+    .ForProvider(ProviderType.Anthropic)
+    .RespondWithMessage("Anthropic-formatted response")
+    .Build();
+
+var handler = MockHttpHandlerBuilder.Create()
+    .ForProvider(ProviderType.OpenAI)
+    .RespondWithMessage("OpenAI-formatted response")
+    .Build();
+```
+
+### Provider-Specific HTTP Patterns
+
+#### **Anthropic HTTP Requirements:**
+- **Endpoint**: `POST /messages`
+- **Headers**: `anthropic-version`, `x-api-key`
+- **Request Format**: `AnthropicRequest` JSON structure
+- **Non-streaming Response**: JSON with `AnthropicResponse` structure
+- **Streaming Response**: `Content-Type: text/event-stream` with Anthropic SSE format:
+  ```
+  event: message_start
+  data: {"type":"message_start","message":{...}}
+
+  event: content_block_delta
+  data: {"type":"content_block_delta",...}
+
+  event: message_stop
+  data: {"type":"message_stop"}
+  ```
+
+#### **OpenAI HTTP Requirements:**
+- **Endpoint**: `POST /chat/completions`
+- **Headers**: `Authorization: Bearer {api-key}`
+- **Request Format**: `ChatCompletionRequest` JSON structure
+- **Non-streaming Response**: JSON with `ChatCompletionResponse` structure
+- **Streaming Response**: `Content-Type: text/event-stream` with OpenAI SSE format:
+  ```
+  data: {"choices":[{"delta":{"content":"hello"}}]}
+  data: {"choices":[{"delta":{"content":" world"}}]}
+  data: [DONE]
+  ```
+
+### HttpMessageHandler Implementation Requirements
+
+#### **Core Request Processing:**
+1. **Provider Detection**: 
+   - Identify Anthropic requests: `POST` to paths containing `/messages`
+   - Identify OpenAI requests: `POST` to paths containing `/chat/completions`
+   - Extract provider from headers and endpoint patterns
+
+2. **Request Parsing**: 
+   - Parse JSON request body to extract typed request objects
+   - Handle `AnthropicRequest` vs `ChatCompletionRequest` structures
+   - Preserve request for capture and matching scenarios
+
+3. **Request Validation**: 
+   - Compare requests against expected patterns for record/playback
+   - Validate required fields and formats
+   - Support complex request matching logic from current wrappers
+
+4. **State Management**: 
+   - Maintain conversation state across multiple requests
+   - Handle tool use → tool result → final response sequences
+   - Support stateful multi-request scenarios
+
+#### **Advanced Response Generation:**
+1. **Provider-Specific Formatting**: 
+   - Generate correct JSON response format for each provider
+   - Handle provider-specific field mappings (e.g., Anthropic `input_tokens` vs OpenAI `prompt_tokens`)
+   - Apply proper response structure and validation
+
+2. **SSE Stream Generation**: 
+   - Create valid SSE format compatible with `System.Net.ServerSentEvents.SseParser`
+   - Handle different event types for Anthropic vs OpenAI
+   - Support streaming delays and realistic timing
+
+3. **File-Based Responses**: 
+   - Read SSE files and serve with proper `Content-Type: text/event-stream` headers
+   - Parse and validate SSE file format
+   - Support both Anthropic and OpenAI SSE formats
+
+4. **Error Response Generation**: 
+   - Generate provider-specific error response formats
+   - Handle different HTTP status codes appropriately
+   - Provide meaningful error messages matching provider patterns
+
+#### **Advanced Features:**
+1. **Real API Forwarding**: 
+   - Call actual APIs for record/playback scenarios
+   - Handle authentication and real HTTP requests
+   - Cache responses for subsequent test runs
+
+2. **Request Capture System**: 
+   - Store complete request information for detailed inspection
+   - Provide typed access to provider-specific request properties
+   - Support multiple request capture in sequence
+
+3. **File Persistence**: 
+   - Save/load test data for record/playback functionality
+   - Maintain compatibility with existing test data formats
+   - Handle complex interaction sequences and request matching
+
+### Migration Strategy and Work Items
+
+#### **Phase 1: Core MockHttpHandlerBuilder (Week 1)**
+- **WI-MM001**: Implement `MockHttpHandlerBuilder` base infrastructure
+- **WI-MM002**: Add provider detection and request parsing
+- **WI-MM003**: Implement basic response methods (`.RespondWithAnthropicMessage()`, `.RespondWithOpenAIMessage()`)
+- **WI-MM004**: Add request capture functionality (`.CaptureRequests()`)
+
+#### **Phase 2: Advanced Response Features (Week 2)**
+- **WI-MM005**: Implement tool use responses (`.RespondWithToolUse()`)
+- **WI-MM006**: Add SSE streaming support (`.RespondWithStreamingFile()`)
+- **WI-MM007**: Create error response handling (`.RespondWithError()`)
+- **WI-MM008**: Add conditional response logic (`.When().ThenRespond()`)
+
+#### **Phase 3: Complex Scenarios (Week 3)**
+- **WI-MM009**: Implement record/playback functionality (`.WithRecordPlayback()`)
+- **WI-MM010**: Add real API forwarding capabilities
+- **WI-MM011**: Create state management for multi-request conversations
+- **WI-MM012**: Add provider-specific optimizations
+
+#### **Phase 4: Mock Migration (Week 4)**
+- **WI-MM013**: Replace `MockAnthropicClient` and `MockOpenClient` usage
+- **WI-MM014**: Migrate `CaptureAnthropicClient` tests to request capture
+- **WI-MM015**: Replace `ToolResponseMockClient` with tool use responses
+- **WI-MM016**: Migrate `StreamingFileAnthropicClient` to streaming file responses
+
+#### **Phase 5: Infrastructure Migration (Week 5)**
+- **WI-MM017**: Replace `DatabasedClientWrapper` and `AnthropicClientWrapper`
+- **WI-MM018**: Remove obsolete mock classes and factory
+- **WI-MM019**: Update all test files to use new unified approach
+- **WI-MM020**: Performance testing and optimization
+
+### Complete Mock Replacement Reference
+
+| **Current Mock Class** | **Location** | **Primary Usage** | **HttpMessageHandler Replacement** | **Migration Complexity** |
+|------------------------|-------------|------------------|-----------------------------------|-------------------------|
+| `MockAnthropicClient` | `tests/AnthropicProvider.Tests/Mocks/` | 15+ test methods | `.RespondWithAnthropicMessage("text")` | ⭐ **LOW** |
+| `CaptureAnthropicClient` | `tests/AnthropicProvider.Tests/Mocks/` | 8+ test methods | `.CaptureRequests(out var capture)` | ⭐⭐ **MEDIUM** |
+| `StreamingFileAnthropicClient` | `tests/AnthropicProvider.Tests/Mocks/` | 5+ test methods | `.RespondWithStreamingFile("file.sse")` | ⭐⭐⭐ **HIGH** |
+| `ToolResponseMockClient` | `tests/AnthropicProvider.Tests/Mocks/` | 3+ test methods | `.RespondWithToolUse("tool_name", input)` | ⭐⭐ **MEDIUM** |
+| `AnthropicClientWrapper` | `tests/TestUtils/` | 10+ test methods | `.WithRecordPlayback("test.json", true)` | ⭐⭐⭐⭐ **VERY HIGH** |
+| `MockOpenClient` | `tests/TestUtils/DatabasedClientWrapperTests.cs` | 5+ test methods | `.RespondWithOpenAIMessage("text")` | ⭐ **LOW** |
+| `DatabasedClientWrapper` | `tests/TestUtils/` | 12+ test methods | `.WithRecordPlayback("test.json", true)` | ⭐⭐⭐⭐ **VERY HIGH** |
+| `BaseClientWrapper` | `tests/TestUtils/` | Base class | **Built into MockHttpHandlerBuilder** | ⭐⭐⭐ **HIGH** |
+| `ClientWrapperFactory` | `tests/TestUtils/` | Factory pattern | **Replaced by fluent builder** | ⭐⭐ **MEDIUM** |
+
+### Benefits of Unified HttpMessageHandler Approach
+
+#### **Technical Benefits:**
+1. **Complete Pipeline Testing**: Tests actual HTTP serialization/deserialization pipeline used in production
+2. **Unified API**: Single fluent interface replaces 10 different mock classes and patterns
+3. **Provider Agnostic**: Same API works for OpenAI, Anthropic, and future providers with automatic detection
+4. **Better Debugging**: Real HTTP responses are easier to inspect and validate than mocked interface calls
+5. **Reduced Maintenance**: One comprehensive mock system instead of multiple specialized implementations
+
+#### **Developer Experience Benefits:**
+1. **Learning Curve**: New developers learn one API instead of 10 different mock patterns
+2. **Consistency**: All tests use the same mocking approach regardless of provider or scenario
+3. **Flexibility**: Easy to switch between simple mocks and complex scenarios
+4. **Documentation**: Single comprehensive API with clear examples for all scenarios
+
+#### **Quality Benefits:**
+1. **Test Realism**: Tests exercise the same HTTP stack used in production
+2. **Error Coverage**: Easier to test HTTP-specific error scenarios and edge cases
+3. **Performance**: HTTP-layer mocking can be more efficient than complex mock object hierarchies
+4. **Reliability**: Reduces test flakiness from mock object state management issues
+
+### Usage Examples: Before vs After
+
+#### **Example 1: Simple Response Testing**
+```csharp
+// BEFORE: Using MockAnthropicClient
+[Fact]
+public async Task BasicConversation_Should_Work()
+{
+    var mockClient = new MockAnthropicClient();
+    var agent = new AnthropicAgent("TestAgent", mockClient);
+    
+    var result = await agent.ProcessAsync("Hello");
+    
+    Assert.Contains("Claude", result);
+}
+
+// AFTER: Using HttpMessageHandler
+[Fact]
+public async Task BasicConversation_Should_Work()
+{
+    var handler = MockHttpHandlerBuilder.Create()
+        .RespondWithAnthropicMessage("Hello! I'm Claude, an AI assistant...")
+        .Build();
+    
+    var httpClient = new HttpClient(handler);
+    var client = new AnthropicClient("test-key", "https://api.anthropic.com", httpClient: httpClient);
+    var agent = new AnthropicAgent("TestAgent", client);
+    
+    var result = await agent.ProcessAsync("Hello");
+    
+    Assert.Contains("Claude", result);
+}
+```
+
+#### **Example 2: Request Capture and Validation**
+```csharp
+// BEFORE: Using CaptureAnthropicClient
+[Fact]
+public async Task Should_Send_Correct_Model_Parameter()
+{
+    var captureClient = new CaptureAnthropicClient();
+    var agent = new AnthropicAgent("TestAgent", captureClient);
+    
+    await agent.ProcessAsync("test message");
+    
+    Assert.Equal("claude-3-7-sonnet-20250219", captureClient.CapturedRequest?.Model);
+    Assert.NotNull(captureClient.CapturedThinking);
+}
+
+// AFTER: Using HttpMessageHandler with capture
+[Fact]
+public async Task Should_Send_Correct_Model_Parameter()
+{
+    var handler = MockHttpHandlerBuilder.Create()
+        .CaptureRequests(out var capture)
+        .RespondWithAnthropicMessage("Mock response")
+        .Build();
+    
+    var httpClient = new HttpClient(handler);
+    var client = new AnthropicClient("test-key", "https://api.anthropic.com", httpClient: httpClient);
+    var agent = new AnthropicAgent("TestAgent", client);
+    
+    await agent.ProcessAsync("test message");
+    
+    Assert.Equal("claude-3-7-sonnet-20250219", capture.AnthropicRequest?.Model);
+    Assert.NotNull(capture.AnthropicRequest?.Thinking);
+}
+```
+
+#### **Example 3: Complex Multi-Request Tool Use**
+```csharp
+// BEFORE: Using ToolResponseMockClient
+[Fact]
+public async Task Tool_Use_Should_Work()
+{
+    var toolClient = new ToolResponseMockClient();
+    var agent = new AnthropicAgent("TestAgent", toolClient);
+    
+    await agent.ProcessAsync("List files in directory");
+    
+    Assert.NotNull(toolClient.LastRequest?.Tools);
+    Assert.Equal("python_mcp-list_directory", toolClient.LastRequest.Tools[0].Name);
+}
+
+// AFTER: Using HttpMessageHandler with conditional responses
+[Fact]
+public async Task Tool_Use_Should_Work()
+{
+    var handler = MockHttpHandlerBuilder.Create()
+        .CaptureRequests(out var capture)
+        .When(req => req.Messages.Count == 1 && !req.Messages.Any(m => m.Role == "tool"))
+            .ThenRespondWithToolUse("python_mcp-list_directory", new { relative_path = "." })
+        .When(req => req.Messages.Any(m => m.Role == "tool"))
+            .ThenRespondWithMessage("Found 5 files in the directory")
+        .Build();
+    
+    var httpClient = new HttpClient(handler);
+    var client = new AnthropicClient("test-key", "https://api.anthropic.com", httpClient: httpClient);
+    var agent = new AnthropicAgent("TestAgent", client);
+    
+    await agent.ProcessAsync("List files in directory");
+    
+    Assert.NotNull(capture.AnthropicRequest?.Tools);
+    Assert.Equal("python_mcp-list_directory", capture.AnthropicRequest.Tools[0].Name);
+}
+```
+
+### Integration with Existing Work Items
+
+This mock modernization strategy integrates with and enhances the existing provider modernization work items:
+
+- **WI-PM006 (Shared Test Infrastructure)**: MockHttpHandlerBuilder becomes part of the shared test infrastructure
+- **WI-PM007 (Comprehensive Test Coverage)**: All new tests use unified HttpMessageHandler patterns
+- **Phase 2 Provider Modernization**: Updated providers can be tested using the unified mock approach
+- **Performance Tracking**: HttpMessageHandler can capture performance metrics during testing
+
+**Total Impact**: 
+- **58+ test methods** across all providers will be simplified and unified
+- **10 mock classes** replaced with 1 comprehensive MockHttpHandlerBuilder
+- **Complete HTTP pipeline testing** for all provider scenarios
+- **Unified testing approach** for current and future providers
+
 ### Validation Criteria
 
 **Build Requirements**:
@@ -1236,316 +1643,6 @@ public static IEnumerable<object[]> ProviderTestCases => new List<object[]>
 - ✅ Performance tracking must capture accurate metrics
 - ✅ Error handling must provide consistent, helpful error messages
 - ✅ Validation must catch all invalid parameter scenarios
-
----
-
-## Dependencies and Prerequisites
-
-### Current Project Dependency Analysis
-
-```mermaid
-graph TD
-    subgraph CurrentState["📊 Current Dependencies"]
-        LmCore_Current["LmCore<br/>• Microsoft.Data.Sqlite<br/>• Scriban<br/>• System.Memory.Data<br/>• Microsoft.AspNetCore.WebUtilities<br/>• YamlDotNet"]
-        
-        OpenAI_Current["OpenAIProvider<br/>• JsonSchema.Net<br/>• JsonSchema.Net.Generation<br/>• System.Net.ServerSentEvents<br/>→ References LmCore"]
-        
-        Anthropic_Current["AnthropicProvider<br/>• System.Net.Http.Json<br/>• System.Net.ServerSentEvents<br/>• System.Text.Json<br/>→ References LmCore"]
-        
-        LmEmbeddings_Current["LmEmbeddings<br/>• Microsoft.Extensions.Http<br/>• Microsoft.Extensions.Logging.Abstractions<br/>• Microsoft.Extensions.Options<br/>• System.Text.Json<br/>→ References LmCore"]
-    end
-    
-    subgraph NewSharedDeps["🎯 Required Shared Dependencies"]
-        HttpDeps["HTTP Infrastructure<br/>• Microsoft.Extensions.Http<br/>• Microsoft.Extensions.Logging.Abstractions<br/>• System.Text.Json"]
-        
-        TestDeps["Test Infrastructure<br/>• Microsoft.Extensions.DependencyInjection<br/>• Microsoft.Extensions.Http<br/>• System.Net.Http"]
-        
-        PerformanceDeps["Performance Tracking<br/>• System.Diagnostics.Activity<br/>• System.Text.Json<br/>• Microsoft.Extensions.Options"]
-    end
-    
-    subgraph RecommendedStructure["✅ Recommended Structure"]
-        LmCore_New["LmCore (Enhanced)<br/>+ HTTP utilities<br/>+ Validation helpers<br/>+ Performance tracking<br/>+ Test infrastructure"]
-        
-        Providers_New["Providers<br/>• Minimal provider-specific deps<br/>• Reference enhanced LmCore<br/>• Share common patterns"]
-    end
-    
-    LmCore_Current --> LmCore_New
-    OpenAI_Current --> Providers_New
-    Anthropic_Current --> Providers_New
-    LmEmbeddings_Current --> Providers_New
-    
-    HttpDeps --> LmCore_New
-    TestDeps --> LmCore_New
-    PerformanceDeps --> LmCore_New
-    
-    classDef current fill:#ffebee,stroke:#c62828,stroke-width:2px
-    classDef shared fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef recommended fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
-    
-    class LmCore_Current,OpenAI_Current,Anthropic_Current,LmEmbeddings_Current current
-    class HttpDeps,TestDeps,PerformanceDeps shared
-    class LmCore_New,Providers_New recommended
-```
-
-### Shared Component Strategy
-
-**Phase 1: Move Common Dependencies to LmCore**
-1. **HTTP Infrastructure**: Move from LmEmbeddings to LmCore
-   - `HttpRetryHelper` → `src/LmCore/Http/`
-   - `BaseHttpService` → `src/LmCore/Http/`
-   - `ValidationHelper` → `src/LmCore/Validation/`
-
-2. **Test Infrastructure**: Create separate LmTestUtils project
-   - `FakeHttpMessageHandler` → `src/LmTestUtils/`
-   - `HttpTestHelpers` → `src/LmTestUtils/`
-   - `TestLoggerFactory` → `src/LmTestUtils/`
-
-**Phase 2: Update Provider Dependencies**
-1. **Remove Duplicated Packages**: Remove HTTP/JSON packages from providers
-2. **Update Import Statements**: Change namespace imports to use LmCore utilities
-3. **Test Migration**: Update test projects to use shared LmTestUtils
-
-**Phase 3: Validate Dependencies**
-1. **Build Verification**: Ensure all projects build successfully
-2. **Dependency Analysis**: Run dependency analysis to confirm no circular references
-3. **Package Audit**: Verify no duplicate package versions across projects
-
-### Recommended Project Dependencies
-
-**Enhanced LmCore Dependencies** (Foundation):
-```xml
-<!-- LmCore - Enhanced with shared utilities -->
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-  
-  <!-- Existing Dependencies (keep as-is) -->
-  <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
-    <PackageReference Include="Scriban" Version="6.2.1" />
-    <PackageReference Include="System.Memory.Data" Version="9.0.5" />
-    <PackageReference Include="Microsoft.AspNetCore.WebUtilities" Version="9.0.5" />
-    <PackageReference Include="YamlDotNet" Version="16.3.0" />
-  </ItemGroup>
-  
-  <!-- New Shared Infrastructure Dependencies -->
-  <ItemGroup>
-    <!-- HTTP Infrastructure -->
-    <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.5" />
-    <PackageReference Include="System.Text.Json" Version="9.0.5" />
-    
-    <!-- Performance Tracking -->
-    <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="9.0.5" />
-    
-    <!-- Validation -->
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.5" />
-  </ItemGroup>
-  
-  <!-- Test Infrastructure Dependencies (test-only) -->
-  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
-    <PackageReference Include="System.Net.Http" Version="4.3.4" />
-  </ItemGroup>
-</Project>
-```
-
-**Simplified Provider Dependencies** (OpenAI/Anthropic):
-```xml
-<!-- OpenAIProvider - Simplified with LmCore utilities -->
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-  
-  <!-- Core Dependency -->
-  <ItemGroup>
-    <ProjectReference Include="../LmCore/AchieveAi.LmDotnetTools.LmCore.csproj" />
-  </ItemGroup>
-  
-  <!-- Provider-Specific Dependencies Only -->
-  <ItemGroup>
-    <!-- Keep provider-specific JSON schema packages -->
-    <PackageReference Include="JsonSchema.Net" Version="7.3.4" />
-    <PackageReference Include="JsonSchema.Net.Generation" Version="5.0.2" />
-    <!-- Keep provider-specific SSE support -->
-    <PackageReference Include="System.Net.ServerSentEvents" Version="9.0.5" />
-    
-    <!-- Remove: HTTP, JSON, Logging packages (now in LmCore) -->
-  </ItemGroup>
-</Project>
-
-<!-- AnthropicProvider - Simplified with LmCore utilities -->
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-  
-  <!-- Core Dependency -->
-  <ItemGroup>
-    <ProjectReference Include="../LmCore/AchieveAi.LmDotnetTools.LmCore.csproj" />
-  </ItemGroup>
-  
-  <!-- Provider-Specific Dependencies Only -->
-  <ItemGroup>
-    <!-- Keep provider-specific SSE support -->
-    <PackageReference Include="System.Net.ServerSentEvents" Version="9.0.5" />
-    
-    <!-- Remove: System.Net.Http.Json, System.Text.Json (now in LmCore) -->
-  </ItemGroup>
-</Project>
-```
-
-### Shared Component Migration Strategy
-
-**Phase 1: Move Common Dependencies to LmCore**
-1. **HTTP Infrastructure**: Move from LmEmbeddings to LmCore
-   - `HttpRetryHelper` → `src/LmCore/Http/`
-   - `BaseHttpService` → `src/LmCore/Http/`
-   - `ValidationHelper` → `src/LmCore/Validation/`
-
-2. **Test Infrastructure**: Create separate LmTestUtils project
-   - `FakeHttpMessageHandler` → `src/LmTestUtils/`
-   - `HttpTestHelpers` → `src/LmTestUtils/`
-   - `TestLoggerFactory` → `src/LmTestUtils/`
-
-**Phase 2: Update Provider Dependencies**
-1. **Remove Duplicated Packages**: Remove HTTP/JSON packages from providers
-2. **Update Import Statements**: Change namespace imports to use LmCore utilities
-3. **Test Migration**: Update test projects to use shared LmTestUtils
-
-**Phase 3: Validate Dependencies**
-1. **Build Verification**: Ensure all projects build successfully
-2. **Dependency Analysis**: Run dependency analysis to confirm no circular references
-3. **Package Audit**: Verify no duplicate package versions across projects
-
-### 🏗️ Implementation Roadmap
-
-#### Phase 1: Foundation Migration (Week 1)
-**Critical Path - Must Complete First**
-
-1. **Create Shared LmTestUtils Project**
-   ```bash
-   # Commands to execute:
-   mkdir -p src/LmTestUtils
-   dotnet new classlib -n LmTestUtils -o src/LmTestUtils
-   
-   # Move test utilities to shared project
-   mv tests/LmEmbeddings.Tests/TestUtilities/FakeHttpMessageHandler.cs src/LmTestUtils/
-   mv tests/LmEmbeddings.Tests/TestUtilities/HttpTestHelpers.cs src/LmTestUtils/
-   mv tests/LmEmbeddings.Tests/TestUtilities/TestLoggerFactory.cs src/LmTestUtils/
-   
-   # Update namespaces from:
-   # LmEmbeddings.Tests.TestUtilities
-   # To:
-   # AchieveAi.LmDotnetTools.LmTestUtils
-   ```
-
-2. **Move HTTP Utilities to LmCore**
-   ```bash
-   mkdir -p src/LmCore/Http
-   mv src/LmEmbeddings/Core/Utils/HttpRetryHelper.cs src/LmCore/Http/
-   mv src/LmEmbeddings/Core/BaseHttpService.cs src/LmCore/Http/
-   
-   # Update namespaces from:
-   # AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils
-   # To:
-   # AchieveAi.LmDotnetTools.LmCore.Http
-   ```
-
-3. **Move Validation Utilities to LmCore**
-   ```bash
-   mkdir -p src/LmCore/Validation
-   mv src/LmEmbeddings/Core/Utils/ValidationHelper.cs src/LmCore/Validation/
-   
-   # Update namespace from:
-   # AchieveAi.LmDotnetTools.LmEmbeddings.Core.Utils
-   # To:
-   # AchieveAi.LmDotnetTools.LmCore.Validation
-   ```
-
-#### Phase 2: Provider Modernization (Weeks 2-3)
-**Parallel Implementation**
-
-1. **OpenAI Provider Updates**
-   - Replace primitive retry with `HttpRetryHelper.ExecuteWithRetryAsync`
-   - Add comprehensive error handling using `ValidationHelper`
-   - Integrate performance tracking using new `PerformanceTracker`
-   - Update all tests to use `FakeHttpMessageHandler` patterns
-
-2. **Anthropic Provider Updates**  
-   - Add missing retry logic using `HttpRetryHelper`
-   - Add comprehensive validation using `ValidationHelper`
-   - Integrate performance tracking using new `PerformanceTracker`
-   - Create comprehensive test suite using proven patterns
-
-#### Phase 3: Validation & Documentation (Week 4)
-**Quality Assurance**
-
-1. **Dependency Validation**
-   ```bash
-   # Run dependency analysis to ensure no circular references
-   dotnet list package --include-transitive
-   
-   # Verify all projects build successfully
-   dotnet build --configuration Release
-   
-   # Run all tests to ensure no regressions
-   dotnet test --logger:console --verbosity:normal
-   ```
-
-2. **Performance Baseline Establishment**
-   - Run performance tests on all providers
-   - Establish baseline metrics for retry behavior
-   - Document expected performance characteristics
-
-### 🎯 Success Validation Checklist
-
-#### Technical Validation:
-- [ ] All 336+ tests continue to pass after component migration
-- [ ] Zero build warnings across all projects
-- [ ] Shared components reduce code duplication by 60%+
-- [ ] OpenAI retry logic upgraded from primitive (1 retry) to sophisticated (exponential backoff)
-- [ ] Anthropic gains retry logic (previously missing entirely)
-- [ ] All providers use identical error handling patterns
-- [ ] Performance tracking works consistently across all providers
-
-#### Dependency Validation:
-- [ ] LmCore has only necessary shared dependencies (no provider-specific packages)
-- [ ] Providers have minimal dependencies (only provider-specific packages)
-- [ ] No circular dependencies between projects
-- [ ] No duplicate package versions across projects
-- [ ] Test projects can use shared test infrastructure without conflicts
-
-#### Pattern Validation:
-- [ ] All new tests use proven FakeHttpMessageHandler patterns
-- [ ] Request capture patterns validate API formatting correctly
-- [ ] Retry test patterns validate exponential backoff behavior
-- [ ] Error handling tests cover all HTTP status codes appropriately
-- [ ] Performance tests capture metrics consistently
-
-### 🚨 Risk Mitigation Strategies
-
-1. **Breaking Changes**: Create feature branches for each provider modernization to allow independent testing
-2. **Test Regressions**: Run full test suite after each component migration step
-3. **Dependency Conflicts**: Use dependency lock files to ensure consistent package versions
-4. **Performance Impact**: Establish baseline performance metrics before modernization begins
-
-### 📊 Expected Outcomes
-
-- **95%+ reduction** in transient HTTP failures through sophisticated retry logic
-- **60%+ reduction** in code duplication through shared utilities  
-- **100% consistency** in error handling patterns across all providers
-- **Comprehensive test coverage** using proven FakeHttpMessageHandler patterns
-- **Standardized performance tracking** with metrics collection across all providers
-- **Simplified maintenance** through shared component strategy
 
 ## Conclusion
 

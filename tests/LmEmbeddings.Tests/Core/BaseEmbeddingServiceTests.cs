@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Models;
 using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;

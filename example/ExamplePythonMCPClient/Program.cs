@@ -176,7 +176,7 @@ data can be used and few insights based on this data.";
                 }
 
                 Console.WriteLine("What's Next (q/quit to quit)?");
-                var x = Console.ReadLine().Trim();
+                var x = Console.ReadLine()?.Trim() ?? "";
 
                 if (x.ToLowerInvariant() == "quit" || x.ToLowerInvariant() == "q")
                 {
