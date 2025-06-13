@@ -45,17 +45,25 @@ public record Union<T1, T2> : Union
 
     public override T Get<T>()
     {
-        if (typeof(T) == typeof(T1))
+        if (typeof(T).IsAssignableFrom(typeof(T1)))
         {
             return (T)(object)_v1!;
         }
-        else if (typeof(T) == typeof(T2))
+        else if (typeof(T).IsAssignableFrom(typeof(T2)))
         {
             return (T)(object)_v2!;
         }
 
         return base.Get<T>();
     }
+
+    public static implicit operator T1(Union<T1, T2> union) => union.Get<T1>();
+
+    public static implicit operator T2(Union<T1, T2> union) => union.Get<T2>();
+
+    public static implicit operator Union<T1, T2>(T1 value) => new Union<T1, T2>(value);
+
+    public static implicit operator Union<T1, T2>(T2 value) => new Union<T1, T2>(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -109,17 +117,29 @@ public record Union<T1, T2, T3> : Union<T1, T2>
     public Union(T2 value) : base(value!) { }
     public Union(T3 value) : base(typeof(T3)) { _v3 = value; }
     public Union(Union<T1, T2> other) : base(other) { }
-    public Union(Union<T1, T2, T3> other) : base(other) { _v3 = other._v3; }
+    public Union(Union<T1, T2, T3> other) : base(other as Union<T1, T2>) { _v3 = other._v3; }
 
     public override T Get<T>()
     {
-        if (typeof(T) == typeof(T3))
+        if (typeof(T).IsAssignableFrom(typeof(T3)))
         {
             return (T)(object)_v3!;
         }
 
         return base.Get<T>();
     }
+
+    public static implicit operator T1(Union<T1, T2, T3> union) => union.Get<T1>();
+
+    public static implicit operator T2(Union<T1, T2, T3> union) => union.Get<T2>();
+
+    public static implicit operator T3(Union<T1, T2, T3> union) => union.Get<T3>();
+
+    public static implicit operator Union<T1, T2, T3>(T1 value) => new Union<T1, T2, T3>(value);
+
+    public static implicit operator Union<T1, T2, T3>(T2 value) => new Union<T1, T2, T3>(value);
+
+    public static implicit operator Union<T1, T2, T3>(T3 value) => new Union<T1, T2, T3>(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -169,17 +189,33 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
     public Union(T4 value) : base(typeof(T4)) { _v4 = value; }
     public Union(Union<T1, T2> other) : base(other) { }
     public Union(Union<T1, T2, T3> other) : base(other) { }
-    public Union(Union<T1, T2, T3, T4> other) : base(other) { _v4 = other._v4; }
+    public Union(Union<T1, T2, T3, T4> other) : base(other as Union<T1, T2, T3>) { _v4 = other._v4; }
 
     public override T Get<T>()
     {
-        if (typeof(T) == typeof(T4))
+        if (typeof(T).IsAssignableFrom(typeof(T4)))
         {
             return (T)(object)_v4!;
         }
 
         return base.Get<T>();
     }
+
+    public static implicit operator T1(Union<T1, T2, T3, T4> union) => union.Get<T1>();
+
+    public static implicit operator T2(Union<T1, T2, T3, T4> union) => union.Get<T2>();
+
+    public static implicit operator T3(Union<T1, T2, T3, T4> union) => union.Get<T3>();
+
+    public static implicit operator T4(Union<T1, T2, T3, T4> union) => union.Get<T4>();
+
+    public static implicit operator Union<T1, T2, T3, T4>(T1 value) => new Union<T1, T2, T3, T4>(value);
+
+    public static implicit operator Union<T1, T2, T3, T4>(T2 value) => new Union<T1, T2, T3, T4>(value);
+
+    public static implicit operator Union<T1, T2, T3, T4>(T3 value) => new Union<T1, T2, T3, T4>(value);
+
+    public static implicit operator Union<T1, T2, T3, T4>(T4 value) => new Union<T1, T2, T3, T4>(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {

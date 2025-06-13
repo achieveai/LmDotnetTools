@@ -285,12 +285,20 @@ public class SqliteManager : IDisposable
                 CONSTRAINT chk_user_id_format CHECK (length(user_id) > 0 AND length(user_id) <= 100)
             );");
         
-        // Vector embeddings table (fallback if sqlite-vec not available)
+        // Vector embeddings using sqlite-vec (primary approach)
         schema.AppendLine(@"
-            CREATE TABLE IF NOT EXISTS memory_embeddings (
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
                 memory_id INTEGER PRIMARY KEY,
-                embedding BLOB NOT NULL,
-                dimension INTEGER NOT NULL,
+                embedding FLOAT[1536]
+            );");
+            
+        // Vector metadata table for embedding information
+        schema.AppendLine(@"
+            CREATE TABLE IF NOT EXISTS embedding_metadata (
+                memory_id INTEGER PRIMARY KEY,
+                model_name TEXT NOT NULL,
+                embedding_dimension INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
             );");
         
@@ -358,6 +366,11 @@ public class SqliteManager : IDisposable
             CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at DESC);
+            
+            -- Embedding metadata indexes
+            CREATE INDEX IF NOT EXISTS idx_embedding_metadata_model ON embedding_metadata(model_name);
+            CREATE INDEX IF NOT EXISTS idx_embedding_metadata_dimension ON embedding_metadata(embedding_dimension);
+            CREATE INDEX IF NOT EXISTS idx_embedding_metadata_created ON embedding_metadata(created_at DESC);
             
             -- Graph database indexes
             CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(user_id, agent_id, run_id);

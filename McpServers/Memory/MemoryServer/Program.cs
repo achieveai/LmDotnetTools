@@ -3,12 +3,16 @@ using MemoryServer.Models;
 using MemoryServer.Tools;
 using MemoryServer.Infrastructure;
 using MemoryServer.Services;
+using MemoryServer.Utils;
 using Microsoft.Extensions.Options;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+
+// Load environment variables from .env file early in startup
+EnvironmentHelper.LoadEnvIfNeeded();
 
 var commandLineArgs = Environment.GetCommandLineArgs();
 

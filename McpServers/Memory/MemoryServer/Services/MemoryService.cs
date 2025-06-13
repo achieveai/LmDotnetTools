@@ -9,17 +9,27 @@ namespace MemoryServer.Services;
 public class MemoryService : IMemoryService
 {
     private readonly IMemoryRepository _memoryRepository;
+    private readonly IGraphMemoryService _graphMemoryService;
+    private readonly IEmbeddingManager _embeddingManager;
     private readonly ILogger<MemoryService> _logger;
     private readonly MemoryOptions _options;
+    private readonly LLMOptions _llmOptions;
+    private readonly EmbeddingOptions _embeddingOptions;
 
     public MemoryService(
         IMemoryRepository memoryRepository,
+        IGraphMemoryService graphMemoryService,
+        IEmbeddingManager embeddingManager,
         ILogger<MemoryService> logger,
         IOptions<MemoryServerOptions> options)
     {
         _memoryRepository = memoryRepository;
+        _graphMemoryService = graphMemoryService;
+        _embeddingManager = embeddingManager;
         _logger = logger;
         _options = options.Value.Memory;
+        _llmOptions = options.Value.LLM;
+        _embeddingOptions = options.Value.Embedding;
     }
 
     /// <summary>
@@ -38,6 +48,51 @@ public class MemoryService : IMemoryService
         var memory = await _memoryRepository.AddAsync(content, sessionContext, metadata, cancellationToken);
         
         _logger.LogInformation("Added memory {Id} for session {SessionContext}", memory.Id, sessionContext);
+
+        // Generate and store embedding if enabled
+        if (_embeddingOptions.EnableVectorStorage && _embeddingOptions.AutoGenerateEmbeddings)
+        {
+            try
+            {
+                _logger.LogDebug("Generating embedding for memory {MemoryId}", memory.Id);
+                var embedding = await _embeddingManager.GenerateEmbeddingAsync(content, cancellationToken);
+                await _memoryRepository.StoreEmbeddingAsync(memory.Id, embedding, _embeddingManager.ModelName, cancellationToken);
+                _logger.LogDebug("Stored embedding for memory {MemoryId} using model {ModelName}", memory.Id, _embeddingManager.ModelName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to generate embedding for memory {MemoryId}. Memory was saved but embedding generation failed.", memory.Id);
+                // Don't throw - memory was successfully saved, embedding generation is supplementary
+            }
+        }
+
+        // Process graph extraction if enabled
+        if (_llmOptions.EnableGraphProcessing)
+        {
+            try
+            {
+                _logger.LogDebug("Starting graph processing for memory {MemoryId}", memory.Id);
+                var graphSummary = await _graphMemoryService.ProcessMemoryAsync(memory, sessionContext, cancellationToken);
+                _logger.LogInformation("Graph processing completed for memory {MemoryId}: {EntitiesAdded} entities, {RelationshipsAdded} relationships added in {ProcessingTimeMs}ms",
+                    memory.Id, graphSummary.EntitiesAdded, graphSummary.RelationshipsAdded, graphSummary.ProcessingTimeMs);
+
+                if (graphSummary.Warnings.Any())
+                {
+                    _logger.LogWarning("Graph processing warnings for memory {MemoryId}: {Warnings}",
+                        memory.Id, string.Join("; ", graphSummary.Warnings));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to process graph for memory {MemoryId}. Memory was saved but graph extraction failed.", memory.Id);
+                // Don't throw - memory was successfully saved, graph processing is supplementary
+            }
+        }
+        else
+        {
+            _logger.LogDebug("Graph processing is disabled for memory {MemoryId}", memory.Id);
+        }
+
         return memory;
     }
 
@@ -56,9 +111,51 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Searching memories for session {SessionContext}, query: '{Query}', limit: {Limit}, threshold: {Threshold}", 
             sessionContext, query, limit, scoreThreshold);
 
-        var memories = await _memoryRepository.SearchAsync(query, sessionContext, limit, scoreThreshold, cancellationToken);
-        
-        _logger.LogInformation("Found {Count} memories for query '{Query}' in session {SessionContext}", memories.Count, query, sessionContext);
+        List<Memory> memories;
+
+        // Use hybrid search if vector storage is enabled, otherwise use traditional search
+        if (_embeddingOptions.EnableVectorStorage && _embeddingOptions.UseHybridSearch)
+        {
+            try
+            {
+                _logger.LogDebug("Using hybrid search for query: '{Query}'", query);
+                
+                // Generate embedding for the query
+                var queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(query, cancellationToken);
+                
+                // Perform hybrid search
+                memories = await _memoryRepository.SearchHybridAsync(
+                    query, 
+                    queryEmbedding, 
+                    sessionContext, 
+                    limit, 
+                    _embeddingOptions.TraditionalSearchWeight, 
+                    _embeddingOptions.VectorSearchWeight, 
+                    cancellationToken);
+                
+                _logger.LogInformation("Hybrid search found {Count} memories for query '{Query}' in session {SessionContext}", 
+                    memories.Count, query, sessionContext);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Hybrid search failed for query '{Query}', falling back to traditional search", query);
+                
+                // Fall back to traditional search
+                memories = await _memoryRepository.SearchAsync(query, sessionContext, limit, scoreThreshold, cancellationToken);
+                
+                _logger.LogInformation("Traditional search (fallback) found {Count} memories for query '{Query}' in session {SessionContext}", 
+                    memories.Count, query, sessionContext);
+            }
+        }
+        else
+        {
+            // Use traditional FTS5 search
+            memories = await _memoryRepository.SearchAsync(query, sessionContext, limit, scoreThreshold, cancellationToken);
+            
+            _logger.LogInformation("Traditional search found {Count} memories for query '{Query}' in session {SessionContext}", 
+                memories.Count, query, sessionContext);
+        }
+
         return memories;
     }
 
@@ -99,6 +196,50 @@ public class MemoryService : IMemoryService
         if (memory != null)
         {
             _logger.LogInformation("Updated memory {Id} for session {SessionContext}", id, sessionContext);
+
+            // Regenerate and store embedding if enabled
+            if (_embeddingOptions.EnableVectorStorage && _embeddingOptions.AutoGenerateEmbeddings)
+            {
+                try
+                {
+                    _logger.LogDebug("Regenerating embedding for updated memory {MemoryId}", memory.Id);
+                    var embedding = await _embeddingManager.GenerateEmbeddingAsync(content, cancellationToken);
+                    await _memoryRepository.StoreEmbeddingAsync(memory.Id, embedding, _embeddingManager.ModelName, cancellationToken);
+                    _logger.LogDebug("Updated embedding for memory {MemoryId} using model {ModelName}", memory.Id, _embeddingManager.ModelName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to regenerate embedding for updated memory {MemoryId}. Memory was updated but embedding generation failed.", memory.Id);
+                    // Don't throw - memory was successfully updated, embedding generation is supplementary
+                }
+            }
+
+            // Process graph extraction if enabled
+            if (_llmOptions.EnableGraphProcessing)
+            {
+                try
+                {
+                    _logger.LogDebug("Starting graph processing for updated memory {MemoryId}", memory.Id);
+                    var graphSummary = await _graphMemoryService.ProcessMemoryAsync(memory, sessionContext, cancellationToken);
+                    _logger.LogInformation("Graph processing completed for updated memory {MemoryId}: {EntitiesAdded} entities, {RelationshipsAdded} relationships added in {ProcessingTimeMs}ms",
+                        memory.Id, graphSummary.EntitiesAdded, graphSummary.RelationshipsAdded, graphSummary.ProcessingTimeMs);
+
+                    if (graphSummary.Warnings.Any())
+                    {
+                        _logger.LogWarning("Graph processing warnings for updated memory {MemoryId}: {Warnings}",
+                            memory.Id, string.Join("; ", graphSummary.Warnings));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to process graph for updated memory {MemoryId}. Memory was updated but graph extraction failed.", memory.Id);
+                    // Don't throw - memory was successfully updated, graph processing is supplementary
+                }
+            }
+            else
+            {
+                _logger.LogDebug("Graph processing is disabled for updated memory {MemoryId}", memory.Id);
+            }
         }
         else
         {

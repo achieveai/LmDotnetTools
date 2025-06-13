@@ -32,7 +32,6 @@ entity_extraction:
           }
         ]
         ```
-
     - user: |
         Extract entities from this conversation content:
         
@@ -75,7 +74,6 @@ relationship_extraction:
           }
         ]
         ```
-
     - user: |
         Extract relationships from this conversation content:
         
@@ -131,7 +129,6 @@ combined_extraction:
           ]
         }
         ```
-
     - user: |
         Extract entities and relationships from this conversation content:
         
@@ -181,7 +178,6 @@ graph_update_analysis:
           }
         }
         ```
-
     - user: |
         Analyze what graph updates are needed based on this new conversation content:
         
@@ -203,25 +199,45 @@ entity_validation:
         Your task is to review extracted entities and:
         1. Remove duplicates (same entity with different names)
         2. Standardize naming conventions
-        3. Merge similar entities that represent the same thing
+        3. Merge similar entities
         4. Validate entity types
-        5. Ensure confidence scores are reasonable
+        5. Ensure consistency across the knowledge graph
         
         Rules:
-        - Prefer more specific names over generic ones
-        - Use consistent capitalization and formatting
-        - Merge entities that clearly refer to the same thing
-        - Remove entities that are too vague or generic
-        - Ensure entity types are appropriate
+        1. Preserve the most complete and accurate entity information
+        2. Use consistent naming conventions (proper case, full names)
+        3. Merge entities that clearly refer to the same thing
+        4. Validate that entity types are appropriate
+        5. Include confidence scores for all decisions
+        6. Provide clear reasoning for changes
         
-        Return cleaned entities in the same JSON format as input.
-
+        Return your response as JSON with this structure:
+        ```json
+        {
+          "validated_entities": [
+            {
+              "name": "standardized entity name",
+              "type": "person|place|organization|concept|object|event|other",
+              "aliases": ["alternative names"],
+              "confidence": 0.95,
+              "merged_from": ["original entity names if merged"],
+              "reasoning": "explanation for any changes"
+            }
+          ],
+          "removed_entities": [
+            {
+              "name": "removed entity name",
+              "reasoning": "why this entity was removed"
+            }
+          ]
+        }
+        ```
     - user: |
         Validate and clean these extracted entities:
         
         {{ entities_json }}
         
-        Remove duplicates, standardize names, and ensure consistency for knowledge graph storage.
+        Ensure consistency and remove duplicates while preserving important information.
 
 relationship_validation:
   v1.0:
@@ -243,7 +259,6 @@ relationship_validation:
         - Check for logical consistency
         
         Return cleaned relationships in the same JSON format as input.
-
     - user: |
         Validate and clean these extracted relationships:
         

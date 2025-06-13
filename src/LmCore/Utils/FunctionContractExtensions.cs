@@ -18,7 +18,9 @@ public static class FunctionContractMarkdownExtensions
     public static string ToMarkdown(this FunctionContract function)
     {
         if (function == null)
+        {
             throw new ArgumentNullException(nameof(function));
+        }
 
         var markdown = new StringBuilder();
 
@@ -74,7 +76,7 @@ public static class FunctionContractMarkdownExtensions
                     }
 
                     // Add array constraints
-                    if (parameter.ParameterType.Type.ToLower() == "array")
+                    if (parameter.ParameterType.Type.Contains("array"))
                     {
                         if (parameter.ParameterType.MinItems.HasValue)
                         {
@@ -122,7 +124,7 @@ public static class FunctionContractMarkdownExtensions
                             {
                                 markdown.AppendLine($"      - Maximum: {prop.Value.Maximum.Value}");
                             }
-                            if (prop.Value.Type.ToLower() == "array")
+                            if (prop.Value.Type.Contains("array"))
                             {
                                 if (prop.Value.MinItems.HasValue)
                                 {
@@ -212,7 +214,7 @@ public static class FunctionContractMarkdownExtensions
         if (schema == null)
             return "value";
 
-        switch (schema.Type.ToLower())
+        switch (schema.Type.GetTypeString())
         {
             case "string":
                 if (schema.Enum != null && schema.Enum.Count > 0)
@@ -274,7 +276,7 @@ public static class FunctionContractMarkdownExtensions
         if (property == null)
             return "value";
 
-        switch (property.Type.ToLower())
+        switch (property.Type.GetTypeString())
         {
             case "string":
                 if (property.Enum != null && property.Enum.Count > 0)

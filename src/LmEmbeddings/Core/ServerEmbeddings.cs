@@ -34,27 +34,23 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 /// </remarks>
 /// <example>
 /// <code>
-/// // Create service with OpenAI API format
+/// // Basic configuration for OpenAI
 /// var service = new ServerEmbeddings(
 ///     endpoint: "https://api.openai.com",
-///     model: "text-embedding-3-small",
+///     model: Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "text-embedding-3-small",
 ///     embeddingSize: 1536,
-///     apiKey: "your-api-key",
-///     maxBatchSize: 100,
-///     apiType: EmbeddingApiType.Default,
-///     logger: logger,
-///     httpClient: httpClient);
+///     apiKey: Environment.GetEnvironmentVariable("EMBEDDING_API_KEY"));
 ///
-/// // Generate single embedding
-/// var embedding = await service.GetEmbeddingAsync("Hello, world!");
-///
-/// // Generate batch embeddings
-/// var request = new EmbeddingRequest
-/// {
-///     Inputs = new[] { "Text 1", "Text 2", "Text 3" },
-///     Model = "text-embedding-3-small"
-/// };
-/// var response = await service.GenerateEmbeddingsAsync(request);
+/// // Advanced configuration with custom settings
+/// var service = new ServerEmbeddings(
+///     endpoint: "https://api.jina.ai",
+///     model: Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "jina-embeddings-v2-base-en",
+///     embeddingSize: 768,
+///     apiKey: Environment.GetEnvironmentVariable("JINA_API_KEY"),
+///     maxBatchSize: 50,
+///     apiType: EmbeddingApiType.Jina,
+///     logger: loggerFactory.CreateLogger&lt;ServerEmbeddings&gt;(),
+///     httpClient: customHttpClient);
 /// </code>
 /// </example>
 public class ServerEmbeddings : BaseEmbeddingService
@@ -104,14 +100,14 @@ public class ServerEmbeddings : BaseEmbeddingService
     /// // Basic configuration for OpenAI
     /// var service = new ServerEmbeddings(
     ///     endpoint: "https://api.openai.com",
-    ///     model: "text-embedding-3-small",
+    ///     model: Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "text-embedding-3-small",
     ///     embeddingSize: 1536,
-    ///     apiKey: Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
+    ///     apiKey: Environment.GetEnvironmentVariable("EMBEDDING_API_KEY"));
     ///
     /// // Advanced configuration with custom settings
     /// var service = new ServerEmbeddings(
     ///     endpoint: "https://api.jina.ai",
-    ///     model: "jina-embeddings-v2-base-en",
+    ///     model: Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "jina-embeddings-v2-base-en",
     ///     embeddingSize: 768,
     ///     apiKey: Environment.GetEnvironmentVariable("JINA_API_KEY"),
     ///     maxBatchSize: 50,

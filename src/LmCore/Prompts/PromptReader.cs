@@ -119,11 +119,12 @@ public class PromptReader : IPromptReader
 
             return new TextMessage
             {
-                Role = role switch
+                Role = role! switch
                 {
                     "system" => Role.System,
                     "user" => Role.User,
-                    "assistant" => Role.Assistant
+                    "assistant" => Role.Assistant,
+                    _ => throw new NotImplementedException()
                 },
                 Text = content
             } as IMessage;

@@ -239,6 +239,7 @@ public class OpenClient : BaseHttpService, IOpenClient
 
         jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
         jsonSerializerOptions.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
+        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
 
         return jsonSerializerOptions;
     }

@@ -15,6 +15,7 @@ public class MemoryMcpToolsTests
     private readonly MockMemoryRepository _mockRepository;
     private readonly Mock<ISessionContextResolver> _mockSessionResolver;
     private readonly Mock<ILogger<MemoryMcpTools>> _mockLogger;
+    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
     private readonly MemoryMcpTools _mcpTools;
     private readonly MemoryService _memoryService;
 
@@ -23,6 +24,7 @@ public class MemoryMcpToolsTests
         _mockRepository = new MockMemoryRepository();
         _mockSessionResolver = new Mock<ISessionContextResolver>();
         _mockLogger = new Mock<ILogger<MemoryMcpTools>>();
+        _mockEmbeddingManager = new Mock<IEmbeddingManager>();
 
         // Setup memory service with mocked dependencies
         var memoryOptions = new MemoryServerOptions
@@ -31,14 +33,26 @@ public class MemoryMcpToolsTests
             {
                 MaxMemoryLength = 10000,
                 DefaultSearchLimit = 10
+            },
+            Embedding = new EmbeddingOptions
+            {
+                EnableVectorStorage = false, // Disable for unit tests by default
+                AutoGenerateEmbeddings = false
             }
         };
 
         var optionsMock = new Mock<IOptions<MemoryServerOptions>>();
         optionsMock.Setup(x => x.Value).Returns(memoryOptions);
 
+        var mockGraphMemoryService = new Mock<IGraphMemoryService>();
         var memoryServiceLogger = new Mock<ILogger<MemoryService>>();
-        _memoryService = new MemoryService(_mockRepository, memoryServiceLogger.Object, optionsMock.Object);
+        
+        // Setup mock embedding manager
+        _mockEmbeddingManager.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
+        _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
+        
+        _memoryService = new MemoryService(_mockRepository, mockGraphMemoryService.Object, _mockEmbeddingManager.Object, memoryServiceLogger.Object, optionsMock.Object);
 
         // Setup session resolver to return predictable session contexts
         _mockSessionResolver

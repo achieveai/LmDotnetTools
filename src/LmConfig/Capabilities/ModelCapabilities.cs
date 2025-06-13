@@ -80,11 +80,29 @@ public record ModelCapabilities
     public IDictionary<string, object>? CustomCapabilities { get; init; }
 
     /// <summary>
-    /// Checks if the model has a specific capability.
+    /// Checks if the model has a specific capability or multiple capabilities.
     /// </summary>
-    /// <param name="capability">The capability to check for.</param>
-    /// <returns>True if the model has the capability, false otherwise.</returns>
+    /// <param name="capability">The capability to check for. Multiple capabilities can be specified separated by ',' or ';'.</param>
+    /// <returns>True if the model has all specified capabilities, false otherwise.</returns>
     public bool HasCapability(string capability)
+    {
+        if (string.IsNullOrWhiteSpace(capability))
+            return false;
+
+        // Split by comma or semicolon and check all capabilities
+        var capabilities = capability.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(c => c.Trim())
+                .Where(c => !string.IsNullOrWhiteSpace(c));
+
+        return capabilities.All(HasSingleCapability);
+    }
+
+    /// <summary>
+    /// Checks if the model has a single specific capability.
+    /// </summary>
+    /// <param name="capability">The single capability to check for.</param>
+    /// <returns>True if the model has the capability, false otherwise.</returns>
+    private bool HasSingleCapability(string capability)
     {
         return capability.ToLowerInvariant() switch
         {

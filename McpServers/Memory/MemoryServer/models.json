@@ -1,0 +1,1854 @@
+{
+ "models": [
+   {
+     "id": "claude-3-sonnet",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "Anthropic",
+         "supports_budget_tokens": true,
+         "supports_thinking_type": true,
+         "max_thinking_tokens": 8192,
+         "is_built_in": false,
+         "is_exposed": true,
+         "parameter_name": "thinking"
+       },
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 5242880,
+         "max_images_per_message": 20
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": false,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 200000,
+         "max_output_tokens": 8192,
+         "recommended_max_prompt_tokens": 190000
+       },
+       "response_formats": {
+         "supports_json_mode": false,
+         "supports_structured_output": false,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["thinking", "multimodal", "function-calling", "long-context"],
+       "performance": {
+         "typical_latency": "00:00:03",
+         "max_latency": "00:00:15",
+         "tokens_per_second": 50.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "Anthropic",
+         "model_name": "claude-3-sonnet-20240229",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 3.0,
+           "completion_per_million": 15.0
+         },
+         "tags": ["high-quality", "thinking", "multimodal"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "anthropic/claude-3-sonnet",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 3.0,
+           "completion_per_million": 15.0
+         },
+         "sub_providers": [
+           {
+             "name": "Anthropic",
+             "model_name": "claude-3-sonnet-20240229",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 3.0,
+               "completion_per_million": 15.0
+             }
+           },
+           {
+             "name": "AWS Bedrock",
+             "model_name": "anthropic.claude-3-sonnet-20240229-v1:0",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 3.0,
+               "completion_per_million": 15.0
+             }
+           }
+         ],
+         "tags": ["fallback", "reliable", "aggregator", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "gpt-4.1",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 30
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-long-context", "structured-output"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:10",
+         "tokens_per_second": 85.0,
+         "quality_tier": "premium"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenAI",
+         "model_name": "gpt-4.1",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 2.0,
+           "completion_per_million": 8.0
+         },
+         "tags": ["flagship", "ultra-long-context", "premium"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "openai/gpt-4.1",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 2.2,
+           "completion_per_million": 8.8
+         },
+         "sub_providers": [
+           {
+             "name": "OpenAI",
+             "model_name": "gpt-4.1",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 2.0,
+               "completion_per_million": 8.0
+             }
+           },
+           {
+             "name": "Azure OpenAI",
+             "model_name": "gpt-4.1",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 2.0,
+               "completion_per_million": 8.0
+             }
+           }
+         ],
+         "tags": ["fallback", "aggregator", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "gpt-4.1-mini",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 30
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-long-context", "structured-output"],
+       "performance": {
+         "typical_latency": "00:00:01.5",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 120.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenAI",
+         "model_name": "gpt-4.1-mini",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.4,
+           "completion_per_million": 1.6
+         },
+         "tags": ["cost-effective", "fast", "balanced"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "openai/gpt-4.1-mini",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.44,
+           "completion_per_million": 1.76
+         },
+         "sub_providers": [
+           {
+             "name": "OpenAI",
+             "model_name": "gpt-4.1-mini",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.4,
+               "completion_per_million": 1.6
+             }
+           },
+           {
+             "name": "Azure OpenAI",
+             "model_name": "gpt-4.1-mini",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.4,
+               "completion_per_million": 1.6
+             }
+           }
+         ],
+         "tags": ["fallback", "cost-effective", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "gpt-4.1-nano",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 20
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-long-context", "speed-optimized"],
+       "performance": {
+         "typical_latency": "00:00:01",
+         "max_latency": "00:00:05",
+         "tokens_per_second": 200.0,
+         "quality_tier": "good"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenAI",
+         "model_name": "gpt-4.1-nano",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.1,
+           "completion_per_million": 0.4
+         },
+         "tags": ["ultra-fast", "cost-optimized", "high-volume"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "openai/gpt-4.1-nano",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.11,
+           "completion_per_million": 0.44
+         },
+         "sub_providers": [
+           {
+             "name": "OpenAI",
+             "model_name": "gpt-4.1-nano",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.1,
+               "completion_per_million": 0.4
+             }
+           }
+         ],
+         "tags": ["fallback", "ultra-fast", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "gemini-2.5-pro",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "Custom",
+         "supports_budget_tokens": true,
+         "supports_thinking_type": true,
+         "max_thinking_tokens": 32768,
+         "is_built_in": true,
+         "is_exposed": true,
+         "parameter_name": "thinking_budget"
+       },
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": true,
+         "supports_video": true,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "supported_audio_formats": ["mp3", "wav", "flac"],
+         "supported_video_formats": ["mp4", "webm"],
+         "max_image_size": 20971520,
+         "max_audio_duration": 9000,
+         "max_video_duration": 3600,
+         "max_files_per_message": 50
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function", "code_execution"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 65536,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["thinking", "multimodal", "function-calling", "audio-output", "code-execution"],
+       "performance": {
+         "typical_latency": "00:00:04",
+         "max_latency": "00:00:20",
+         "tokens_per_second": 60.0,
+         "quality_tier": "premium"
+       }
+     },
+     "providers": [
+       {
+         "name": "GoogleGemini",
+         "model_name": "gemini-2.5-pro-preview",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 1.25,
+           "completion_per_million": 10.0,
+           "images_per_1000": 5.16
+         },
+         "tags": ["flagship", "thinking", "multimodal", "premium"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "google/gemini-2.5-pro-preview",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 1.375,
+           "completion_per_million": 11.0,
+           "images_per_1000": 5.68
+         },
+         "sub_providers": [
+           {
+             "name": "Google AI Studio",
+             "model_name": "gemini-2.5-pro-preview",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 1.25,
+               "completion_per_million": 10.0
+             }
+           },
+           {
+             "name": "Vertex AI",
+             "model_name": "gemini-2.5-pro",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 1.25,
+               "completion_per_million": 10.0
+             }
+           }
+         ],
+         "tags": ["fallback", "thinking", "multimodal", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "gemini-2.5-flash",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "Custom",
+         "supports_budget_tokens": true,
+         "supports_thinking_type": true,
+         "max_thinking_tokens": 24576,
+         "is_built_in": true,
+         "is_exposed": true,
+         "parameter_name": "thinking_budget"
+       },
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": true,
+         "supports_video": true,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "supported_audio_formats": ["mp3", "wav", "flac"],
+         "supported_video_formats": ["mp4", "webm"],
+         "max_image_size": 20971520,
+         "max_audio_duration": 9000,
+         "max_video_duration": 3600,
+         "max_files_per_message": 50
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function", "code_execution"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["thinking", "multimodal", "function-calling", "fast", "cost-effective"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:12",
+         "tokens_per_second": 150.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "GoogleGemini",
+         "model_name": "gemini-2.5-flash",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.15,
+           "completion_per_million": 0.6,
+           "images_per_1000": 0.775
+         },
+         "tags": ["fast", "thinking", "multimodal", "cost-effective"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "google/gemini-2.5-flash",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.165,
+           "completion_per_million": 0.66,
+           "images_per_1000": 0.853
+         },
+         "sub_providers": [
+           {
+             "name": "Google AI Studio",
+             "model_name": "gemini-2.5-flash",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Vertex AI",
+             "model_name": "gemini-2.5-flash",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.6
+             }
+           }
+         ],
+         "tags": ["fallback", "fast", "thinking", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "gemini-2.0-flash-lite",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp"],
+         "max_image_size": 10485760,
+         "max_images_per_message": 20
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 16384,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-fast", "cost-optimized"],
+       "performance": {
+         "typical_latency": "00:00:01",
+         "max_latency": "00:00:06",
+         "tokens_per_second": 250.0,
+         "quality_tier": "good"
+       }
+     },
+     "providers": [
+       {
+         "name": "GoogleGemini",
+         "model_name": "gemini-2.0-flash-lite",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.075,
+           "completion_per_million": 0.3,
+           "images_per_1000": 0.388
+         },
+         "tags": ["ultra-fast", "cost-optimized", "high-volume"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "google/gemini-2.0-flash-lite",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.083,
+           "completion_per_million": 0.33,
+           "images_per_1000": 0.427
+         },
+         "sub_providers": [
+           {
+             "name": "Google AI Studio",
+             "model_name": "gemini-2.0-flash-lite",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.075,
+               "completion_per_million": 0.3
+             }
+           }
+         ],
+         "tags": ["fallback", "ultra-fast", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "llama-3.3-70b",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["function-calling", "multilingual", "coding"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 120.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "Groq",
+         "model_name": "llama-3.3-70b-versatile",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.59,
+           "completion_per_million": 0.79
+         },
+         "tags": ["ultra-fast", "open-source", "multilingual"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "meta-llama/Llama-3.3-70B-Instruct",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.7,
+           "completion_per_million": 0.8
+         },
+         "tags": ["cost-effective", "reliable", "open-source"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "meta-llama/llama-3.3-70b-instruct",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 0.88,
+           "completion_per_million": 0.88
+         },
+         "sub_providers": [
+           {
+             "name": "Together AI",
+             "model_name": "meta-llama/Llama-3.3-70B-Instruct",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.88,
+               "completion_per_million": 0.88
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "meta-llama/Llama-3.3-70B-Instruct",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.7,
+               "completion_per_million": 0.8
+             }
+           },
+           {
+             "name": "Fireworks AI",
+             "model_name": "accounts/fireworks/models/llama-v3p3-70b-instruct",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 0.9,
+               "completion_per_million": 0.9
+             }
+           },
+           {
+             "name": "Hyperbolic",
+             "model_name": "meta-llama/Meta-Llama-3.3-70B-Instruct",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 0.6,
+               "completion_per_million": 0.6
+             }
+           }
+         ],
+         "tags": ["fallback", "open-source", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "llama-4-scout",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 30
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 327680,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 300000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "moe", "ultra-fast"],
+       "performance": {
+         "typical_latency": "00:00:00.5",
+         "max_latency": "00:00:03",
+         "tokens_per_second": 2600.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "Cerebras",
+         "model_name": "llama-4-scout",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.11,
+           "completion_per_million": 0.34
+         },
+         "tags": ["world-record-speed", "moe", "multimodal"]
+       },
+       {
+         "name": "Groq",
+         "model_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.11,
+           "completion_per_million": 0.34
+         },
+         "tags": ["ultra-fast", "moe", "cost-effective"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct-FP8",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 0.15,
+           "completion_per_million": 0.5
+         },
+         "tags": ["cost-effective", "reliable", "moe"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "meta-llama/llama-4-scout",
+         "priority": 4,
+         "pricing": {
+           "prompt_per_million": 0.18,
+           "completion_per_million": 0.59
+         },
+         "sub_providers": [
+           {
+             "name": "Together AI",
+             "model_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.18,
+               "completion_per_million": 0.59
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct-FP8",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.5
+             }
+           },
+           {
+             "name": "Replicate",
+             "model_name": "meta/llama-4-scout-instruct",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 0.2,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Hyperbolic",
+             "model_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 0.14,
+               "completion_per_million": 0.45
+             }
+           }
+         ],
+         "tags": ["fallback", "moe", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "llama-4-maverick",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 50
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "moe", "arena-leader"],
+       "performance": {
+         "typical_latency": "00:00:01",
+         "max_latency": "00:00:05",
+         "tokens_per_second": 2522.0,
+         "quality_tier": "premium"
+       }
+     },
+     "providers": [
+       {
+         "name": "Cerebras",
+         "model_name": "llama-4-maverick",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 1.35,
+           "completion_per_million": 1.35
+         },
+         "tags": ["arena-leader", "moe", "multimodal", "premium-speed"]
+       },
+       {
+         "name": "Groq",
+         "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 1.35,
+           "completion_per_million": 1.35
+         },
+         "tags": ["ultra-fast", "moe", "arena-leader"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 1.5,
+           "completion_per_million": 1.5
+         },
+         "tags": ["cost-effective", "reliable", "moe"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "meta-llama/llama-4-maverick",
+         "priority": 4,
+         "pricing": {
+           "prompt_per_million": 1.8,
+           "completion_per_million": 1.8
+         },
+         "sub_providers": [
+           {
+             "name": "Together AI",
+             "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 1.8,
+               "completion_per_million": 1.8
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 1.5,
+               "completion_per_million": 1.5
+             }
+           },
+           {
+             "name": "Replicate",
+             "model_name": "meta/llama-4-maverick-instruct",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 2.0,
+               "completion_per_million": 2.0
+             }
+           },
+           {
+             "name": "Fireworks AI",
+             "model_name": "accounts/fireworks/models/llama-4-maverick-instruct",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 1.75,
+               "completion_per_million": 1.75
+             }
+           }
+         ],
+         "tags": ["fallback", "arena-leader", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "deepseek-r1",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "DeepSeek",
+         "supports_budget_tokens": false,
+         "supports_thinking_type": false,
+         "max_thinking_tokens": 32768,
+         "is_built_in": true,
+         "is_exposed": true,
+         "parameter_name": "reasoning_effort"
+       },
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": false,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 65536,
+         "max_output_tokens": 4096,
+         "max_reasoning_tokens": 32768,
+         "recommended_max_prompt_tokens": 60000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["reasoning", "function-calling", "cost-effective", "cot"],
+       "performance": {
+         "typical_latency": "00:00:05",
+         "max_latency": "00:00:30",
+         "tokens_per_second": 40.0,
+         "quality_tier": "premium"
+       }
+     },
+     "providers": [
+       {
+         "name": "DeepSeek",
+         "model_name": "deepseek-reasoner",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.55,
+           "completion_per_million": 2.19
+         },
+         "tags": ["reasoning", "cost-effective", "math-expert", "official"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "deepseek-ai/DeepSeek-R1",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.5,
+           "completion_per_million": 2.15
+         },
+         "tags": ["reasoning", "cost-effective", "reliable"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "deepseek/deepseek-r1",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 0.5,
+           "completion_per_million": 2.15
+         },
+         "sub_providers": [
+           {
+             "name": "DeepSeek",
+             "model_name": "deepseek-reasoner",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.55,
+               "completion_per_million": 2.19
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "deepseek-ai/DeepSeek-R1",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.5,
+               "completion_per_million": 2.15
+             }
+           },
+           {
+             "name": "Together AI",
+             "model_name": "deepseek-ai/DeepSeek-R1",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 3.0,
+               "completion_per_million": 7.0
+             }
+           },
+           {
+             "name": "NovitaAI",
+             "model_name": "deepseek-ai/DeepSeek-R1",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 0.7,
+               "completion_per_million": 2.5
+             }
+           },
+           {
+             "name": "Chutes",
+             "model_name": "deepseek-ai/DeepSeek-R1",
+             "priority": 5,
+             "pricing": {
+               "prompt_per_million": 0.0,
+               "completion_per_million": 0.0
+             }
+           }
+         ],
+         "tags": ["fallback", "reasoning", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "deepseek-r1-distill-qwen-1.5b",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "DeepSeek",
+         "supports_budget_tokens": false,
+         "supports_thinking_type": false,
+         "max_thinking_tokens": 16384,
+         "is_built_in": true,
+         "is_exposed": false,
+         "parameter_name": "reasoning_effort"
+       },
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": false,
+         "supports_parallel_calls": false,
+         "supports_tool_choice": false,
+         "max_tools_per_request": 0,
+         "supported_tool_types": []
+       },
+       "token_limits": {
+         "max_context_tokens": 32768,
+         "max_output_tokens": 2048,
+         "max_reasoning_tokens": 16384,
+         "recommended_max_prompt_tokens": 30000
+       },
+       "response_formats": {
+         "supports_json_mode": false,
+         "supports_structured_output": false,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["reasoning", "cost-optimized", "math", "distilled"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:10",
+         "tokens_per_second": 150.0,
+         "quality_tier": "good"
+       }
+     },
+     "providers": [
+       {
+         "name": "DeepSeek",
+         "model_name": "deepseek-r1-distill-qwen-1.5b",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.18,
+           "completion_per_million": 0.18
+         },
+         "tags": ["reasoning", "ultra-cost-effective", "distilled", "math-expert"]
+       },
+       {
+         "name": "Together AI",
+         "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.2,
+           "completion_per_million": 0.2
+         },
+         "tags": ["reasoning", "ultra-cost-effective", "distilled"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "deepseek/deepseek-r1-distill-qwen-1.5b",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 0.2,
+           "completion_per_million": 0.2
+         },
+         "sub_providers": [
+           {
+             "name": "DeepSeek",
+             "model_name": "deepseek-r1-distill-qwen-1.5b",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.18,
+               "completion_per_million": 0.18
+             }
+           },
+           {
+             "name": "Together AI",
+             "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.2,
+               "completion_per_million": 0.2
+             }
+           }
+         ],
+         "tags": ["fallback", "reasoning", "ultra-cost-effective"]
+       }
+     ]
+   },
+   {
+     "id": "deepseek-r1-distill-llama-70b",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "DeepSeek",
+         "supports_budget_tokens": false,
+         "supports_thinking_type": false,
+         "max_thinking_tokens": 32768,
+         "is_built_in": true,
+         "is_exposed": false,
+         "parameter_name": "reasoning_effort"
+       },
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": false,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 32,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 65536,
+         "max_output_tokens": 4096,
+         "max_reasoning_tokens": 32768,
+         "recommended_max_prompt_tokens": 60000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["reasoning", "function-calling", "cost-effective", "distilled"],
+       "performance": {
+         "typical_latency": "00:00:03",
+         "max_latency": "00:00:15",
+         "tokens_per_second": 80.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "Cerebras",
+         "model_name": "deepseek-r1-distill-llama-70b",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 2.0,
+           "completion_per_million": 2.0
+         },
+         "tags": ["world-record-speed", "reasoning", "distilled"]
+       },
+       {
+         "name": "Groq",
+         "model_name": "deepseek-r1-distill-llama-70b",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 2.0,
+           "completion_per_million": 2.0
+         },
+         "tags": ["ultra-fast", "reasoning", "distilled"]
+       },
+       {
+         "name": "DeepSeek",
+         "model_name": "deepseek-r1-distill-llama-70b",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 2.0,
+           "completion_per_million": 2.0
+         },
+         "tags": ["reasoning", "cost-effective", "distilled", "function-calling"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "deepseek/deepseek-r1-distill-llama-70b",
+         "priority": 4,
+         "pricing": {
+           "prompt_per_million": 2.2,
+           "completion_per_million": 2.2
+         },
+         "sub_providers": [
+           {
+             "name": "DeepSeek",
+             "model_name": "deepseek-r1-distill-llama-70b",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 2.0,
+               "completion_per_million": 2.0
+             }
+           },
+           {
+             "name": "Together AI",
+             "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 2.5,
+               "completion_per_million": 2.5
+             }
+           }
+         ],
+         "tags": ["fallback", "reasoning", "cost-effective"]
+       }
+     ]
+   },
+   {
+     "id": "qwen3-235b-a22b",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "Custom",
+         "supports_budget_tokens": true,
+         "supports_thinking_type": true,
+         "max_thinking_tokens": 65536,
+         "is_built_in": true,
+         "is_exposed": true,
+         "parameter_name": "enable_thinking"
+       },
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["thinking", "function-calling", "moe", "multilingual", "mcp"],
+       "performance": {
+         "typical_latency": "00:00:03",
+         "max_latency": "00:00:15",
+         "tokens_per_second": 100.0,
+         "quality_tier": "premium"
+       }
+     },
+     "providers": [
+       {
+         "name": "Alibaba Cloud",
+         "model_name": "qwen3-235b-a22b",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 8.0,
+           "completion_per_million": 24.0
+         },
+         "tags": ["thinking", "moe", "flagship", "multilingual"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "Qwen/Qwen3-235B-A22B",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 7.5,
+           "completion_per_million": 22.5
+         },
+         "tags": ["thinking", "moe", "cost-effective"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "qwen/qwen3-235b-a22b",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 8.8,
+           "completion_per_million": 26.4
+         },
+         "sub_providers": [
+           {
+             "name": "Alibaba Cloud",
+             "model_name": "qwen3-235b-a22b",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 8.0,
+               "completion_per_million": 24.0
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "Qwen/Qwen3-235B-A22B",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 7.5,
+               "completion_per_million": 22.5
+             }
+           },
+           {
+             "name": "Together AI",
+             "model_name": "Qwen/Qwen3-235B-A22B",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 9.0,
+               "completion_per_million": 27.0
+             }
+           },
+           {
+             "name": "Hyperbolic",
+             "model_name": "Qwen/Qwen3-235B-A22B",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 7.0,
+               "completion_per_million": 21.0
+             }
+           }
+         ],
+         "tags": ["fallback", "thinking", "moe", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "qwen3-30b-a3b",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "Custom",
+         "supports_budget_tokens": true,
+         "supports_thinking_type": true,
+         "max_thinking_tokens": 32768,
+         "is_built_in": true,
+         "is_exposed": true,
+         "parameter_name": "enable_thinking"
+       },
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["thinking", "function-calling", "moe", "multilingual", "cost-effective"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:10",
+         "tokens_per_second": 150.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "Groq",
+         "model_name": "qwen3-30b-a3b",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 1.0,
+           "completion_per_million": 3.0
+         },
+         "tags": ["ultra-fast", "thinking", "moe", "cost-effective"]
+       },
+       {
+         "name": "Alibaba Cloud",
+         "model_name": "qwen3-30b-a3b",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 1.0,
+           "completion_per_million": 3.0
+         },
+         "tags": ["thinking", "moe", "cost-effective", "multilingual"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "qwen/qwen3-30b-a3b:free",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 0.0,
+           "completion_per_million": 0.0
+         },
+         "sub_providers": [
+           {
+             "name": "Alibaba Cloud",
+             "model_name": "qwen3-30b-a3b",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 1.0,
+               "completion_per_million": 3.0
+             }
+           },
+           {
+             "name": "Community providers",
+             "model_name": "qwen3-30b-a3b",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.0,
+               "completion_per_million": 0.0
+             }
+           },
+           {
+             "name": "Hyperbolic",
+             "model_name": "Qwen/Qwen3-30B-A3B",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 0.8,
+               "completion_per_million": 2.4
+             }
+           }
+         ],
+         "tags": ["free", "thinking", "moe", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "qwen3-32b",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["function-calling", "multilingual", "coding", "mcp"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 140.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "Groq",
+         "model_name": "qwen-2.5-32b-instruct",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 1.2,
+           "completion_per_million": 3.6
+         },
+         "tags": ["ultra-fast", "dense", "multilingual", "coding"]
+       },
+       {
+         "name": "Alibaba Cloud",
+         "model_name": "qwen3-32b",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 1.2,
+           "completion_per_million": 3.6
+         },
+         "tags": ["dense", "multilingual", "coding", "balanced"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "Qwen/Qwen3-32B",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 1.0,
+           "completion_per_million": 3.0
+         },
+         "tags": ["cost-effective", "reliable", "dense"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "qwen/qwen3-32b",
+         "priority": 4,
+         "pricing": {
+           "prompt_per_million": 1.32,
+           "completion_per_million": 3.96
+         },
+         "sub_providers": [
+           {
+             "name": "Alibaba Cloud",
+             "model_name": "qwen3-32b",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 1.2,
+               "completion_per_million": 3.6
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "Qwen/Qwen3-32B",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 1.0,
+               "completion_per_million": 3.0
+             }
+           },
+           {
+             "name": "Together AI",
+             "model_name": "Qwen/Qwen3-32B",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 1.35,
+               "completion_per_million": 4.05
+             }
+           },
+           {
+             "name": "Fireworks AI",
+             "model_name": "accounts/fireworks/models/qwen3-32b-instruct",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 1.4,
+               "completion_per_million": 4.2
+             }
+           }
+         ],
+         "tags": ["fallback", "dense", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "qwen3-8b",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 16384,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["function-calling", "multilingual", "coding", "cost-optimized"],
+       "performance": {
+         "typical_latency": "00:00:01.5",
+         "max_latency": "00:00:06",
+         "tokens_per_second": 200.0,
+         "quality_tier": "good"
+       }
+     },
+     "providers": [
+       {
+         "name": "Alibaba Cloud",
+         "model_name": "qwen3-8b",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.4,
+           "completion_per_million": 1.2
+         },
+         "tags": ["cost-effective", "multilingual", "coding", "fast"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "Qwen/Qwen3-8B",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.35,
+           "completion_per_million": 1.0
+         },
+         "tags": ["ultra-cost-effective", "reliable", "fast"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "qwen/qwen3-8b:free",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 0.0,
+           "completion_per_million": 0.0
+         },
+         "sub_providers": [
+           {
+             "name": "Alibaba Cloud",
+             "model_name": "qwen3-8b",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.4,
+               "completion_per_million": 1.2
+             }
+           },
+           {
+             "name": "Community providers",
+             "model_name": "qwen3-8b",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.0,
+               "completion_per_million": 0.0
+             }
+           },
+           {
+             "name": "NovitaAI",
+             "model_name": "qwen/qwen3-8b",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 0.035,
+               "completion_per_million": 0.138
+             }
+           },
+           {
+             "name": "Chutes",
+             "model_name": "qwen/qwen3-8b",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 0.0,
+               "completion_per_million": 0.0
+             }
+           }
+         ],
+         "tags": ["free", "cost-effective", "openai-compatible"]
+       }
+     ]
+   }
+ ],
+ "provider_registry": {
+   "OpenAI": {
+     "endpoint_url": "https://api.openai.com/v1",
+     "api_key_environment_variable": "OPENAI_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:00",
+     "max_retries": 3,
+     "description": "Official OpenAI API endpoint"
+   },
+   "Anthropic": {
+     "endpoint_url": "https://api.anthropic.com",
+     "api_key_environment_variable": "ANTHROPIC_API_KEY",
+     "compatibility": "Anthropic",
+     "headers": {
+       "anthropic-version": "2023-06-01"
+     },
+     "timeout": "00:02:00",
+     "max_retries": 3,
+     "description": "Official Anthropic API endpoint"
+   },
+   "OpenRouter": {
+     "endpoint_url": "https://openrouter.ai/api/v1",
+     "api_key_environment_variable": "OPENROUTER_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": {
+       "HTTP-Referer": "https://github.com/your-org/lm-dotnet-tools",
+       "X-Title": "LMConfig Application"
+     },
+     "timeout": "00:02:00",
+     "max_retries": 3,
+     "description": "OpenRouter aggregator with multiple provider fallback"
+   },
+   "DeepInfra": {
+     "endpoint_url": "https://api.deepinfra.com/v1/openai",
+     "api_key_environment_variable": "DEEPINFRA_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:30",
+     "max_retries": 3,
+     "description": "DeepInfra multi-vendor model hosting"
+   },
+   "Groq": {
+     "endpoint_url": "https://api.groq.com/openai/v1",
+     "api_key_environment_variable": "GROQ_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:00:30",
+     "max_retries": 2,
+     "description": "Groq ultra-fast inference platform"
+   },
+   "Cerebras": {
+     "endpoint_url": "https://api.cerebras.ai/v1",
+     "api_key_environment_variable": "CEREBRAS_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:00:45",
+     "max_retries": 2,
+     "description": "Cerebras high-performance inference"
+   },
+   "GoogleGemini": {
+     "endpoint_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+     "api_key_environment_variable": "GEMINI_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:30",
+     "max_retries": 3,
+     "description": "Google Gemini via OpenAI-compatible API"
+   },
+   "DeepSeek": {
+     "endpoint_url": "https://api.deepseek.com/v1",
+     "api_key_environment_variable": "DEEPSEEK_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:02:00",
+     "max_retries": 3,
+     "description": "Official DeepSeek API endpoint"
+   },
+   "Alibaba Cloud": {
+     "endpoint_url": "https://dashscope-intl.aliyuncs.com/api/v1",
+     "api_key_environment_variable": "ALIBABA_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:30",
+     "max_retries": 3,
+     "description": "Alibaba Cloud DashScope API"
+   },
+   "Together AI": {
+     "endpoint_url": "https://api.together.ai/v1",
+     "api_key_environment_variable": "TOGETHER_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:00",
+     "max_retries": 3,
+     "description": "Together AI high-performance inference"
+   },
+   "Fireworks AI": {
+     "endpoint_url": "https://api.fireworks.ai/inference/v1",
+     "api_key_environment_variable": "FIREWORKS_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:00:45",
+     "max_retries": 3,
+     "description": "Fireworks AI fast inference platform"
+   },
+   "Hyperbolic": {
+     "endpoint_url": "https://api.hyperbolic.xyz/v1",
+     "api_key_environment_variable": "HYPERBOLIC_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:00",
+     "max_retries": 3,
+     "description": "Hyperbolic cost-effective inference"
+   },
+   "NovitaAI": {
+     "endpoint_url": "https://api.novita.ai/v3/openai",
+     "api_key_environment_variable": "NOVITA_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:00",
+     "max_retries": 3,
+     "description": "NovitaAI multi-model inference"
+   },
+   "Chutes": {
+     "endpoint_url": "https://api.chutes.ai/v1",
+     "api_key_environment_variable": "CHUTES_API_KEY",
+     "compatibility": "OpenAI",
+     "headers": null,
+     "timeout": "00:01:00",
+     "max_retries": 3,
+     "description": "Chutes serverless AI compute"
+   },
+   "Replicate": {
+     "endpoint_url": "https://api.replicate.com/v1",
+     "api_key_environment_variable": "REPLICATE_API_TOKEN",
+     "compatibility": "Replicate",
+     "headers": null,
+     "timeout": "00:02:00",
+     "max_retries": 3,
+     "description": "Replicate machine learning platform"
+   }
+ }
+}

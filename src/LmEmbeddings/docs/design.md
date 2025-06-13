@@ -164,10 +164,20 @@ private async Task<HttpResponseMessage> PostWithRetryAsync<T>(...)
 ## 6. Configuration Parameters
 - `endpoint`: URL of remote API
 - `model`: model identifier (e.g. "text-embedding-ada-002")
-- `apiKey`: optional authentication
+- `apiKey`: authentication key for the service
+  - For embedding services: use `EMBEDDING_API_KEY` environment variable
+  - For reranking services: use `RERANKING_API_KEY` environment variable
+  - For provider-specific services: use provider-specific keys (e.g. `OPENAI_API_KEY`, `JINA_API_KEY`)
 - `embeddingSize`: expected vector dimension
 - `maxBatchSize`: max bytes per batch (ServerEmbeddings)
 - `apiType`: EmbeddingApiType enum for request format (ServerEmbeddings)
+
+### Environment Variable Override Options
+- `EMBEDDING_MODEL`: Override the embedding model (e.g. "text-embedding-3-large")
+- `EMBEDDING_SIZE`: Override the embedding dimension (e.g. "3072" for large models)
+- `RERANKING_MODEL`: Override the reranking model (e.g. "rerank-v3.5")
+- `EMBEDDING_API_URL`: Override the embedding service base URL
+- `RERANKING_API_URL`: Override the reranking service base URL
 
 ## 7. Sequence Flows
 
@@ -188,9 +198,9 @@ private async Task<HttpResponseMessage> PostWithRetryAsync<T>(...)
 ```csharp
 using var embedSvc = new ServerEmbeddings(
     "https://api.example.com/embeddings",
-    "text-embedding-ada-002",
+    Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "text-embedding-ada-002",
     embeddingSize: 1536,
-    apiKey: Environment.GetEnvironmentVariable("API_KEY"),
+    apiKey: Environment.GetEnvironmentVariable("EMBEDDING_API_KEY"),
     maxBatchSize: 1024 * 25,
     apiType: EmbeddingApiType.Default
 );
@@ -198,9 +208,9 @@ using var embedSvc = new ServerEmbeddings(
 float[] vector = await embedSvc.GetEmbeddingAsync("Hello world");
 
 using var rankSvc = new RerankingService(
-    "https://api.example.com/rerank",
-    "ranker-model-v1",
-    apiKey: Environment.GetEnvironmentVariable("API_KEY")
+    Environment.GetEnvironmentVariable("RERANKING_API_URL") ?? "https://api.example.com/rerank",
+    Environment.GetEnvironmentVariable("RERANKING_MODEL") ?? "ranker-model-v1",
+    apiKey: Environment.GetEnvironmentVariable("RERANKING_API_KEY")
 );
 
 var docs = new[] { "doc1", "doc2", "doc3" };

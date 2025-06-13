@@ -209,6 +209,7 @@ public abstract class RequestCaptureBase
         // Note: Order matters - more specific converters should be added first
         jsonSerializerOptions.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
         jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
+        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
         
         // Add ImmutableDictionary converter for ChatCompletionRequest.AdditionalParameters
         jsonSerializerOptions.Converters.Add(new ImmutableDictionaryJsonConverterFactory());

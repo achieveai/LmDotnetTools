@@ -258,4 +258,64 @@ public class MockMemoryRepository : IMemoryRepository
     public bool HasMemory(int id) => _memories.ContainsKey(id);
 
     public Memory? GetMemoryById(int id) => _memories.TryGetValue(id, out var memory) ? memory : null;
+
+    // Vector storage and search methods (mock implementations)
+
+    public Task StoreEmbeddingAsync(int memoryId, float[] embedding, string modelName, CancellationToken cancellationToken = default)
+    {
+        MethodCalls.Add(nameof(StoreEmbeddingAsync));
+        LastCallParameters["memoryId"] = memoryId;
+        LastCallParameters["embedding"] = embedding;
+        LastCallParameters["modelName"] = modelName;
+
+        // Mock implementation - just track the call
+        return Task.CompletedTask;
+    }
+
+    public Task<float[]?> GetEmbeddingAsync(int memoryId, CancellationToken cancellationToken = default)
+    {
+        MethodCalls.Add(nameof(GetEmbeddingAsync));
+        LastCallParameters["memoryId"] = memoryId;
+
+        // Mock implementation - return null (no embedding stored)
+        return Task.FromResult<float[]?>(null);
+    }
+
+    public Task<List<VectorSearchResult>> SearchVectorAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float threshold = 0.7f,
+        CancellationToken cancellationToken = default)
+    {
+        MethodCalls.Add(nameof(SearchVectorAsync));
+        LastCallParameters["queryEmbedding"] = queryEmbedding;
+        LastCallParameters["sessionContext"] = sessionContext;
+        LastCallParameters["limit"] = limit;
+        LastCallParameters["threshold"] = threshold;
+
+        // Mock implementation - return empty results
+        return Task.FromResult(new List<VectorSearchResult>());
+    }
+
+    public Task<List<Memory>> SearchHybridAsync(
+        string query,
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float traditionalWeight = 0.3f,
+        float vectorWeight = 0.7f,
+        CancellationToken cancellationToken = default)
+    {
+        MethodCalls.Add(nameof(SearchHybridAsync));
+        LastCallParameters["query"] = query;
+        LastCallParameters["queryEmbedding"] = queryEmbedding;
+        LastCallParameters["sessionContext"] = sessionContext;
+        LastCallParameters["limit"] = limit;
+        LastCallParameters["traditionalWeight"] = traditionalWeight;
+        LastCallParameters["vectorWeight"] = vectorWeight;
+
+        // Mock implementation - fall back to traditional search
+        return SearchAsync(query, sessionContext, limit, 0.0f, cancellationToken);
+    }
 } 

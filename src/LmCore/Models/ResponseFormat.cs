@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
@@ -82,7 +83,7 @@ public sealed record JsonSchemaObject
     /// The type of the schema object (e.g., "object", "array", "string", etc.)
     /// </summary>
     [JsonPropertyName("type")]
-    public string Type { get; init; } = "object";
+    public Union<string, IReadOnlyList<string>> Type { get; init; } = new Union<string, IReadOnlyList<string>>(["object", "null"]);
 
     /// <summary>
     /// Property definitions for object type schemas
@@ -177,10 +178,17 @@ public sealed record JsonSchemaObject
     {
         return new JsonSchemaObject
         {
-            Type = "array",
+            Type = JsonSchemaTypeHelper.ToType(["array", "null"]),
             Description = description,
             Items = items
         };
+    }
+
+    public static string GetJsonPrimaryType(JsonSchemaObject schemaObject)
+    {
+        if (schemaObject == null) return "string";
+
+        return schemaObject.Type.Get<IReadOnlyList<string>>().FirstOrDefault(x => x != "null") ?? "string";
     }
 }
 
@@ -193,7 +201,7 @@ public sealed record JsonSchemaProperty
     /// The type of the property (e.g., "string", "number", etc.)
     /// </summary>
     [JsonPropertyName("type")]
-    public string Type { get; init; } = "string";
+    public Union<string, IReadOnlyList<string>> Type { get; init; } = new Union<string, IReadOnlyList<string>>(["string", "null"]);
 
     /// <summary>
     /// Description of the property
@@ -269,25 +277,25 @@ public sealed record JsonSchemaProperty
     /// Creates a new string property with the given description
     /// </summary>
     public static JsonSchemaProperty String(string? description = null) =>
-        new JsonSchemaProperty { Type = "string", Description = description };
+        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["string", "null"]), Description = description };
 
     /// <summary>
     /// Creates a new number property with the given description
     /// </summary>
     public static JsonSchemaProperty Number(string? description = null) =>
-        new JsonSchemaProperty { Type = "number", Description = description };
+        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["number", "null"]), Description = description };
 
     /// <summary>
     /// Creates a new integer property with the given description
     /// </summary>
     public static JsonSchemaProperty Integer(string? description = null) =>
-        new JsonSchemaProperty { Type = "integer", Description = description };
+        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["integer", "null"]), Description = description };
 
     /// <summary>
     /// Creates a new boolean property with the given description
     /// </summary>
     public static JsonSchemaProperty Boolean(string? description = null) =>
-        new JsonSchemaProperty { Type = "boolean", Description = description };
+        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["boolean", "null"]), Description = description };
 
     /// <summary>
     /// Creates a new array property with the given item schema and description
@@ -299,7 +307,7 @@ public sealed record JsonSchemaProperty
     {
         return new JsonSchemaProperty
         {
-            Type = "array",
+            Type = JsonSchemaTypeHelper.ToType(["array", "null"]),
             Description = description,
             Items = items
         };
@@ -315,7 +323,7 @@ public sealed record JsonSchemaProperty
     {
         var items = new JsonSchemaObject
         {
-            Type = "string",
+            Type = JsonSchemaTypeHelper.ToType(["string", "null"]),
             Description = itemDescription
         };
 
@@ -403,5 +411,60 @@ public class JsonSchemaObjectBuilder
             AdditionalProperties = _additionalProperties,
             Description = _description
         };
+    }
+}
+
+public static class JsonSchemaTypeHelper
+{
+    public static bool IsNullable(JsonSchemaObject schemaObject)
+    {
+        return schemaObject.Type.Contains("null");
+    }
+
+    public static bool IsNullable(JsonSchemaProperty schemaProperty)
+    {
+        return schemaProperty.Type.Contains("null");
+    }
+
+    public static bool IsStringType(JsonSchemaObject schemaObject)
+    {
+        return schemaObject.Type.Contains("string");
+    }
+
+    public static bool IsStringType(JsonSchemaProperty schemaProperty)
+    {
+        return schemaProperty.Type.Contains("string");
+    }
+
+    public static bool IsTypeString(this JsonSchemaObject schemaObject, string type)
+    {
+        return schemaObject.Type.Contains(type);
+    }
+
+    public static bool Contains(this Union<string, IReadOnlyList<string>> type, string value)
+    {
+        return type.Is<string>()
+            ? type.Get<string>() == value
+            : type.Get<IReadOnlyList<string>>().Contains(value);
+    }
+
+    public static string GetTypeString(this Union<string, IReadOnlyList<string>> type)
+    {
+        return type.Is<string>()
+            ? type.Get<string>()
+            : type.Get<IReadOnlyList<string>>()
+                .Where(x => x != "null")
+                .FirstOrDefault()
+                ?? "object";
+    }
+
+    public static Union<string, IReadOnlyList<string>> ToType(string typeString)
+    {
+        return new Union<string, IReadOnlyList<string>>(typeString);
+    }
+
+    public static Union<string, IReadOnlyList<string>> ToType(string[] type)
+    {
+        return new Union<string, IReadOnlyList<string>>(type as IReadOnlyList<string>);
     }
 }

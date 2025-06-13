@@ -52,15 +52,15 @@ public static class FunctionContractExtension
     private static JsonSchemaProperty CreatePropertyForType(JsonSchemaObject schemaObject, string? description)
     {
         // Handle based on JsonSchemaObject type
-        return schemaObject.Type.ToLowerInvariant() switch
+        return JsonSchemaObject.GetJsonPrimaryType(schemaObject) switch
         {
             "string" => JsonSchemaProperty.String(description),
             "integer" => JsonSchemaProperty.Integer(description),
             "number" => JsonSchemaProperty.Number(description),
             "boolean" => JsonSchemaProperty.Boolean(description),
             "array" when schemaObject.Items != null => JsonSchemaProperty.Array(schemaObject.Items, description),
-            "object" => new JsonSchemaProperty { Type = "object", Description = description },
-            _ => new JsonSchemaProperty { Type = "string", Description = description }
+            "object" => new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["object", "null"]), Description = description },
+            _ => new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["string", "null"]), Description = description }
         };
     }
 }

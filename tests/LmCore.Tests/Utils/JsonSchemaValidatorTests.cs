@@ -212,7 +212,7 @@ public class JsonSchemaValidatorTests
                     ParameterType = new JsonSchemaObject
                     {
                         Type = "array",
-                        Items = new JsonSchemaObject { Type = "string" }
+                        Items = new JsonSchemaObject { Type ="string" }
                     }
                 }
             }

@@ -2,6 +2,7 @@ using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using MemoryServer.Services;
 using MemoryServer.Tools;
+using MemoryServer.Utils;
 using Microsoft.Extensions.Options;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -42,6 +43,9 @@ public static class ServiceCollectionExtensions
     services.AddScoped<IMemoryRepository, MemoryRepository>();
     services.AddScoped<IMemoryService, MemoryService>();
 
+    // Register embedding services for vector storage
+    services.AddScoped<IEmbeddingManager, EmbeddingManager>();
+
     // Register graph database services
     services.AddScoped<IGraphRepository, GraphRepository>();
     services.AddScoped<IGraphExtractionService, GraphExtractionService>();
@@ -50,6 +54,9 @@ public static class ServiceCollectionExtensions
 
     // Register LLM services
     services.AddLlmServices();
+
+    // Register LmConfig integration
+    services.AddScoped<ILmConfigService, LmConfigService>();
 
     // Register MCP tools
     services.AddScoped<MemoryMcpTools>();
@@ -61,28 +68,19 @@ public static class ServiceCollectionExtensions
     this IServiceCollection services, 
     IHostEnvironment? environment = null)
   {
-    if (environment?.IsDevelopment() == true || environment?.EnvironmentName == "Testing")
-    {
-      services.AddSingleton<ISqliteSessionFactory, TestSqliteSessionFactory>();
-    }
-    else
-    {
-      services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
-    }
+    // For MCP server, always use production database services
+    // Test services should only be used in actual test projects
+    services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
 
     return services;
   }
 
   public static IServiceCollection AddLlmServices(this IServiceCollection services)
   {
-    // Register prompt reader
-    services.AddScoped<IPromptReader>(provider =>
-    {
-      var promptsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prompts", "graph-extraction.yaml");
-      return new PromptReader(promptsPath);
-    });
+    // Register prompt reader that loads from embedded resources with file system fallback
+    services.AddScoped<IPromptReader, EmbeddedPromptReader>();
 
-    // Register LLM provider
+    // Register LLM provider following established patterns
     services.AddScoped<IAgent>(provider =>
     {
       var memoryOptions = provider.GetRequiredService<IOptions<MemoryServerOptions>>().Value;
@@ -90,30 +88,134 @@ public static class ServiceCollectionExtensions
 
       if (memoryOptions.LLM.DefaultProvider.ToLower() == "anthropic")
       {
-        var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? memoryOptions.LLM.Anthropic.ApiKey;
-        if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-        {
-          logger.LogWarning("Anthropic API key not configured. LLM features will be disabled.");
-          return new MockAgent("mock-anthropic");
-        }
-        var client = new AchieveAi.LmDotnetTools.AnthropicProvider.Agents.AnthropicClient(apiKey);
-        return new AnthropicAgent("memory-anthropic", client);
+        return CreateAnthropicAgent(memoryOptions, logger);
       }
       else
       {
-        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? memoryOptions.LLM.OpenAI.ApiKey;
-        var baseUrl = Environment.GetEnvironmentVariable("OPENAI_BASE_URL") ?? "https://api.openai.com/v1";
-        if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-        {
-          logger.LogWarning("OpenAI API key not configured. LLM features will be disabled.");
-          return new MockAgent("mock-openai");
-        }
-        var client = new AchieveAi.LmDotnetTools.OpenAIProvider.Agents.OpenClient(apiKey, baseUrl);
-        return new OpenClientAgent("memory-openai", client);
+        return CreateOpenAIAgent(memoryOptions, logger);
       }
     });
 
     return services;
+  }
+
+  /// <summary>
+  /// Gets API key from environment variables with fallback options
+  /// Following the pattern used throughout the codebase
+  /// </summary>
+  private static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "")
+  {
+    var apiKey = Environment.GetEnvironmentVariable(primaryKey);
+    if (!string.IsNullOrEmpty(apiKey))
+    {
+      return apiKey;
+    }
+
+    if (fallbackKeys != null)
+    {
+      foreach (var fallbackKey in fallbackKeys)
+      {
+        apiKey = Environment.GetEnvironmentVariable(fallbackKey);
+        if (!string.IsNullOrEmpty(apiKey))
+        {
+          return apiKey;
+        }
+      }
+    }
+
+    return defaultValue;
+  }
+
+  /// <summary>
+  /// Gets API base URL from environment variables with fallback options
+  /// Following the pattern used throughout the codebase
+  /// </summary>
+  private static string GetApiBaseUrlFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "https://api.openai.com/v1")
+  {
+    var baseUrl = Environment.GetEnvironmentVariable(primaryKey);
+    if (!string.IsNullOrEmpty(baseUrl))
+    {
+      return baseUrl;
+    }
+
+    if (fallbackKeys != null)
+    {
+      foreach (var fallbackKey in fallbackKeys)
+      {
+        baseUrl = Environment.GetEnvironmentVariable(fallbackKey);
+        if (!string.IsNullOrEmpty(baseUrl))
+        {
+          return baseUrl;
+        }
+      }
+    }
+
+    return defaultValue;
+  }
+
+  /// <summary>
+  /// Creates an Anthropic agent using consistent API key patterns
+  /// </summary>
+  private static IAgent CreateAnthropicAgent(MemoryServerOptions memoryOptions, ILogger logger)
+  {
+    // Use consistent pattern: Environment variable first, then config fallback
+    var apiKey = GetApiKeyFromEnv(
+      "ANTHROPIC_API_KEY", 
+      fallbackKeys: null, 
+      defaultValue: memoryOptions.LLM.Anthropic.ApiKey ?? "");
+    
+    if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
+    {
+      logger.LogWarning("Anthropic API key not configured. Using MockAgent for LLM features.");
+      return new MockAgent("mock-anthropic");
+    }
+    
+    try
+    {
+      var client = new AnthropicClient(apiKey);
+      logger.LogInformation("Anthropic LLM provider initialized successfully");
+      return new AnthropicAgent("memory-anthropic", client);
+    }
+    catch (Exception ex)
+    {
+      logger.LogWarning(ex, "Failed to initialize Anthropic client. Using MockAgent.");
+      return new MockAgent("mock-anthropic");
+    }
+  }
+
+  /// <summary>
+  /// Creates an OpenAI agent using consistent API key and base URL patterns
+  /// </summary>
+  private static IAgent CreateOpenAIAgent(MemoryServerOptions memoryOptions, ILogger logger)
+  {
+    // Use consistent pattern: Environment variable first, then config fallback
+    var apiKey = GetApiKeyFromEnv(
+      "OPENAI_API_KEY",
+      fallbackKeys: new[] { "LLM_API_KEY" },
+      defaultValue: memoryOptions.LLM.OpenAI.ApiKey ?? "");
+    
+    var baseUrl = GetApiBaseUrlFromEnv(
+      "OPENAI_BASE_URL",
+      fallbackKeys: new[] { "OPENAI_API_URL", "LLM_API_BASE_URL" },
+      defaultValue: "https://api.openai.com/v1");
+    
+    if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
+    {
+      logger.LogWarning("OpenAI API key not configured. Using MockAgent for LLM features.");
+      return new MockAgent("mock-openai");
+    }
+    
+    try
+    {
+      var client = new OpenClient(apiKey, baseUrl);
+      logger.LogInformation("OpenAI LLM provider initialized successfully with base URL: {BaseUrl}", baseUrl);
+      return new OpenClientAgent("memory-openai", client);
+    }
+    catch (Exception ex)
+    {
+      logger.LogWarning(ex, "Failed to initialize OpenAI client. Using MockAgent.");
+      return new MockAgent("mock-openai");
+    }
   }
 
   public static IServiceCollection AddMcpServices(
@@ -138,12 +240,8 @@ public static class ServiceCollectionExtensions
 
   public static IServiceCollection AddTestLlmServices(this IServiceCollection services)
   {
-    // Register prompt reader
-    services.AddScoped<IPromptReader>(provider =>
-    {
-      var promptsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prompts", "graph-extraction.yaml");
-      return new PromptReader(promptsPath);
-    });
+    // Register prompt reader that loads from embedded resources with file system fallback
+    services.AddScoped<IPromptReader, EmbeddedPromptReader>();
 
     // Use mock agent for testing
     services.AddScoped<IAgent>(provider => new MockAgent("test-agent"));

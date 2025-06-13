@@ -48,9 +48,64 @@ public interface IMemoryRepository
     Task<int> DeleteAllAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Gets memory history/changes for a specific memory ID.
+    /// Gets memory history entries for a specific memory ID.
     /// </summary>
     Task<List<MemoryHistoryEntry>> GetHistoryAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
+
+    // Vector storage and search methods
+
+    /// <summary>
+    /// Stores an embedding for a memory.
+    /// </summary>
+    /// <param name="memoryId">The ID of the memory.</param>
+    /// <param name="embedding">The embedding vector.</param>
+    /// <param name="modelName">The name of the embedding model used.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task StoreEmbeddingAsync(int memoryId, float[] embedding, string modelName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the embedding for a specific memory.
+    /// </summary>
+    /// <param name="memoryId">The ID of the memory.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The embedding vector or null if not found.</returns>
+    Task<float[]?> GetEmbeddingAsync(int memoryId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Performs vector similarity search to find memories similar to the query embedding.
+    /// </summary>
+    /// <param name="queryEmbedding">The query embedding vector.</param>
+    /// <param name="sessionContext">Session context for isolation.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="threshold">Minimum similarity threshold (0.0 to 1.0).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of memories with similarity scores.</returns>
+    Task<List<VectorSearchResult>> SearchVectorAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float threshold = 0.7f,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Performs hybrid search combining FTS5 and vector similarity search.
+    /// </summary>
+    /// <param name="query">The search query text.</param>
+    /// <param name="queryEmbedding">The query embedding vector.</param>
+    /// <param name="sessionContext">Session context for isolation.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="traditionalWeight">Weight for traditional search results (0.0 to 1.0).</param>
+    /// <param name="vectorWeight">Weight for vector search results (0.0 to 1.0).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of memories with combined scores.</returns>
+    Task<List<Memory>> SearchHybridAsync(
+        string query,
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float traditionalWeight = 0.3f,
+        float vectorWeight = 0.7f,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -123,4 +178,25 @@ public class MemoryHistoryEntry
     /// Additional metadata about the change.
     /// </summary>
     public Dictionary<string, object>? ChangeMetadata { get; set; }
+}
+
+/// <summary>
+/// Result of a vector similarity search.
+/// </summary>
+public class VectorSearchResult
+{
+    /// <summary>
+    /// The memory that matched the search.
+    /// </summary>
+    public Memory Memory { get; set; } = new();
+
+    /// <summary>
+    /// Similarity score (0.0 to 1.0, higher is more similar).
+    /// </summary>
+    public float Score { get; set; }
+
+    /// <summary>
+    /// Distance value from the vector search.
+    /// </summary>
+    public float Distance { get; set; }
 } 

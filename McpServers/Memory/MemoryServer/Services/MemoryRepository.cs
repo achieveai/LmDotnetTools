@@ -563,4 +563,294 @@ public class MemoryRepository : IMemoryRepository
         // Escape FTS5 special characters
         return query.Replace("\"", "\"\"");
     }
+
+    /// <summary>
+    /// Checks if the memory_embeddings table is using vec0 virtual table.
+    /// </summary>
+    private async Task<bool> CheckForVec0TableAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT sql FROM sqlite_master 
+            WHERE type='table' AND name='memory_embeddings' AND sql LIKE '%vec0%'";
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result != null;
+    }
+
+    /// <summary>
+    /// Checks if a specific table exists in the database.
+    /// </summary>
+    private async Task<bool> CheckForTableAsync(SqliteConnection connection, string tableName, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT COUNT(*) FROM sqlite_master 
+            WHERE type='table' AND name=@tableName";
+        
+        command.Parameters.AddWithValue("@tableName", tableName);
+        
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result != null && Convert.ToInt32(result) > 0;
+    }
+
+    // Vector storage and search methods
+
+    /// <summary>
+    /// Stores an embedding for a memory.
+    /// </summary>
+    public async Task StoreEmbeddingAsync(int memoryId, float[] embedding, string modelName, CancellationToken cancellationToken = default)
+    {
+        if (embedding == null || embedding.Length == 0)
+            throw new ArgumentException("Embedding cannot be empty", nameof(embedding));
+
+        if (string.IsNullOrWhiteSpace(modelName))
+            throw new ArgumentException("Model name cannot be empty", nameof(modelName));
+
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Convert float array to byte array for storage
+            var embeddingBytes = new byte[embedding.Length * sizeof(float)];
+            Buffer.BlockCopy(embedding, 0, embeddingBytes, 0, embeddingBytes.Length);
+
+            // Check if we're using vec0 virtual table or regular table with dimension column
+            bool hasVec0Table = await CheckForVec0TableAsync(connection, cancellationToken);
+            
+            using var embeddingCommand = connection.CreateCommand();
+            embeddingCommand.Transaction = transaction;
+            
+            if (hasVec0Table)
+            {
+                // Use vec0 virtual table (production schema)
+                embeddingCommand.CommandText = @"
+                    INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding)
+                    VALUES (@memoryId, @embedding)";
+            }
+            else
+            {
+                // Use regular table with dimension column (test schema)
+                embeddingCommand.CommandText = @"
+                    INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding, dimension)
+                    VALUES (@memoryId, @embedding, @dimension)";
+                embeddingCommand.Parameters.AddWithValue("@dimension", embedding.Length);
+            }
+
+            embeddingCommand.Parameters.AddWithValue("@memoryId", memoryId);
+            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingBytes);
+
+            await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
+
+            // Store metadata if embedding_metadata table exists
+            if (await CheckForTableAsync(connection, "embedding_metadata", cancellationToken))
+            {
+                using var metadataCommand = connection.CreateCommand();
+                metadataCommand.Transaction = transaction;
+                metadataCommand.CommandText = @"
+                    INSERT OR REPLACE INTO embedding_metadata (memory_id, model_name, embedding_dimension, created_at)
+                    VALUES (@memoryId, @modelName, @dimension, @createdAt)";
+
+                metadataCommand.Parameters.AddWithValue("@memoryId", memoryId);
+                metadataCommand.Parameters.AddWithValue("@modelName", modelName);
+                metadataCommand.Parameters.AddWithValue("@dimension", embedding.Length);
+                metadataCommand.Parameters.AddWithValue("@createdAt", DateTime.UtcNow);
+
+                await metadataCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            _logger.LogDebug("Stored embedding for memory {MemoryId} using model {ModelName} (dimension: {Dimension})", 
+                memoryId, modelName, embedding.Length);
+        });
+    }
+
+    /// <summary>
+    /// Gets the embedding for a specific memory.
+    /// </summary>
+    public async Task<float[]?> GetEmbeddingAsync(int memoryId, CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT embedding 
+                FROM memory_embeddings 
+                WHERE memory_id = @memoryId";
+
+            command.Parameters.AddWithValue("@memoryId", memoryId);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var embeddingOrdinal = reader.GetOrdinal("embedding");
+                if (!reader.IsDBNull(embeddingOrdinal))
+                {
+                    // sqlite-vec stores embeddings as BLOB, convert to float array
+                    var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
+                    var embedding = new float[embeddingBytes.Length / sizeof(float)];
+                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                    return embedding;
+                }
+            }
+
+            return null;
+        });
+    }
+
+    /// <summary>
+    /// Performs vector similarity search to find memories similar to the query embedding.
+    /// </summary>
+    public async Task<List<VectorSearchResult>> SearchVectorAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float threshold = 0.7f,
+        CancellationToken cancellationToken = default)
+    {
+        if (queryEmbedding == null || queryEmbedding.Length == 0)
+            throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
+
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            
+            // Use sqlite-vec for similarity search with session filtering
+            command.CommandText = @"
+                SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, 
+                       m.created_at, m.updated_at, m.version,
+                       vec_distance_cosine(e.embedding, @queryEmbedding) as distance
+                FROM memories m
+                JOIN memory_embeddings e ON m.id = e.memory_id
+                WHERE m.user_id = @userId
+                  AND vec_distance_cosine(e.embedding, @queryEmbedding) <= @distanceThreshold";
+
+            // Add session context filters
+            if (!string.IsNullOrEmpty(sessionContext.AgentId))
+            {
+                command.CommandText += " AND (m.agent_id = @agentId OR m.agent_id IS NULL)";
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+            }
+
+            if (!string.IsNullOrEmpty(sessionContext.RunId))
+            {
+                command.CommandText += " AND (m.run_id = @runId OR m.run_id IS NULL)";
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+            }
+
+            command.CommandText += @"
+                ORDER BY distance ASC
+                LIMIT @limit";
+
+            // Convert similarity threshold to distance threshold (cosine distance = 1 - cosine similarity)
+            var distanceThreshold = 1.0f - threshold;
+
+            // Convert query embedding to byte array for comparison
+            var queryEmbeddingBytes = new byte[queryEmbedding.Length * sizeof(float)];
+            Buffer.BlockCopy(queryEmbedding, 0, queryEmbeddingBytes, 0, queryEmbeddingBytes.Length);
+
+            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingBytes);
+            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+            command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
+            command.Parameters.AddWithValue("@limit", limit);
+
+            var results = new List<VectorSearchResult>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var memory = ReadMemoryFromReader(reader);
+                var distanceOrdinal = reader.GetOrdinal("distance");
+                var distance = reader.GetFloat(distanceOrdinal);
+                var similarity = 1.0f - distance; // Convert distance back to similarity
+
+                results.Add(new VectorSearchResult
+                {
+                    Memory = memory,
+                    Score = similarity,
+                    Distance = distance
+                });
+            }
+
+            _logger.LogDebug("Vector search returned {Count} results for session {SessionContext} with threshold {Threshold}", 
+                results.Count, sessionContext, threshold);
+
+            return results;
+        });
+    }
+
+    /// <summary>
+    /// Performs hybrid search combining FTS5 and vector similarity search.
+    /// </summary>
+    public async Task<List<Memory>> SearchHybridAsync(
+        string query,
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float traditionalWeight = 0.3f,
+        float vectorWeight = 0.7f,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            throw new ArgumentException("Query cannot be empty", nameof(query));
+
+        if (queryEmbedding == null || queryEmbedding.Length == 0)
+            throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
+
+        // Perform both searches in parallel
+        var traditionalSearchTask = SearchAsync(query, sessionContext, limit * 2, 0.0f, cancellationToken);
+        var vectorSearchTask = SearchVectorAsync(queryEmbedding, sessionContext, limit * 2, 0.5f, cancellationToken);
+
+        await Task.WhenAll(traditionalSearchTask, vectorSearchTask);
+
+        var traditionalResults = await traditionalSearchTask;
+        var vectorResults = await vectorSearchTask;
+
+        // Combine and score results
+        var combinedResults = new Dictionary<int, (Memory memory, float combinedScore)>();
+
+        // Add traditional search results with their weights
+        for (int i = 0; i < traditionalResults.Count; i++)
+        {
+            var memory = traditionalResults[i];
+            var traditionalScore = 1.0f - (float)i / traditionalResults.Count; // Higher score for earlier results
+            var weightedScore = traditionalScore * traditionalWeight;
+
+            combinedResults[memory.Id] = (memory, weightedScore);
+        }
+
+        // Add vector search results with their weights
+        foreach (var vectorResult in vectorResults)
+        {
+            var memory = vectorResult.Memory;
+            var vectorScore = vectorResult.Score;
+            var weightedScore = vectorScore * vectorWeight;
+
+            if (combinedResults.ContainsKey(memory.Id))
+            {
+                // Combine scores for memories found in both searches
+                var (existingMemory, existingScore) = combinedResults[memory.Id];
+                combinedResults[memory.Id] = (existingMemory, existingScore + weightedScore);
+            }
+            else
+            {
+                // Add new memory from vector search only
+                combinedResults[memory.Id] = (memory, weightedScore);
+            }
+        }
+
+        // Sort by combined score and return top results
+        var finalResults = combinedResults.Values
+            .OrderByDescending(x => x.combinedScore)
+            .Take(limit)
+            .Select(x => x.memory.WithScore(x.combinedScore))
+            .ToList();
+
+        _logger.LogInformation("Hybrid search returned {Count} results for session {SessionContext} (traditional: {TraditionalCount}, vector: {VectorCount})", 
+            finalResults.Count, sessionContext, traditionalResults.Count, vectorResults.Count);
+
+        return finalResults;
+    }
 } 

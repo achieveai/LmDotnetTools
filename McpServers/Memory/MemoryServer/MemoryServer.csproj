@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="dotenv.net" Version="3.2.1" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.5" />
@@ -20,7 +21,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="models.json" />
+    <EmbeddedResource Include="Prompts\graph-extraction.yaml" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
+    <ProjectReference Include="..\..\..\src\LmEmbeddings\AchieveAi.LmDotnetTools.LmEmbeddings.csproj" />
     <ProjectReference Include="..\..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
     <!-- Temporarily removed McpMiddleware reference to fix build -->

@@ -8,40 +8,41 @@ This document presents a comprehensive design for a sophisticated memory managem
 
 ## System Architecture Overview
 
-### High-Level Architecture
+### High-Level Architecture (Enhanced with LLM Integration)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Memory System                            │
+│              Memory System (LLM-Integrated)                 │
 ├─────────────────────────────────────────────────────────────┤
 │                    Public API Layer                         │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Memory    │  │ AsyncMemory │  │   Session           │  │
-│  │   Core      │  │    Core     │  │  Management         │  │
+│  │   Memory    │  │   Hybrid    │  │   Session           │  │
+│  │   Service   │  │   Search    │  │  Management         │  │
+│  │ (Enhanced)  │  │  Service    │  │                     │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                Intelligence Layer                           │
+│            LLM Integration Layer (NEW)                      │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │    Fact     │  │   Memory    │  │      LLM            │  │
-│  │ Extraction  │  │  Decision   │  │   Providers         │  │
-│  │   Engine    │  │   Engine    │  │                     │  │
+│  │   LmConfig  │  │ LmEmbeddings│  │   Intelligence      │  │
+│  │Integration  │  │ Integration │  │     Engine          │  │
+│  │   Service   │  │   Service   │  │ (Fact/Decision)     │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                Storage Layer (Enhanced)                     │
+│              Storage Layer (Enhanced)                       │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  Database   │  │   SQLite    │  │    Embedding        │  │
-│  │  Session    │  │  Storage    │  │    Manager          │  │
-│  │  Pattern    │  │  (sqlite-vec)│  │                     │  │
+│  │  Database   │  │   Vector    │  │    SQLite           │  │
+│  │  Session    │  │ Embeddings  │  │   Database          │  │
+│  │  Pattern    │  │   Storage   │  │  (FTS5 + Vec)       │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│                Infrastructure Layer                         │
+│                Provider Integration Layer                   │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ Configuration│  │  Monitoring │  │     Error           │  │
-│  │  Management │  │ & Telemetry │  │   Handling          │  │
+│  │   OpenAI    │  │  Anthropic  │  │    LmCore           │  │
+│  │ Provider    │  │  Provider   │  │   Foundation        │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -108,9 +109,89 @@ This document presents a comprehensive design for a sophisticated memory managem
 4. **Result Processing**: Format results with metadata and relevance scores
 5. **Access Control**: Ensure session isolation and security
 
+## LLM Libraries Integration
+
+### LmConfig Integration
+
+The Memory server now integrates with **LmConfig** for centralized model configuration management, replacing hard-coded provider selection with intelligent, capability-based model resolution.
+
+**Key Benefits**:
+- **Capability-Based Selection**: Automatically select optimal models based on required capabilities (chat, embedding, reasoning)
+- **Cost Optimization**: Choose models based on cost constraints and performance requirements  
+- **Dynamic Provider Management**: Runtime provider switching without configuration changes
+- **Centralized Configuration**: Single source of truth for all model configurations
+
+**Integration Components**:
+- `ILmConfigService`: Centralized service for model management and provider creation
+- Enhanced configuration structure supporting model metadata and cost constraints
+- Automatic fallback strategies for provider failures
+
+### LmEmbeddings Integration
+
+The Memory server now leverages **LmEmbeddings** for semantic vector search capabilities, transforming it from a text-only search system into a sophisticated semantic memory platform.
+
+**Key Benefits**:
+- **Semantic Search**: Find relevant memories regardless of exact wording
+- **Provider Abstraction**: Support multiple embedding providers through unified interface
+- **Performance Optimization**: Built-in caching, batching, and reranking capabilities
+- **Standardized API**: Consistent embedding operations across the ecosystem
+
+**Integration Components**:
+- `IMemoryEmbeddingService`: Memory-specific embedding operations with caching
+- Enhanced database schema with vector storage and indexing
+- Hybrid search combining text (FTS5) and semantic (vector) search
+- Configurable search modes and result fusion strategies
+
+### Enhanced Database Schema
+
+```sql
+-- New: Memory embeddings table
+CREATE TABLE memory_embeddings (
+    memory_id INTEGER PRIMARY KEY,
+    embedding BLOB NOT NULL,
+    embedding_model TEXT NOT NULL,
+    embedding_dimension INTEGER NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    FOREIGN KEY (memory_id) REFERENCES memories (id) ON DELETE CASCADE
+);
+
+-- New: Embedding cache for performance optimization
+CREATE TABLE embedding_cache (
+    content_hash TEXT PRIMARY KEY,
+    embedding BLOB NOT NULL,
+    embedding_model TEXT NOT NULL,
+    embedding_dimension INTEGER NOT NULL,
+    access_count INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    last_accessed DATETIME NOT NULL
+);
+
+-- Optimized indexes for vector operations
+CREATE INDEX idx_memory_embeddings_model ON memory_embeddings (embedding_model);
+CREATE INDEX idx_embedding_cache_model ON embedding_cache (embedding_model);
+CREATE INDEX idx_embedding_cache_accessed ON embedding_cache (last_accessed);
+```
+
+### Hybrid Search Architecture
+
+The integration introduces sophisticated hybrid search capabilities that combine the strengths of both text-based and semantic search:
+
+**Search Modes**:
+- **Text Search**: Traditional FTS5 full-text search for exact matches
+- **Semantic Search**: Vector similarity search for conceptual matches  
+- **Hybrid Search**: Intelligent fusion of both approaches with configurable weights
+
+**Search Flow**:
+1. **Query Processing**: Convert search query to both text tokens and embedding vector
+2. **Parallel Execution**: Run FTS5 and vector search concurrently
+3. **Result Fusion**: Combine and rank results based on configurable weights
+4. **Session Filtering**: Apply session context for proper isolation
+5. **Response Formatting**: Return unified results with relevance scores
+
 ## Component Deep Dive
 
-### 1. Memory Core Layer
+### 1. Memory Core Layer (Enhanced)
 
 **Memory Class (Synchronous)**:
 - Primary orchestration layer for all memory operations
@@ -466,52 +547,78 @@ This document presents a comprehensive design for a sophisticated memory managem
 
 ## Implementation Roadmap
 
-### Phase 1: Core Infrastructure (Weeks 1-2)
+### Phase 1: Core Infrastructure (Weeks 1-2) **COMPLETED**
 **Goal**: Establish foundational memory management capabilities
 
 **Week 1-2: Foundation**
-- Set up project structure and dependencies
-- Implement basic Memory and AsyncMemory classes
-- Create session management system
-- Implement UUID mapping strategy (critical for reliability)
-- Set up basic error handling and logging
+- ✅ Set up project structure and dependencies
+- ✅ Implement basic Memory and AsyncMemory classes
+- ✅ Create session management system
+- ✅ Implement UUID mapping strategy (critical for reliability)
+- ✅ Set up basic error handling and logging
 
-### Phase 1.5: Database Session Pattern (Weeks 2.5-3.5) **NEW PHASE**
+### Phase 1.5: Database Session Pattern (Weeks 2.5-3.5) **COMPLETED**
 **Goal**: Implement reliable SQLite connection management architecture
 
 **Week 2.5-3: Session Pattern Implementation**
-- Implement ISqliteSession and ISqliteSessionFactory interfaces
-- Create production SqliteSession with proper WAL handling
-- Implement TestSqliteSessionFactory for test isolation
-- Add comprehensive error handling and retry mechanisms
+- ✅ Implement ISqliteSession and ISqliteSessionFactory interfaces
+- ✅ Create production SqliteSession with proper WAL handling
+- ✅ Implement TestSqliteSessionFactory for test isolation
+- ✅ Add comprehensive error handling and retry mechanisms
 
 **Week 3-3.5: Migration and Integration**
-- Migrate existing repositories to use session pattern
-- Update service layer dependency injection
-- Comprehensive testing and validation
-- Performance optimization and monitoring
+- ✅ Migrate existing repositories to use session pattern
+- ✅ Update service layer dependency injection
+- ✅ Comprehensive testing and validation
+- ✅ Performance optimization and monitoring
 
 **Deliverables**:
-- Reliable SQLite connection management
-- Test isolation and cleanup mechanisms
-- Eliminated file locking issues
-- Improved resource management
+- ✅ Reliable SQLite connection management
+- ✅ Test isolation and cleanup mechanisms
+- ✅ Eliminated file locking issues
+- ✅ Improved resource management
 
-### Phase 2: Storage & LLM Integration (Weeks 4-5)
-**Goal**: Complete storage and LLM provider integration
+### Phase 2: LLM Libraries Integration (Weeks 4-6) **NEW ENHANCED PHASE**
+**Goal**: Integrate LmConfig and LmEmbeddings for enhanced capabilities
 
-**Week 4-5: Enhanced Storage & LLM Integration**
-- Complete SQLite storage integration with session pattern
-- Create OpenAI and Anthropic LLM providers
+**Week 4: Project Dependencies & Configuration**
+- Add LmConfig and LmEmbeddings project references
+- Implement LmConfigService for centralized model management
+- Update configuration structure to support model metadata
+- Add embedding service configuration and validation
+
+**Week 5: Database Schema Enhancement**
+- Add memory_embeddings and embedding_cache tables
+- Implement vector storage with sqlite-vec integration
+- Update MemoryRepository with embedding operations
+- Add database migration scripts and validation
+
+**Week 6: Hybrid Search Implementation**
+- Implement IMemoryEmbeddingService with caching
+- Create IHybridSearchService for combined search modes
+- Add parallel execution of text and semantic search
+- Implement result fusion with configurable weights
+
+**Deliverables**:
+- ✅ Enhanced project dependencies with LmConfig and LmEmbeddings
+- Vector embedding storage and retrieval
+- Hybrid search capabilities (text + semantic)
+- Centralized model configuration management
+
+### Phase 3: Storage & LLM Integration (Weeks 7-8) **UPDATED**
+**Goal**: Complete remaining LLM provider integration
+
+**Week 7-8: Enhanced LLM Integration**
+- Integrate existing OpenAI and Anthropic providers with LmConfig
 - Add code block removal utility (critical for JSON parsing)
-- Implement basic fact extraction with real prompts
+- Implement enhanced fact extraction with configurable models
 - Add comprehensive error handling and retry mechanisms
 
 **Deliverables**:
-- Working memory add/search operations with session management
-- Session isolation and security
-- Reliable LLM response processing
-- Basic fact extraction functionality
+- Working memory add/search operations with semantic capabilities
+- Session isolation and security maintained
+- Reliable LLM response processing with model flexibility
+- Enhanced fact extraction functionality
 
 ### Phase 3: Intelligence Layer (Weeks 5-8)
 **Goal**: Add sophisticated memory decision-making and advanced features
