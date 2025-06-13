@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+
 namespace MemoryServer.Models;
 
 /// <summary>
@@ -37,9 +39,19 @@ public class MemoryServerOptions
     public LLMOptions LLM { get; set; } = new();
 
     /// <summary>
+    /// LmConfig integration options.
+    /// </summary>
+    public LmConfigOptions LmConfig { get; set; } = new();
+
+    /// <summary>
     /// Memory-specific configuration options.
     /// </summary>
     public MemoryOptions Memory { get; set; } = new();
+
+    /// <summary>
+    /// Embedding and vector storage configuration options.
+    /// </summary>
+    public EmbeddingOptions Embedding { get; set; } = new();
 
     /// <summary>
     /// Server configuration options.
@@ -92,6 +104,11 @@ public class LLMOptions
     /// Default LLM provider to use.
     /// </summary>
     public string DefaultProvider { get; set; } = "openai";
+
+    /// <summary>
+    /// Whether to enable LLM-powered graph processing for entity and relationship extraction.
+    /// </summary>
+    public bool EnableGraphProcessing { get; set; } = true;
 
     /// <summary>
     /// OpenAI provider configuration.
@@ -252,4 +269,107 @@ public class SessionDefaultsOptions
     /// Maximum age for session defaults in minutes.
     /// </summary>
     public int MaxSessionAge { get; set; } = 1440; // 24 hours
+}
+
+/// <summary>
+/// LmConfig integration configuration options.
+/// </summary>
+public class LmConfigOptions
+{
+    /// <summary>
+    /// Direct AppConfig instance. If provided, this takes precedence over loading from file.
+    /// </summary>
+    public AppConfig? AppConfig { get; set; }
+
+    /// <summary>
+    /// Path to the LmConfig models.json file. Used only if AppConfig is not provided.
+    /// </summary>
+    public string ConfigPath { get; set; } = "config/models.json";
+
+    /// <summary>
+    /// Default fallback strategy for model selection.
+    /// </summary>
+    public string FallbackStrategy { get; set; } = "cost-optimized";
+
+    /// <summary>
+    /// Cost optimization settings.
+    /// </summary>
+    public CostOptimizationOptions CostOptimization { get; set; } = new();
+}
+
+/// <summary>
+/// Cost optimization configuration options.
+/// </summary>
+public class CostOptimizationOptions
+{
+    /// <summary>
+    /// Whether cost optimization is enabled.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Maximum cost per request in USD.
+    /// </summary>
+    public decimal MaxCostPerRequest { get; set; } = 0.01m;
+
+    /// <summary>
+    /// Daily cost limit in USD.
+    /// </summary>
+    public decimal DailyCostLimit { get; set; } = 10.00m;
+}
+
+/// <summary>
+/// Embedding and vector storage configuration options.
+/// </summary>
+public class EmbeddingOptions
+{
+    /// <summary>
+    /// Whether to enable vector storage and semantic search.
+    /// </summary>
+    public bool EnableVectorStorage { get; set; } = true;
+
+    /// <summary>
+    /// Cache expiration time in hours for generated embeddings.
+    /// </summary>
+    public int CacheExpirationHours { get; set; } = 24;
+
+    /// <summary>
+    /// Maximum size of the embedding cache in entries.
+    /// </summary>
+    public int MaxCacheSize { get; set; } = 10000;
+
+    /// <summary>
+    /// Default similarity threshold for vector search (0.0 to 1.0).
+    /// </summary>
+    public float DefaultSimilarityThreshold { get; set; } = 0.7f;
+
+    /// <summary>
+    /// Maximum number of results to return from vector search.
+    /// </summary>
+    public int MaxVectorSearchResults { get; set; } = 50;
+
+    /// <summary>
+    /// Weight for traditional search in hybrid search (0.0 to 1.0).
+    /// </summary>
+    public float TraditionalSearchWeight { get; set; } = 0.3f;
+
+    /// <summary>
+    /// Weight for vector search in hybrid search (0.0 to 1.0).
+    /// </summary>
+    public float VectorSearchWeight { get; set; } = 0.7f;
+
+    /// <summary>
+    /// Batch size for processing multiple embeddings at once.
+    /// </summary>
+    public int BatchSize { get; set; } = 10;
+
+    /// <summary>
+    /// Whether to generate embeddings automatically when adding memories.
+    /// </summary>
+    public bool AutoGenerateEmbeddings { get; set; } = true;
+
+    /// <summary>
+    /// Whether to use hybrid search (combining FTS5 and vector search) by default.
+    /// </summary>
+    public bool UseHybridSearch { get; set; } = true;
 } 

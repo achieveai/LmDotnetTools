@@ -28,6 +28,7 @@ public class ProviderTestDataManager
             new GenerateReplyOptionsJsonConverter(),
             new UnionJsonConverter<int, string>(),
             new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>(),
+            new UnionJsonConverter<string, IReadOnlyList<string>>(),
             new UnionJsonConverter<TextContent, ImageContent>(),
             new JsonPropertyNameEnumConverter<Role>(),
             new JsonPropertyNameEnumConverter<RoleEnum>(),

@@ -2,11 +2,10 @@
   "profiles": {
     "MemoryServer": {
       "commandName": "Project",
-      "launchBrowser": true,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       },
-      "applicationUrl": "https://localhost:64478;http://localhost:64479"
+      "applicationUrl": "http://localhost:64478;http://localhost:64479"
     }
   }
 }

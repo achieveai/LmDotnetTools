@@ -3,7 +3,11 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
 using System;
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Schema;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -188,5 +192,78 @@ public class ShadowPropertySerializationTests
         {
             Assert.Equal(50, Convert.ToInt32(topK));
         }
+    }
+
+    public record Person(string Name, int Age, string? Address = null);
+
+    [Fact]
+    public void JsonSchemaObject_CanBeDeserialized_FromDotNetJsonSchema_SimpleType()
+    {
+        // Generate schema using .NET 9 API
+        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(Person));
+        string schemaJson = dotnetSchema.ToJsonString();
+        var deserOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
+
+        deserOptions.Converters.Add(new JsonStringEnumConverter());
+        deserOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
+
+        // Deserialize to JsonSchemaObject
+        var schemaObj = JsonSerializer.Deserialize<JsonSchemaObject>(schemaJson, deserOptions);
+
+        Assert.NotNull(schemaObj);
+        Assert.Equal("object", JsonSchemaObject.GetJsonPrimaryType(schemaObj));
+        Assert.NotNull(schemaObj.Properties);
+        Assert.Contains("Name", schemaObj.Properties.Keys);
+        Assert.Contains("Age", schemaObj.Properties.Keys);
+        Assert.Contains("Address", schemaObj.Properties.Keys);
+        Assert.Contains("Name", schemaObj.Required ?? []);
+        Assert.Contains("Age", schemaObj.Required ?? []);
+    }
+
+    public class UserProfile
+    {
+        public string DisplayName { get; set; } = string.Empty;
+        public int Level { get; set; }
+    }
+
+    public class UserAccount
+    {
+        public Guid Id { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public UserProfile? Profile { get; set; }
+    }
+
+    [Fact]
+    public void JsonSchemaObject_CanBeDeserialized_FromDotNetJsonSchema_NestedType()
+    {
+        // Generate schema using .NET 9 API
+        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(UserAccount));
+        string schemaJson = dotnetSchema.ToJsonString();
+        var deserOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
+
+        deserOptions.Converters.Add(new JsonStringEnumConverter());
+        deserOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
+
+        // Deserialize to JsonSchemaObject
+        var schemaObj = JsonSerializer.Deserialize<JsonSchemaObject>(schemaJson, deserOptions);
+
+        Assert.NotNull(schemaObj);
+        Assert.Equal("object", JsonSchemaObject.GetJsonPrimaryType(schemaObj));
+        Assert.NotNull(schemaObj.Properties);
+        Assert.Contains("Id", schemaObj.Properties.Keys);
+        Assert.Contains("Email", schemaObj.Properties.Keys);
+        Assert.Contains("Profile", schemaObj.Properties.Keys);
+        // Profile should be an object type property
+        var profileProp = schemaObj.Properties["Profile"];
+        Assert.NotNull(profileProp);
+        // If Profile is nullable, type may be ["object", "null"] or similar
+        // We check that type contains "object" or is "object"
+        Assert.Equal("object", profileProp.Type.GetTypeString());
     }
 }

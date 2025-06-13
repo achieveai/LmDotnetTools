@@ -32,8 +32,8 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
 /// // Basic configuration
 /// var options = new OpenAIEmbeddingOptions
 /// {
-///     ApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
-///     DefaultModel = "text-embedding-3-small"
+///     ApiKey = Environment.GetEnvironmentVariable("EMBEDDING_API_KEY"),
+///     DefaultModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "text-embedding-3-small"
 /// };
 /// 
 /// var service = new OpenAIEmbeddingService(logger, httpClient, options);
@@ -231,7 +231,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
 
             var embeddings = openAIResponse.Data.Select((item, index) => new EmbeddingItem
             {
-                Vector = DecodeEmbedding(item.Embedding, request.EncodingFormat ?? "base64"),
+                Vector = DecodeEmbedding(item.Embedding, request.EncodingFormat ?? "float"),
                 Index = item.Index,
                 Text = request.Inputs.ElementAtOrDefault(item.Index)
             }).ToArray();

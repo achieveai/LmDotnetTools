@@ -1,14 +1,9 @@
 ---
-description: 
-globs: 
+description: Core Project Guidelines with Self-Review Process
+globs: *
 alwaysApply: true
 ---
 # Enhanced Cursor Rules with Self-Review Process
-
----
-Description: Core Project Guidelines with Self-Review Process
-Globs: *
----
 
 ## CRITICAL: Review Process Before Task Completion
 

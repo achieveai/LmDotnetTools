@@ -16,6 +16,7 @@ public class MemoryServiceTests
 {
     private readonly MockMemoryRepository _mockRepository;
     private readonly Mock<ILogger<MemoryService>> _mockLogger;
+    private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
     private readonly MemoryService _memoryService;
     private readonly MemoryServerOptions _options;
 
@@ -23,6 +24,7 @@ public class MemoryServiceTests
     {
         _mockRepository = new MockMemoryRepository();
         _mockLogger = new Mock<ILogger<MemoryService>>();
+        _mockEmbeddingManager = new Mock<IEmbeddingManager>();
         
         _options = new MemoryServerOptions
         {
@@ -30,13 +32,25 @@ public class MemoryServiceTests
             {
                 MaxMemoryLength = 10000,
                 DefaultSearchLimit = 10
+            },
+            Embedding = new EmbeddingOptions
+            {
+                EnableVectorStorage = false, // Disable for unit tests by default
+                AutoGenerateEmbeddings = false
             }
         };
 
         var optionsMock = new Mock<IOptions<MemoryServerOptions>>();
         optionsMock.Setup(x => x.Value).Returns(_options);
 
-        _memoryService = new MemoryService(_mockRepository, _mockLogger.Object, optionsMock.Object);
+        var mockGraphMemoryService = new Mock<IGraphMemoryService>();
+        
+        // Setup mock embedding manager
+        _mockEmbeddingManager.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
+        _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
+        
+        _memoryService = new MemoryService(_mockRepository, mockGraphMemoryService.Object, _mockEmbeddingManager.Object, _mockLogger.Object, optionsMock.Object);
     }
 
     [Theory]

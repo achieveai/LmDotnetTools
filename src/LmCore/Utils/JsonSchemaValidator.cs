@@ -69,7 +69,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         if (schema == null)
             return true;
 
-        switch (schema.Type.ToLower())
+        switch (schema.Type.GetTypeString())
         {
             case "string":
                 if (element.ValueKind != JsonValueKind.String)
@@ -131,7 +131,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         if (property == null)
             return true;
 
-        switch (property.Type.ToLower())
+        switch (property.Type.GetTypeString())
         {
             case "string":
                 if (element.ValueKind != JsonValueKind.String)

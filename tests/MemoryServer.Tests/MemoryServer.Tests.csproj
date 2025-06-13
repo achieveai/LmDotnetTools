@@ -49,6 +49,10 @@
     <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.runtimeconfig.json" 
           DestinationFolder="$(OutputPath)" 
           SkipUnchangedFiles="true" />
+    <!-- Copy prompt files needed for LLM services -->
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\Prompts\graph-extraction.yaml" 
+          DestinationFolder="$(OutputPath)\Prompts" 
+          SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

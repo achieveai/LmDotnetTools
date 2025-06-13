@@ -1,0 +1,47 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+## 🎯 **What the Story Scenario Tests:**
+
+### **📖 Story Content:**
+- Uses "The Mystery of Willowbrook's Lost Compass" with Emily Chen, Marcus Rodriguez, Mrs. Abernathy
+- Rich metadata including characters, locations, objects, relationships, and historical events
+- 3 chapters with different paragraph types (introduction, discovery, revelation)
+
+### **🔍 MCP Memory Operations:**
+- **Storage**: `memory_add` with structured metadata
+- **Retrieval**: `memory_search` by character, location, and object
+- **Semantic Search**: Testing vector similarity with "mysterious ancient artifacts"
+- **Cleanup**: `memory_delete_all` and verification
+
+### **🗄️ Database Validation using memory_db Tools:**
+- **Story Count**: Total memories for the story
+- **Character Analysis**: Cross-chapter character relationships  
+- **Embedding Status**: Verify vector embeddings were generated
+- **Session Isolation**: Ensure proper user/agent/run separation
+- **Metadata Structure**: Validate JSON metadata parsing
+
+### **🧪 Key Database Queries:**
+```sql
+-- Check story memories count
+SELECT COUNT(*) FROM memories WHERE json_extract(metadata, '$.story') = 'willowbrook_mystery';
+
+-- Verify character relationships across chapters
+SELECT chapter, characters, content_preview FROM memories WHERE story = 'willowbrook_mystery';
+
+-- Check embedding generation status
+SELECT id, has_embedding, embedding_size FROM memories WHERE story = 'willowbrook_mystery';
+```
+
+### **✅ Expected Validation Results:**
+- All paragraphs stored with unique IDs
+- Character/location searches return relevant content
+- Database footprints show proper metadata structure
+- Session isolation maintained
+- Vector embeddings generated (with API keys)
+- Semantic search returns contextually relevant results
+
+
+This scenario provides **end-to-end validation** of the MemoryServer's core functionality, from .env loading through complex memory operations to database analysis, exactly replicating our successful testing approach! 🎉

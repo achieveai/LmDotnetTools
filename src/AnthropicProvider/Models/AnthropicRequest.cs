@@ -354,15 +354,6 @@ public record AnthropicRequest
     {
         if (schemaObject == null) return "string";
 
-        return schemaObject.Type.ToLower() switch
-        {
-            "string" => "string",
-            "integer" => "integer",
-            "number" => "number",
-            "boolean" => "boolean",
-            "object" => "object",
-            "array" => "array",
-            _ => "string"
-        };
+        return schemaObject.Type.GetTypeString();
     }
 }
