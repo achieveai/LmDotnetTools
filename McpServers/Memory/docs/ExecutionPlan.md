@@ -6,6 +6,287 @@ The Memory MCP Server is an intelligent memory management system that provides p
 
 ## Current Status: 98-100% Complete ✅
 
+### 🚧 FUTURE ENHANCEMENTS - Memory Search Optimization
+
+Based on comprehensive testing and analysis, the following enhancements have been identified to transform the already excellent search system into an exceptional knowledge discovery platform:
+
+## **MASTER CHECKLIST - Phases 6-8 Overview**
+
+### **Phase 6: Unified Multi-Source Search Engine (2-3 weeks)**
+- [ ] **Week 1**: Database schema changes, enhanced GraphRepository with FTS5 and vector search for entities/relationships
+- [ ] **Week 2**: UnifiedSearchEngine implementation with parallel execution of 6 search operations
+- [ ] **Week 3**: Service integration, performance optimization, comprehensive testing
+
+### **Phase 7: Intelligent Reranking System (1-2 weeks)**  
+- [ ] **Week 1**: RerankingEngine with multi-dimensional scoring and hierarchical weighting (Memory 1.0, Entity 0.8, Relationship 0.7)
+- [ ] **Week 2**: Integration with reranking services, advanced scoring features, comprehensive testing
+
+### **Phase 8: Smart Deduplication & Result Enrichment (1-2 weeks)**
+- [ ] **Week 1**: DeduplicationEngine with hybrid detection (content similarity + source relationships)
+- [ ] **Week 2**: ResultEnricher with minimal enrichment (max 2 items), full pipeline integration and testing
+
+### **Success Criteria for All Phases**
+- [ ] Search accuracy improved from 8.5/10 to 9.5/10 target
+- [ ] All 225+ existing tests continue to pass
+- [ ] Performance maintained at <500ms response time
+- [ ] Graph data (43 entities, 26 relationships) fully searchable
+- [ ] Natural search experience without query type considerations
+- [ ] Clean results with intelligent deduplication
+
+---
+
+#### Phase 6: Unified Multi-Source Search Engine (High Priority) 🚧
+**Status**: NOT STARTED - Critical transformation to comprehensive search
+**Priority**: HIGH - Addresses major gap in current functionality
+**Estimated Effort**: 2-3 weeks
+**Dependencies**: Existing infrastructure (memories, entities, relationships, vector storage)
+
+**Problem Statement**:
+- Current search only uses memories, ignoring rich graph data (43 entities, 26 relationships)
+- No cross-source ranking between memories, entities, and relationships
+- Users need natural search without thinking about query types
+- Need intelligent deduplication to avoid overlapping results
+
+**Implementation Checklist**:
+
+**Week 1: Database Schema & Repository Enhancements**
+- [ ] **Database Schema Changes**
+  - [ ] Create `entities_fts` virtual table using FTS5 for entity full-text search
+  - [ ] Create `relationships_fts` virtual table using FTS5 for relationship full-text search
+  - [ ] Add `entity_embeddings` table for vector storage with foreign key to entities
+  - [ ] Add `relationship_embeddings` table for vector storage with foreign key to relationships
+  - [ ] Create database migration scripts for schema updates
+  - [ ] Test schema migration on existing database with 43 entities and 26 relationships
+
+- [ ] **Enhanced IGraphRepository Interface**
+  - [ ] Add `SearchEntitiesAsync(string query, SessionContext, int limit, CancellationToken)` method
+  - [ ] Add `SearchEntitiesVectorAsync(float[] embedding, SessionContext, int limit, CancellationToken)` method
+  - [ ] Add `SearchRelationshipsAsync(string query, SessionContext, int limit, CancellationToken)` method
+  - [ ] Add `SearchRelationshipsVectorAsync(float[] embedding, SessionContext, int limit, CancellationToken)` method
+  - [ ] Add `StoreEntityEmbeddingAsync(int entityId, float[] embedding, string model)` method
+  - [ ] Add `StoreRelationshipEmbeddingAsync(int relationshipId, float[] embedding, string model)` method
+
+- [ ] **GraphRepository Implementation**
+  - [ ] Implement entity FTS5 search with session isolation
+  - [ ] Implement relationship FTS5 search with session isolation
+  - [ ] Implement entity vector search using sqlite-vec
+  - [ ] Implement relationship vector search using sqlite-vec
+  - [ ] Add embedding storage and retrieval methods
+  - [ ] Add comprehensive error handling and logging
+
+**Week 2: UnifiedSearchEngine Core Implementation**
+- [ ] **UnifiedSearchEngine Class**
+  - [ ] Create `IUnifiedSearchEngine` interface with `SearchAllSourcesAsync` method
+  - [ ] Implement `UnifiedSearchEngine` class with dependency injection
+  - [ ] Add parallel execution of all 6 search operations (Memory FTS5/Vector, Entity FTS5/Vector, Relationship FTS5/Vector)
+  - [ ] Implement configurable timeouts for each search operation
+  - [ ] Add result aggregation and normalization logic
+  - [ ] Create `UnifiedSearchOptions` configuration class
+
+- [ ] **Data Models**
+  - [ ] Create `UnifiedSearchResult` class with common interface properties
+  - [ ] Create `UnifiedSearchResults` collection class with performance metrics
+  - [ ] Add `UnifiedResultType` enum (Memory, Entity, Relationship)
+  - [ ] Implement dual representation (common interface + original structure access)
+  - [ ] Add source metadata tracking for each result
+
+- [ ] **Result Normalization**
+  - [ ] Implement memory result normalization to unified format
+  - [ ] Implement entity result normalization to unified format
+  - [ ] Implement relationship result normalization to unified format
+  - [ ] Add score normalization across different search types
+  - [ ] Preserve original object references for type-specific access
+
+**Week 3: Integration & Performance Optimization**
+- [ ] **Service Integration**
+  - [ ] Update `IMemoryService.SearchMemoriesAsync` to use UnifiedSearchEngine
+  - [ ] Maintain backward compatibility with existing API
+  - [ ] Add configuration option to enable/disable unified search
+  - [ ] Implement graceful fallback to memory-only search on failures
+
+- [ ] **Performance Optimization**
+  - [ ] Add configurable result limits per source (default 20 per source)
+  - [ ] Implement search operation timeouts (default 5 seconds)
+  - [ ] Add performance metrics collection (search times, result counts)
+  - [ ] Optimize parallel execution with proper cancellation token handling
+  - [ ] Add memory usage monitoring and optimization
+
+- [ ] **Configuration & Testing**
+  - [ ] Add `UnifiedSearchOptions` to appsettings.json with hierarchical weights
+  - [ ] Create comprehensive unit tests for UnifiedSearchEngine
+  - [ ] Create integration tests with real database and all 6 search operations
+  - [ ] Test with existing 43 entities and 26 relationships
+  - [ ] Verify session isolation works across all search types
+  - [ ] Performance testing to ensure <500ms response time maintained
+
+#### Phase 7: Intelligent Reranking System (High Priority) 🚧
+**Status**: NOT STARTED - Critical for result quality optimization
+**Priority**: HIGH - Ensures best results surface regardless of source
+**Estimated Effort**: 1-2 weeks
+**Dependencies**: Phase 6 completion, LmEmbeddings rerank integration
+
+**Problem Statement**:
+- Need to rank results from different sources (memories vs entities vs relationships)
+- Must apply reranking BEFORE cutoffs to preserve best results
+- Require multi-dimensional scoring combining multiple relevance signals
+
+**Implementation Checklist**:
+
+**Week 1: RerankingEngine Core Implementation**
+- [ ] **RerankingEngine Interface & Class**
+  - [ ] Create `IRerankingEngine` interface with `RerankResultsAsync` method
+  - [ ] Implement `RerankingEngine` class with dependency injection
+  - [ ] Add integration with existing LmEmbeddings package for semantic reranking
+  - [ ] Implement generic reranking service abstraction (not provider-specific)
+  - [ ] Add fallback to local scoring when external reranking unavailable
+
+- [ ] **Multi-Dimensional Scoring System**
+  - [ ] Implement primary semantic relevance scoring using reranking service
+  - [ ] Add secondary scoring factors: content quality, recency, confidence
+  - [ ] Implement hierarchical source weighting (Memory 1.0, Entity 0.8, Relationship 0.7)
+  - [ ] Add connection strength scoring for entities (based on relationship count)
+  - [ ] Create configurable scoring weights and thresholds
+
+- [ ] **Configuration & Options**
+  - [ ] Create `RerankingOptions` class with all configuration parameters
+  - [ ] Add reranking service configuration (enable/disable, model selection)
+  - [ ] Implement configurable source weights dictionary
+  - [ ] Add max candidates limit for reranking (default 100)
+  - [ ] Create fallback scoring configuration options
+
+**Week 2: Integration & Advanced Features**
+- [ ] **Service Integration**
+  - [ ] Integrate RerankingEngine into UnifiedSearchEngine pipeline
+  - [ ] Ensure reranking happens BEFORE result cutoffs (as specified in design)
+  - [ ] Add reranking performance metrics and logging
+  - [ ] Implement graceful degradation when reranking fails
+
+- [ ] **Advanced Scoring Features**
+  - [ ] Add query intent matching for better semantic relevance
+  - [ ] Implement cross-source relevance comparison
+  - [ ] Add temporal scoring boost for recent content
+  - [ ] Implement confidence-based scoring for entities and relationships
+  - [ ] Add contextual scoring using relationship connections
+
+- [ ] **Testing & Validation**
+  - [ ] Create comprehensive unit tests for RerankingEngine
+  - [ ] Test with mock reranking service and real LmEmbeddings integration
+  - [ ] Validate hierarchical weighting works correctly (Memory > Entity > Relationship)
+  - [ ] Test fallback mechanisms when external reranking unavailable
+  - [ ] Performance testing to ensure reranking doesn't exceed time budgets
+  - [ ] Integration testing with Phase 6 UnifiedSearchEngine
+  - [ ] Validate that reranking improves search accuracy from 8.5/10 toward 9.5/10 target
+
+#### Phase 8: Smart Deduplication & Result Enrichment (Medium Priority) 🚧
+**Status**: NOT STARTED - Result quality and user experience enhancement
+**Priority**: MEDIUM - Improves result quality and user experience
+**Estimated Effort**: 1-2 weeks
+**Dependencies**: Phases 6-7 completion
+
+**Problem Statement**:
+- Avoid returning both entity and the memory that mentions it
+- Need intelligent overlap detection while preserving valuable context
+- Results should include relationship context and explanations
+
+**Implementation Checklist**:
+
+**Week 1: Smart Deduplication Engine**
+- [ ] **DeduplicationEngine Interface & Class**
+  - [ ] Create `IDeduplicationEngine` interface with `DeduplicateResultsAsync` method
+  - [ ] Implement `DeduplicationEngine` class with dependency injection
+  - [ ] Add configurable deduplication options and thresholds
+  - [ ] Implement hybrid detection combining content similarity and source relationships
+
+- [ ] **Content Similarity Detection**
+  - [ ] Implement text-based similarity detection using configurable threshold (default 85%)
+  - [ ] Add fuzzy matching for near-duplicate content across sources
+  - [ ] Create similarity scoring algorithm for cross-source content comparison
+  - [ ] Add whitespace and formatting normalization for accurate comparison
+
+- [ ] **Source Relationship Analysis**
+  - [ ] Implement memory-entity overlap detection (trace entities back to originating memories)
+  - [ ] Add memory-relationship overlap detection (trace relationships back to memories)
+  - [ ] Create entity-relationship connection analysis
+  - [ ] Implement hierarchical preference logic (Memory > Entity > Relationship)
+
+- [ ] **Context Preservation Logic**
+  - [ ] Add logic to preserve duplicates that provide unique value or perspective
+  - [ ] Implement complementary information detection
+  - [ ] Create context value scoring to determine when to keep duplicates
+  - [ ] Add configuration for context preservation sensitivity
+
+**Week 2: Result Enrichment & Integration**
+- [ ] **ResultEnricher Interface & Class**
+  - [ ] Create `IResultEnricher` interface with `EnrichResultsAsync` method
+  - [ ] Implement `ResultEnricher` class with minimal enrichment principle (max 2 items)
+  - [ ] Add relationship context discovery for memory results
+  - [ ] Implement connection path analysis between entities and query terms
+
+- [ ] **Minimal Enrichment Features**
+  - [ ] Add 1-2 most directly related entities for memory results
+  - [ ] Include 1-2 most relevant relationships for entity results
+  - [ ] Generate concise relevance explanations for each result
+  - [ ] Add confidence indicators for extracted entities and relationships
+
+- [ ] **Advanced Enrichment (Optional)**
+  - [ ] Implement suggested related queries based on graph connections
+  - [ ] Add connection path visualization data
+  - [ ] Create alternative result suggestions
+  - [ ] Add query expansion suggestions based on discovered entities
+
+- [ ] **Integration & Testing**
+  - [ ] Integrate DeduplicationEngine into UnifiedSearchEngine pipeline (after reranking)
+  - [ ] Integrate ResultEnricher as final step in search pipeline
+  - [ ] Create comprehensive unit tests for both engines
+  - [ ] Test deduplication with real data (43 entities, 26 relationships)
+  - [ ] Validate that enrichment stays minimal (max 2 related items per result)
+  - [ ] Performance testing to ensure enrichment doesn't impact <500ms target
+  - [ ] Integration testing with complete Phases 6-7-8 pipeline
+  - [ ] User experience testing to validate clean, non-redundant results
+
+#### Phase 9: Intelligent Score Calibration (Lower Priority) 🚧
+**Status**: NOT STARTED - Search optimization
+**Priority**: LOWER - Optimization and refinement
+**Estimated Effort**: 1 week
+**Dependencies**: Phases 6-8 completion recommended
+
+**Components to Implement**:
+1. **Adaptive Scoring System**
+   - Adjust scoring based on query type and context
+   - Multi-dimensional scoring (content, relationships, relevance)
+   - Dynamic threshold calculation
+
+2. **Score Transparency**
+   - Provide scoring rationale and explanations
+   - Enhanced API with score breakdown
+   - Result ranking improvements
+
+#### Phase 10: Advanced Query Understanding (Lower Priority) 🚧
+**Status**: NOT STARTED - Query processing enhancement
+**Priority**: LOWER - Advanced user experience features
+**Estimated Effort**: 2 weeks
+**Dependencies**: All previous phases recommended
+
+**Components to Implement**:
+1. **Multi-Intent Query Processing**
+   - Query intent classification system
+   - Handle multi-intent queries (e.g., "researchers at Stanford who work on AI")
+   - Temporal query support (e.g., "recent collaborations")
+
+2. **Comparative Search**
+   - Similarity-based search capabilities
+   - Comparative queries (e.g., "similar researchers to X")
+   - Related entity suggestions
+
+**Current Search Performance**: 8.5/10 ⭐
+- ✅ Excellent domain-specific expertise matching
+- ✅ Strong multi-term semantic understanding  
+- ✅ Perfect institutional and location recognition
+- ✅ Effective cross-domain conceptual searches
+- ✅ Robust hybrid FTS5 + vector similarity integration
+- 🔄 Relationship queries need enhancement (Phases 6-8)
+- 🔄 Abstract concept handling needs improvement (Phase 7)
+
 ### ✅ COMPLETED PHASES
 
 #### Phase 1: Data Models and Core Infrastructure (100% Complete)
@@ -273,6 +554,44 @@ The Memory MCP Server is an intelligent memory management system that provides p
 
 ## Implementation Priorities
 
+### **NEXT: Unified Multi-Source Search Enhancements** 🚧
+
+#### **Phase 6: Unified Multi-Source Search Engine (HIGH PRIORITY)**
+**Timeline**: Next 2-3 weeks
+**Impact**: Critical - Transforms search from single-source to comprehensive multi-source
+**Effort**: High - Requires parallel search execution and result normalization
+**Dependencies**: Existing infrastructure (memories, entities, relationships, vector storage)
+
+**Key Deliverables**:
+- UnifiedSearchEngine executing 6 parallel searches simultaneously
+- Enhanced GraphRepository with FTS5 and vector search for entities/relationships
+- Database schema enhancements for entity/relationship search and embeddings
+- Result normalization and aggregation across all sources
+
+#### **Phase 7: Intelligent Reranking System (HIGH PRIORITY)**
+**Timeline**: Following Phase 6 completion (1-2 weeks)
+**Impact**: High - Ensures best results surface regardless of source
+**Effort**: Medium - Leverages existing LmEmbeddings rerank integration
+**Dependencies**: Phase 6 completion, Cohere API access
+
+**Key Deliverables**:
+- RerankingEngine with Cohere API integration for semantic reranking
+- Multi-dimensional scoring system combining multiple relevance signals
+- Source-aware weighting with configurable preferences
+- Fallback mechanisms for API unavailability
+
+#### **Phase 8: Smart Deduplication & Result Enrichment (MEDIUM PRIORITY)**
+**Timeline**: After Phases 6-7 (1-2 weeks)
+**Impact**: Medium - Improves result quality and user experience
+**Effort**: Medium - Intelligent overlap detection and context enrichment
+**Dependencies**: Phases 6-7 completion
+
+**Key Deliverables**:
+- DeduplicationEngine with intelligent overlap detection
+- ResultEnricher adding relationship context and explanations
+- Connection path discovery and relevance explanations
+- Suggested query generation based on graph connections
+
 ### **COMPLETED: LLM Integration** ✅
 1. **Configure LLM Providers** ✅
    - Added API keys to appsettings.json with environment variable support
@@ -301,6 +620,17 @@ The Memory MCP Server is an intelligent memory management system that provides p
    - Optimized search performance with configurable weights and caching
 
 ## Success Criteria
+
+### 🚧 **Unified Multi-Source Search Enhancements - IN PLANNING**
+- [ ] Unified search engine querying all 6 sources simultaneously (Memory FTS5/Vector, Entity FTS5/Vector, Relationship FTS5/Vector)
+- [ ] Intelligent reranking using Cohere API with multi-dimensional scoring
+- [ ] Smart deduplication avoiding overlapping results while preserving context
+- [ ] Natural search experience without query type considerations
+- [ ] Graph data (43 entities, 26 relationships) fully searchable and integrated
+- [ ] Reranking applied BEFORE cutoffs to preserve best results
+- [ ] Search accuracy improved from 8.5/10 to 9.5/10 target
+- [ ] Performance maintained <500ms with parallel execution optimization
+- [ ] Comprehensive test coverage for unified search pipeline
 
 ### ✅ **MCP Protocol Integration - COMPLETED**
 - [x] All 13 MCP tools implemented and tested
