@@ -20,13 +20,8 @@ public static class SchemaHelper
     {
         JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
         string schemaJson = dotnetSchema.ToJsonString();
-        var deserOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
-
+        var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());
-        deserOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
 
         // Deserialize to JsonSchemaObject
         return JsonSerializer.Deserialize<JsonSchemaObject>(schemaJson, deserOptions)!;

@@ -34,7 +34,7 @@
           {
             "role": "user",
             "index": 0,
-            "content": "What's the weather in San Francisco?"
+            "content": "What\u0027s the weather in San Francisco?"
           }
         ]
       },
@@ -57,7 +57,7 @@
                   "type": "function",
                   "function": {
                     "name": "getWeather",
-                    "arguments": "{\n  \"location\": \"San Francisco\"\n}"
+                    "arguments": "{\n  \u0022location\u0022: \u0022San Francisco\u0022\n}"
                   }
                 }
               ],
@@ -77,8 +77,27 @@
           }
         }
       },
+      "SerializedResponseFragments": []
+    },
+    {
+      "SerializedRequest": {
+        "model": "",
+        "temperature": 0,
+        "max_tokens": 4096,
+        "n": 1,
+        "stop": [],
+        "messages": []
+      },
+      "SerializedResponse": {
+        "error": {
+          "message": "Input required: specify \u0022prompt\u0022 or \u0022messages\u0022",
+          "code": 400
+        },
+        "user_id": "user_2eAHWsOS7GUxlg91mlZ8k48Z64p"
+      },
       "SerializedResponseFragments": [],
-      "IsStreaming": false
+      "RecordedAt": "2025-06-13T23:22:42.1047353Z",
+      "Provider": "OpenAI"
     }
   ]
 }

@@ -18,34 +18,9 @@ public class CachingMiddleware : IStreamingMiddleware
     /// <summary>
     /// Static JsonSerializerOptions used for serialization and deserialization of messages
     /// </summary>
-    public static readonly JsonSerializerOptions S_jsonSerializerOptions = CreateJsonSerializerOptions();
+    public static readonly JsonSerializerOptions S_jsonSerializerOptions = JsonSerializerOptionsFactory.CreateBase();
 
-    /// <summary>
-    /// Creates a JsonSerializerOptions instance with all necessary converters for message serialization
-    /// </summary>
-    private static JsonSerializerOptions CreateJsonSerializerOptions()
-    {
-        var options = new JsonSerializerOptions
-        {
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            WriteIndented = false,
-            PropertyNameCaseInsensitive = true
-        };
 
-        // Add the IMessage converter for polymorphic serialization
-        options.Converters.Add(new IMessageJsonConverter());
-
-        // Add converters for specific message types
-        options.Converters.Add(new TextMessageJsonConverter());
-        options.Converters.Add(new ImageMessageJsonConverter());
-        options.Converters.Add(new ToolsCallMessageJsonConverter());
-        options.Converters.Add(new ToolsCallResultMessageJsonConverter());
-        options.Converters.Add(new ToolsCallAggregateMessageJsonConverter());
-        options.Converters.Add(new TextUpdateMessageJsonConverter());
-        options.Converters.Add(new ToolsCallUpdateMessageJsonConverter());
-
-        return options;
-    }
 
     private readonly IKvStore _kvStore;
 

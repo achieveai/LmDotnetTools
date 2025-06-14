@@ -11,12 +11,13 @@ using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
 public class OpenClient : BaseHttpService, IOpenClient
 {
-    public readonly static JsonSerializerOptions S_jsonSerializerOptions = CreateJsonSerializerOptions();
+    public readonly static JsonSerializerOptions S_jsonSerializerOptions = OpenAIJsonSerializerOptionsFactory.CreateForProduction();
 
     private readonly IPerformanceTracker _performanceTracker;
     private readonly string _baseUrl;
@@ -229,18 +230,5 @@ public class OpenClient : BaseHttpService, IOpenClient
         }
     }
 
-    private static JsonSerializerOptions CreateJsonSerializerOptions()
-    {
-        var jsonSerializerOptions = new JsonSerializerOptions()
-        {
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            AllowTrailingCommas = true,
-        };
 
-        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
-        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
-        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
-
-        return jsonSerializerOptions;
-    }
 }
