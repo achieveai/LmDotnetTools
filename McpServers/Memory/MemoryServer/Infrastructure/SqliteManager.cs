@@ -360,6 +360,60 @@ public class SqliteManager : IDisposable
                 FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE SET NULL,
                 UNIQUE(source, relationship_type, target, user_id, agent_id, run_id)
             );");
+
+        // FTS5 virtual tables for entity and relationship search
+        schema.AppendLine(@"
+            CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
+                name,
+                type,
+                aliases,
+                metadata,
+                content='entities',
+                content_rowid='id'
+            );");
+
+        schema.AppendLine(@"
+            CREATE VIRTUAL TABLE IF NOT EXISTS relationships_fts USING fts5(
+                source,
+                relationship_type,
+                target,
+                temporal_context,
+                metadata,
+                content='relationships',
+                content_rowid='id'
+            );");
+
+        // Vector embeddings for entities and relationships using sqlite-vec
+        schema.AppendLine(@"
+            CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(
+                entity_id INTEGER PRIMARY KEY,
+                embedding FLOAT[1536]
+            );");
+
+        schema.AppendLine(@"
+            CREATE VIRTUAL TABLE IF NOT EXISTS relationship_embeddings USING vec0(
+                relationship_id INTEGER PRIMARY KEY,
+                embedding FLOAT[1536]
+            );");
+
+        // Metadata tables for entity and relationship embeddings
+        schema.AppendLine(@"
+            CREATE TABLE IF NOT EXISTS entity_embedding_metadata (
+                entity_id INTEGER PRIMARY KEY,
+                model_name TEXT NOT NULL,
+                embedding_dimension INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+            );");
+
+        schema.AppendLine(@"
+            CREATE TABLE IF NOT EXISTS relationship_embedding_metadata (
+                relationship_id INTEGER PRIMARY KEY,
+                model_name TEXT NOT NULL,
+                embedding_dimension INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (relationship_id) REFERENCES relationships(id) ON DELETE CASCADE
+            );");
         
         // Indexes for performance
         schema.AppendLine(@"
@@ -371,6 +425,16 @@ public class SqliteManager : IDisposable
             CREATE INDEX IF NOT EXISTS idx_embedding_metadata_model ON embedding_metadata(model_name);
             CREATE INDEX IF NOT EXISTS idx_embedding_metadata_dimension ON embedding_metadata(embedding_dimension);
             CREATE INDEX IF NOT EXISTS idx_embedding_metadata_created ON embedding_metadata(created_at DESC);
+            
+            -- Entity embedding metadata indexes
+            CREATE INDEX IF NOT EXISTS idx_entity_embedding_metadata_model ON entity_embedding_metadata(model_name);
+            CREATE INDEX IF NOT EXISTS idx_entity_embedding_metadata_dimension ON entity_embedding_metadata(embedding_dimension);
+            CREATE INDEX IF NOT EXISTS idx_entity_embedding_metadata_created ON entity_embedding_metadata(created_at DESC);
+            
+            -- Relationship embedding metadata indexes
+            CREATE INDEX IF NOT EXISTS idx_relationship_embedding_metadata_model ON relationship_embedding_metadata(model_name);
+            CREATE INDEX IF NOT EXISTS idx_relationship_embedding_metadata_dimension ON relationship_embedding_metadata(embedding_dimension);
+            CREATE INDEX IF NOT EXISTS idx_relationship_embedding_metadata_created ON relationship_embedding_metadata(created_at DESC);
             
             -- Graph database indexes
             CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(user_id, agent_id, run_id);
@@ -402,6 +466,38 @@ public class SqliteManager : IDisposable
         schema.AppendLine(@"
             CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.id;
+            END");
+
+        // FTS5 triggers for entities
+        schema.AppendLine(@"
+            CREATE TRIGGER IF NOT EXISTS entities_fts_insert AFTER INSERT ON entities BEGIN
+                INSERT INTO entities_fts(rowid, name, type, aliases, metadata) VALUES (new.id, new.name, new.type, new.aliases, new.metadata);
+            END");
+
+        schema.AppendLine(@"
+            CREATE TRIGGER IF NOT EXISTS entities_fts_update AFTER UPDATE ON entities BEGIN
+                UPDATE entities_fts SET name = new.name, type = new.type, aliases = new.aliases, metadata = new.metadata WHERE rowid = new.id;
+            END");
+
+        schema.AppendLine(@"
+            CREATE TRIGGER IF NOT EXISTS entities_fts_delete AFTER DELETE ON entities BEGIN
+                DELETE FROM entities_fts WHERE rowid = old.id;
+            END");
+
+        // FTS5 triggers for relationships
+        schema.AppendLine(@"
+            CREATE TRIGGER IF NOT EXISTS relationships_fts_insert AFTER INSERT ON relationships BEGIN
+                INSERT INTO relationships_fts(rowid, source, relationship_type, target, temporal_context, metadata) VALUES (new.id, new.source, new.relationship_type, new.target, new.temporal_context, new.metadata);
+            END");
+
+        schema.AppendLine(@"
+            CREATE TRIGGER IF NOT EXISTS relationships_fts_update AFTER UPDATE ON relationships BEGIN
+                UPDATE relationships_fts SET source = new.source, relationship_type = new.relationship_type, target = new.target, temporal_context = new.temporal_context, metadata = new.metadata WHERE rowid = new.id;
+            END");
+
+        schema.AppendLine(@"
+            CREATE TRIGGER IF NOT EXISTS relationships_fts_delete AFTER DELETE ON relationships BEGIN
+                DELETE FROM relationships_fts WHERE rowid = old.id;
             END");
         
         return schema.ToString();

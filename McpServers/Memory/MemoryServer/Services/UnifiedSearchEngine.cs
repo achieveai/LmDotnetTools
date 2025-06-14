@@ -1,0 +1,494 @@
+using System.Diagnostics;
+using MemoryServer.Models;
+
+namespace MemoryServer.Services;
+
+/// <summary>
+/// Unified multi-source search engine that searches across memories, entities, and relationships.
+/// Executes all 6 search operations in parallel (Memory FTS5/Vector, Entity FTS5/Vector, Relationship FTS5/Vector).
+/// </summary>
+public class UnifiedSearchEngine : IUnifiedSearchEngine
+{
+    private readonly IMemoryRepository _memoryRepository;
+    private readonly IGraphRepository _graphRepository;
+    private readonly IEmbeddingManager _embeddingManager;
+    private readonly ILogger<UnifiedSearchEngine> _logger;
+
+    public UnifiedSearchEngine(
+        IMemoryRepository memoryRepository,
+        IGraphRepository graphRepository,
+        IEmbeddingManager embeddingManager,
+        ILogger<UnifiedSearchEngine> logger)
+    {
+        _memoryRepository = memoryRepository ?? throw new ArgumentNullException(nameof(memoryRepository));
+        _graphRepository = graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
+        _embeddingManager = embeddingManager ?? throw new ArgumentNullException(nameof(embeddingManager));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public async Task<UnifiedSearchResults> SearchAllSourcesAsync(
+        string query,
+        SessionContext sessionContext,
+        UnifiedSearchOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            throw new ArgumentException("Query cannot be empty", nameof(query));
+
+        options ??= new UnifiedSearchOptions();
+        var totalStopwatch = Stopwatch.StartNew();
+        var metrics = new UnifiedSearchMetrics();
+
+        _logger.LogDebug("Starting unified search for query '{Query}' with options: FTS={EnableFts}, Vector={EnableVector}", 
+            query, options.EnableFtsSearch, options.EnableVectorSearch);
+
+        try
+        {
+            // Generate embedding for vector searches if enabled
+            float[]? queryEmbedding = null;
+            if (options.EnableVectorSearch)
+            {
+                try
+                {
+                    queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(query, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to generate embedding for query '{Query}', vector search will be disabled", query);
+                    metrics.Errors.Add($"Embedding generation failed: {ex.Message}");
+                    if (!options.EnableGracefulFallback)
+                        throw;
+                }
+            }
+
+            return await SearchAllSourcesAsync(query, queryEmbedding, sessionContext, options, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unified search failed for query '{Query}'", query);
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Search failed: {ex.Message}");
+            metrics.TotalDuration = totalStopwatch.Elapsed;
+
+            if (!options.EnableGracefulFallback)
+                throw;
+
+            return new UnifiedSearchResults { Metrics = metrics };
+        }
+    }
+
+    public async Task<UnifiedSearchResults> SearchAllSourcesAsync(
+        string query,
+        float[]? queryEmbedding,
+        SessionContext sessionContext,
+        UnifiedSearchOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            throw new ArgumentException("Query cannot be empty", nameof(query));
+
+        options ??= new UnifiedSearchOptions();
+        var totalStopwatch = Stopwatch.StartNew();
+        var metrics = new UnifiedSearchMetrics();
+
+        _logger.LogDebug("Starting unified search with {SearchCount} parallel operations", 
+            GetSearchOperationCount(options, queryEmbedding != null));
+
+        try
+        {
+            // Create tasks for all search operations
+            var searchTasks = new List<Task>();
+            var results = new List<UnifiedSearchResult>();
+
+            // Memory searches
+            if (options.EnableFtsSearch)
+            {
+                searchTasks.Add(ExecuteMemoryFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken));
+            }
+
+            if (options.EnableVectorSearch && queryEmbedding != null)
+            {
+                searchTasks.Add(ExecuteMemoryVectorSearchAsync(queryEmbedding, sessionContext, options, metrics, results, cancellationToken));
+            }
+
+            // Entity searches
+            if (options.EnableFtsSearch)
+            {
+                searchTasks.Add(ExecuteEntityFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken));
+            }
+
+            if (options.EnableVectorSearch && queryEmbedding != null)
+            {
+                searchTasks.Add(ExecuteEntityVectorSearchAsync(queryEmbedding, sessionContext, options, metrics, results, cancellationToken));
+            }
+
+            // Relationship searches
+            if (options.EnableFtsSearch)
+            {
+                searchTasks.Add(ExecuteRelationshipFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken));
+            }
+
+            if (options.EnableVectorSearch && queryEmbedding != null)
+            {
+                searchTasks.Add(ExecuteRelationshipVectorSearchAsync(queryEmbedding, sessionContext, options, metrics, results, cancellationToken));
+            }
+
+            // Execute all searches in parallel with timeout
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(options.SearchTimeout);
+
+            try
+            {
+                await Task.WhenAll(searchTasks);
+            }
+            catch (OperationCanceledException) when (timeoutCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("Unified search timed out after {Timeout}", options.SearchTimeout);
+                metrics.HasFailures = true;
+                metrics.Errors.Add($"Search timed out after {options.SearchTimeout}");
+            }
+
+            totalStopwatch.Stop();
+            metrics.TotalDuration = totalStopwatch.Elapsed;
+
+            // Apply type weights and sort results
+            ApplyTypeWeights(results, options.TypeWeights);
+            var sortedResults = results.OrderByDescending(r => r.Score).ToList();
+
+            _logger.LogInformation("Unified search completed: {TotalResults} results ({MemoryCount} memories, {EntityCount} entities, {RelationshipCount} relationships) in {Duration}ms",
+                sortedResults.Count,
+                sortedResults.Count(r => r.Type == UnifiedResultType.Memory),
+                sortedResults.Count(r => r.Type == UnifiedResultType.Entity),
+                sortedResults.Count(r => r.Type == UnifiedResultType.Relationship),
+                metrics.TotalDuration.TotalMilliseconds);
+
+            return new UnifiedSearchResults
+            {
+                Results = sortedResults,
+                Metrics = metrics
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unified search failed for query '{Query}'", query);
+            totalStopwatch.Stop();
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Search failed: {ex.Message}");
+            metrics.TotalDuration = totalStopwatch.Elapsed;
+
+            if (!options.EnableGracefulFallback)
+                throw;
+
+            return new UnifiedSearchResults { Metrics = metrics };
+        }
+    }
+
+    private async Task ExecuteMemoryFtsSearchAsync(
+        string query,
+        SessionContext sessionContext,
+        UnifiedSearchOptions options,
+        UnifiedSearchMetrics metrics,
+        List<UnifiedSearchResult> results,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var memories = await _memoryRepository.SearchAsync(query, sessionContext, options.MaxResultsPerSource, 0.0f, cancellationToken);
+            
+            lock (results)
+            {
+                foreach (var memory in memories)
+                {
+                    results.Add(new UnifiedSearchResult
+                    {
+                        Type = UnifiedResultType.Memory,
+                        Id = memory.Id,
+                        Content = memory.Content,
+                        Score = 1.0f, // FTS5 doesn't provide scores, use default
+                        Source = "FTS5",
+                        CreatedAt = memory.CreatedAt,
+                        Metadata = memory.Metadata,
+                        OriginalMemory = memory
+                    });
+                }
+                metrics.MemoryFtsResultCount = memories.Count;
+            }
+
+            _logger.LogDebug("Memory FTS5 search returned {Count} results in {Duration}ms", memories.Count, stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Memory FTS5 search failed");
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Memory FTS5 search failed: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            metrics.MemoryFtsSearchDuration = stopwatch.Elapsed;
+        }
+    }
+
+    private async Task ExecuteMemoryVectorSearchAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        UnifiedSearchOptions options,
+        UnifiedSearchMetrics metrics,
+        List<UnifiedSearchResult> results,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var vectorResults = await _memoryRepository.SearchVectorAsync(queryEmbedding, sessionContext, options.MaxResultsPerSource, options.VectorSimilarityThreshold, cancellationToken);
+            
+            lock (results)
+            {
+                foreach (var vectorResult in vectorResults)
+                {
+                    results.Add(new UnifiedSearchResult
+                    {
+                        Type = UnifiedResultType.Memory,
+                        Id = vectorResult.Memory.Id,
+                        Content = vectorResult.Memory.Content,
+                        Score = vectorResult.Score,
+                        Source = "Vector",
+                        CreatedAt = vectorResult.Memory.CreatedAt,
+                        Metadata = vectorResult.Memory.Metadata,
+                        OriginalMemory = vectorResult.Memory
+                    });
+                }
+                metrics.MemoryVectorResultCount = vectorResults.Count;
+            }
+
+            _logger.LogDebug("Memory vector search returned {Count} results in {Duration}ms", vectorResults.Count, stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Memory vector search failed");
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Memory vector search failed: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            metrics.MemoryVectorSearchDuration = stopwatch.Elapsed;
+        }
+    }
+
+    private async Task ExecuteEntityFtsSearchAsync(
+        string query,
+        SessionContext sessionContext,
+        UnifiedSearchOptions options,
+        UnifiedSearchMetrics metrics,
+        List<UnifiedSearchResult> results,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var entities = await _graphRepository.SearchEntitiesAsync(query, sessionContext, options.MaxResultsPerSource, cancellationToken);
+            
+            lock (results)
+            {
+                foreach (var entity in entities)
+                {
+                    results.Add(new UnifiedSearchResult
+                    {
+                        Type = UnifiedResultType.Entity,
+                        Id = entity.Id,
+                        Content = entity.Name,
+                        SecondaryContent = entity.Type,
+                        Score = 1.0f, // FTS5 doesn't provide scores, use default
+                        Source = "FTS5",
+                        CreatedAt = entity.CreatedAt,
+                        Confidence = entity.Confidence,
+                        Metadata = entity.Metadata,
+                        OriginalEntity = entity
+                    });
+                }
+                metrics.EntityFtsResultCount = entities.Count();
+            }
+
+            _logger.LogDebug("Entity FTS5 search returned {Count} results in {Duration}ms", entities.Count(), stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Entity FTS5 search failed");
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Entity FTS5 search failed: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            metrics.EntityFtsSearchDuration = stopwatch.Elapsed;
+        }
+    }
+
+    private async Task ExecuteEntityVectorSearchAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        UnifiedSearchOptions options,
+        UnifiedSearchMetrics metrics,
+        List<UnifiedSearchResult> results,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var vectorResults = await _graphRepository.SearchEntitiesVectorAsync(queryEmbedding, sessionContext, options.MaxResultsPerSource, options.VectorSimilarityThreshold, cancellationToken);
+            
+            lock (results)
+            {
+                foreach (var vectorResult in vectorResults)
+                {
+                    results.Add(new UnifiedSearchResult
+                    {
+                        Type = UnifiedResultType.Entity,
+                        Id = vectorResult.Entity.Id,
+                        Content = vectorResult.Entity.Name,
+                        SecondaryContent = vectorResult.Entity.Type,
+                        Score = vectorResult.Score,
+                        Source = "Vector",
+                        CreatedAt = vectorResult.Entity.CreatedAt,
+                        Confidence = vectorResult.Entity.Confidence,
+                        Metadata = vectorResult.Entity.Metadata,
+                        OriginalEntity = vectorResult.Entity
+                    });
+                }
+                metrics.EntityVectorResultCount = vectorResults.Count;
+            }
+
+            _logger.LogDebug("Entity vector search returned {Count} results in {Duration}ms", vectorResults.Count, stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Entity vector search failed");
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Entity vector search failed: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            metrics.EntityVectorSearchDuration = stopwatch.Elapsed;
+        }
+    }
+
+    private async Task ExecuteRelationshipFtsSearchAsync(
+        string query,
+        SessionContext sessionContext,
+        UnifiedSearchOptions options,
+        UnifiedSearchMetrics metrics,
+        List<UnifiedSearchResult> results,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var relationships = await _graphRepository.SearchRelationshipsAsync(query, sessionContext, options.MaxResultsPerSource, cancellationToken);
+            
+            lock (results)
+            {
+                foreach (var relationship in relationships)
+                {
+                    results.Add(new UnifiedSearchResult
+                    {
+                        Type = UnifiedResultType.Relationship,
+                        Id = relationship.Id,
+                        Content = $"{relationship.Source} {relationship.RelationshipType} {relationship.Target}",
+                        SecondaryContent = relationship.TemporalContext,
+                        Score = 1.0f, // FTS5 doesn't provide scores, use default
+                        Source = "FTS5",
+                        CreatedAt = relationship.CreatedAt,
+                        Confidence = relationship.Confidence,
+                        Metadata = relationship.Metadata,
+                        OriginalRelationship = relationship
+                    });
+                }
+                metrics.RelationshipFtsResultCount = relationships.Count();
+            }
+
+            _logger.LogDebug("Relationship FTS5 search returned {Count} results in {Duration}ms", relationships.Count(), stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Relationship FTS5 search failed");
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Relationship FTS5 search failed: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            metrics.RelationshipFtsSearchDuration = stopwatch.Elapsed;
+        }
+    }
+
+    private async Task ExecuteRelationshipVectorSearchAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        UnifiedSearchOptions options,
+        UnifiedSearchMetrics metrics,
+        List<UnifiedSearchResult> results,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            var vectorResults = await _graphRepository.SearchRelationshipsVectorAsync(queryEmbedding, sessionContext, options.MaxResultsPerSource, options.VectorSimilarityThreshold, cancellationToken);
+            
+            lock (results)
+            {
+                foreach (var vectorResult in vectorResults)
+                {
+                    results.Add(new UnifiedSearchResult
+                    {
+                        Type = UnifiedResultType.Relationship,
+                        Id = vectorResult.Relationship.Id,
+                        Content = $"{vectorResult.Relationship.Source} {vectorResult.Relationship.RelationshipType} {vectorResult.Relationship.Target}",
+                        SecondaryContent = vectorResult.Relationship.TemporalContext,
+                        Score = vectorResult.Score,
+                        Source = "Vector",
+                        CreatedAt = vectorResult.Relationship.CreatedAt,
+                        Confidence = vectorResult.Relationship.Confidence,
+                        Metadata = vectorResult.Relationship.Metadata,
+                        OriginalRelationship = vectorResult.Relationship
+                    });
+                }
+                metrics.RelationshipVectorResultCount = vectorResults.Count;
+            }
+
+            _logger.LogDebug("Relationship vector search returned {Count} results in {Duration}ms", vectorResults.Count, stopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Relationship vector search failed");
+            metrics.HasFailures = true;
+            metrics.Errors.Add($"Relationship vector search failed: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            metrics.RelationshipVectorSearchDuration = stopwatch.Elapsed;
+        }
+    }
+
+    private static void ApplyTypeWeights(List<UnifiedSearchResult> results, Dictionary<UnifiedResultType, float> typeWeights)
+    {
+        foreach (var result in results)
+        {
+            if (typeWeights.TryGetValue(result.Type, out var weight))
+            {
+                result.Score *= weight;
+            }
+        }
+    }
+
+    private static int GetSearchOperationCount(UnifiedSearchOptions options, bool hasEmbedding)
+    {
+        var count = 0;
+        if (options.EnableFtsSearch) count += 3; // Memory, Entity, Relationship FTS5
+        if (options.EnableVectorSearch && hasEmbedding) count += 3; // Memory, Entity, Relationship Vector
+        return count;
+    }
+} 

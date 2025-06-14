@@ -52,6 +52,9 @@ public static class ServiceCollectionExtensions
     services.AddScoped<IGraphDecisionEngine, GraphDecisionEngine>();
     services.AddScoped<IGraphMemoryService, GraphMemoryService>();
 
+    // Register unified search engine for Phase 6
+    services.AddScoped<IUnifiedSearchEngine, UnifiedSearchEngine>();
+
     // Register LLM services
     services.AddLlmServices();
 
