@@ -312,7 +312,8 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 confidence REAL DEFAULT 1.0,
                 source_memory_ids TEXT, -- JSON array
-                metadata TEXT -- JSON
+                metadata TEXT, -- JSON
+                version INTEGER DEFAULT 1
             )",
 
             // Graph relationships table
@@ -329,7 +330,8 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 confidence REAL DEFAULT 1.0,
                 source_memory_id TEXT,
                 temporal_context TEXT,
-                metadata TEXT -- JSON
+                metadata TEXT, -- JSON
+                version INTEGER DEFAULT 1
             )",
 
             // Performance indexes
