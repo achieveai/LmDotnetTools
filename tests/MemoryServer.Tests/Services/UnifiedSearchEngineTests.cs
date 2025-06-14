@@ -20,6 +20,8 @@ public class UnifiedSearchEngineTests
     private readonly Mock<IGraphRepository> _mockGraphRepository;
     private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
     private readonly Mock<IRerankingEngine> _mockRerankingEngine;
+    private readonly Mock<IDeduplicationEngine> _mockDeduplicationEngine;
+    private readonly Mock<IResultEnricher> _mockResultEnricher;
     private readonly Mock<ILogger<UnifiedSearchEngine>> _mockLogger;
     private readonly UnifiedSearchEngine _unifiedSearchEngine;
     private readonly ITestOutputHelper _output;
@@ -31,6 +33,8 @@ public class UnifiedSearchEngineTests
         _mockGraphRepository = new Mock<IGraphRepository>();
         _mockEmbeddingManager = new Mock<IEmbeddingManager>();
         _mockRerankingEngine = new Mock<IRerankingEngine>();
+        _mockDeduplicationEngine = new Mock<IDeduplicationEngine>();
+        _mockResultEnricher = new Mock<IResultEnricher>();
         _mockLogger = new Mock<ILogger<UnifiedSearchEngine>>();
 
         // Setup default reranking behavior to return original results
@@ -48,11 +52,55 @@ public class UnifiedSearchEngineTests
                     Metrics = new RerankingMetrics()
                 });
 
+        // Setup default deduplication behavior to return original results
+        _mockDeduplicationEngine.Setup(x => x.DeduplicateResultsAsync(
+            It.IsAny<List<UnifiedSearchResult>>(),
+            It.IsAny<SessionContext>(),
+            It.IsAny<DeduplicationOptions>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync((List<UnifiedSearchResult> results, SessionContext context, DeduplicationOptions options, CancellationToken token) =>
+                new DeduplicationResults
+                {
+                    Results = results,
+                    Metrics = new DeduplicationMetrics()
+                });
+
+        // Setup default enrichment behavior to return original results
+        _mockResultEnricher.Setup(x => x.EnrichResultsAsync(
+            It.IsAny<List<UnifiedSearchResult>>(),
+            It.IsAny<SessionContext>(),
+            It.IsAny<EnrichmentOptions>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync((List<UnifiedSearchResult> results, SessionContext context, EnrichmentOptions options, CancellationToken token) =>
+                new EnrichmentResults
+                {
+                    Results = results.Select(r => new EnrichedSearchResult
+                    {
+                        Type = r.Type,
+                        Id = r.Id,
+                        Content = r.Content,
+                        SecondaryContent = r.SecondaryContent,
+                        Source = r.Source,
+                        Score = r.Score,
+                        CreatedAt = r.CreatedAt,
+                        Confidence = r.Confidence,
+                        Metadata = r.Metadata,
+                        OriginalMemory = r.OriginalMemory,
+                        OriginalEntity = r.OriginalEntity,
+                        OriginalRelationship = r.OriginalRelationship,
+                        RelatedEntities = new List<RelatedItem>(),
+                        RelatedRelationships = new List<RelatedItem>()
+                    }).ToList(),
+                    Metrics = new EnrichmentMetrics()
+                });
+
         _unifiedSearchEngine = new UnifiedSearchEngine(
             _mockMemoryRepository.Object,
             _mockGraphRepository.Object,
             _mockEmbeddingManager.Object,
             _mockRerankingEngine.Object,
+            _mockDeduplicationEngine.Object,
+            _mockResultEnricher.Object,
             _mockLogger.Object);
     }
 
@@ -65,6 +113,8 @@ public class UnifiedSearchEngineTests
             _mockGraphRepository.Object,
             _mockEmbeddingManager.Object,
             _mockRerankingEngine.Object,
+            _mockDeduplicationEngine.Object,
+            _mockResultEnricher.Object,
             _mockLogger.Object);
 
         // Assert

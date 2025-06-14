@@ -208,6 +208,26 @@ public class UnifiedSearchMetrics
     /// Number of results that changed position after reranking.
     /// </summary>
     public int RerankingPositionChanges { get; set; }
+
+    /// <summary>
+    /// Time taken for deduplication operation.
+    /// </summary>
+    public TimeSpan DeduplicationDuration { get; set; }
+
+    /// <summary>
+    /// Number of duplicates removed during deduplication.
+    /// </summary>
+    public int DuplicatesRemoved { get; set; }
+
+    /// <summary>
+    /// Time taken for result enrichment operation.
+    /// </summary>
+    public TimeSpan EnrichmentDuration { get; set; }
+
+    /// <summary>
+    /// Number of results that were enriched.
+    /// </summary>
+    public int ItemsEnriched { get; set; }
 }
 
 /// <summary>
@@ -412,4 +432,205 @@ public class RerankingMetrics
     /// Number of results that changed position after reranking.
     /// </summary>
     public int PositionChanges { get; set; }
+}
+
+/// <summary>
+/// Results from deduplication operation with performance metrics.
+/// </summary>
+public class DeduplicationResults
+{
+    /// <summary>
+    /// The deduplicated results with duplicates removed.
+    /// </summary>
+    public List<UnifiedSearchResult> Results { get; set; } = new();
+
+    /// <summary>
+    /// Performance metrics for the deduplication operation.
+    /// </summary>
+    public DeduplicationMetrics Metrics { get; set; } = new();
+
+    /// <summary>
+    /// Whether deduplication was actually performed.
+    /// </summary>
+    public bool WasDeduplicationPerformed { get; set; }
+
+    /// <summary>
+    /// Reason for fallback if deduplication was not performed.
+    /// </summary>
+    public string? FallbackReason { get; set; }
+}
+
+/// <summary>
+/// Performance metrics for deduplication operations.
+/// </summary>
+public class DeduplicationMetrics
+{
+    /// <summary>
+    /// Total time taken for the deduplication operation.
+    /// </summary>
+    public TimeSpan TotalDuration { get; set; }
+
+    /// <summary>
+    /// Time taken for content similarity analysis.
+    /// </summary>
+    public TimeSpan SimilarityAnalysisDuration { get; set; }
+
+    /// <summary>
+    /// Time taken for source relationship analysis.
+    /// </summary>
+    public TimeSpan SourceAnalysisDuration { get; set; }
+
+    /// <summary>
+    /// Number of potential duplicates identified.
+    /// </summary>
+    public int PotentialDuplicatesFound { get; set; }
+
+    /// <summary>
+    /// Number of duplicates actually removed.
+    /// </summary>
+    public int DuplicatesRemoved { get; set; }
+
+    /// <summary>
+    /// Number of duplicates preserved due to complementary information.
+    /// </summary>
+    public int DuplicatesPreserved { get; set; }
+
+    /// <summary>
+    /// Whether any errors occurred during deduplication.
+    /// </summary>
+    public bool HasFailures { get; set; }
+
+    /// <summary>
+    /// List of any errors that occurred during deduplication.
+    /// </summary>
+    public List<string> Errors { get; set; } = new();
+}
+
+/// <summary>
+/// Results from enrichment operation with performance metrics.
+/// </summary>
+public class EnrichmentResults
+{
+    /// <summary>
+    /// The enriched results with additional context.
+    /// </summary>
+    public List<EnrichedSearchResult> Results { get; set; } = new();
+
+    /// <summary>
+    /// Performance metrics for the enrichment operation.
+    /// </summary>
+    public EnrichmentMetrics Metrics { get; set; } = new();
+
+    /// <summary>
+    /// Whether enrichment was actually performed.
+    /// </summary>
+    public bool WasEnrichmentPerformed { get; set; }
+
+    /// <summary>
+    /// Reason for fallback if enrichment was not performed.
+    /// </summary>
+    public string? FallbackReason { get; set; }
+}
+
+/// <summary>
+/// Performance metrics for enrichment operations.
+/// </summary>
+public class EnrichmentMetrics
+{
+    /// <summary>
+    /// Total time taken for the enrichment operation.
+    /// </summary>
+    public TimeSpan TotalDuration { get; set; }
+
+    /// <summary>
+    /// Time taken for relationship discovery.
+    /// </summary>
+    public TimeSpan RelationshipDiscoveryDuration { get; set; }
+
+    /// <summary>
+    /// Time taken for context analysis.
+    /// </summary>
+    public TimeSpan ContextAnalysisDuration { get; set; }
+
+    /// <summary>
+    /// Number of results that were enriched.
+    /// </summary>
+    public int ResultsEnriched { get; set; }
+
+    /// <summary>
+    /// Total number of related items added across all results.
+    /// </summary>
+    public int RelatedItemsAdded { get; set; }
+
+    /// <summary>
+    /// Whether any errors occurred during enrichment.
+    /// </summary>
+    public bool HasFailures { get; set; }
+
+    /// <summary>
+    /// List of any errors that occurred during enrichment.
+    /// </summary>
+    public List<string> Errors { get; set; } = new();
+}
+
+/// <summary>
+/// Enriched search result with additional context and related items.
+/// </summary>
+public class EnrichedSearchResult : UnifiedSearchResult
+{
+    /// <summary>
+    /// Related entities for this result (max 2 per minimal enrichment principle).
+    /// </summary>
+    public List<RelatedItem> RelatedEntities { get; set; } = new();
+
+    /// <summary>
+    /// Related relationships for this result (max 2 per minimal enrichment principle).
+    /// </summary>
+    public List<RelatedItem> RelatedRelationships { get; set; } = new();
+
+    /// <summary>
+    /// Relevance explanation for why this result matches the query.
+    /// </summary>
+    public string? RelevanceExplanation { get; set; }
+
+    /// <summary>
+    /// Connection paths showing how this result relates to the query terms.
+    /// </summary>
+    public List<string> ConnectionPaths { get; set; } = new();
+}
+
+/// <summary>
+/// Related item for enrichment with relevance scoring.
+/// </summary>
+public class RelatedItem
+{
+    /// <summary>
+    /// Type of the related item.
+    /// </summary>
+    public UnifiedResultType Type { get; set; }
+
+    /// <summary>
+    /// Unique identifier for the related item.
+    /// </summary>
+    public int Id { get; set; }
+
+    /// <summary>
+    /// Content or name of the related item.
+    /// </summary>
+    public string Content { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Relevance score for this related item (0.0 to 1.0).
+    /// </summary>
+    public float RelevanceScore { get; set; }
+
+    /// <summary>
+    /// Confidence score for this related item (if applicable).
+    /// </summary>
+    public float? Confidence { get; set; }
+
+    /// <summary>
+    /// Explanation of how this item relates to the main result.
+    /// </summary>
+    public string? RelationshipExplanation { get; set; }
 } 
