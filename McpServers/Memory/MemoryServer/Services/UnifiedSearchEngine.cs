@@ -13,6 +13,8 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
     private readonly IGraphRepository _graphRepository;
     private readonly IEmbeddingManager _embeddingManager;
     private readonly IRerankingEngine _rerankingEngine;
+    private readonly IDeduplicationEngine _deduplicationEngine;
+    private readonly IResultEnricher _resultEnricher;
     private readonly ILogger<UnifiedSearchEngine> _logger;
 
     public UnifiedSearchEngine(
@@ -20,12 +22,16 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         IGraphRepository graphRepository,
         IEmbeddingManager embeddingManager,
         IRerankingEngine rerankingEngine,
+        IDeduplicationEngine deduplicationEngine,
+        IResultEnricher resultEnricher,
         ILogger<UnifiedSearchEngine> logger)
     {
         _memoryRepository = memoryRepository ?? throw new ArgumentNullException(nameof(memoryRepository));
         _graphRepository = graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
         _embeddingManager = embeddingManager ?? throw new ArgumentNullException(nameof(embeddingManager));
         _rerankingEngine = rerankingEngine ?? throw new ArgumentNullException(nameof(rerankingEngine));
+        _deduplicationEngine = deduplicationEngine ?? throw new ArgumentNullException(nameof(deduplicationEngine));
+        _resultEnricher = resultEnricher ?? throw new ArgumentNullException(nameof(resultEnricher));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -184,11 +190,83 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 }
             }
 
+            // Apply deduplication AFTER reranking but BEFORE final cutoffs (Phase 8)
+            if (finalResults.Count > 0)
+            {
+                try
+                {
+                    var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(finalResults, sessionContext, null, cancellationToken);
+                    finalResults = deduplicationResults.Results;
+                    
+                    // Update metrics with deduplication information
+                    metrics.DeduplicationDuration = deduplicationResults.Metrics.TotalDuration;
+                    metrics.DuplicatesRemoved = deduplicationResults.Metrics.DuplicatesRemoved;
+                    
+                    if (deduplicationResults.Metrics.HasFailures)
+                    {
+                        metrics.Errors.AddRange(deduplicationResults.Metrics.Errors);
+                    }
+                    
+                    _logger.LogDebug("Deduplication completed: {DuplicatesRemoved} duplicates removed in {Duration}ms",
+                        deduplicationResults.Metrics.DuplicatesRemoved, deduplicationResults.Metrics.TotalDuration.TotalMilliseconds);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Deduplication failed, using original results");
+                    metrics.Errors.Add($"Deduplication failed: {ex.Message}");
+                    // Continue with original results
+                }
+            }
+
+            // Apply enrichment as final step in search pipeline (Phase 8)
+            List<EnrichedSearchResult> enrichedResults = new();
+            if (finalResults.Count > 0)
+            {
+                try
+                {
+                    var enrichmentResults = await _resultEnricher.EnrichResultsAsync(finalResults, sessionContext, null, cancellationToken);
+                    enrichedResults = enrichmentResults.Results;
+                    
+                    // Update metrics with enrichment information
+                    metrics.EnrichmentDuration = enrichmentResults.Metrics.TotalDuration;
+                    metrics.ItemsEnriched = enrichmentResults.Metrics.ResultsEnriched;
+                    
+                    if (enrichmentResults.Metrics.HasFailures)
+                    {
+                        metrics.Errors.AddRange(enrichmentResults.Metrics.Errors);
+                    }
+                    
+                    _logger.LogDebug("Enrichment completed: {ItemsEnriched} results enriched, {RelatedItemsAdded} related items added in {Duration}ms",
+                        enrichmentResults.Metrics.ResultsEnriched, enrichmentResults.Metrics.RelatedItemsAdded, enrichmentResults.Metrics.TotalDuration.TotalMilliseconds);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Enrichment failed, using original results");
+                    metrics.Errors.Add($"Enrichment failed: {ex.Message}");
+                    // Convert to enriched results without enrichment
+                    enrichedResults = finalResults.Select(r => new EnrichedSearchResult
+                    {
+                        Type = r.Type,
+                        Id = r.Id,
+                        Content = r.Content,
+                        SecondaryContent = r.SecondaryContent,
+                        Score = r.Score,
+                        Source = r.Source,
+                        CreatedAt = r.CreatedAt,
+                        Confidence = r.Confidence,
+                        Metadata = r.Metadata,
+                        OriginalMemory = r.OriginalMemory,
+                        OriginalEntity = r.OriginalEntity,
+                        OriginalRelationship = r.OriginalRelationship
+                    }).ToList();
+                }
+            }
+
             totalStopwatch.Stop();
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             // Sort final results by score
-            var sortedResults = finalResults.OrderByDescending(r => r.Score).ToList();
+            var sortedResults = enrichedResults.OrderByDescending(r => r.Score).ToList();
 
             _logger.LogInformation("Unified search completed: {TotalResults} results ({MemoryCount} memories, {EntityCount} entities, {RelationshipCount} relationships) in {Duration}ms",
                 sortedResults.Count,
@@ -199,7 +277,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
 
             return new UnifiedSearchResults
             {
-                Results = sortedResults,
+                Results = sortedResults.Cast<UnifiedSearchResult>().ToList(),
                 Metrics = metrics
             };
         }

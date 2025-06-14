@@ -72,6 +72,16 @@ public class MemoryServerOptions
     /// Intelligent reranking configuration options for Phase 7.
     /// </summary>
     public RerankingOptions Reranking { get; set; } = new();
+
+    /// <summary>
+    /// Smart deduplication configuration options for Phase 8.
+    /// </summary>
+    public DeduplicationOptions Deduplication { get; set; } = new();
+
+    /// <summary>
+    /// Result enrichment configuration options for Phase 8.
+    /// </summary>
+    public EnrichmentOptions Enrichment { get; set; } = new();
 }
 
 /// <summary>
@@ -382,4 +392,88 @@ public class EmbeddingOptions
     /// Whether to use hybrid search (combining FTS5 and vector search) by default.
     /// </summary>
     public bool UseHybridSearch { get; set; } = true;
+}
+
+/// <summary>
+/// Smart deduplication configuration options for Phase 8.
+/// </summary>
+public class DeduplicationOptions
+{
+    /// <summary>
+    /// Whether to enable smart deduplication.
+    /// </summary>
+    public bool EnableDeduplication { get; set; } = true;
+
+    /// <summary>
+    /// Content similarity threshold for detecting duplicates (0.0 to 1.0).
+    /// Higher values require more similarity to be considered duplicates.
+    /// </summary>
+    public float SimilarityThreshold { get; set; } = 0.85f;
+
+    /// <summary>
+    /// Whether to preserve duplicates that provide complementary information.
+    /// </summary>
+    public bool PreserveComplementaryInfo { get; set; } = true;
+
+    /// <summary>
+    /// Whether to enable graceful fallback if deduplication fails.
+    /// </summary>
+    public bool EnableGracefulFallback { get; set; } = true;
+
+    /// <summary>
+    /// Timeout for deduplication operations.
+    /// </summary>
+    public TimeSpan DeduplicationTimeout { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Context preservation sensitivity (0.0 to 1.0).
+    /// Higher values preserve more context-rich duplicates.
+    /// </summary>
+    public float ContextPreservationSensitivity { get; set; } = 0.7f;
+
+    /// <summary>
+    /// Whether to analyze source relationships for overlap detection.
+    /// </summary>
+    public bool EnableSourceRelationshipAnalysis { get; set; } = true;
+}
+
+/// <summary>
+/// Result enrichment configuration options for Phase 8.
+/// </summary>
+public class EnrichmentOptions
+{
+    /// <summary>
+    /// Whether to enable result enrichment.
+    /// </summary>
+    public bool EnableEnrichment { get; set; } = true;
+
+    /// <summary>
+    /// Maximum number of related items to include per result (minimal enrichment principle).
+    /// </summary>
+    public int MaxRelatedItems { get; set; } = 2;
+
+    /// <summary>
+    /// Whether to include confidence scores for enriched items.
+    /// </summary>
+    public bool IncludeConfidenceScores { get; set; } = true;
+
+    /// <summary>
+    /// Whether to enable graceful fallback if enrichment fails.
+    /// </summary>
+    public bool EnableGracefulFallback { get; set; } = true;
+
+    /// <summary>
+    /// Timeout for enrichment operations.
+    /// </summary>
+    public TimeSpan EnrichmentTimeout { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Whether to generate relevance explanations for results.
+    /// </summary>
+    public bool GenerateRelevanceExplanations { get; set; } = true;
+
+    /// <summary>
+    /// Minimum relevance score for including related items (0.0 to 1.0).
+    /// </summary>
+    public float MinRelevanceScore { get; set; } = 0.6f;
 } 

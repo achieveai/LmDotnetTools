@@ -58,6 +58,12 @@ public static class ServiceCollectionExtensions
     // Register reranking engine for Phase 7
     services.AddScoped<IRerankingEngine, RerankingEngine>();
 
+    // Register deduplication engine for Phase 8
+    services.AddScoped<IDeduplicationEngine, DeduplicationEngine>();
+
+    // Register result enrichment engine for Phase 8
+    services.AddScoped<IResultEnricher, ResultEnricher>();
+
     // Register LLM services
     services.AddLlmServices();
 
