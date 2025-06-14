@@ -67,6 +67,11 @@ public class MemoryServerOptions
     /// Unified search configuration options for Phase 6.
     /// </summary>
     public UnifiedSearchOptions UnifiedSearch { get; set; } = new();
+
+    /// <summary>
+    /// Intelligent reranking configuration options for Phase 7.
+    /// </summary>
+    public RerankingOptions Reranking { get; set; } = new();
 }
 
 /// <summary>

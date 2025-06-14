@@ -55,6 +55,9 @@ public static class ServiceCollectionExtensions
     // Register unified search engine for Phase 6
     services.AddScoped<IUnifiedSearchEngine, UnifiedSearchEngine>();
 
+    // Register reranking engine for Phase 7
+    services.AddScoped<IRerankingEngine, RerankingEngine>();
+
     // Register LLM services
     services.AddLlmServices();
 
