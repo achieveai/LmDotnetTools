@@ -28,7 +28,6 @@ public abstract record Union
     }
 }
 
-[JsonConverter(typeof(UnionJsonConverter<,>))]
 public record Union<T1, T2> : Union
 {
     private readonly T1? _v1;
@@ -107,7 +106,6 @@ public record Union<T1, T2> : Union
 }
 
 
-[JsonConverter(typeof(UnionJsonConverter<,,>))]
 public record Union<T1, T2, T3> : Union<T1, T2>
 {
     protected readonly T3? _v3;
@@ -177,7 +175,6 @@ public record Union<T1, T2, T3> : Union<T1, T2>
     }
 }
 
-[JsonConverter(typeof(UnionJsonConverter<,,,>))]
 public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
 {
     protected readonly T4? _v4;

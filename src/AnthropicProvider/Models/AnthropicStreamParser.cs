@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
@@ -25,10 +26,7 @@ public class AnthropicStreamParser
     /// </summary>
     public AnthropicStreamParser()
     {
-        _jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
+        _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateUniversal();
     }
 
     /// <summary>

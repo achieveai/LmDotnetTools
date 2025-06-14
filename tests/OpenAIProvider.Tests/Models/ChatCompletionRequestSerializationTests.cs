@@ -3,6 +3,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
 using System.Collections.Generic;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Xunit;
 using Xunit.Abstractions;
@@ -23,15 +24,7 @@ public class ChatCompletionRequestSerializationTests
     public void ChatCompletionRequest_SerializesCorrectly()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            Converters = {
-        new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>(),
-        new UnionJsonConverter<TextContent, ImageContent>(),
-        new ImmutableDictionaryJsonConverterFactory()
-      }
-        };
+        var options = OpenAIJsonSerializerOptionsFactory.CreateForTesting();
 
         var messages = new List<ChatMessage>
     {

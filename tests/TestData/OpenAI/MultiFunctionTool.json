@@ -54,7 +54,7 @@
           {
             "role": "user",
             "index": 0,
-            "content": "List files in root and \"code\" directories."
+            "content": "List files in root and \u0022code\u0022 directories."
           }
         ]
       },
@@ -77,7 +77,7 @@
                   "type": "function",
                   "function": {
                     "name": "python_mcp-list_directory",
-                    "arguments": "{\n  \"relative_path\": \"\"\n}"
+                    "arguments": "{\n  \u0022relative_path\u0022: \u0022\u0022\n}"
                   }
                 }
               ],
@@ -97,8 +97,27 @@
           }
         }
       },
+      "SerializedResponseFragments": []
+    },
+    {
+      "SerializedRequest": {
+        "model": "",
+        "temperature": 0,
+        "max_tokens": 4096,
+        "n": 1,
+        "stop": [],
+        "messages": []
+      },
+      "SerializedResponse": {
+        "error": {
+          "message": "Input required: specify \u0022prompt\u0022 or \u0022messages\u0022",
+          "code": 400
+        },
+        "user_id": "user_2eAHWsOS7GUxlg91mlZ8k48Z64p"
+      },
       "SerializedResponseFragments": [],
-      "IsStreaming": false
+      "RecordedAt": "2025-06-13T23:22:41.0474018Z",
+      "Provider": "OpenAI"
     }
   ]
 }

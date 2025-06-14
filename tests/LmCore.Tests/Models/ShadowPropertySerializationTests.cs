@@ -202,13 +202,8 @@ public class ShadowPropertySerializationTests
         // Generate schema using .NET 9 API
         JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(Person));
         string schemaJson = dotnetSchema.ToJsonString();
-        var deserOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
-
+        var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());
-        deserOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
 
         // Deserialize to JsonSchemaObject
         var schemaObj = JsonSerializer.Deserialize<JsonSchemaObject>(schemaJson, deserOptions);
@@ -242,13 +237,8 @@ public class ShadowPropertySerializationTests
         // Generate schema using .NET 9 API
         JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(UserAccount));
         string schemaJson = dotnetSchema.ToJsonString();
-        var deserOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
-
+        var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());
-        deserOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
 
         // Deserialize to JsonSchemaObject
         var schemaObj = JsonSerializer.Deserialize<JsonSchemaObject>(schemaJson, deserOptions);

@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Utils;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 
@@ -35,7 +36,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
         
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
-        _jsonOptions = CreateJsonSerializerOptions();
+        _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
     }
 
     /// <summary>
@@ -48,7 +49,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         : base(logger ?? NullLogger.Instance, httpClient)
     {
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
-        _jsonOptions = CreateJsonSerializerOptions();
+        _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
     }
 
     private static HttpClient CreateHttpClient(string apiKey)
@@ -61,14 +62,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         return httpClient;
     }
 
-    private static JsonSerializerOptions CreateJsonSerializerOptions()
-    {
-        return new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-        };
-    }
+
 
     /// <inheritdoc/>
     public async Task<AnthropicResponse> CreateChatCompletionsAsync(

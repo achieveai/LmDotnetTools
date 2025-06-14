@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
@@ -100,10 +101,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         OpenAIEmbeddingOptions options) : base(logger, httpClient)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
-        };
+        _jsonOptions = JsonSerializerOptionsFactory.CreateBase(namingPolicy: JsonNamingPolicy.SnakeCaseLower);
 
         // Configure HttpClient
         if (!string.IsNullOrEmpty(_options.ApiKey))

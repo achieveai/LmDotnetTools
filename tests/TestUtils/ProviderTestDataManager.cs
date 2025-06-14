@@ -2,6 +2,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using FinishReasonEnum = AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice.FinishReasonEnum;
 
@@ -18,27 +19,22 @@ public class ProviderTestDataManager
     private const string AnthropicDirectory = "Anthropic";
     private const string CommonDirectory = "Common";
 
-    public static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+    public static readonly JsonSerializerOptions JsonOptions = CreateTestingOptions();
+
+    /// <summary>
+    /// Creates JsonSerializerOptions optimized for testing with comprehensive converter support.
+    /// Includes all LmCore converters plus OpenAI-specific converters and additional test utilities.
+    /// </summary>
+    private static JsonSerializerOptions CreateTestingOptions()
     {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        Converters =
-        {
-            new GenerateReplyOptionsJsonConverter(),
-            new UnionJsonConverter<int, string>(),
-            new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>(),
-            new UnionJsonConverter<string, IReadOnlyList<string>>(),
-            new UnionJsonConverter<TextContent, ImageContent>(),
-            new JsonPropertyNameEnumConverter<Role>(),
-            new JsonPropertyNameEnumConverter<RoleEnum>(),
-            new JsonPropertyNameEnumConverter<FinishReasonEnum>(),
-            new JsonPropertyNameEnumConverter<ToolChoiceEnum>(),
-            new ImmutableDictionaryJsonConverterFactory(),
-            new ExtraPropertiesConverter(),
-            new UsageShadowPropertiesJsonConverter()
-        }
-    };
+        // Start with OpenAI factory (includes LmCore + OpenAI converters)
+        var options = OpenAIJsonSerializerOptionsFactory.CreateForTesting();
+        
+        // Add test-specific converters not included in the base factories
+        options.Converters.Add(new UnionJsonConverter<int, string>());
+        
+        return options;
+    }
 
     public ProviderTestDataManager()
     {

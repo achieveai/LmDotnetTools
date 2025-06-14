@@ -17,9 +17,9 @@ public abstract class RequestCaptureBase
     private readonly List<object> _capturedResponses = new();
     
     /// <summary>
-    /// Shared JsonSerializerOptions that match the OpenAI provider configuration
+    /// Shared JsonSerializerOptions that can handle both OpenAI and Anthropic provider types
     /// </summary>
-    private static readonly JsonSerializerOptions s_jsonSerializerOptions = CreateJsonSerializerOptions();
+    private static readonly JsonSerializerOptions s_jsonSerializerOptions = CreateUniversalOptions();
 
     /// <summary>
     /// Gets all captured HTTP requests
@@ -193,30 +193,19 @@ public abstract class RequestCaptureBase
     /// Creates JsonSerializerOptions that can handle both OpenAI and Anthropic provider types
     /// This ensures that request deserialization works correctly with Union types, polymorphic types, and other complex objects
     /// </summary>
-    private static JsonSerializerOptions CreateJsonSerializerOptions()
+    private static JsonSerializerOptions CreateUniversalOptions()
     {
-        var jsonSerializerOptions = new JsonSerializerOptions()
-        {
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            AllowTrailingCommas = true,
-            PropertyNameCaseInsensitive = true, // Allow case-insensitive matching for robustness
-            // Note: Not setting PropertyNamingPolicy here to maintain compatibility with both providers
-            // OpenAI uses default (camelCase), Anthropic explicitly sets CamelCase
-            // PropertyNameCaseInsensitive = true handles both cases
-        };
+        // Start with LmCore base configuration with case-insensitive matching
+        var options = JsonSerializerOptionsFactory.CreateBase(caseInsensitive: true);
 
-        // Add Union converters that are essential for OpenAI request/response types
-        // Note: Order matters - more specific converters should be added first
-        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
-        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
-        jsonSerializerOptions.Converters.Add(new UnionJsonConverter<string, IReadOnlyList<string>>());
-        
-        // Add ImmutableDictionary converter for ChatCompletionRequest.AdditionalParameters
-        jsonSerializerOptions.Converters.Add(new ImmutableDictionaryJsonConverterFactory());
+        // Add OpenAI-specific Union converters for cross-provider compatibility
+        // Note: These require OpenAI types, but LmTestUtils already references OpenAI Provider
+        options.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
+        options.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
 
         // Anthropic polymorphic types are handled automatically by the [JsonPolymorphic] attributes
         // No additional converters needed for AnthropicResponseContent and AnthropicStreamEvent
 
-        return jsonSerializerOptions;
+        return options;
     }
 } 
