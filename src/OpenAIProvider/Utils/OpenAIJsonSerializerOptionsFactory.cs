@@ -35,19 +35,19 @@ public static class OpenAIJsonSerializerOptionsFactory
 
     /// <summary>
     /// Adds OpenAI-specific converters to the provided JsonSerializerOptions.
-    /// This includes Union converters for OpenAI content types and OpenAI enum converters.
+    /// This includes only the essential Union converters for OpenAI content types that are not already in LmCore.
+    /// Enum converters are not added to avoid conflicts with JsonPropertyName attributes.
     /// </summary>
     /// <param name="options">The JsonSerializerOptions to add OpenAI converters to</param>
     public static void AddOpenAIConverters(JsonSerializerOptions options)
     {
-        // OpenAI Union converters for content types
+        // OpenAI-specific Union converters for content types (not in LmCore)
         options.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
         options.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
 
-        // OpenAI enum converters
-        options.Converters.Add(new JsonPropertyNameEnumConverter<RoleEnum>());
-        options.Converters.Add(new JsonPropertyNameEnumConverter<Choice.FinishReasonEnum>());
-        options.Converters.Add(new JsonPropertyNameEnumConverter<ToolChoiceEnum>());
+        // Note: UnionJsonConverter<string, IReadOnlyList<string>> is already registered in LmCore
+        // Note: Enum converters are not added here to avoid conflicts with JsonPropertyName attributes
+        // on OpenAI models. The models use JsonPropertyName attributes for proper JSON mapping.
     }
 
     /// <summary>

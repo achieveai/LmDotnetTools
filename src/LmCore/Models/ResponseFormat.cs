@@ -188,7 +188,20 @@ public sealed record JsonSchemaObject
     {
         if (schemaObject == null) return "string";
 
-        return schemaObject.Type.Get<IReadOnlyList<string>>().FirstOrDefault(x => x != "null") ?? "string";
+        // Handle both single string and list of strings
+        if (schemaObject.Type.Is<string>())
+        {
+            var singleType = schemaObject.Type.Get<string>();
+            return singleType == "null" ? "string" : singleType;
+        }
+        
+        if (schemaObject.Type.Is<IReadOnlyList<string>>())
+        {
+            var typeList = schemaObject.Type.Get<IReadOnlyList<string>>();
+            return typeList.FirstOrDefault(x => x != "null") ?? "string";
+        }
+
+        return "string";
     }
 }
 

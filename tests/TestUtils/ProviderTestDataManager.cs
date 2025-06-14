@@ -23,12 +23,14 @@ public class ProviderTestDataManager
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for testing with comprehensive converter support.
-    /// Includes all LmCore converters plus OpenAI-specific converters and additional test utilities.
+    /// Uses camelCase naming policy to match the existing test data files.
     /// </summary>
     private static JsonSerializerOptions CreateTestingOptions()
     {
-        // Start with OpenAI factory (includes LmCore + OpenAI converters)
-        var options = OpenAIJsonSerializerOptionsFactory.CreateForTesting();
+        // Start with OpenAI factory but with camelCase naming to match test data
+        var options = OpenAIJsonSerializerOptionsFactory.CreateForOpenAI(
+            writeIndented: true,
+            namingPolicy: JsonNamingPolicy.CamelCase);
         
         // Add test-specific converters not included in the base factories
         options.Converters.Add(new UnionJsonConverter<int, string>());
