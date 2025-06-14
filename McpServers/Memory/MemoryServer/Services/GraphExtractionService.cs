@@ -4,7 +4,9 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Options;
+using System.Text.Json.Serialization;
 
 namespace MemoryServer.Services;
 
@@ -512,20 +514,7 @@ public class GraphExtractionService : IGraphExtractionService
   /// </summary>
   private static ResponseFormat CreateEntityExtractionSchema()
   {
-    var entitySchema = JsonSchemaObject.Create("object")
-      .WithProperty("name", JsonSchemaProperty.String("The name or identifier of the entity"), required: true)
-      .WithProperty("type", JsonSchemaProperty.String("The category or type of the entity (e.g., person, organization, location)"))
-      .WithProperty("aliases", JsonSchemaProperty.StringArray("Alternative names or aliases for the entity"))
-      .WithProperty("confidence", JsonSchemaProperty.Number("Confidence score between 0.0 and 1.0"))
-      .WithProperty("reasoning", JsonSchemaProperty.String("Explanation for why this entity was extracted"))
-      .WithDescription("An entity extracted from the content")
-      .Build();
-
-    var schema = JsonSchemaObject.Create("array")
-      .WithProperty("items", new JsonSchemaProperty { Type = "object", Properties = entitySchema.Properties })
-      .WithDescription("List of entities extracted from the content")
-      .Build();
-
+    var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(EntityExtractionWrapper));
     return ResponseFormat.CreateWithSchema("entity_extraction", schema, strictValidation: true);
   }
 
@@ -534,21 +523,7 @@ public class GraphExtractionService : IGraphExtractionService
   /// </summary>
   private static ResponseFormat CreateRelationshipExtractionSchema()
   {
-    var relationshipSchema = JsonSchemaObject.Create("object")
-      .WithProperty("source", JsonSchemaProperty.String("The source entity in the relationship"), required: true)
-      .WithProperty("relationship_type", JsonSchemaProperty.String("The type of relationship (e.g., works_for, located_in, knows)"), required: true)
-      .WithProperty("target", JsonSchemaProperty.String("The target entity in the relationship"), required: true)
-      .WithProperty("confidence", JsonSchemaProperty.Number("Confidence score between 0.0 and 1.0"))
-      .WithProperty("temporal_context", JsonSchemaProperty.String("Time-related context for the relationship"))
-      .WithProperty("reasoning", JsonSchemaProperty.String("Explanation for why this relationship was extracted"))
-      .WithDescription("A relationship between two entities")
-      .Build();
-
-    var schema = JsonSchemaObject.Create("array")
-      .WithProperty("items", new JsonSchemaProperty { Type = "object", Properties = relationshipSchema.Properties })
-      .WithDescription("List of relationships extracted from the content")
-      .Build();
-
+    var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(RelationshipExtractionWrapper));
     return ResponseFormat.CreateWithSchema("relationship_extraction", schema, strictValidation: true);
   }
 
@@ -557,29 +532,7 @@ public class GraphExtractionService : IGraphExtractionService
   /// </summary>
   private static ResponseFormat CreateCombinedExtractionSchema()
   {
-    var entitySchema = JsonSchemaObject.Create("object")
-      .WithProperty("name", JsonSchemaProperty.String("The name or identifier of the entity"), required: true)
-      .WithProperty("type", JsonSchemaProperty.String("The category or type of the entity"))
-      .WithProperty("aliases", JsonSchemaProperty.StringArray("Alternative names for the entity"))
-      .WithProperty("confidence", JsonSchemaProperty.Number("Confidence score between 0.0 and 1.0"))
-      .WithProperty("reasoning", JsonSchemaProperty.String("Explanation for extraction"))
-      .Build();
-
-    var relationshipSchema = JsonSchemaObject.Create("object")
-      .WithProperty("source", JsonSchemaProperty.String("Source entity"), required: true)
-      .WithProperty("relationship_type", JsonSchemaProperty.String("Type of relationship"), required: true)
-      .WithProperty("target", JsonSchemaProperty.String("Target entity"), required: true)
-      .WithProperty("confidence", JsonSchemaProperty.Number("Confidence score"))
-      .WithProperty("temporal_context", JsonSchemaProperty.String("Time context"))
-      .WithProperty("reasoning", JsonSchemaProperty.String("Explanation for extraction"))
-      .Build();
-
-    var schema = JsonSchemaObject.Create("object")
-      .WithProperty("entities", JsonSchemaProperty.Array(JsonSchemaObject.Array(entitySchema), "Extracted entities"), required: true)
-      .WithProperty("relationships", JsonSchemaProperty.Array(JsonSchemaObject.Array(relationshipSchema), "Extracted relationships"), required: true)
-      .WithDescription("Combined extraction of entities and relationships")
-      .Build();
-
+    var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(CombinedExtractionResult));
     return ResponseFormat.CreateWithSchema("combined_extraction", schema, strictValidation: true);
   }
 
@@ -617,7 +570,18 @@ public class GraphExtractionService : IGraphExtractionService
     {
       // Try to extract JSON from response (may be wrapped in markdown)
       var jsonContent = ExtractJsonFromResponse(jsonResponse);
-      return JsonSerializer.Deserialize<List<ExtractedEntity>>(jsonContent, _jsonOptions) ?? new List<ExtractedEntity>();
+      
+      // First try to parse as direct array (legacy format)
+      try
+      {
+        return JsonSerializer.Deserialize<List<ExtractedEntity>>(jsonContent, _jsonOptions) ?? new List<ExtractedEntity>();
+      }
+      catch
+      {
+        // If that fails, try to parse as wrapped object with "entities" property
+        var wrappedResult = JsonSerializer.Deserialize<EntityExtractionWrapper>(jsonContent, _jsonOptions);
+        return wrappedResult?.Entities ?? new List<ExtractedEntity>();
+      }
     }
     catch (Exception ex)
     {
@@ -631,7 +595,18 @@ public class GraphExtractionService : IGraphExtractionService
     try
     {
       var jsonContent = ExtractJsonFromResponse(jsonResponse);
-      return JsonSerializer.Deserialize<List<ExtractedRelationship>>(jsonContent, _jsonOptions) ?? new List<ExtractedRelationship>();
+      
+      // First try to parse as direct array (legacy format)
+      try
+      {
+        return JsonSerializer.Deserialize<List<ExtractedRelationship>>(jsonContent, _jsonOptions) ?? new List<ExtractedRelationship>();
+      }
+      catch
+      {
+        // If that fails, try to parse as wrapped object with "relationships" property
+        var wrappedResult = JsonSerializer.Deserialize<RelationshipExtractionWrapper>(jsonContent, _jsonOptions);
+        return wrappedResult?.Relationships ?? new List<ExtractedRelationship>();
+      }
     }
     catch (Exception ex)
     {
@@ -670,52 +645,107 @@ public class GraphExtractionService : IGraphExtractionService
 
   private static string ExtractJsonFromResponse(string response)
   {
-    // Remove markdown code blocks if present
+    if (string.IsNullOrWhiteSpace(response))
+      return string.Empty;
+
+    // First, try to find JSON within markdown code blocks
     var lines = response.Split('\n');
     var jsonLines = new List<string>();
     var inJsonBlock = false;
     
     foreach (var line in lines)
     {
-      if (line.Trim().StartsWith("```json") || line.Trim().StartsWith("```"))
+      var trimmedLine = line.Trim();
+      if (trimmedLine.StartsWith("```json") || (trimmedLine == "```" && inJsonBlock))
       {
         inJsonBlock = !inJsonBlock;
         continue;
       }
       
-      if (inJsonBlock || (!line.Trim().StartsWith("```") && (line.Trim().StartsWith("{") || line.Trim().StartsWith("["))))
+      if (inJsonBlock)
       {
         jsonLines.Add(line);
       }
     }
     
-    var jsonContent = string.Join('\n', jsonLines).Trim();
-    
-    // If no JSON block found, try to find JSON in the response
-    if (string.IsNullOrEmpty(jsonContent))
+    if (jsonLines.Count > 0)
     {
-      var startIndex = response.IndexOf('{');
-      var startArrayIndex = response.IndexOf('[');
-      
-      if (startIndex >= 0 && (startArrayIndex < 0 || startIndex < startArrayIndex))
+      var jsonContent = string.Join('\n', jsonLines).Trim();
+      if (!string.IsNullOrEmpty(jsonContent))
+        return jsonContent;
+    }
+    
+    // If no markdown blocks found, try to extract JSON directly
+    // Look for the first '{' or '[' and find the matching closing brace/bracket
+    var startIndex = -1;
+    var isObject = false;
+    
+    for (int i = 0; i < response.Length; i++)
+    {
+      if (response[i] == '{')
       {
-        var endIndex = response.LastIndexOf('}');
-        if (endIndex > startIndex)
-        {
-          jsonContent = response.Substring(startIndex, endIndex - startIndex + 1);
-        }
+        startIndex = i;
+        isObject = true;
+        break;
       }
-      else if (startArrayIndex >= 0)
+      else if (response[i] == '[')
       {
-        var endIndex = response.LastIndexOf(']');
-        if (endIndex > startArrayIndex)
+        startIndex = i;
+        isObject = false;
+        break;
+      }
+    }
+    
+    if (startIndex >= 0)
+    {
+      var braceCount = 0;
+      var bracketCount = 0;
+      var inString = false;
+      var escaped = false;
+      
+      for (int i = startIndex; i < response.Length; i++)
+      {
+        var c = response[i];
+        
+        if (escaped)
         {
-          jsonContent = response.Substring(startArrayIndex, endIndex - startArrayIndex + 1);
+          escaped = false;
+          continue;
+        }
+        
+        if (c == '\\' && inString)
+        {
+          escaped = true;
+          continue;
+        }
+        
+        if (c == '"')
+        {
+          inString = !inString;
+          continue;
+        }
+        
+        if (!inString)
+        {
+          if (c == '{') braceCount++;
+          else if (c == '}') braceCount--;
+          else if (c == '[') bracketCount++;
+          else if (c == ']') bracketCount--;
+          
+          // Check if we've closed all braces/brackets
+          if (isObject && braceCount == 0 && i > startIndex)
+          {
+            return response.Substring(startIndex, i - startIndex + 1);
+          }
+          else if (!isObject && bracketCount == 0 && i > startIndex)
+          {
+            return response.Substring(startIndex, i - startIndex + 1);
+          }
         }
       }
     }
     
-    return jsonContent;
+    return string.Empty;
   }
 
   #endregion
@@ -724,26 +754,61 @@ public class GraphExtractionService : IGraphExtractionService
 
   private class ExtractedEntity
   {
+    [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
+    
+    [JsonPropertyName("type")]
     public string? Type { get; set; }
+    
+    [JsonPropertyName("aliases")]
     public List<string>? Aliases { get; set; }
+    
+    [JsonPropertyName("confidence")]
     public float Confidence { get; set; } = 1.0f;
+    
+    [JsonPropertyName("reasoning")]
     public string? Reasoning { get; set; }
   }
 
   private class ExtractedRelationship
   {
+    [JsonPropertyName("source")]
     public string Source { get; set; } = string.Empty;
+    
+    [JsonPropertyName("relationship_type")]
     public string RelationshipType { get; set; } = string.Empty;
+    
+    [JsonPropertyName("target")]
     public string Target { get; set; } = string.Empty;
+    
+    [JsonPropertyName("confidence")]
     public float Confidence { get; set; } = 1.0f;
+    
+    [JsonPropertyName("temporal_context")]
     public string? TemporalContext { get; set; }
+    
+    [JsonPropertyName("reasoning")]
     public string? Reasoning { get; set; }
   }
 
   private class CombinedExtractionResult
   {
+    [JsonPropertyName("entities")]
     public List<ExtractedEntity> Entities { get; set; } = new();
+    
+    [JsonPropertyName("relationships")]
+    public List<ExtractedRelationship> Relationships { get; set; } = new();
+  }
+
+  private class EntityExtractionWrapper
+  {
+    [JsonPropertyName("entities")]
+    public List<ExtractedEntity> Entities { get; set; } = new();
+  }
+
+  private class RelationshipExtractionWrapper
+  {
+    [JsonPropertyName("relationships")]
     public List<ExtractedRelationship> Relationships { get; set; } = new();
   }
 
