@@ -151,6 +151,86 @@ public interface IGraphRepository
     /// <returns>List of matching relationships with relevance scores.</returns>
     Task<IEnumerable<Relationship>> SearchRelationshipsAsync(string query, SessionContext sessionContext, int limit = 10, CancellationToken cancellationToken = default);
 
+    // Enhanced Search Operations for Phase 6
+
+    /// <summary>
+    /// Searches for entities matching a query using FTS5 full-text search.
+    /// </summary>
+    /// <param name="query">Search query for entity content.</param>
+    /// <param name="sessionContext">Session context for isolation.</param>
+    /// <param name="limit">Maximum number of results.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of matching entities with relevance scores.</returns>
+    Task<IEnumerable<Entity>> SearchEntitiesAsync(string query, SessionContext sessionContext, int limit = 10, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Performs vector similarity search to find entities similar to the query embedding.
+    /// </summary>
+    /// <param name="queryEmbedding">The query embedding vector.</param>
+    /// <param name="sessionContext">Session context for isolation.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="threshold">Minimum similarity threshold (0.0 to 1.0).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of entities with similarity scores.</returns>
+    Task<List<EntityVectorSearchResult>> SearchEntitiesVectorAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float threshold = 0.7f,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Performs vector similarity search to find relationships similar to the query embedding.
+    /// </summary>
+    /// <param name="queryEmbedding">The query embedding vector.</param>
+    /// <param name="sessionContext">Session context for isolation.</param>
+    /// <param name="limit">Maximum number of results to return.</param>
+    /// <param name="threshold">Minimum similarity threshold (0.0 to 1.0).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of relationships with similarity scores.</returns>
+    Task<List<RelationshipVectorSearchResult>> SearchRelationshipsVectorAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float threshold = 0.7f,
+        CancellationToken cancellationToken = default);
+
+    // Embedding Storage Operations
+
+    /// <summary>
+    /// Stores an embedding for an entity.
+    /// </summary>
+    /// <param name="entityId">The ID of the entity.</param>
+    /// <param name="embedding">The embedding vector.</param>
+    /// <param name="modelName">The name of the embedding model used.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task StoreEntityEmbeddingAsync(int entityId, float[] embedding, string modelName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores an embedding for a relationship.
+    /// </summary>
+    /// <param name="relationshipId">The ID of the relationship.</param>
+    /// <param name="embedding">The embedding vector.</param>
+    /// <param name="modelName">The name of the embedding model used.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task StoreRelationshipEmbeddingAsync(int relationshipId, float[] embedding, string modelName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the embedding for a specific entity.
+    /// </summary>
+    /// <param name="entityId">The ID of the entity.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The embedding vector or null if not found.</returns>
+    Task<float[]?> GetEntityEmbeddingAsync(int entityId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the embedding for a specific relationship.
+    /// </summary>
+    /// <param name="relationshipId">The ID of the relationship.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The embedding vector or null if not found.</returns>
+    Task<float[]?> GetRelationshipEmbeddingAsync(int relationshipId, CancellationToken cancellationToken = default);
+
     // Utility Operations
     
     /// <summary>
@@ -198,4 +278,46 @@ public class GraphStatistics
     /// Entities with the most connections.
     /// </summary>
     public Dictionary<string, int> TopConnectedEntities { get; set; } = new();
+}
+
+/// <summary>
+/// Result of an entity vector similarity search.
+/// </summary>
+public class EntityVectorSearchResult
+{
+    /// <summary>
+    /// The entity that matched the search.
+    /// </summary>
+    public Entity Entity { get; set; } = new();
+
+    /// <summary>
+    /// Similarity score (0.0 to 1.0, higher is more similar).
+    /// </summary>
+    public float Score { get; set; }
+
+    /// <summary>
+    /// Distance value from the vector search.
+    /// </summary>
+    public float Distance { get; set; }
+}
+
+/// <summary>
+/// Result of a relationship vector similarity search.
+/// </summary>
+public class RelationshipVectorSearchResult
+{
+    /// <summary>
+    /// The relationship that matched the search.
+    /// </summary>
+    public Relationship Relationship { get; set; } = new();
+
+    /// <summary>
+    /// Similarity score (0.0 to 1.0, higher is more similar).
+    /// </summary>
+    public float Score { get; set; }
+
+    /// <summary>
+    /// Distance value from the vector search.
+    /// </summary>
+    public float Distance { get; set; }
 } 

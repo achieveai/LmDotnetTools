@@ -619,16 +619,16 @@ public class GraphRepository : IGraphRepository
         {
             using var command = connection.CreateCommand();
             command.CommandText = @"
-                SELECT id, source_entity_name, relationship_type, target_entity_name, user_id, agent_id, run_id, created_at, updated_at,
+                SELECT id, source, relationship_type, target, user_id, agent_id, run_id, created_at, updated_at,
                        confidence, source_memory_id, temporal_context, metadata, version
                 FROM relationships 
-                WHERE (source_entity_name LIKE @query OR target_entity_name LIKE @query OR relationship_type LIKE @query)
+                WHERE (source LIKE @query OR target LIKE @query OR relationship_type LIKE @query)
                   AND user_id = @userId 
                   AND (@agentId IS NULL OR agent_id = @agentId)
                   AND (@runId IS NULL OR run_id = @runId)
                 ORDER BY 
                     CASE 
-                        WHEN source_entity_name = @exactQuery OR target_entity_name = @exactQuery THEN 1
+                        WHEN source = @exactQuery OR target = @exactQuery THEN 1
                         WHEN relationship_type = @exactQuery THEN 2
                         ELSE 3
                     END,
@@ -652,6 +652,305 @@ public class GraphRepository : IGraphRepository
             }
 
             return relationships;
+        });
+    }
+
+    // Enhanced Search Operations for Phase 6
+
+    public async Task<IEnumerable<Entity>> SearchEntitiesAsync(string query, SessionContext sessionContext, int limit = 10, CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT e.id, e.name, e.type, e.aliases, e.user_id, e.agent_id, e.run_id, e.created_at, e.updated_at,
+                       e.confidence, e.source_memory_ids, e.metadata, e.version
+                FROM entities e
+                JOIN entities_fts fts ON e.id = fts.rowid
+                WHERE entities_fts MATCH @query
+                  AND e.user_id = @userId 
+                  AND (@agentId IS NULL OR e.agent_id = @agentId)
+                  AND (@runId IS NULL OR e.run_id = @runId)
+                ORDER BY bm25(entities_fts), e.confidence DESC, e.created_at DESC
+                LIMIT @limit";
+
+            command.Parameters.AddWithValue("@query", query);
+            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+            command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@limit", limit);
+
+            var entities = new List<Entity>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                entities.Add(MapEntityFromReader(reader));
+            }
+
+            _logger.LogDebug("Entity FTS5 search for '{Query}' returned {Count} results", query, entities.Count);
+            return entities;
+        });
+    }
+
+    public async Task<List<EntityVectorSearchResult>> SearchEntitiesVectorAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float threshold = 0.7f,
+        CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT e.id, e.name, e.type, e.aliases, e.user_id, e.agent_id, e.run_id, e.created_at, e.updated_at,
+                       e.confidence, e.source_memory_ids, e.metadata, e.version,
+                       vec_distance_cosine(ee.embedding, @queryEmbedding) as distance
+                FROM entities e
+                JOIN entity_embeddings ee ON e.id = ee.entity_id
+                WHERE e.user_id = @userId 
+                  AND (@agentId IS NULL OR e.agent_id = @agentId)
+                  AND (@runId IS NULL OR e.run_id = @runId)
+                  AND vec_distance_cosine(ee.embedding, @queryEmbedding) <= @distanceThreshold
+                ORDER BY distance ASC
+                LIMIT @limit";
+
+            var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
+            
+            // Convert query embedding to byte array for sqlite-vec
+            var queryEmbeddingBytes = new byte[queryEmbedding.Length * sizeof(float)];
+            Buffer.BlockCopy(queryEmbedding, 0, queryEmbeddingBytes, 0, queryEmbeddingBytes.Length);
+            
+            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingBytes);
+            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+            command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
+            command.Parameters.AddWithValue("@limit", limit);
+
+            var results = new List<EntityVectorSearchResult>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var entity = MapEntityFromReader(reader);
+                var distance = Convert.ToSingle(reader["distance"]);
+                var score = 1.0f - distance; // Convert distance back to similarity
+
+                results.Add(new EntityVectorSearchResult
+                {
+                    Entity = entity,
+                    Distance = distance,
+                    Score = score
+                });
+            }
+
+            _logger.LogDebug("Entity vector search returned {Count} results with threshold {Threshold}", results.Count, threshold);
+            return results;
+        });
+    }
+
+    public async Task<List<RelationshipVectorSearchResult>> SearchRelationshipsVectorAsync(
+        float[] queryEmbedding,
+        SessionContext sessionContext,
+        int limit = 10,
+        float threshold = 0.7f,
+        CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT r.id, r.source, r.relationship_type, r.target, r.user_id, r.agent_id, r.run_id, r.created_at, r.updated_at,
+                       r.confidence, r.source_memory_id, r.temporal_context, r.metadata, r.version,
+                       vec_distance_cosine(re.embedding, @queryEmbedding) as distance
+                FROM relationships r
+                JOIN relationship_embeddings re ON r.id = re.relationship_id
+                WHERE r.user_id = @userId 
+                  AND (@agentId IS NULL OR r.agent_id = @agentId)
+                  AND (@runId IS NULL OR r.run_id = @runId)
+                  AND vec_distance_cosine(re.embedding, @queryEmbedding) <= @distanceThreshold
+                ORDER BY distance ASC
+                LIMIT @limit";
+
+            var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
+            
+            // Convert query embedding to byte array for sqlite-vec
+            var queryEmbeddingBytes = new byte[queryEmbedding.Length * sizeof(float)];
+            Buffer.BlockCopy(queryEmbedding, 0, queryEmbeddingBytes, 0, queryEmbeddingBytes.Length);
+            
+            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingBytes);
+            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+            command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
+            command.Parameters.AddWithValue("@limit", limit);
+
+            var results = new List<RelationshipVectorSearchResult>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var relationship = MapRelationshipFromReader(reader);
+                var distance = Convert.ToSingle(reader["distance"]);
+                var score = 1.0f - distance; // Convert distance back to similarity
+
+                results.Add(new RelationshipVectorSearchResult
+                {
+                    Relationship = relationship,
+                    Distance = distance,
+                    Score = score
+                });
+            }
+
+            _logger.LogDebug("Relationship vector search returned {Count} results with threshold {Threshold}", results.Count, threshold);
+            return results;
+        });
+    }
+
+    // Embedding Storage Operations
+
+    public async Task StoreEntityEmbeddingAsync(int entityId, float[] embedding, string modelName, CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Store the embedding in the vec0 table
+            using var embeddingCommand = connection.CreateCommand();
+            embeddingCommand.Transaction = transaction;
+            embeddingCommand.CommandText = @"
+                INSERT OR REPLACE INTO entity_embeddings (entity_id, embedding)
+                VALUES (@entityId, @embedding)";
+
+            // Convert embedding to byte array for sqlite-vec
+            var embeddingBytes = new byte[embedding.Length * sizeof(float)];
+            Buffer.BlockCopy(embedding, 0, embeddingBytes, 0, embeddingBytes.Length);
+            
+            embeddingCommand.Parameters.AddWithValue("@entityId", entityId);
+            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingBytes);
+
+            await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
+
+            // Store metadata
+            using var metadataCommand = connection.CreateCommand();
+            metadataCommand.Transaction = transaction;
+            metadataCommand.CommandText = @"
+                INSERT OR REPLACE INTO entity_embedding_metadata (entity_id, model_name, embedding_dimension, created_at)
+                VALUES (@entityId, @modelName, @dimension, @createdAt)";
+
+            metadataCommand.Parameters.AddWithValue("@entityId", entityId);
+            metadataCommand.Parameters.AddWithValue("@modelName", modelName);
+            metadataCommand.Parameters.AddWithValue("@dimension", embedding.Length);
+            metadataCommand.Parameters.AddWithValue("@createdAt", DateTime.UtcNow);
+
+            await metadataCommand.ExecuteNonQueryAsync(cancellationToken);
+
+            _logger.LogDebug("Stored embedding for entity {EntityId} using model {ModelName}", entityId, modelName);
+        });
+    }
+
+    public async Task StoreRelationshipEmbeddingAsync(int relationshipId, float[] embedding, string modelName, CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        await session.ExecuteInTransactionAsync(async (connection, transaction) =>
+        {
+            // Store the embedding in the vec0 table
+            using var embeddingCommand = connection.CreateCommand();
+            embeddingCommand.Transaction = transaction;
+            embeddingCommand.CommandText = @"
+                INSERT OR REPLACE INTO relationship_embeddings (relationship_id, embedding)
+                VALUES (@relationshipId, @embedding)";
+
+            // Convert embedding to byte array for sqlite-vec
+            var embeddingBytes = new byte[embedding.Length * sizeof(float)];
+            Buffer.BlockCopy(embedding, 0, embeddingBytes, 0, embeddingBytes.Length);
+            
+            embeddingCommand.Parameters.AddWithValue("@relationshipId", relationshipId);
+            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingBytes);
+
+            await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
+
+            // Store metadata
+            using var metadataCommand = connection.CreateCommand();
+            metadataCommand.Transaction = transaction;
+            metadataCommand.CommandText = @"
+                INSERT OR REPLACE INTO relationship_embedding_metadata (relationship_id, model_name, embedding_dimension, created_at)
+                VALUES (@relationshipId, @modelName, @dimension, @createdAt)";
+
+            metadataCommand.Parameters.AddWithValue("@relationshipId", relationshipId);
+            metadataCommand.Parameters.AddWithValue("@modelName", modelName);
+            metadataCommand.Parameters.AddWithValue("@dimension", embedding.Length);
+            metadataCommand.Parameters.AddWithValue("@createdAt", DateTime.UtcNow);
+
+            await metadataCommand.ExecuteNonQueryAsync(cancellationToken);
+
+            _logger.LogDebug("Stored embedding for relationship {RelationshipId} using model {ModelName}", relationshipId, modelName);
+        });
+    }
+
+    public async Task<float[]?> GetEntityEmbeddingAsync(int entityId, CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT embedding FROM entity_embeddings WHERE entity_id = @entityId";
+
+            command.Parameters.AddWithValue("@entityId", entityId);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var embeddingOrdinal = reader.GetOrdinal("embedding");
+                if (!reader.IsDBNull(embeddingOrdinal))
+                {
+                    // sqlite-vec stores embeddings as BLOB, convert to float array
+                    var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
+                    var embedding = new float[embeddingBytes.Length / sizeof(float)];
+                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                    return embedding;
+                }
+            }
+
+            return null;
+        });
+    }
+
+    public async Task<float[]?> GetRelationshipEmbeddingAsync(int relationshipId, CancellationToken cancellationToken = default)
+    {
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT embedding FROM relationship_embeddings WHERE relationship_id = @relationshipId";
+
+            command.Parameters.AddWithValue("@relationshipId", relationshipId);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var embeddingOrdinal = reader.GetOrdinal("embedding");
+                if (!reader.IsDBNull(embeddingOrdinal))
+                {
+                    // sqlite-vec stores embeddings as BLOB, convert to float array
+                    var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
+                    var embedding = new float[embeddingBytes.Length / sizeof(float)];
+                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                    return embedding;
+                }
+            }
+
+            return null;
         });
     }
 

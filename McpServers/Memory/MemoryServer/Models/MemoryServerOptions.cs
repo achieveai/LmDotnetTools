@@ -62,6 +62,11 @@ public class MemoryServerOptions
     /// Session defaults configuration options.
     /// </summary>
     public SessionDefaultsOptions SessionDefaults { get; set; } = new();
+
+    /// <summary>
+    /// Unified search configuration options for Phase 6.
+    /// </summary>
+    public UnifiedSearchOptions UnifiedSearch { get; set; } = new();
 }
 
 /// <summary>
