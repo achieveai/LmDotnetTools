@@ -12,17 +12,20 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
     private readonly IMemoryRepository _memoryRepository;
     private readonly IGraphRepository _graphRepository;
     private readonly IEmbeddingManager _embeddingManager;
+    private readonly IRerankingEngine _rerankingEngine;
     private readonly ILogger<UnifiedSearchEngine> _logger;
 
     public UnifiedSearchEngine(
         IMemoryRepository memoryRepository,
         IGraphRepository graphRepository,
         IEmbeddingManager embeddingManager,
+        IRerankingEngine rerankingEngine,
         ILogger<UnifiedSearchEngine> logger)
     {
         _memoryRepository = memoryRepository ?? throw new ArgumentNullException(nameof(memoryRepository));
         _graphRepository = graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
         _embeddingManager = embeddingManager ?? throw new ArgumentNullException(nameof(embeddingManager));
+        _rerankingEngine = rerankingEngine ?? throw new ArgumentNullException(nameof(rerankingEngine));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -148,12 +151,44 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 metrics.Errors.Add($"Search timed out after {options.SearchTimeout}");
             }
 
+            // Apply type weights to results
+            ApplyTypeWeights(results, options.TypeWeights);
+
+            // Apply reranking BEFORE result cutoffs (Phase 7 requirement)
+            var finalResults = results;
+            if (results.Count > 0)
+            {
+                try
+                {
+                    var rerankingResults = await _rerankingEngine.RerankResultsAsync(query, results, sessionContext, null, cancellationToken);
+                    finalResults = rerankingResults.Results;
+                    
+                    // Update metrics with reranking information
+                    metrics.RerankingDuration = rerankingResults.Metrics.TotalDuration;
+                    metrics.WasReranked = rerankingResults.WasReranked;
+                    metrics.RerankingPositionChanges = rerankingResults.Metrics.PositionChanges;
+                    
+                    if (rerankingResults.Metrics.HasFailures)
+                    {
+                        metrics.Errors.AddRange(rerankingResults.Metrics.Errors);
+                    }
+                    
+                    _logger.LogDebug("Reranking completed: {WasReranked}, {PositionChanges} position changes in {Duration}ms",
+                        rerankingResults.WasReranked, rerankingResults.Metrics.PositionChanges, rerankingResults.Metrics.TotalDuration.TotalMilliseconds);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Reranking failed, using original results");
+                    metrics.Errors.Add($"Reranking failed: {ex.Message}");
+                    // Continue with original results
+                }
+            }
+
             totalStopwatch.Stop();
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
-            // Apply type weights and sort results
-            ApplyTypeWeights(results, options.TypeWeights);
-            var sortedResults = results.OrderByDescending(r => r.Score).ToList();
+            // Sort final results by score
+            var sortedResults = finalResults.OrderByDescending(r => r.Score).ToList();
 
             _logger.LogInformation("Unified search completed: {TotalResults} results ({MemoryCount} memories, {EntityCount} entities, {RelationshipCount} relationships) in {Duration}ms",
                 sortedResults.Count,

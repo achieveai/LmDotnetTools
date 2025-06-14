@@ -19,6 +19,7 @@ public class UnifiedSearchEngineTests
     private readonly Mock<IMemoryRepository> _mockMemoryRepository;
     private readonly Mock<IGraphRepository> _mockGraphRepository;
     private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
+    private readonly Mock<IRerankingEngine> _mockRerankingEngine;
     private readonly Mock<ILogger<UnifiedSearchEngine>> _mockLogger;
     private readonly UnifiedSearchEngine _unifiedSearchEngine;
     private readonly ITestOutputHelper _output;
@@ -29,12 +30,29 @@ public class UnifiedSearchEngineTests
         _mockMemoryRepository = new Mock<IMemoryRepository>();
         _mockGraphRepository = new Mock<IGraphRepository>();
         _mockEmbeddingManager = new Mock<IEmbeddingManager>();
+        _mockRerankingEngine = new Mock<IRerankingEngine>();
         _mockLogger = new Mock<ILogger<UnifiedSearchEngine>>();
+
+        // Setup default reranking behavior to return original results
+        _mockRerankingEngine.Setup(x => x.RerankResultsAsync(
+            It.IsAny<string>(),
+            It.IsAny<List<UnifiedSearchResult>>(),
+            It.IsAny<SessionContext>(),
+            It.IsAny<RerankingOptions>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string query, List<UnifiedSearchResult> results, SessionContext context, RerankingOptions options, CancellationToken token) =>
+                new RerankingResults
+                {
+                    Results = results,
+                    WasReranked = false,
+                    Metrics = new RerankingMetrics()
+                });
 
         _unifiedSearchEngine = new UnifiedSearchEngine(
             _mockMemoryRepository.Object,
             _mockGraphRepository.Object,
             _mockEmbeddingManager.Object,
+            _mockRerankingEngine.Object,
             _mockLogger.Object);
     }
 
@@ -46,6 +64,7 @@ public class UnifiedSearchEngineTests
             _mockMemoryRepository.Object,
             _mockGraphRepository.Object,
             _mockEmbeddingManager.Object,
+            _mockRerankingEngine.Object,
             _mockLogger.Object);
 
         // Assert

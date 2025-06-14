@@ -193,6 +193,21 @@ public class UnifiedSearchMetrics
     /// List of any errors that occurred during search.
     /// </summary>
     public List<string> Errors { get; set; } = new();
+
+    /// <summary>
+    /// Time taken for reranking operation.
+    /// </summary>
+    public TimeSpan RerankingDuration { get; set; }
+
+    /// <summary>
+    /// Whether reranking was performed.
+    /// </summary>
+    public bool WasReranked { get; set; }
+
+    /// <summary>
+    /// Number of results that changed position after reranking.
+    /// </summary>
+    public int RerankingPositionChanges { get; set; }
 }
 
 /// <summary>
@@ -201,32 +216,32 @@ public class UnifiedSearchMetrics
 public class UnifiedSearchOptions
 {
     /// <summary>
-    /// Maximum number of results to return per source (default: 20).
+    /// Maximum number of results to return per source type.
     /// </summary>
     public int MaxResultsPerSource { get; set; } = 20;
 
     /// <summary>
-    /// Timeout for each individual search operation (default: 5 seconds).
+    /// Timeout for search operations.
     /// </summary>
     public TimeSpan SearchTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// Whether to enable vector search operations.
+    /// Whether to enable vector search.
     /// </summary>
     public bool EnableVectorSearch { get; set; } = true;
 
     /// <summary>
-    /// Whether to enable FTS5 search operations.
+    /// Whether to enable FTS5 search.
     /// </summary>
     public bool EnableFtsSearch { get; set; } = true;
 
     /// <summary>
-    /// Minimum similarity threshold for vector searches (0.0 to 1.0).
+    /// Similarity threshold for vector search.
     /// </summary>
     public float VectorSimilarityThreshold { get; set; } = 0.7f;
 
     /// <summary>
-    /// Hierarchical weights for different result types.
+    /// Type-based weights for different result types.
     /// </summary>
     public Dictionary<UnifiedResultType, float> TypeWeights { get; set; } = new()
     {
@@ -236,7 +251,165 @@ public class UnifiedSearchOptions
     };
 
     /// <summary>
-    /// Whether to enable graceful fallback when search operations fail.
+    /// Whether to enable graceful fallback on errors.
     /// </summary>
     public bool EnableGracefulFallback { get; set; } = true;
+}
+
+/// <summary>
+/// Configuration options for intelligent reranking operations.
+/// </summary>
+public class RerankingOptions
+{
+    /// <summary>
+    /// Whether to enable semantic reranking.
+    /// </summary>
+    public bool EnableReranking { get; set; } = true;
+
+    /// <summary>
+    /// Maximum number of candidates to send for reranking (to manage API costs).
+    /// </summary>
+    public int MaxCandidates { get; set; } = 100;
+
+    /// <summary>
+    /// Whether to fall back to local scoring when external reranking fails.
+    /// </summary>
+    public bool EnableGracefulFallback { get; set; } = true;
+
+    /// <summary>
+    /// Timeout for reranking operations.
+    /// </summary>
+    public TimeSpan RerankingTimeout { get; set; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Reranking service endpoint URL.
+    /// </summary>
+    public string RerankingEndpoint { get; set; } = "https://api.cohere.ai";
+
+    /// <summary>
+    /// Reranking model to use.
+    /// </summary>
+    public string RerankingModel { get; set; } = "rerank-v3.5";
+
+    /// <summary>
+    /// API key for reranking service.
+    /// </summary>
+    public string ApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Weight for semantic relevance score (0.0 to 1.0).
+    /// </summary>
+    public float SemanticRelevanceWeight { get; set; } = 0.7f;
+
+    /// <summary>
+    /// Weight for content quality score (0.0 to 1.0).
+    /// </summary>
+    public float ContentQualityWeight { get; set; } = 0.1f;
+
+    /// <summary>
+    /// Weight for recency score (0.0 to 1.0).
+    /// </summary>
+    public float RecencyWeight { get; set; } = 0.1f;
+
+    /// <summary>
+    /// Weight for confidence score (0.0 to 1.0).
+    /// </summary>
+    public float ConfidenceWeight { get; set; } = 0.1f;
+
+    /// <summary>
+    /// Source-specific weights for hierarchical scoring.
+    /// </summary>
+    public Dictionary<UnifiedResultType, float> SourceWeights { get; set; } = new()
+    {
+        { UnifiedResultType.Memory, 1.0f },
+        { UnifiedResultType.Entity, 0.8f },
+        { UnifiedResultType.Relationship, 0.7f }
+    };
+
+    /// <summary>
+    /// Whether to boost scores for recent content.
+    /// </summary>
+    public bool EnableRecencyBoost { get; set; } = true;
+
+    /// <summary>
+    /// Number of days for recency boost calculation.
+    /// </summary>
+    public int RecencyBoostDays { get; set; } = 30;
+}
+
+/// <summary>
+/// Results from reranking operation with performance metrics.
+/// </summary>
+public class RerankingResults
+{
+    /// <summary>
+    /// The reranked results with updated scores.
+    /// </summary>
+    public List<UnifiedSearchResult> Results { get; set; } = new();
+
+    /// <summary>
+    /// Performance metrics for the reranking operation.
+    /// </summary>
+    public RerankingMetrics Metrics { get; set; } = new();
+
+    /// <summary>
+    /// Whether reranking was actually performed or fell back to original scores.
+    /// </summary>
+    public bool WasReranked { get; set; }
+
+    /// <summary>
+    /// Reason for fallback if reranking was not performed.
+    /// </summary>
+    public string? FallbackReason { get; set; }
+}
+
+/// <summary>
+/// Performance metrics for reranking operations.
+/// </summary>
+public class RerankingMetrics
+{
+    /// <summary>
+    /// Total time taken for the reranking operation.
+    /// </summary>
+    public TimeSpan TotalDuration { get; set; }
+
+    /// <summary>
+    /// Time taken for semantic reranking API call.
+    /// </summary>
+    public TimeSpan SemanticRerankingDuration { get; set; }
+
+    /// <summary>
+    /// Time taken for local scoring calculations.
+    /// </summary>
+    public TimeSpan LocalScoringDuration { get; set; }
+
+    /// <summary>
+    /// Number of results sent for reranking.
+    /// </summary>
+    public int CandidateCount { get; set; }
+
+    /// <summary>
+    /// Number of results returned after reranking.
+    /// </summary>
+    public int RankedResultCount { get; set; }
+
+    /// <summary>
+    /// Whether any errors occurred during reranking.
+    /// </summary>
+    public bool HasFailures { get; set; }
+
+    /// <summary>
+    /// List of any errors that occurred during reranking.
+    /// </summary>
+    public List<string> Errors { get; set; } = new();
+
+    /// <summary>
+    /// Average score change after reranking.
+    /// </summary>
+    public float AverageScoreChange { get; set; }
+
+    /// <summary>
+    /// Number of results that changed position after reranking.
+    /// </summary>
+    public int PositionChanges { get; set; }
 } 
