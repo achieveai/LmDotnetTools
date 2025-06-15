@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="dotenv.net" Version="3.2.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.5" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.5" />
@@ -17,6 +18,8 @@
     <PackageReference Include="ModelContextProtocol" Version="0.2.0-preview.2" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.2.0-preview.2" />
     <PackageReference Include="sqlite-vec" Version="0.1.7-alpha.2.1" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.2.1" />
     <PackageReference Include="System.Text.Json" Version="9.0.5" />
   </ItemGroup>
 
