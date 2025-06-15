@@ -100,8 +100,9 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         var totalStopwatch = Stopwatch.StartNew();
         var metrics = new UnifiedSearchMetrics();
 
-        _logger.LogDebug("Starting unified search with {SearchCount} parallel operations", 
-            GetSearchOperationCount(options, queryEmbedding != null));
+        var searchOperationCount = GetSearchOperationCount(options, queryEmbedding != null);
+        _logger.LogDebug("Starting unified search with {SearchCount} parallel operations. EnableFts: {EnableFts}, EnableVector: {EnableVector}, HasEmbedding: {HasEmbedding}", 
+            searchOperationCount, options.EnableFtsSearch, options.EnableVectorSearch, queryEmbedding != null);
 
         try
         {
@@ -112,33 +113,39 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             // Memory searches
             if (options.EnableFtsSearch)
             {
+                _logger.LogTrace("Adding memory FTS search task");
                 searchTasks.Add(ExecuteMemoryFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken));
             }
 
             if (options.EnableVectorSearch && queryEmbedding != null)
             {
+                _logger.LogTrace("Adding memory vector search task");
                 searchTasks.Add(ExecuteMemoryVectorSearchAsync(queryEmbedding, sessionContext, options, metrics, results, cancellationToken));
             }
 
             // Entity searches
             if (options.EnableFtsSearch)
             {
+                _logger.LogTrace("Adding entity FTS search task");
                 searchTasks.Add(ExecuteEntityFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken));
             }
 
             if (options.EnableVectorSearch && queryEmbedding != null)
             {
+                _logger.LogTrace("Adding entity vector search task");
                 searchTasks.Add(ExecuteEntityVectorSearchAsync(queryEmbedding, sessionContext, options, metrics, results, cancellationToken));
             }
 
             // Relationship searches
             if (options.EnableFtsSearch)
             {
+                _logger.LogTrace("Adding relationship FTS search task");
                 searchTasks.Add(ExecuteRelationshipFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken));
             }
 
             if (options.EnableVectorSearch && queryEmbedding != null)
             {
+                _logger.LogTrace("Adding relationship vector search task");
                 searchTasks.Add(ExecuteRelationshipVectorSearchAsync(queryEmbedding, sessionContext, options, metrics, results, cancellationToken));
             }
 
@@ -149,6 +156,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             try
             {
                 await Task.WhenAll(searchTasks);
+                _logger.LogTrace("All {TaskCount} search tasks completed. Total results: {ResultCount}", searchTasks.Count, results.Count);
             }
             catch (OperationCanceledException) when (timeoutCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
@@ -159,11 +167,13 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
 
             // Apply type weights to results
             ApplyTypeWeights(results, options.TypeWeights);
+            _logger.LogTrace("Applied type weights. Results after weighting: {ResultCount}", results.Count);
 
             // Apply reranking BEFORE result cutoffs (Phase 7 requirement)
             var finalResults = results;
             if (results.Count > 0)
             {
+                _logger.LogTrace("Starting reranking with {ResultCount} results", results.Count);
                 try
                 {
                     var rerankingResults = await _rerankingEngine.RerankResultsAsync(query, results, sessionContext, null, cancellationToken);
@@ -193,6 +203,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             // Apply deduplication AFTER reranking but BEFORE final cutoffs (Phase 8)
             if (finalResults.Count > 0)
             {
+                _logger.LogTrace("Starting deduplication with {ResultCount} results", finalResults.Count);
                 try
                 {
                     var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(finalResults, sessionContext, null, cancellationToken);
@@ -222,6 +233,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             List<EnrichedSearchResult> enrichedResults = new();
             if (finalResults.Count > 0)
             {
+                _logger.LogTrace("Starting enrichment with {ResultCount} results", finalResults.Count);
                 try
                 {
                     var enrichmentResults = await _resultEnricher.EnrichResultsAsync(finalResults, sessionContext, null, cancellationToken);
