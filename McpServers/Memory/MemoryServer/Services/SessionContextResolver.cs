@@ -1,5 +1,6 @@
 using MemoryServer.Models;
 using Microsoft.Extensions.Options;
+using System.Security.Claims;
 
 namespace MemoryServer.Services;
 
@@ -10,18 +11,21 @@ public class SessionContextResolver : ISessionContextResolver
 {
     private readonly ILogger<SessionContextResolver> _logger;
     private readonly SessionDefaultsOptions _options;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
     public SessionContextResolver(
         ILogger<SessionContextResolver> logger,
-        IOptions<MemoryServerOptions> options)
+        IOptions<MemoryServerOptions> options,
+        IHttpContextAccessor httpContextAccessor)
     {
         _logger = logger;
         _options = options.Value.SessionDefaults;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     /// <summary>
     /// Resolves session context using precedence hierarchy.
-    /// Precedence: Explicit Parameters > Transport Context > System Defaults
+    /// Precedence: Explicit Parameters > JWT Token Claims > Transport Context > System Defaults
     /// </summary>
     public Task<SessionContext> ResolveSessionContextAsync(
         string? explicitUserId = null,
@@ -34,9 +38,9 @@ public class SessionContextResolver : ISessionContextResolver
 
         var sessionContext = new SessionContext
         {
-            // Start with explicit parameters (highest precedence)
-            UserId = explicitUserId ?? GetFromTransportContext("userId") ?? _options.DefaultUserId,
-            AgentId = explicitAgentId ?? GetFromTransportContext("agentId"),
+            // Precedence: Explicit Parameters > JWT Claims > Transport Context > System Defaults
+            UserId = explicitUserId ?? GetFromJwtClaims("userId") ?? GetFromTransportContext("userId") ?? _options.DefaultUserId,
+            AgentId = explicitAgentId ?? GetFromJwtClaims("agentId") ?? GetFromTransportContext("agentId"),
             RunId = explicitRunId ?? GetFromTransportContext("runId") ?? GenerateDefaultRunId()
         };
 
@@ -84,6 +88,32 @@ public class SessionContextResolver : ISessionContextResolver
     public Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default)
     {
         return ResolveSessionContextAsync(cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets session context from JWT token claims.
+    /// </summary>
+    private string? GetFromJwtClaims(string claimName)
+    {
+        try
+        {
+            var httpContext = _httpContextAccessor.HttpContext;
+            if (httpContext?.User?.Identity?.IsAuthenticated == true)
+            {
+                var claimValue = httpContext.User.FindFirst(claimName)?.Value;
+                if (!string.IsNullOrWhiteSpace(claimValue))
+                {
+                    _logger.LogDebug("Found {ClaimName} in JWT claims: {Value}", claimName, claimValue);
+                    return claimValue;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to extract {ClaimName} from JWT claims", claimName);
+        }
+
+        return null;
     }
 
     /// <summary>
