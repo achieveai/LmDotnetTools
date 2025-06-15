@@ -23,7 +23,7 @@ public class JwtOptions
     /// <summary>
     /// Token expiration time in minutes
     /// </summary>
-    public int ExpirationMinutes { get; set; } = 60;
+    public int ExpirationMinutes { get; set; } = 60 * 24 * 30; // 30 days
 
     /// <summary>
     /// Validates that all required JWT options are configured
