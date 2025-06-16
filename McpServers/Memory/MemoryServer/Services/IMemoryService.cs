@@ -46,4 +46,14 @@ public interface IMemoryService
     /// Gets memory history for a specific memory ID.
     /// </summary>
     Task<List<MemoryHistoryEntry>> GetMemoryHistoryAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets all agents for a specific user.
+    /// </summary>
+    Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets all run IDs for a specific user and agent.
+    /// </summary>
+    Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default);
 } 

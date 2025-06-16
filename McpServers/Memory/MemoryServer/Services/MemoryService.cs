@@ -312,4 +312,41 @@ public class MemoryService : IMemoryService
         
         return history;
     }
+
+    /// <summary>
+    /// Gets all agents for a specific user.
+    /// </summary>
+    public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new ArgumentException("UserId cannot be empty", nameof(userId));
+
+        _logger.LogDebug("Getting all agents for user {UserId}", userId);
+
+        var agents = await _memoryRepository.GetAgentsAsync(userId, cancellationToken);
+        
+        _logger.LogDebug("Retrieved {Count} agents for user {UserId}", agents.Count, userId);
+        
+        return agents;
+    }
+
+    /// <summary>
+    /// Gets all run IDs for a specific user and agent.
+    /// </summary>
+    public async Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new ArgumentException("UserId cannot be empty", nameof(userId));
+
+        if (string.IsNullOrWhiteSpace(agentId))
+            throw new ArgumentException("AgentId cannot be empty", nameof(agentId));
+
+        _logger.LogDebug("Getting all runs for user {UserId} and agent {AgentId}", userId, agentId);
+
+        var runs = await _memoryRepository.GetRunsAsync(userId, agentId, cancellationToken);
+        
+        _logger.LogDebug("Retrieved {Count} runs for user {UserId} and agent {AgentId}", runs.Count, userId, agentId);
+        
+        return runs;
+    }
 } 
