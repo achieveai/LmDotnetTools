@@ -853,4 +853,95 @@ public class MemoryRepository : IMemoryRepository
 
         return finalResults;
     }
+
+    /// <summary>
+    /// Gets all agents for a specific user.
+    /// </summary>
+    public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new ArgumentException("UserId cannot be empty", nameof(userId));
+
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT DISTINCT agent_id
+                FROM memories 
+                WHERE user_id = @userId 
+                  AND agent_id IS NOT NULL 
+                  AND agent_id != ''
+                ORDER BY agent_id";
+
+            command.Parameters.AddWithValue("@userId", userId);
+
+            var agents = new List<string>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var agentIdOrdinal = reader.GetOrdinal("agent_id");
+                if (!reader.IsDBNull(agentIdOrdinal))
+                {
+                    var agentId = reader.GetString(agentIdOrdinal);
+                    if (!string.IsNullOrWhiteSpace(agentId))
+                    {
+                        agents.Add(agentId);
+                    }
+                }
+            }
+
+            _logger.LogDebug("Found {Count} agents for user {UserId}", agents.Count, userId);
+            return agents;
+        });
+    }
+
+    /// <summary>
+    /// Gets all run IDs for a specific user and agent.
+    /// </summary>
+    public async Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new ArgumentException("UserId cannot be empty", nameof(userId));
+
+        if (string.IsNullOrWhiteSpace(agentId))
+            throw new ArgumentException("AgentId cannot be empty", nameof(agentId));
+
+        await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
+        
+        return await session.ExecuteAsync(async connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT DISTINCT run_id
+                FROM memories 
+                WHERE user_id = @userId 
+                  AND agent_id = @agentId
+                  AND run_id IS NOT NULL 
+                  AND run_id != ''
+                ORDER BY run_id";
+
+            command.Parameters.AddWithValue("@userId", userId);
+            command.Parameters.AddWithValue("@agentId", agentId);
+
+            var runs = new List<string>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var runIdOrdinal = reader.GetOrdinal("run_id");
+                if (!reader.IsDBNull(runIdOrdinal))
+                {
+                    var runId = reader.GetString(runIdOrdinal);
+                    if (!string.IsNullOrWhiteSpace(runId))
+                    {
+                        runs.Add(runId);
+                    }
+                }
+            }
+
+            _logger.LogDebug("Found {Count} runs for user {UserId} and agent {AgentId}", runs.Count, userId, agentId);
+            return runs;
+        });
+    }
 } 

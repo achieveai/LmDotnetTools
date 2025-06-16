@@ -52,6 +52,16 @@ public interface IMemoryRepository
     /// </summary>
     Task<List<MemoryHistoryEntry>> GetHistoryAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Gets all agents for a specific user.
+    /// </summary>
+    Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets all run IDs for a specific user and agent.
+    /// </summary>
+    Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default);
+
     // Vector storage and search methods
 
     /// <summary>
@@ -165,6 +175,21 @@ public class MemoryHistoryEntry
     public string Content { get; set; } = string.Empty;
 
     /// <summary>
+    /// User identifier for the memory.
+    /// </summary>
+    public string UserId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Agent identifier for the memory.
+    /// </summary>
+    public string? AgentId { get; set; }
+
+    /// <summary>
+    /// Run identifier for the memory.
+    /// </summary>
+    public string? RunId { get; set; }
+
+    /// <summary>
     /// When this version was created.
     /// </summary>
     public DateTime CreatedAt { get; set; }
@@ -173,6 +198,11 @@ public class MemoryHistoryEntry
     /// The type of change.
     /// </summary>
     public string ChangeType { get; set; } = "UPDATE";
+
+    /// <summary>
+    /// Memory metadata at this version.
+    /// </summary>
+    public Dictionary<string, object>? Metadata { get; set; }
 
     /// <summary>
     /// Additional metadata about the change.
