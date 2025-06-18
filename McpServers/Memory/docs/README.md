@@ -20,21 +20,21 @@ This directory contains comprehensive design documentation for a simplified yet 
 
 ### Core Design Documents
 
-1. **[DeepDesignDoc.md](./DeepDesignDoc.md)** - Comprehensive system architecture
+1. **[03_Architecture_and_DataModels.md](./03_Architecture_and_DataModels.md)** - Comprehensive system architecture
    - High-level system design and component interactions
    - Database Session Pattern architecture for reliable connection management
    - Data flow diagrams and processing pipelines
    - Integration patterns and deployment strategies
    - Performance optimization and monitoring approaches
 
-2. **[FunctionalRequirements.md](./FunctionalRequirements.md)** - Detailed functional specifications
+2. **[02_Requirements.md](./02_Requirements.md)** - Detailed functional specifications
    - Complete MCP tool specifications with session pattern integration
    - Session management and isolation requirements
    - Database Session Pattern functional requirements (FR-DB-001 through FR-DB-020)
    - Performance, security, and reliability requirements
    - Testing and validation criteria
 
-3. **[ExecutionPlan.md](./ExecutionPlan.md)** - Implementation roadmap
+3. **[01_Introduction_and_Roadmap.md](./01_Introduction_and_Roadmap.md)** - Implementation roadmap
    - Phase-by-phase development plan including Database Session Pattern implementation
    - Phase 1.5: Critical Database Session Pattern implementation phase
    - Milestone definitions and success criteria
@@ -43,28 +43,28 @@ This directory contains comprehensive design documentation for a simplified yet 
 
 ### Technical Specifications
 
-4. **[SqliteAsGotoDb.md](./SqliteAsGotoDb.md)** - SQLite storage architecture
+4. **[04_CoreMemoryEngine.md](./04_CoreMemoryEngine.md)** - SQLite storage architecture
    - Database Session Pattern implementation details
    - SQLite with sqlite-vec integration for vector operations
    - Session-scoped connection management and resource cleanup
    - Test isolation mechanisms and production reliability
    - Schema design and performance optimization
 
-5. **[MemoryCore.md](./MemoryCore.md)** - Core memory management
+5. **[04_CoreMemoryEngine.md](./04_CoreMemoryEngine.md)** - Core memory management
    - Memory and AsyncMemory class implementations with session pattern
    - Session-scoped database operations and transaction management
    - Dual processing modes (inference vs direct)
    - Component orchestration and error handling
    - Performance optimization and caching strategies
 
-6. **[DataModels.md](./DataModels.md)** - Data structures and schemas
+6. **[03_Architecture_and_DataModels.md](./03_Architecture_and_DataModels.md)** - Data structures and schemas
    - Database Session Pattern interfaces (ISqliteSession, ISqliteSessionFactory)
    - Session configuration and performance metrics models
    - Core memory entities with integer ID support
    - Session context and isolation models
    - Graph memory and relationship structures
 
-7. **[VectorStorage.md](./VectorStorage.md)** - Vector storage system
+7. **[08_VectorStorage_and_Persistence.md](./08_VectorStorage_and_Persistence.md)** - Vector storage system
    - SQLite with sqlite-vec integration for semantic similarity search
    - Session isolation and metadata filtering
    - Graph memory integration with relationship extraction
@@ -72,19 +72,19 @@ This directory contains comprehensive design documentation for a simplified yet 
 
 ### Implementation Guides
 
-8. **[LLMProviders.md](./LLMProviders.md)** - LLM provider integration
+8. **[05_LLM_Integration.md](./05_LLM_Integration.md)** - LLM provider integration
    - OpenAI and Anthropic provider implementations
    - Structured output handling and response parsing
    - Error handling and fallback mechanisms
    - Cost optimization and rate limiting
 
-9. **[MemoryDecisionEngine.md](./MemoryDecisionEngine.md)** - Decision-making system
+9. **[04_CoreMemoryEngine.md](./04_CoreMemoryEngine.md)** - Decision-making system
    - AI-powered memory operation decisions
    - Conflict resolution and consistency management
    - Integer ID mapping for LLM compatibility
    - Temporal reasoning and relationship analysis
 
-10. **[FactExtraction.md](./FactExtraction.md)** - Fact extraction engine
+10. **[02_Requirements.md](./02_Requirements.md)** - Fact extraction engine
     - LLM-powered fact extraction from conversations
     - Custom prompt configuration and domain adaptation
     - Multi-language support and cultural considerations

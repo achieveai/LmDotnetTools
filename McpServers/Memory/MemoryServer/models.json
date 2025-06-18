@@ -218,7 +218,7 @@
            "prompt_per_million": 0.4,
            "completion_per_million": 1.6
          },
-         "tags": ["cost-effective", "fast", "balanced"]
+         "tags": ["cost-effective", "fast", "balanced", "small-model"]
        },
        {
          "name": "OpenRouter",
@@ -248,7 +248,7 @@
              }
            }
          ],
-         "tags": ["fallback", "cost-effective", "openai-compatible"]
+         "tags": ["fallback", "cost-effective", "openai-compatible", "small-model"]
        }
      ]
    },
@@ -299,7 +299,7 @@
            "prompt_per_million": 0.1,
            "completion_per_million": 0.4
          },
-         "tags": ["ultra-fast", "cost-optimized", "high-volume"]
+         "tags": ["ultra-fast", "cost-optimized", "high-volume", "nano-model"]
        },
        {
          "name": "OpenRouter",
@@ -320,7 +320,7 @@
              }
            }
          ],
-         "tags": ["fallback", "ultra-fast", "openai-compatible"]
+         "tags": ["fallback", "ultra-fast", "openai-compatible", "nano-model"]
        }
      ]
    },
@@ -481,7 +481,7 @@
            "completion_per_million": 0.6,
            "images_per_1000": 0.775
          },
-         "tags": ["fast", "thinking", "multimodal", "cost-effective"]
+         "tags": ["fast", "thinking", "multimodal", "cost-effective", "small-model"]
        },
        {
          "name": "OpenRouter",
@@ -512,7 +512,7 @@
              }
            }
          ],
-         "tags": ["fallback", "fast", "thinking", "openai-compatible"]
+         "tags": ["fallback", "fast", "thinking", "openai-compatible", "small-model"]
        }
      ]
    },
@@ -564,7 +564,7 @@
            "completion_per_million": 0.3,
            "images_per_1000": 0.388
          },
-         "tags": ["ultra-fast", "cost-optimized", "high-volume"]
+         "tags": ["ultra-fast", "cost-optimized", "high-volume", "nano-model"]
        },
        {
          "name": "OpenRouter",
@@ -586,7 +586,7 @@
              }
            }
          ],
-         "tags": ["fallback", "ultra-fast", "openai-compatible"]
+         "tags": ["fallback", "ultra-fast", "openai-compatible", "nano-model"]
        }
      ]
    },
@@ -644,7 +644,7 @@
            "prompt_per_million": 0.7,
            "completion_per_million": 0.8
          },
-         "tags": ["cost-effective", "reliable", "open-source"]
+         "tags": ["cost-effective", "reliable", "open-source", "small-model"]
        },
        {
          "name": "OpenRouter",
@@ -692,7 +692,7 @@
              }
            }
          ],
-         "tags": ["fallback", "open-source", "openai-compatible"]
+         "tags": ["fallback", "open-source", "openai-compatible", "small-model"]
        }
      ]
    },
@@ -743,7 +743,7 @@
            "prompt_per_million": 0.11,
            "completion_per_million": 0.34
          },
-         "tags": ["world-record-speed", "moe", "multimodal"]
+         "tags": ["world-record-speed", "moe", "multimodal", "nano-model"]
        },
        {
          "name": "Groq",
@@ -753,7 +753,7 @@
            "prompt_per_million": 0.11,
            "completion_per_million": 0.34
          },
-         "tags": ["ultra-fast", "moe", "cost-effective"]
+         "tags": ["ultra-fast", "moe", "cost-effective", "nano-model"]
        },
        {
          "name": "DeepInfra",
@@ -763,7 +763,7 @@
            "prompt_per_million": 0.15,
            "completion_per_million": 0.5
          },
-         "tags": ["cost-effective", "reliable", "moe"]
+         "tags": ["cost-effective", "reliable", "moe", "nano-model"]
        },
        {
          "name": "OpenRouter",
@@ -811,7 +811,7 @@
              }
            }
          ],
-         "tags": ["fallback", "moe", "openai-compatible"]
+         "tags": ["fallback", "moe", "openai-compatible", "nano-model"]
        }
      ]
    },
@@ -862,7 +862,7 @@
            "prompt_per_million": 1.35,
            "completion_per_million": 1.35
          },
-         "tags": ["arena-leader", "moe", "multimodal", "premium-speed"]
+         "tags": ["arena-leader", "moe", "multimodal", "premium-speed", "small-model"]
        },
        {
          "name": "Groq",
@@ -872,7 +872,7 @@
            "prompt_per_million": 1.35,
            "completion_per_million": 1.35
          },
-         "tags": ["ultra-fast", "moe", "arena-leader"]
+         "tags": ["ultra-fast", "moe", "arena-leader", "small-model"]
        },
        {
          "name": "DeepInfra",
@@ -882,7 +882,7 @@
            "prompt_per_million": 1.5,
            "completion_per_million": 1.5
          },
-         "tags": ["cost-effective", "reliable", "moe"]
+         "tags": ["cost-effective", "reliable", "moe", "small-model"]
        },
        {
          "name": "OpenRouter",
@@ -930,7 +930,7 @@
              }
            }
          ],
-         "tags": ["fallback", "arena-leader", "openai-compatible"]
+         "tags": ["fallback", "arena-leader", "openai-compatible", "small-model"]
        }
      ]
    },
@@ -1482,7 +1482,7 @@
              }
            }
          ],
-         "tags": ["free", "thinking", "moe", "openai-compatible"]
+         "tags": ["free", "thinking", "moe", "openai-compatible", "small-model"]
        }
      ]
    },
@@ -1598,7 +1598,7 @@
              }
            }
          ],
-         "tags": ["fallback", "dense", "openai-compatible"]
+         "tags": ["fallback", "dense", "openai-compatible", "small-model"]
        }
      ]
    },
@@ -1646,7 +1646,7 @@
            "prompt_per_million": 0.4,
            "completion_per_million": 1.2
          },
-         "tags": ["cost-effective", "multilingual", "coding", "fast"]
+         "tags": ["cost-effective", "multilingual", "coding", "fast", "nano-model"]
        },
        {
          "name": "DeepInfra",
@@ -1656,7 +1656,7 @@
            "prompt_per_million": 0.35,
            "completion_per_million": 1.0
          },
-         "tags": ["ultra-cost-effective", "reliable", "fast"]
+         "tags": ["ultra-cost-effective", "reliable", "fast", "nano-model"]
        },
        {
          "name": "OpenRouter",
@@ -1704,7 +1704,7 @@
              }
            }
          ],
-         "tags": ["free", "cost-effective", "openai-compatible"]
+         "tags": ["free", "cost-effective", "openai-compatible", "nano-model"]
        }
      ]
    }

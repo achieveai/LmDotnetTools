@@ -78,7 +78,7 @@ public abstract class McpTransportTestBase : IDisposable
     #region Core MCP Functionality Tests
 
     [Fact]
-    public async Task ToolDiscovery_ShouldDiscoverAll8MemoryTools()
+    public async Task ToolDiscovery_ShouldDiscoverAll10MemoryTools()
     {
         // Arrange
         var client = await GetClientAsync();
@@ -112,9 +112,9 @@ public abstract class McpTransportTestBase : IDisposable
         // - memory_clear_session (replaced by process/connection lifecycle)
         // - memory_resolve_session (replaced by automatic resolution)
         
-        // Should have exactly 8 tools
-        Assert.Equal(8, toolNames.Count);
-        _output.WriteLine($"✅ {GetTransportName()}: All 8 MCP tools discovered successfully");
+        // Should have exactly 10 tools
+        Assert.Equal(10, toolNames.Count);
+        _output.WriteLine($"✅ {GetTransportName()}: All 10 MCP tools discovered successfully");
     }
 
     [Fact]

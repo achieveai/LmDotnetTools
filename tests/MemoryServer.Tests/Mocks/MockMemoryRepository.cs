@@ -318,4 +318,33 @@ public class MockMemoryRepository : IMemoryRepository
         // Mock implementation - fall back to traditional search
         return SearchAsync(query, sessionContext, limit, 0.0f, cancellationToken);
     }
+
+    public Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
+    {
+        MethodCalls.Add(nameof(GetAgentsAsync));
+        LastCallParameters["userId"] = userId;
+
+        var agents = _memories.Values
+            .Where(m => m.UserId == userId && !string.IsNullOrEmpty(m.AgentId))
+            .Select(m => m.AgentId!)
+            .Distinct()
+            .ToList();
+
+        return Task.FromResult(agents);
+    }
+
+    public Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default)
+    {
+        MethodCalls.Add(nameof(GetRunsAsync));
+        LastCallParameters["userId"] = userId;
+        LastCallParameters["agentId"] = agentId;
+
+        var runs = _memories.Values
+            .Where(m => m.UserId == userId && m.AgentId == agentId && !string.IsNullOrEmpty(m.RunId))
+            .Select(m => m.RunId!)
+            .Distinct()
+            .ToList();
+
+        return Task.FromResult(runs);
+    }
 } 
