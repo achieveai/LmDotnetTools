@@ -15,6 +15,27 @@ public class MemoryMcpTools
     private readonly ISessionContextResolver _sessionResolver;
     private readonly ILogger<MemoryMcpTools> _logger;
 
+    // Tool descriptions as const strings for better maintainability
+    private const string AddMemoryDescription = @"Stores important information, facts, preferences, or context that should be remembered across conversations. Use this when you learn something significant about the user, their preferences, project details, or any information that would be valuable to recall later. Examples: user's coding style preferences, project requirements, personal details shared in conversation, or task-specific context that spans multiple interactions.";
+
+    private const string SearchMemoriesDescription = @"Finds relevant memories based on semantic meaning and keywords to provide context for current conversations. Use this when you need to recall information about the user, understand their preferences, find project details, or gather context for better responses. The search uses both AI-powered semantic similarity and traditional keyword matching to find the most relevant memories. Essential for maintaining conversational continuity and personalized interactions.";
+
+    private const string GetAllMemoriesDescription = @"Retrieves all stored memories for comprehensive review, debugging, or bulk operations. Use this when you need to see the complete memory history, audit what information has been stored, export memories for backup, or when troubleshooting memory-related issues. Supports pagination for large memory sets. Useful for understanding the full context of past interactions or preparing summaries of learned information.";
+
+    private const string UpdateMemoryDescription = @"Modifies existing memories when information changes or needs correction. Use this when you discover that stored information is outdated, incorrect, or incomplete. Common scenarios include updating user preferences that have changed, correcting factual errors in stored information, adding new details to existing memories, or refining context based on new insights. Maintains version history for audit trails.";
+
+    private const string DeleteMemoryDescription = @"Removes specific memories that are no longer relevant, contain sensitive information, or are duplicates. Use this for privacy compliance (removing personal data upon request), cleaning up outdated information that could cause confusion, removing duplicate or redundant memories, or deleting test/temporary memories. Exercise caution as deletion is permanent and removes valuable context.";
+
+    private const string DeleteAllMemoriesDescription = @"Completely clears all memories for a fresh start or privacy compliance. Use this when users request complete data deletion, when starting a new project that requires clean context, for testing scenarios that need clean state, or when memories have become corrupted or inconsistent. This is a nuclear option that removes all conversational history and learned context - use sparingly and only when absolutely necessary.";
+
+    private const string GetMemoryHistoryDescription = @"Tracks how specific memories have evolved over time through updates and modifications. Use this for auditing changes to important information, understanding how user preferences or project requirements have evolved, debugging issues with memory accuracy, or providing transparency about what information has been stored and how it changed. Essential for compliance and understanding the evolution of stored knowledge.";
+
+    private const string GetMemoryStatsDescription = @"Analyzes memory usage patterns and provides insights into stored information trends. Use this to understand how effectively memory is being utilized, identify potential storage issues, monitor memory growth over time, optimize memory management strategies, or generate reports on AI learning and knowledge accumulation. Valuable for system administrators and users wanting to understand their memory footprint.";
+
+    private const string GetAgentsDescription = @"Lists all AI agents that have stored memories for the current user, enabling multi-agent memory management. Use this to understand which AI assistants have been learning about you, manage memories across different specialized agents, coordinate context sharing between agents, or audit which agents have access to your information. Essential for multi-agent environments where different AIs serve different purposes.";
+
+    private const string GetRunsDescription = @"Retrieves all conversation sessions (runs) for tracking and organizing memories by interaction context. Use this to understand conversation history patterns, organize memories by specific projects or time periods, resume previous conversation contexts, analyze interaction frequency, or manage memory organization across different sessions. Helpful for users who have multiple ongoing projects or need to compartmentalize different types of interactions.";
+
     public MemoryMcpTools(
         IMemoryService memoryService,
         ISessionContextResolver sessionResolver,
@@ -33,7 +54,7 @@ public class MemoryMcpTools
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="metadata">Optional additional metadata as JSON string</param>
     /// <returns>Created memory with integer ID</returns>
-    [McpServerTool(Name = "memory_add"), Description("Adds new memories from conversation messages or direct content")]
+    [McpServerTool(Name = "memory_add"), Description(AddMemoryDescription)]
     public async Task<object> AddMemoryAsync(
         [Description("The content to add as a memory")] string? content,
         [Description("Run identifier for session isolation")] string? runId = "",
@@ -109,7 +130,7 @@ public class MemoryMcpTools
     /// <param name="limit">Maximum number of results (default: 10, max: 100)</param>
     /// <param name="scoreThreshold">Minimum similarity score threshold (default: 0.0)</param>
     /// <returns>Array of relevant memory objects with relevance scores</returns>
-    [McpServerTool(Name = "memory_search"), Description("Searches for relevant memories using semantic similarity and full-text search")]
+    [McpServerTool(Name = "memory_search"), Description(SearchMemoriesDescription)]
     public async Task<object> SearchMemoriesAsync(
         [Description("Search query text")] string? query,
         [Description("Agent identifier for session filtering - if not provided, uses JWT token agentId; if \"all\", searches all agents")] string? agentId = "",
@@ -195,7 +216,7 @@ public class MemoryMcpTools
     /// <param name="limit">Maximum number of results (default: 100, max: 1000)</param>
     /// <param name="offset">Offset for pagination (default: 0)</param>
     /// <returns>Array of memory objects</returns>
-    [McpServerTool(Name = "memory_get_all"), Description("Retrieves all memories for a specific session")]
+    [McpServerTool(Name = "memory_get_all"), Description(GetAllMemoriesDescription)]
     public async Task<object> GetAllMemoriesAsync(
         [Description("Agent identifier for session filtering - if not provided, uses JWT token agentId; if \"all\", gets all agents")] string? agentId = "",
         [Description("Run identifier for session filtering")] string? runId = "",
@@ -276,7 +297,7 @@ public class MemoryMcpTools
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="metadata">Optional additional metadata as JSON string</param>
     /// <returns>Updated memory object</returns>
-    [McpServerTool(Name = "memory_update"), Description("Updates an existing memory by ID")]
+    [McpServerTool(Name = "memory_update"), Description(UpdateMemoryDescription)]
     public async Task<object> UpdateMemoryAsync(
         [Description("Memory ID to update")] int id,
         [Description("New content for the memory")] string? content,
@@ -360,7 +381,7 @@ public class MemoryMcpTools
     /// <param name="id">Memory ID to delete</param>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <returns>Deletion confirmation</returns>
-    [McpServerTool(Name = "memory_delete"), Description("Deletes a memory by ID")]
+    [McpServerTool(Name = "memory_delete"), Description(DeleteMemoryDescription)]
     public async Task<object> DeleteMemoryAsync(
         [Description("Memory ID to delete")] int id,
         [Description("Run identifier for session isolation")] string? runId = "")
@@ -410,7 +431,7 @@ public class MemoryMcpTools
     /// </summary>
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <returns>Deletion summary</returns>
-    [McpServerTool(Name = "memory_delete_all"), Description("Deletes all memories for a session")]
+    [McpServerTool(Name = "memory_delete_all"), Description(DeleteAllMemoriesDescription)]
     public async Task<object> DeleteAllMemoriesAsync(
         [Description("Run identifier for session isolation")] string? runId = "")
     {
@@ -453,7 +474,7 @@ public class MemoryMcpTools
     /// <param name="runId">Optional run identifier for session isolation</param>
     /// <param name="limit">Maximum number of history entries (default: 50, max: 100)</param>
     /// <returns>Array of memory history entries</returns>
-    [McpServerTool(Name = "memory_get_history"), Description("Gets memory history for a specific memory ID")]
+    [McpServerTool(Name = "memory_get_history"), Description(GetMemoryHistoryDescription)]
     public async Task<object> GetMemoryHistoryAsync(
         [Description("Memory ID to get history for")] int id,
         [Description("Agent identifier for session isolation - if not provided, uses JWT token agentId; if \"all\", searches all agents")] string? agentId = "",
@@ -528,7 +549,7 @@ public class MemoryMcpTools
     /// <param name="agentId">Agent identifier for session filtering - if not provided, uses JWT token agentId; if "all", gets stats for all agents</param>
     /// <param name="runId">Optional run identifier for session filtering</param>
     /// <returns>Memory usage statistics</returns>
-    [McpServerTool(Name = "memory_get_stats"), Description("Provides memory usage statistics and analytics")]
+    [McpServerTool(Name = "memory_get_stats"), Description(GetMemoryStatsDescription)]
     public async Task<object> GetMemoryStatsAsync(
         [Description("Agent identifier for session filtering - if not provided, uses JWT token agentId; if \"all\", gets stats for all agents")] string? agentId = "",
         [Description("Run identifier for session filtering")] string? runId = "")
@@ -598,7 +619,7 @@ public class MemoryMcpTools
     /// UserId is automatically extracted from JWT token.
     /// </summary>
     /// <returns>Array of agent identifiers</returns>
-    [McpServerTool(Name = "memory_get_agents"), Description("Gets all agents for the current user")]
+    [McpServerTool(Name = "memory_get_agents"), Description(GetAgentsDescription)]
     public async Task<object> GetAgentsAsync()
     {
         try
@@ -636,7 +657,7 @@ public class MemoryMcpTools
     /// </summary>
     /// <param name="agentId">Agent identifier to get runs for</param>
     /// <returns>Array of run identifiers</returns>
-    [McpServerTool(Name = "memory_get_runs"), Description("Gets all run IDs for a specific agent and user")]
+    [McpServerTool(Name = "memory_get_runs"), Description(GetRunsDescription)]
     public async Task<object> GetRunsAsync(
         [Description("Agent identifier to get runs for")] string? agentId = "")
     {
