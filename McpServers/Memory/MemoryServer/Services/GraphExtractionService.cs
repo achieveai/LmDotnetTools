@@ -57,7 +57,7 @@ public class GraphExtractionService : IGraphExtractionService
 
       var promptChain = _promptReader.GetPromptChain("entity_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("small_model", cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
       var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
@@ -116,7 +116,7 @@ public class GraphExtractionService : IGraphExtractionService
         ["entities_json"] = entitiesJson 
       });
       
-      var generateOptions = await CreateGenerateReplyOptionsAsync("small_model", cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
       var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       var responseText = ExtractTextFromResponse(response);
       var extractedRelationships = ParseRelationshipsFromJson(responseText);
@@ -166,7 +166,7 @@ public class GraphExtractionService : IGraphExtractionService
 
       var promptChain = _promptReader.GetPromptChain("combined_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("small_model", cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
       var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
@@ -260,7 +260,7 @@ public class GraphExtractionService : IGraphExtractionService
         ["existing_relationships_json"] = relationshipsJson
       });
       
-      var generateOptions = await CreateGenerateReplyOptionsAsync("small_model", cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
       var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       var responseText = ExtractTextFromResponse(response);
       var updateInstructions = ParseUpdateInstructionsFromJson(responseText);
@@ -300,7 +300,7 @@ public class GraphExtractionService : IGraphExtractionService
 
       var promptChain = _promptReader.GetPromptChain("entity_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["entities_json"] = entitiesJson });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("small_model", cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
       var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
@@ -360,7 +360,7 @@ public class GraphExtractionService : IGraphExtractionService
 
       var promptChain = _promptReader.GetPromptChain("relationship_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["relationships_json"] = relationshipsJson });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("small_model", cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
       var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);

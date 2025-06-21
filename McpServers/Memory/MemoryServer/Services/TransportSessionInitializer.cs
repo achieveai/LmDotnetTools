@@ -1,5 +1,6 @@
 using MemoryServer.Models;
 using Microsoft.Extensions.Options;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace MemoryServer.Services;
 
@@ -181,9 +182,9 @@ public class TransportSessionInitializer
     {
         var envVars = new[]
         {
-            ("MCP_MEMORY_USER_ID", Environment.GetEnvironmentVariable("MCP_MEMORY_USER_ID")),
-            ("MCP_MEMORY_AGENT_ID", Environment.GetEnvironmentVariable("MCP_MEMORY_AGENT_ID")),
-            ("MCP_MEMORY_RUN_ID", Environment.GetEnvironmentVariable("MCP_MEMORY_RUN_ID"))
+            ("MCP_MEMORY_USER_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID")),
+            ("MCP_MEMORY_AGENT_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID")),
+            ("MCP_MEMORY_RUN_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"))
         };
 
         foreach (var (name, value) in envVars)

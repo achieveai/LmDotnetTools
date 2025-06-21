@@ -1,6 +1,7 @@
 using MemoryServer.Models;
 using Microsoft.Extensions.Options;
 using System.Security.Claims;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace MemoryServer.Services;
 
@@ -124,9 +125,9 @@ public class SessionContextResolver : ISessionContextResolver
         // Try environment variables first (STDIO transport)
         var envValue = parameterName.ToLowerInvariant() switch
         {
-            "userid" => Environment.GetEnvironmentVariable("MCP_MEMORY_USER_ID"),
-            "agentid" => Environment.GetEnvironmentVariable("MCP_MEMORY_AGENT_ID"),
-            "runid" => Environment.GetEnvironmentVariable("MCP_MEMORY_RUN_ID"),
+                            "userid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID"),
+                "agentid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID"),
+                "runid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"),
             _ => null
         };
 

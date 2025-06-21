@@ -97,7 +97,30 @@ public static class HttpRetryHelper
                 }
                 
                 // Not retryable or max retries exceeded, throw
-                response.EnsureSuccessStatusCode();
+                try
+                {
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        // Try to read the response body for better error information
+                        var responseBody = await response.Content.ReadAsStringAsync();
+                        var errorMessage = $"HTTP request failed with status {response.StatusCode} ({response.ReasonPhrase})";
+                        if (!string.IsNullOrWhiteSpace(responseBody))
+                        {
+                            errorMessage += $". Response body: {responseBody}";
+                        }
+
+                        throw new HttpRequestException(
+                            errorMessage,
+                            null,
+                            response.StatusCode);
+                    }
+                }
+                catch (Exception ex) when (!(ex is HttpRequestException))
+                {
+                    // If reading response body fails, fall back to standard behavior
+                    response.EnsureSuccessStatusCode();
+                }
+
                 return default(T)!; // This line should never be reached
             }
             catch (HttpRequestException ex) when (attempt < maxRetries && IsRetryableError(ex))

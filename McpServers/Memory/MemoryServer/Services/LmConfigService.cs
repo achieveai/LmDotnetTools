@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
@@ -109,9 +110,9 @@ public class LmConfigService : ILmConfigService
     /// </summary>
     public Task<IEmbeddingService> CreateEmbeddingServiceAsync(CancellationToken cancellationToken = default)
     {
-        var apiKey = Environment.GetEnvironmentVariable("EMBEDDING_API_KEY");
-        var baseUrl = Environment.GetEnvironmentVariable("EMBEDDING_BASE_URL") ?? "https://api.openai.com/v1";
-        var model = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "text-embedding-3-small";
+        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_API_KEY");
+        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_BASE_URL", null, "https://api.openai.com/v1");
+        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_MODEL", null, "text-embedding-3-small");
         
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
         {
@@ -130,9 +131,9 @@ public class LmConfigService : ILmConfigService
     /// </summary>
     public Task<IRerankService> CreateRerankServiceAsync(CancellationToken cancellationToken = default)
     {
-        var apiKey = Environment.GetEnvironmentVariable("RERANKING_API_KEY");
-        var baseUrl = Environment.GetEnvironmentVariable("RERANKING_BASE_URL") ?? "https://api.cohere.ai";
-        var model = Environment.GetEnvironmentVariable("RERANKING_MODEL") ?? "rerank-english-v3.0";
+        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_API_KEY");
+        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_BASE_URL", null, "https://api.cohere.ai");
+        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_MODEL", null, "rerank-english-v3.0");
         
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
         {
@@ -180,7 +181,7 @@ public class LmConfigService : ILmConfigService
         }
 
         // Validate embedding service configuration
-        var embeddingApiKey = Environment.GetEnvironmentVariable("EMBEDDING_API_KEY");
+        var embeddingApiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_API_KEY");
         if (string.IsNullOrEmpty(embeddingApiKey) || embeddingApiKey.StartsWith("${"))
         {
             _logger.LogError("Embedding API key not configured. Set EMBEDDING_API_KEY environment variable.");
@@ -188,7 +189,7 @@ public class LmConfigService : ILmConfigService
         }
 
         // Validate reranking service configuration (optional)
-        var rerankingApiKey = Environment.GetEnvironmentVariable("RERANKING_API_KEY");
+        var rerankingApiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_API_KEY");
         if (!string.IsNullOrEmpty(rerankingApiKey) && !rerankingApiKey.StartsWith("${"))
         {
             _logger.LogInformation("Reranking service configured");
@@ -297,8 +298,8 @@ public class LmConfigService : ILmConfigService
 
     private IAgent CreateOpenAIAgent(ModelConfig model)
     {
-        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? _memoryOptions.LLM?.OpenAI?.ApiKey;
-        var baseUrl = Environment.GetEnvironmentVariable("OPENAI_BASE_URL") ?? "https://api.openai.com/v1";
+        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("OPENAI_API_KEY", null, _memoryOptions.LLM?.OpenAI?.ApiKey ?? "");
+        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("OPENAI_BASE_URL", null, "https://api.openai.com/v1");
         
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
         {
@@ -311,7 +312,7 @@ public class LmConfigService : ILmConfigService
 
     private IAgent CreateAnthropicAgent(ModelConfig model)
     {
-        var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? _memoryOptions.LLM?.Anthropic?.ApiKey;
+        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("ANTHROPIC_API_KEY", null, _memoryOptions.LLM?.Anthropic?.ApiKey ?? "");
         
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
         {

@@ -172,7 +172,7 @@ public class UnifiedSearchEngineTests
 
         // Setup embedding manager to return null (no vector search)
         _mockEmbeddingManager.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((float[]?)null);
+            .ThrowsAsync(new InvalidOperationException("Embedding generation disabled for this test"));
 
         var options = new UnifiedSearchOptions
         {

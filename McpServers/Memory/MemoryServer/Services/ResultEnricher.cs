@@ -163,7 +163,7 @@ public class ResultEnricher : IResultEnricher
         return enrichedResults;
     }
 
-    private async Task<bool> EnrichMemoryResultAsync(
+    private Task<bool> EnrichMemoryResultAsync(
         EnrichedSearchResult result,
         SessionContext sessionContext,
         EnrichmentOptions options,
@@ -171,7 +171,7 @@ public class ResultEnricher : IResultEnricher
         CancellationToken cancellationToken)
     {
         if (result.OriginalMemory == null)
-            return false;
+            return Task.FromResult(false);
 
         var relationshipStopwatch = Stopwatch.StartNew();
         bool wasEnriched = false;
@@ -201,7 +201,7 @@ public class ResultEnricher : IResultEnricher
             metrics.RelationshipDiscoveryDuration += relationshipStopwatch.Elapsed;
         }
 
-        return wasEnriched;
+        return Task.FromResult(wasEnriched);
     }
 
     private async Task<bool> EnrichEntityResultAsync(

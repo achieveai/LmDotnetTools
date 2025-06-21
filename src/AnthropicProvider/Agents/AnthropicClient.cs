@@ -6,6 +6,7 @@ using System.Net.ServerSentEvents;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using AchieveAi.LmDotnetTools.LmCore.Http;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
@@ -54,12 +55,11 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
     private static HttpClient CreateHttpClient(string apiKey)
     {
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
-        httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
-        httpClient.Timeout = TimeSpan.FromMinutes(5);
-        return httpClient;
+        var headers = new Dictionary<string, string>
+        {
+            ["anthropic-version"] = "2023-06-01"
+        };
+        return HttpClientFactory.CreateForAnthropic(apiKey, "https://api.anthropic.com", null, headers);
     }
 
 
