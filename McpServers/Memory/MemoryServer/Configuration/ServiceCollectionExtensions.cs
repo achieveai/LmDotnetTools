@@ -94,107 +94,14 @@ public static class ServiceCollectionExtensions
     // Register prompt reader that loads from embedded resources with file system fallback
     services.AddScoped<IPromptReader, EmbeddedPromptReader>();
 
-    // Register LLM provider following established patterns
-    services.AddScoped<IAgent>(provider =>
-    {
-      var memoryOptions = provider.GetRequiredService<IOptions<MemoryServerOptions>>().Value;
-      var logger = provider.GetRequiredService<ILogger<IAgent>>();
-
-      if (memoryOptions.LLM.DefaultProvider.ToLower() == "anthropic")
-      {
-        return CreateAnthropicAgent(memoryOptions, logger);
-      }
-      else
-      {
-        return CreateOpenAIAgent(memoryOptions, logger);
-      }
-    });
+    // Note: IAgent is now provided through ILmConfigService.CreateAgentAsync() 
+    // instead of direct dependency injection for better model selection and provider management
 
     return services;
   }
 
-  /// <summary>
-  /// Gets API key from environment variables with fallback options
-  /// Following the pattern used throughout the codebase
-  /// </summary>
-  private static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "")
-  {
-    return EnvironmentVariableHelper.GetApiKeyFromEnv(primaryKey, fallbackKeys, defaultValue);
-  }
-
-  /// <summary>
-  /// Gets API base URL from environment variables with fallback options
-  /// Following the pattern used throughout the codebase
-  /// </summary>
-  private static string GetApiBaseUrlFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "https://api.openai.com/v1")
-  {
-    return EnvironmentVariableHelper.GetApiBaseUrlFromEnv(primaryKey, fallbackKeys, defaultValue);
-  }
-
-  /// <summary>
-  /// Creates an Anthropic agent using consistent API key patterns
-  /// </summary>
-  private static IAgent CreateAnthropicAgent(MemoryServerOptions memoryOptions, ILogger logger)
-  {
-    // Use consistent pattern: Environment variable first, then config fallback
-    var apiKey = GetApiKeyFromEnv(
-      "ANTHROPIC_API_KEY", 
-      fallbackKeys: null, 
-      defaultValue: memoryOptions.LLM.Anthropic.ApiKey ?? "");
-    
-    if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-    {
-      logger.LogWarning("Anthropic API key not configured. Using MockAgent for LLM features.");
-      return new MockAgent("mock-anthropic");
-    }
-    
-    try
-    {
-      var client = new AnthropicClient(apiKey);
-      logger.LogInformation("Anthropic LLM provider initialized successfully");
-      return new AnthropicAgent("memory-anthropic", client);
-    }
-    catch (Exception ex)
-    {
-      logger.LogWarning(ex, "Failed to initialize Anthropic client. Using MockAgent.");
-      return new MockAgent("mock-anthropic");
-    }
-  }
-
-  /// <summary>
-  /// Creates an OpenAI agent using consistent API key and base URL patterns
-  /// </summary>
-  private static IAgent CreateOpenAIAgent(MemoryServerOptions memoryOptions, ILogger logger)
-  {
-    // Use consistent pattern: Environment variable first, then config fallback
-    var apiKey = GetApiKeyFromEnv(
-      "OPENAI_API_KEY",
-      fallbackKeys: new[] { "LLM_API_KEY" },
-      defaultValue: memoryOptions.LLM.OpenAI.ApiKey ?? "");
-    
-    var baseUrl = GetApiBaseUrlFromEnv(
-      "OPENAI_BASE_URL",
-      fallbackKeys: new[] { "OPENAI_API_URL", "LLM_API_BASE_URL" },
-      defaultValue: "https://api.openai.com/v1");
-    
-    if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-    {
-      logger.LogWarning("OpenAI API key not configured. Using MockAgent for LLM features.");
-      return new MockAgent("mock-openai");
-    }
-    
-    try
-    {
-      var client = new OpenClient(apiKey, baseUrl);
-      logger.LogInformation("OpenAI LLM provider initialized successfully with base URL: {BaseUrl}", baseUrl);
-      return new OpenClientAgent("memory-openai", client);
-    }
-    catch (Exception ex)
-    {
-      logger.LogWarning(ex, "Failed to initialize OpenAI client. Using MockAgent.");
-      return new MockAgent("mock-openai");
-    }
-  }
+  // Note: Agent creation methods removed as they are now handled by ILmConfigService
+  // which provides better model selection, provider management, and configuration
 
   public static IServiceCollection AddMcpServices(
     this IServiceCollection services, 

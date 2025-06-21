@@ -16,25 +16,22 @@ namespace MemoryServer.Services;
 /// </summary>
 public class GraphExtractionService : IGraphExtractionService
 {
-  private readonly IAgent _agent;
   private readonly IPromptReader _promptReader;
   private readonly ILogger<GraphExtractionService> _logger;
   private readonly MemoryServerOptions _options;
-  private readonly ILmConfigService? _lmConfigService;
+  private readonly ILmConfigService _lmConfigService;
   private readonly JsonSerializerOptions _jsonOptions;
 
   public GraphExtractionService(
-    IAgent agent,
     IPromptReader promptReader,
     ILogger<GraphExtractionService> logger,
     IOptions<MemoryServerOptions> options,
-    ILmConfigService? lmConfigService = null)
+    ILmConfigService lmConfigService)
   {
-    _agent = agent ?? throw new ArgumentNullException(nameof(agent));
     _promptReader = promptReader ?? throw new ArgumentNullException(nameof(promptReader));
     _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
-    _lmConfigService = lmConfigService;
+    _lmConfigService = lmConfigService ?? throw new ArgumentNullException(nameof(lmConfigService));
     
     _jsonOptions = new JsonSerializerOptions
     {
@@ -55,10 +52,11 @@ public class GraphExtractionService : IGraphExtractionService
       _logger.LogInformation("Extracting entities from content for memory {MemoryId} in session {SessionContext}", 
         memoryId, sessionContext);
 
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("entity_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
-      var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("entity_extraction", cancellationToken);
+      var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
       var extractedEntities = ParseEntitiesFromJson(responseText);
@@ -109,6 +107,7 @@ public class GraphExtractionService : IGraphExtractionService
       var entities = await ExtractEntitiesAsync(content, sessionContext, memoryId, cancellationToken);
       var entitiesJson = JsonSerializer.Serialize(entities.Select(e => new { e.Name, e.Type }), _jsonOptions);
 
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("relationship_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> 
       { 
@@ -116,8 +115,8 @@ public class GraphExtractionService : IGraphExtractionService
         ["entities_json"] = entitiesJson 
       });
       
-      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
-      var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("relationship_extraction", cancellationToken);
+      var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       var responseText = ExtractTextFromResponse(response);
       var extractedRelationships = ParseRelationshipsFromJson(responseText);
       
@@ -164,10 +163,11 @@ public class GraphExtractionService : IGraphExtractionService
       _logger.LogInformation("Extracting combined graph data from content for memory {MemoryId} in session {SessionContext}", 
         memoryId, sessionContext);
 
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("combined_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
-      var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("combined_extraction", cancellationToken);
+      var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
       var extractedData = ParseCombinedExtractionFromJson(responseText);
@@ -252,6 +252,7 @@ public class GraphExtractionService : IGraphExtractionService
         r.TemporalContext 
       }), _jsonOptions);
 
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("graph_update_analysis");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> 
       { 
@@ -260,8 +261,8 @@ public class GraphExtractionService : IGraphExtractionService
         ["existing_relationships_json"] = relationshipsJson
       });
       
-      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
-      var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("graph_update_analysis", cancellationToken);
+      var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       var responseText = ExtractTextFromResponse(response);
       var updateInstructions = ParseUpdateInstructionsFromJson(responseText);
 
@@ -298,10 +299,11 @@ public class GraphExtractionService : IGraphExtractionService
         e.Confidence 
       }), _jsonOptions);
 
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("entity_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["entities_json"] = entitiesJson });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
-      var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("entity_validation", cancellationToken);
+      var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
       var cleanedEntities = ParseEntitiesFromJson(responseText);
@@ -358,10 +360,11 @@ public class GraphExtractionService : IGraphExtractionService
         r.TemporalContext 
       }), _jsonOptions);
 
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("relationship_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["relationships_json"] = relationshipsJson });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("nano-model", cancellationToken);
-      var response = await _agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+      var generateOptions = await CreateGenerateReplyOptionsAsync("relationship_validation", cancellationToken);
+      var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
       var cleanedRelationships = ParseRelationshipsFromJson(responseText);
@@ -411,38 +414,36 @@ public class GraphExtractionService : IGraphExtractionService
   {
     try
     {
-      // Try to use LmConfig for optimal model selection
-      if (_lmConfigService != null)
+      // Use LmConfig for optimal model selection based on capability
+      // Request small, cost-effective models with JSON support for graph extraction
+      var modelConfig = await _lmConfigService.GetOptimalModelAsync("small-model;json_mode", cancellationToken);
+      if (modelConfig != null)
       {
-        var modelConfig = await _lmConfigService.GetOptimalModelAsync("small-model;json_mode", cancellationToken);
-        if (modelConfig != null)
+        var options = new GenerateReplyOptions
         {
-          var options = new GenerateReplyOptions
-          {
-            ModelId = modelConfig.Id,
-            Temperature = 0.0f, // Use low temperature for consistent extraction
-            MaxToken = 2000 // Reasonable limit for graph extraction
-          };
+          ModelId = modelConfig.Id,
+          Temperature = 0.0f, // Use low temperature for consistent extraction
+          MaxToken = 2000 // Reasonable limit for graph extraction
+        };
 
-          // Add JSON schema if model supports structured output
-          if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
-          {
-            options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
-            _logger.LogDebug("Using structured output with JSON schema for capability {Capability} with model {ModelId}", 
-              capability, modelConfig.Id);
-          }
-          else if (modelConfig.HasCapability("json_mode"))
-          {
-            options = options with { ResponseFormat = ResponseFormat.JSON };
-            _logger.LogDebug("Using JSON mode for capability {Capability} with model {ModelId}", 
-              capability, modelConfig.Id);
-          }
-
-          return options;
+        // Add JSON schema if model supports structured output
+        if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
+        {
+          options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
+          _logger.LogDebug("Using structured output with JSON schema for capability {Capability} with model {ModelId}", 
+            capability, modelConfig.Id);
         }
+        else if (modelConfig.HasCapability("json_mode"))
+        {
+          options = options with { ResponseFormat = ResponseFormat.JSON };
+          _logger.LogDebug("Using JSON mode for capability {Capability} with model {ModelId}", 
+            capability, modelConfig.Id);
+        }
+
+        return options;
       }
 
-      // Fallback to basic configuration
+      // Fallback to basic configuration if no model found
       return CreateBasicGenerateReplyOptions(capability);
     }
     catch (Exception ex)
