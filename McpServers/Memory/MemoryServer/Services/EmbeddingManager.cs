@@ -4,6 +4,7 @@ using System.Text.Json;
 using MemoryServer.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 
 namespace MemoryServer.Services;
@@ -310,10 +311,10 @@ public class EmbeddingManager : IEmbeddingManager
         _cachedEmbeddingService = await _lmConfigService.CreateEmbeddingServiceAsync(cancellationToken);
         
         // Get model information from environment variables
-        _cachedModelName = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "text-embedding-3-small";
+        _cachedModelName = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_MODEL", null, "text-embedding-3-small");
         
         // Set embedding dimension from environment variable or based on model
-        var embeddingSizeEnv = Environment.GetEnvironmentVariable("EMBEDDING_SIZE");
+        var embeddingSizeEnv = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_SIZE");
         if (!string.IsNullOrEmpty(embeddingSizeEnv) && int.TryParse(embeddingSizeEnv, out var customDimension) && customDimension > 0)
         {
             _cachedEmbeddingDimension = customDimension;

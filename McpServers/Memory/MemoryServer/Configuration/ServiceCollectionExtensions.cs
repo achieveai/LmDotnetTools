@@ -9,6 +9,8 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+
 
 namespace MemoryServer.Configuration;
 
@@ -117,25 +119,7 @@ public static class ServiceCollectionExtensions
   /// </summary>
   private static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "")
   {
-    var apiKey = Environment.GetEnvironmentVariable(primaryKey);
-    if (!string.IsNullOrEmpty(apiKey))
-    {
-      return apiKey;
-    }
-
-    if (fallbackKeys != null)
-    {
-      foreach (var fallbackKey in fallbackKeys)
-      {
-        apiKey = Environment.GetEnvironmentVariable(fallbackKey);
-        if (!string.IsNullOrEmpty(apiKey))
-        {
-          return apiKey;
-        }
-      }
-    }
-
-    return defaultValue;
+    return EnvironmentVariableHelper.GetApiKeyFromEnv(primaryKey, fallbackKeys, defaultValue);
   }
 
   /// <summary>
@@ -144,25 +128,7 @@ public static class ServiceCollectionExtensions
   /// </summary>
   private static string GetApiBaseUrlFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "https://api.openai.com/v1")
   {
-    var baseUrl = Environment.GetEnvironmentVariable(primaryKey);
-    if (!string.IsNullOrEmpty(baseUrl))
-    {
-      return baseUrl;
-    }
-
-    if (fallbackKeys != null)
-    {
-      foreach (var fallbackKey in fallbackKeys)
-      {
-        baseUrl = Environment.GetEnvironmentVariable(fallbackKey);
-        if (!string.IsNullOrEmpty(baseUrl))
-        {
-          return baseUrl;
-        }
-      }
-    }
-
-    return defaultValue;
+    return EnvironmentVariableHelper.GetApiBaseUrlFromEnv(primaryKey, fallbackKeys, defaultValue);
   }
 
   /// <summary>

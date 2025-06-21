@@ -1,3 +1,5 @@
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+
 namespace MemoryServer.Models;
 
 /// <summary>
@@ -49,9 +51,9 @@ public class SessionDefaults
         return new SessionDefaults
         {
             ConnectionId = "stdio-env",
-            UserId = Environment.GetEnvironmentVariable("MCP_MEMORY_USER_ID"),
-            AgentId = Environment.GetEnvironmentVariable("MCP_MEMORY_AGENT_ID"),
-            RunId = Environment.GetEnvironmentVariable("MCP_MEMORY_RUN_ID"),
+            UserId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID"),
+            AgentId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID"),
+            RunId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"),
             Source = SessionDefaultsSource.EnvironmentVariables,
             CreatedAt = DateTime.UtcNow
         };

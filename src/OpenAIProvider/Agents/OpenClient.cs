@@ -44,17 +44,7 @@ public class OpenClient : BaseHttpService, IOpenClient
 
     private static HttpClient CreateHttpClient(string apiKey, string baseUrl)
     {
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Accept.Add(
-            new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-
-        if (!string.IsNullOrEmpty(apiKey))
-        {
-            httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
-        }
-
-        httpClient.Timeout = TimeSpan.FromMinutes(5);
-        return httpClient;
+        return HttpClientFactory.CreateForOpenAI(apiKey, baseUrl);
     }
 
     public async Task<ChatCompletionResponse> CreateChatCompletionsAsync(
