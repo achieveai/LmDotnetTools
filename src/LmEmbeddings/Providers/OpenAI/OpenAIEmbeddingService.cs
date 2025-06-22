@@ -229,7 +229,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
 
             var embeddings = openAIResponse.Data.Select((item, index) => new EmbeddingItem
             {
-                Vector = DecodeEmbedding(item.Embedding, request.EncodingFormat ?? "float"),
+                Vector = DecodeEmbedding(item.Embedding, null),
                 Index = item.Index,
                 Text = request.Inputs.ElementAtOrDefault(item.Index)
             }).ToArray();
@@ -275,35 +275,113 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     }
 
     /// <summary>
-    /// Decodes an embedding from the OpenAI API response based on the specified encoding format.
-    /// This method handles both base64 and float array encoding formats used by the OpenAI API.
+    /// Decodes an embedding from the OpenAI API response with automatic format detection.
+    /// This method intelligently detects whether the embedding data is in base64 or float array format
+    /// and decodes it appropriately, while still respecting explicit format specifications.
     /// </summary>
     /// <param name="embedding">The embedding data from the OpenAI API response</param>
-    /// <param name="encodingFormat">The encoding format used for the embedding data</param>
+    /// <param name="encodingFormat">The encoding format hint (optional - will auto-detect if null or empty)</param>
     /// <returns>A float array representing the decoded embedding vector</returns>
-    /// <exception cref="NotSupportedException">Thrown when an unsupported encoding format is specified</exception>
+    /// <exception cref="NotSupportedException">Thrown when an unsupported encoding format is specified or detected</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the embedding data format cannot be determined</exception>
     /// <remarks>
     /// <para>
-    /// Supported encoding formats:
+    /// This method provides robust embedding decoding with the following features:
     /// </para>
     /// <list type="bullet">
-    /// <item><description><c>base64</c> - Base64 encoded binary data (default, more efficient)</description></item>
-    /// <item><description><c>float</c> - JSON array of floating-point numbers</description></item>
+    /// <item><description><c>Auto-detection</c> - Automatically detects base64 strings vs float arrays</description></item>
+    /// <item><description><c>Explicit override</c> - Respects explicit format specification when provided</description></item>
+    /// <item><description><c>Comprehensive validation</c> - Validates that specified format matches actual data</description></item>
+    /// <item><description><c>Clear error messages</c> - Provides detailed context when format mismatches occur</description></item>
     /// </list>
     /// <para>
-    /// The base64 format is more efficient for network transfer and is the default format
-    /// used by the OpenAI API. The float format provides direct access to the values
-    /// but results in larger response sizes.
+    /// Format detection logic:
     /// </para>
+    /// <list type="number">
+    /// <item><description>If encodingFormat is explicitly specified, use it (with validation)</description></item>
+    /// <item><description>If data is JsonElement with Array ValueKind, treat as float array</description></item>
+    /// <item><description>If data is string or JsonElement with String ValueKind, treat as base64</description></item>
+    /// <item><description>Otherwise, throw descriptive error with detected type information</description></item>
+    /// </list>
     /// </remarks>
-    private static float[] DecodeEmbedding(object embedding, string encodingFormat)
+    private static float[] DecodeEmbedding(object embedding, string? encodingFormat)
     {
-        return encodingFormat.ToLowerInvariant() switch
+        // Auto-detect format if not explicitly specified
+        if (string.IsNullOrEmpty(encodingFormat))
+        {
+            return DetectAndDecodeEmbedding(embedding);
+        }
+
+        // Use explicit format with validation
+        var detectedFormat = DetectEmbeddingFormat(embedding);
+        var requestedFormat = encodingFormat.ToLowerInvariant();
+        
+        // Validate that the requested format matches the detected format
+        if (detectedFormat != requestedFormat)
+        {
+            throw new InvalidOperationException(
+                $"Encoding format mismatch: requested '{requestedFormat}' but detected '{detectedFormat}' " +
+                $"based on data type {embedding?.GetType().Name ?? "null"}. " +
+                $"Consider omitting EncodingFormat to enable auto-detection.");
+        }
+
+        return requestedFormat switch
         {
             "base64" => DecodeBase64Embedding(embedding.ToString()!),
-            "float" => ((JsonElement)embedding).EnumerateArray().Select(x => x.GetSingle()).ToArray(),
-            _ => throw new NotSupportedException($"Encoding format '{encodingFormat}' is not supported")
+            "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
+            _ => throw new NotSupportedException($"Encoding format '{requestedFormat}' is not supported")
         };
+    }
+
+    /// <summary>
+    /// Automatically detects the embedding format and decodes it appropriately.
+    /// </summary>
+    /// <param name="embedding">The embedding data to detect and decode</param>
+    /// <returns>A float array representing the decoded embedding vector</returns>
+    private static float[] DetectAndDecodeEmbedding(object embedding)
+    {
+        var detectedFormat = DetectEmbeddingFormat(embedding);
+        
+        return detectedFormat switch
+        {
+            "base64" => DecodeBase64Embedding(embedding.ToString()!),
+            "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
+            _ => throw new InvalidOperationException(
+                $"Unable to detect embedding format for data type {embedding?.GetType().Name ?? "null"}. " +
+                $"Expected string (base64) or JsonElement array (float), but got {embedding}")
+        };
+    }
+
+    /// <summary>
+    /// Detects the format of embedding data based on its type and structure.
+    /// </summary>
+    /// <param name="embedding">The embedding data to analyze</param>
+    /// <returns>The detected format: "base64" or "float"</returns>
+    private static string DetectEmbeddingFormat(object embedding)
+    {
+        return embedding switch
+        {
+            string => "base64",
+            JsonElement jsonElement when jsonElement.ValueKind == JsonValueKind.String => "base64",
+            JsonElement jsonElement when jsonElement.ValueKind == JsonValueKind.Array => "float",
+            _ => "unknown"
+        };
+    }
+
+    /// <summary>
+    /// Decodes a float array embedding from a JsonElement.
+    /// </summary>
+    /// <param name="jsonElement">The JsonElement containing the float array</param>
+    /// <returns>A float array representing the decoded embedding vector</returns>
+    private static float[] DecodeFloatArrayEmbedding(JsonElement jsonElement)
+    {
+        if (jsonElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"Expected JsonElement with Array ValueKind for float format, but got {jsonElement.ValueKind}");
+        }
+
+        return jsonElement.EnumerateArray().Select(x => x.GetSingle()).ToArray();
     }
 
     /// <summary>

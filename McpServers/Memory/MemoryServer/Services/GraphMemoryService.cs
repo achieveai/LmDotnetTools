@@ -48,7 +48,10 @@ public class GraphMemoryService : IGraphMemoryService
 
             // Extract entities and relationships from memory content using combined extraction for efficiency
             var (entities, relationships) = await _extractionService.ExtractGraphDataAsync(
-                memory.Content, sessionContext, memory.Id, cancellationToken);
+                memory.Content,
+                sessionContext,
+                memory.Id,
+                cancellationToken);
 
             _logger.LogDebug("Extracted {EntityCount} entities and {RelationshipCount} relationships",
                 entities.Count(), relationships.Count());
