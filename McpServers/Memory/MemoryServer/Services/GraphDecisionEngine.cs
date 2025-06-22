@@ -12,7 +12,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     private readonly ILogger<GraphDecisionEngine> _logger;
 
     // Configuration constants for decision making
-    private const float MinimumConfidenceThreshold = 0.3f;
+    private const float MinimumConfidenceThreshold = 0.1f;
     private const float HighConfidenceThreshold = 0.8f;
     private const int MaxAliasesPerEntity = 10;
     private const float SimilarityThreshold = 0.7f;
@@ -296,10 +296,13 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     {
         try
         {
+            _logger.LogDebug("VALIDATION START: Operation={Operation}, Confidence={Confidence}, HasEntity={HasEntity}, HasRelationship={HasRelationship}",
+                instruction.Operation, instruction.Confidence, instruction.EntityData != null, instruction.RelationshipData != null);
+
             // Basic validation rules
             if (instruction.Confidence < MinimumConfidenceThreshold)
             {
-                _logger.LogDebug("Update rejected: confidence {Confidence} below threshold {Threshold}",
+                _logger.LogWarning("VALIDATION FAILED: confidence {Confidence} below threshold {Threshold}",
                     instruction.Confidence, MinimumConfidenceThreshold);
                 return Task.FromResult(false);
             }
@@ -324,27 +327,39 @@ public class GraphDecisionEngine : IGraphDecisionEngine
             // Validate relationship data if present
             if (instruction.RelationshipData != null)
             {
+                _logger.LogDebug("RELATIONSHIP VALIDATION: Source='{Source}', Target='{Target}', Type='{Type}'",
+                    instruction.RelationshipData.Source ?? "NULL", 
+                    instruction.RelationshipData.Target ?? "NULL", 
+                    instruction.RelationshipData.RelationshipType ?? "NULL");
+
                 if (string.IsNullOrWhiteSpace(instruction.RelationshipData.Source) ||
                     string.IsNullOrWhiteSpace(instruction.RelationshipData.Target) ||
                     string.IsNullOrWhiteSpace(instruction.RelationshipData.RelationshipType))
                 {
-                    _logger.LogDebug("Update rejected: relationship has empty required fields");
+                    _logger.LogWarning("VALIDATION FAILED: relationship has empty required fields - Source: '{Source}', Target: '{Target}', Type: '{Type}'",
+                        instruction.RelationshipData.Source ?? "NULL", 
+                        instruction.RelationshipData.Target ?? "NULL", 
+                        instruction.RelationshipData.RelationshipType ?? "NULL");
                     return Task.FromResult(false);
                 }
 
                 // Check for self-referential relationships
                 if (instruction.RelationshipData.Source.Equals(instruction.RelationshipData.Target, StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogDebug("Update rejected: self-referential relationship");
+                    _logger.LogWarning("VALIDATION FAILED: self-referential relationship - Source: '{Source}', Target: '{Target}'",
+                        instruction.RelationshipData.Source, instruction.RelationshipData.Target);
                     return Task.FromResult(false);
                 }
             }
 
+            _logger.LogDebug("VALIDATION PASSED: Operation={Operation}, Confidence={Confidence}",
+                instruction.Operation, instruction.Confidence);
             return Task.FromResult(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error validating graph update");
+            _logger.LogError(ex, "VALIDATION ERROR: Exception during validation for Operation={Operation}, Confidence={Confidence}",
+                instruction.Operation, instruction.Confidence);
             return Task.FromResult(false);
         }
     }

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
+using System.Globalization;
 
 namespace MemoryServer.Services;
 
@@ -707,8 +708,8 @@ public class GraphRepository : IGraphRepository
         {
             using var command = connection.CreateCommand();
             command.CommandText = @"
-                SELECT e.id, e.name, e.type, e.aliases, e.user_id, e.agent_id, e.run_id, e.created_at, e.updated_at,
-                       e.confidence, e.source_memory_ids, e.metadata, e.version,
+                SELECT e.id, e.name, e.type, e.user_id, e.agent_id, e.run_id, e.created_at, e.updated_at,
+                       e.description, e.confidence, e.source_memory_id, e.metadata, e.version,
                        vec_distance_cosine(ee.embedding, @queryEmbedding) as distance
                 FROM entities e
                 JOIN entity_embeddings ee ON e.id = ee.entity_id
@@ -721,11 +722,10 @@ public class GraphRepository : IGraphRepository
 
             var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
             
-            // Convert query embedding to byte array for sqlite-vec
-            var queryEmbeddingBytes = new byte[queryEmbedding.Length * sizeof(float)];
-            Buffer.BlockCopy(queryEmbedding, 0, queryEmbeddingBytes, 0, queryEmbeddingBytes.Length);
+            // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+            var queryEmbeddingJson = "[" + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
             
-            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingBytes);
+            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
             command.Parameters.AddWithValue("@userId", sessionContext.UserId);
             command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
@@ -780,11 +780,10 @@ public class GraphRepository : IGraphRepository
 
             var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
             
-            // Convert query embedding to byte array for sqlite-vec
-            var queryEmbeddingBytes = new byte[queryEmbedding.Length * sizeof(float)];
-            Buffer.BlockCopy(queryEmbedding, 0, queryEmbeddingBytes, 0, queryEmbeddingBytes.Length);
+            // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+            var queryEmbeddingJson = "[" + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
             
-            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingBytes);
+            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
             command.Parameters.AddWithValue("@userId", sessionContext.UserId);
             command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
@@ -827,12 +826,11 @@ public class GraphRepository : IGraphRepository
                 INSERT OR REPLACE INTO entity_embeddings (entity_id, embedding)
                 VALUES (@entityId, @embedding)";
 
-            // Convert embedding to byte array for sqlite-vec
-            var embeddingBytes = new byte[embedding.Length * sizeof(float)];
-            Buffer.BlockCopy(embedding, 0, embeddingBytes, 0, embeddingBytes.Length);
+            // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+            var embeddingJson = "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
             
             embeddingCommand.Parameters.AddWithValue("@entityId", entityId);
-            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingBytes);
+            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
 
             await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
 
@@ -867,12 +865,11 @@ public class GraphRepository : IGraphRepository
                 INSERT OR REPLACE INTO relationship_embeddings (relationship_id, embedding)
                 VALUES (@relationshipId, @embedding)";
 
-            // Convert embedding to byte array for sqlite-vec
-            var embeddingBytes = new byte[embedding.Length * sizeof(float)];
-            Buffer.BlockCopy(embedding, 0, embeddingBytes, 0, embeddingBytes.Length);
+            // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+            var embeddingJson = "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
             
             embeddingCommand.Parameters.AddWithValue("@relationshipId", relationshipId);
-            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingBytes);
+            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
 
             await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
 

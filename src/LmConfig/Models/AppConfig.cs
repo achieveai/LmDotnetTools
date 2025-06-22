@@ -26,6 +26,13 @@ public record AppConfig
     /// <returns>The model configuration if found, null otherwise.</returns>
     public ModelConfig? GetModel(string modelId)
     {
+        System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModel called with modelId: {modelId ?? "NULL"}");
+        System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
+        if (Models != null)
+        {
+            System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
+        }
+        
         return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -36,7 +43,21 @@ public record AppConfig
     /// <returns>List of models that have the specified capability.</returns>
     public IReadOnlyList<ModelConfig> GetModelsWithCapability(string capability)
     {
-        return Models.Where(m => m.HasCapability(capability)).ToList();
+        System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModelsWithCapability called with capability: {capability ?? "NULL"}");
+        System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
+        if (Models != null)
+        {
+            System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
+            var matchingModels = Models.Where(m => m.HasCapability(capability)).ToList();
+            System.Diagnostics.Debug.WriteLine($"DEBUG: Found {matchingModels.Count} models with capability {capability}");
+            foreach (var model in matchingModels)
+            {
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Model {model.Id} has capability {capability}");
+            }
+            return matchingModels;
+        }
+        
+        return new List<ModelConfig>();
     }
 
     /// <summary>

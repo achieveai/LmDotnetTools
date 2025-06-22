@@ -113,6 +113,7 @@ public record ModelCapabilities
             "function_calling" or "tools" => FunctionCalling?.SupportsTools == true,
             "streaming" => SupportsStreaming,
             "json_mode" => ResponseFormats?.SupportsJsonMode == true,
+            "json_schema" => ResponseFormats?.SupportsJsonSchema == true,
             "structured_output" => ResponseFormats?.SupportsStructuredOutput == true,
             _ => SupportedFeatures.Contains(capability) || 
                  CustomCapabilities?.ContainsKey(capability) == true
@@ -143,6 +144,9 @@ public record ModelCapabilities
 
         if (ResponseFormats?.SupportsJsonMode == true)
             capabilities.Add("json_mode");
+
+        if (ResponseFormats?.SupportsJsonSchema == true)
+            capabilities.Add("json_schema");
 
         if (ResponseFormats?.SupportsStructuredOutput == true)
             capabilities.Add("structured_output");

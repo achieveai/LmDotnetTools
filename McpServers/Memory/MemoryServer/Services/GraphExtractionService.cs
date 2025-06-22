@@ -52,7 +52,7 @@ public class GraphExtractionService : IGraphExtractionService
       _logger.LogInformation("Extracting entities from content for memory {MemoryId} in session {SessionContext}", 
         memoryId, sessionContext);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("entity_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
       var generateOptions = await CreateGenerateReplyOptionsAsync("entity_extraction", cancellationToken);
@@ -92,66 +92,6 @@ public class GraphExtractionService : IGraphExtractionService
     }
   }
 
-  public async Task<IEnumerable<Relationship>> ExtractRelationshipsAsync(
-    string content, 
-    SessionContext sessionContext, 
-    int memoryId, 
-    CancellationToken cancellationToken = default)
-  {
-    try
-    {
-      _logger.LogInformation("Extracting relationships from content for memory {MemoryId} in session {SessionContext}", 
-        memoryId, sessionContext);
-
-      // First extract entities to provide context for relationship extraction
-      var entities = await ExtractEntitiesAsync(content, sessionContext, memoryId, cancellationToken);
-      var entitiesJson = JsonSerializer.Serialize(entities.Select(e => new { e.Name, e.Type }), _jsonOptions);
-
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
-      var promptChain = _promptReader.GetPromptChain("relationship_extraction");
-      var messages = promptChain.PromptMessages(new Dictionary<string, object> 
-      { 
-        ["content"] = content, 
-        ["entities_json"] = entitiesJson 
-      });
-      
-      var generateOptions = await CreateGenerateReplyOptionsAsync("relationship_extraction", cancellationToken);
-      var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
-      var responseText = ExtractTextFromResponse(response);
-      var extractedRelationships = ParseRelationshipsFromJson(responseText);
-      
-      // Convert to Relationship objects with session context
-      var relationships = extractedRelationships.Select(r => new Relationship
-      {
-        Source = r.Source,
-        RelationshipType = r.RelationshipType,
-        Target = r.Target,
-        UserId = sessionContext.UserId,
-        AgentId = sessionContext.AgentId,
-        RunId = sessionContext.RunId,
-        Confidence = r.Confidence,
-        SourceMemoryId = memoryId,
-        TemporalContext = r.TemporalContext,
-        Metadata = new Dictionary<string, object>
-        {
-          ["extraction_reasoning"] = r.Reasoning ?? "",
-          ["extraction_timestamp"] = DateTime.UtcNow,
-          ["source_memory_id"] = memoryId
-        }
-      }).ToList();
-
-      _logger.LogInformation("Extracted {RelationshipCount} relationships from memory {MemoryId}", 
-        relationships.Count, memoryId);
-      
-      return relationships;
-    }
-    catch (Exception ex)
-    {
-      _logger.LogError(ex, "Failed to extract relationships from memory {MemoryId}", memoryId);
-      return Enumerable.Empty<Relationship>();
-    }
-  }
-
   public async Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
     string content, 
     SessionContext sessionContext, 
@@ -163,7 +103,7 @@ public class GraphExtractionService : IGraphExtractionService
       _logger.LogInformation("Extracting combined graph data from content for memory {MemoryId} in session {SessionContext}", 
         memoryId, sessionContext);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("combined_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
       var generateOptions = await CreateGenerateReplyOptionsAsync("combined_extraction", cancellationToken);
@@ -195,7 +135,7 @@ public class GraphExtractionService : IGraphExtractionService
       var relationships = extractedData.Relationships.Select(r => new Relationship
       {
         Source = r.Source,
-        RelationshipType = r.RelationshipType,
+        RelationshipType = r.ActualRelationshipType,
         Target = r.Target,
         UserId = sessionContext.UserId,
         AgentId = sessionContext.AgentId,
@@ -252,7 +192,7 @@ public class GraphExtractionService : IGraphExtractionService
         r.TemporalContext 
       }), _jsonOptions);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("graph_update_analysis");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> 
       { 
@@ -299,7 +239,7 @@ public class GraphExtractionService : IGraphExtractionService
         e.Confidence 
       }), _jsonOptions);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("entity_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["entities_json"] = entitiesJson });
       var generateOptions = await CreateGenerateReplyOptionsAsync("entity_validation", cancellationToken);
@@ -360,7 +300,7 @@ public class GraphExtractionService : IGraphExtractionService
         r.TemporalContext 
       }), _jsonOptions);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_mode", cancellationToken);
+      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
       var promptChain = _promptReader.GetPromptChain("relationship_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["relationships_json"] = relationshipsJson });
       var generateOptions = await CreateGenerateReplyOptionsAsync("relationship_validation", cancellationToken);
@@ -379,7 +319,7 @@ public class GraphExtractionService : IGraphExtractionService
         return new Relationship
         {
           Source = r.Source,
-          RelationshipType = r.RelationshipType,
+          RelationshipType = r.ActualRelationshipType,
           Target = r.Target,
           UserId = sessionContext.UserId,
           AgentId = sessionContext.AgentId,
@@ -415,13 +355,13 @@ public class GraphExtractionService : IGraphExtractionService
     try
     {
       // Use LmConfig for optimal model selection based on capability
-      // Request small, cost-effective models with JSON support for graph extraction
-      var modelConfig = await _lmConfigService.GetOptimalModelAsync("small-model;json_mode", cancellationToken);
+      // Request small, cost-effective models with JSON schema support for graph extraction
+      var modelConfig = await _lmConfigService.GetOptimalModelAsync("small-model;json_schema", cancellationToken);
       if (modelConfig != null)
       {
         var options = new GenerateReplyOptions
         {
-          ModelId = modelConfig.Id,
+          ModelId = modelConfig.Id, // UnifiedAgent will translate this to the effective model name
           Temperature = 0.0f, // Use low temperature for consistent extraction
           MaxToken = 2000 // Reasonable limit for graph extraction
         };
@@ -621,7 +561,21 @@ public class GraphExtractionService : IGraphExtractionService
     try
     {
       var jsonContent = ExtractJsonFromResponse(jsonResponse);
-      return JsonSerializer.Deserialize<CombinedExtractionResult>(jsonContent, _jsonOptions) ?? new CombinedExtractionResult();
+      _logger.LogDebug("EXTRACTED JSON CONTENT: {JsonContent}", jsonContent);
+      
+      var result = JsonSerializer.Deserialize<CombinedExtractionResult>(jsonContent, _jsonOptions) ?? new CombinedExtractionResult();
+      
+      _logger.LogDebug("PARSED RESULT: {EntityCount} entities, {RelationshipCount} relationships", 
+        result.Entities.Count, result.Relationships.Count);
+      
+      // Log relationship details for debugging
+      foreach (var rel in result.Relationships.Take(3))
+      {
+        _logger.LogDebug("PARSED RELATIONSHIP: Source='{Source}', Type='{Type}', Target='{Target}', Confidence={Confidence}", 
+          rel.Source, rel.RelationshipType, rel.Target, rel.Confidence);
+      }
+      
+      return result;
     }
     catch (Exception ex)
     {
@@ -779,6 +733,10 @@ public class GraphExtractionService : IGraphExtractionService
     [JsonPropertyName("relationship_type")]
     public string RelationshipType { get; set; } = string.Empty;
     
+    // Fallback property in case LLM uses "type" instead of "relationship_type"
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+    
     [JsonPropertyName("target")]
     public string Target { get; set; } = string.Empty;
     
@@ -790,6 +748,13 @@ public class GraphExtractionService : IGraphExtractionService
     
     [JsonPropertyName("reasoning")]
     public string? Reasoning { get; set; }
+    
+    // Property to get the actual relationship type, with fallback logic
+    [JsonIgnore]
+    public string ActualRelationshipType => 
+      !string.IsNullOrWhiteSpace(RelationshipType) ? RelationshipType :
+      !string.IsNullOrWhiteSpace(Type) ? Type :
+      "related_to"; // Default fallback
   }
 
   private class CombinedExtractionResult

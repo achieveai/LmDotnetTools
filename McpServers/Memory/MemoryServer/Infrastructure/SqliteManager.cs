@@ -287,10 +287,10 @@ public class SqliteManager : IDisposable
         
         // Vector embeddings using sqlite-vec (primary approach)
         schema.AppendLine(@"
-            CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
-                memory_id INTEGER PRIMARY KEY,
-                embedding FLOAT[1536]
-            );");
+                            CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
+                    memory_id INTEGER PRIMARY KEY,
+                    embedding FLOAT[1024]
+                );");
             
         // Vector metadata table for embedding information
         schema.AppendLine(@"
@@ -385,16 +385,16 @@ public class SqliteManager : IDisposable
 
         // Vector embeddings for entities and relationships using sqlite-vec
         schema.AppendLine(@"
-            CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(
-                entity_id INTEGER PRIMARY KEY,
-                embedding FLOAT[1536]
-            );");
+                            CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(
+                    entity_id INTEGER PRIMARY KEY,
+                    embedding FLOAT[1024]
+                );");
 
         schema.AppendLine(@"
-            CREATE VIRTUAL TABLE IF NOT EXISTS relationship_embeddings USING vec0(
-                relationship_id INTEGER PRIMARY KEY,
-                embedding FLOAT[1536]
-            );");
+                            CREATE VIRTUAL TABLE IF NOT EXISTS relationship_embeddings USING vec0(
+                    relationship_id INTEGER PRIMARY KEY,
+                    embedding FLOAT[1024]
+                );");
 
         // Metadata tables for entity and relationship embeddings
         schema.AppendLine(@"
