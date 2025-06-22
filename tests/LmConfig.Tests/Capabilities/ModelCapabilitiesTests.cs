@@ -119,6 +119,41 @@ public class ModelCapabilitiesTests
     }
 
     [Fact]
+    public void ModelCapabilities_WithJsonSchemaCapability_HasJsonSchemaCapability()
+    {
+        // Arrange
+        System.Diagnostics.Debug.WriteLine("Testing ModelCapabilities with json_schema capability");
+        
+        var responseFormatCapability = new ResponseFormatCapability
+        {
+            SupportsJsonSchema = true
+        };
+        
+        var tokenLimits = new TokenLimits
+        {
+            MaxContextTokens = 128000,
+            MaxOutputTokens = 4096
+        };
+        
+        var capabilities = new ModelCapabilities
+        {
+            ResponseFormats = responseFormatCapability,
+            TokenLimits = tokenLimits
+        };
+
+        // Act
+        var hasJsonSchema = capabilities.HasCapability("json_schema");
+        var allCapabilities = capabilities.GetAllCapabilities();
+        
+        System.Diagnostics.Debug.WriteLine($"Has json_schema capability: {hasJsonSchema}");
+        System.Diagnostics.Debug.WriteLine($"All capabilities: {string.Join(", ", allCapabilities)}");
+
+        // Assert
+        Assert.True(hasJsonSchema);
+        Assert.Contains("json_schema", allCapabilities);
+    }
+
+    [Fact]
     public void ModelCapabilities_WithAllCapabilities_ReturnsCompleteCapabilityList()
     {
         // Arrange
@@ -132,6 +167,7 @@ public class ModelCapabilitiesTests
             ResponseFormats = new ResponseFormatCapability 
             { 
                 SupportsJsonMode = true,
+                SupportsJsonSchema = true,
                 SupportsStructuredOutput = true 
             },
             TokenLimits = new TokenLimits
@@ -155,6 +191,7 @@ public class ModelCapabilitiesTests
         Assert.Contains("function_calling", allCapabilities);
         Assert.Contains("streaming", allCapabilities);
         Assert.Contains("json_mode", allCapabilities);
+        Assert.Contains("json_schema", allCapabilities);
         Assert.Contains("structured_output", allCapabilities);
         Assert.Contains("custom-feature", allCapabilities);
         Assert.Contains("custom", allCapabilities);

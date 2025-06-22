@@ -2,6 +2,7 @@ using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
+using System.Globalization;
 
 namespace MemoryServer.Services;
 
@@ -597,7 +598,7 @@ public class MemoryRepository : IMemoryRepository
     // Vector storage and search methods
 
     /// <summary>
-    /// Stores an embedding for a memory.
+    /// Stores an embedding for a specific memory.
     /// </summary>
     public async Task StoreEmbeddingAsync(int memoryId, float[] embedding, string modelName, CancellationToken cancellationToken = default)
     {
@@ -611,9 +612,8 @@ public class MemoryRepository : IMemoryRepository
         
         await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
-            // Convert float array to byte array for storage
-            var embeddingBytes = new byte[embedding.Length * sizeof(float)];
-            Buffer.BlockCopy(embedding, 0, embeddingBytes, 0, embeddingBytes.Length);
+            // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+            var embeddingJson = "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
 
             // Check if we're using vec0 virtual table or regular table with dimension column
             bool hasVec0Table = await CheckForVec0TableAsync(connection, cancellationToken);
@@ -638,7 +638,7 @@ public class MemoryRepository : IMemoryRepository
             }
 
             embeddingCommand.Parameters.AddWithValue("@memoryId", memoryId);
-            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingBytes);
+            embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
 
             await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
 
@@ -748,11 +748,10 @@ public class MemoryRepository : IMemoryRepository
             // Convert similarity threshold to distance threshold (cosine distance = 1 - cosine similarity)
             var distanceThreshold = 1.0f - threshold;
 
-            // Convert query embedding to byte array for comparison
-            var queryEmbeddingBytes = new byte[queryEmbedding.Length * sizeof(float)];
-            Buffer.BlockCopy(queryEmbedding, 0, queryEmbeddingBytes, 0, queryEmbeddingBytes.Length);
+            // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+            var queryEmbeddingJson = "[" + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
 
-            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingBytes);
+            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
             command.Parameters.AddWithValue("@userId", sessionContext.UserId);
             command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
             command.Parameters.AddWithValue("@limit", limit);

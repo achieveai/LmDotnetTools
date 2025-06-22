@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
@@ -12,6 +13,7 @@ using MemoryServer.Models;
 using MemoryServer.Utils;
 using System.Text.Json;
 using System.Reflection;
+using AchieveAi.LmDotnetTools.LmConfig.Agents;
 
 namespace MemoryServer.Services;
 
@@ -24,18 +26,25 @@ public class LmConfigService : ILmConfigService
     private readonly MemoryServerOptions _memoryOptions;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<LmConfigService> _logger;
+    private readonly IModelResolver _modelResolver;
+    private readonly UnifiedAgent _unifiedAgent;
 
     public LmConfigService(
         IOptions<MemoryServerOptions> memoryOptions,
         IServiceProvider serviceProvider,
-        ILogger<LmConfigService> logger)
+        ILogger<LmConfigService> logger,
+        IModelResolver modelResolver,
+        UnifiedAgent unifiedAgent,
+        IOptions<AppConfig> appConfig)
     {
         _memoryOptions = memoryOptions.Value;
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _modelResolver = modelResolver;
+        _unifiedAgent = unifiedAgent;
 
-        // Load LmConfig from file
-        _appConfig = LoadAppConfig();
+        // Use the shared AppConfig instance from DI
+        _appConfig = appConfig.Value ?? throw new ArgumentNullException(nameof(appConfig));
     }
 
     /// <summary>
@@ -43,7 +52,10 @@ public class LmConfigService : ILmConfigService
     /// </summary>
     public Task<ModelConfig?> GetOptimalModelAsync(string capability, CancellationToken cancellationToken = default)
     {
+        _logger.LogError("DEBUG: GetOptimalModelAsync called with capability: {Capability}", capability);
+        
         var modelsWithCapability = GetModelsWithCapability(capability);
+        _logger.LogError("DEBUG: Found {Count} models with capability {Capability}", modelsWithCapability.Count, capability);
         
         if (!modelsWithCapability.Any())
         {
@@ -84,25 +96,32 @@ public class LmConfigService : ILmConfigService
     /// </summary>
     public async Task<IAgent> CreateAgentAsync(string capability, CancellationToken cancellationToken = default)
     {
-        var model = await GetOptimalModelAsync(capability, cancellationToken);
-        if (model == null)
+        try
         {
-            throw new InvalidOperationException($"No model found for capability: {capability}");
+            _logger.LogInformation("CreateAgentAsync called with capability: {Capability}", capability);
+            
+            // First get the optimal model for this capability
+            var optimalModel = await GetOptimalModelAsync(capability, cancellationToken);
+            _logger.LogInformation("GetOptimalModelAsync returned: {ModelId}", optimalModel?.Id ?? "null");
+            
+            if (optimalModel == null)
+            {
+                _logger.LogError("No optimal model found for capability: {Capability}", capability);
+                throw new InvalidOperationException($"No model found for capability: {capability}");
+            }
+            
+            // Return UnifiedAgent directly - it will handle model resolution, provider dispatching, 
+            // and model name translation when GenerateReplyAsync is called
+            _logger.LogInformation("Successfully created UnifiedAgent for model: {ModelId}", 
+                optimalModel.Id);
+            
+            return _unifiedAgent;
         }
-
-        // Create agent based on provider
-        var provider = model.GetPrimaryProvider();
-        var agent = provider.Name.ToLower() switch
+        catch (Exception ex)
         {
-            "openai" => CreateOpenAIAgent(model),
-            "anthropic" => CreateAnthropicAgent(model),
-            _ => throw new NotSupportedException($"Provider {provider.Name} not supported")
-        };
-
-        _logger.LogInformation("Created {Provider} agent for capability {Capability} using model {ModelId}", 
-            provider.Name, capability, model.Id);
-
-        return agent;
+            _logger.LogError(ex, "Failed to create agent for capability: {Capability}", capability);
+            throw;
+        }
     }
 
     /// <summary>
@@ -203,6 +222,39 @@ public class LmConfigService : ILmConfigService
         return true;
     }
 
+    /// <summary>
+    /// Gets the effective model name that should be used for API calls for a specific capability.
+    /// </summary>
+    public async Task<string?> GetEffectiveModelNameAsync(string capability, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // First get the optimal model for this capability
+            var optimalModel = await GetOptimalModelAsync(capability, cancellationToken);
+            if (optimalModel == null)
+            {
+                _logger.LogWarning("No optimal model found for capability: {Capability}", capability);
+                return null;
+            }
+            
+            // Then resolve the provider for that model to get the effective model name
+            var providerResolution = await _modelResolver.ResolveProviderAsync(optimalModel.Id, cancellationToken: cancellationToken);
+            if (providerResolution == null)
+            {
+                _logger.LogWarning("No provider resolution found for model: {ModelId}", optimalModel.Id);
+                return null;
+            }
+            
+            // Return the effective model name that should be used for API calls
+            return providerResolution.EffectiveModelName;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get effective model name for capability: {Capability}", capability);
+            return null;
+        }
+    }
+
     #region Private Methods
 
     private AppConfig LoadAppConfig()
@@ -292,35 +344,6 @@ public class LmConfigService : ILmConfigService
         }
 
         return config;
-    }
-
-
-
-    private IAgent CreateOpenAIAgent(ModelConfig model)
-    {
-        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("OPENAI_API_KEY", null, _memoryOptions.LLM?.OpenAI?.ApiKey ?? "");
-        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("OPENAI_BASE_URL", null, "https://api.openai.com/v1");
-        
-        if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-        {
-            throw new InvalidOperationException("OpenAI API key not configured");
-        }
-
-        var client = new AchieveAi.LmDotnetTools.OpenAIProvider.Agents.OpenClient(apiKey, baseUrl);
-        return new OpenClientAgent($"memory-{model.Id}", client);
-    }
-
-    private IAgent CreateAnthropicAgent(ModelConfig model)
-    {
-        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("ANTHROPIC_API_KEY", null, _memoryOptions.LLM?.Anthropic?.ApiKey ?? "");
-        
-        if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
-        {
-            throw new InvalidOperationException("Anthropic API key not configured");
-        }
-
-        var client = new AchieveAi.LmDotnetTools.AnthropicProvider.Agents.AnthropicClient(apiKey);
-        return new AnthropicAgent($"memory-{model.Id}", client);
     }
 
     private IEmbeddingService CreateOpenAIEmbeddingService(string apiKey, string baseUrl, string model)

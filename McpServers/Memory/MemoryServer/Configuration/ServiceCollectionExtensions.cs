@@ -10,7 +10,10 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-
+using AchieveAi.LmDotnetTools.LmConfig.Agents;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Services;
+using System.Text.Json;
 
 namespace MemoryServer.Configuration;
 
@@ -94,11 +97,23 @@ public static class ServiceCollectionExtensions
     // Register prompt reader that loads from embedded resources with file system fallback
     services.AddScoped<IPromptReader, EmbeddedPromptReader>();
 
+    // Register LmConfig with embedded resource configuration
+    // This will properly register UnifiedAgent, ModelResolver, ProviderAgentFactory, and AppConfig
+    services.AddLmConfigFromEmbeddedResource("models.json");
+
+    // Register LmConfig integration
+    services.AddScoped<ILmConfigService, LmConfigService>();
+
+    // Add HTTP client factory for provider connections
+    services.AddHttpClient();
+
     // Note: IAgent is now provided through ILmConfigService.CreateAgentAsync() 
     // instead of direct dependency injection for better model selection and provider management
 
     return services;
   }
+
+
 
   // Note: Agent creation methods removed as they are now handled by ILmConfigService
   // which provides better model selection, provider management, and configuration

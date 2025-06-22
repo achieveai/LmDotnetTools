@@ -283,13 +283,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 CONSTRAINT chk_user_id_format CHECK (length(user_id) > 0 AND length(user_id) <= 100)
             )",
 
-            // Vector embeddings table (fallback if sqlite-vec not available)
-            @"CREATE TABLE IF NOT EXISTS memory_embeddings (
-                memory_id INTEGER PRIMARY KEY,
-                embedding BLOB NOT NULL,
-                dimension INTEGER NOT NULL,
-                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-            )",
+            // Vector embeddings using sqlite-vec (primary approach)
+            @"                CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
+                    memory_id INTEGER PRIMARY KEY,
+                    embedding FLOAT[1024]
+                );",
 
             // FTS5 virtual table for full-text search
             @"CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(

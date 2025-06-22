@@ -23,20 +23,6 @@ public interface IGraphExtractionService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Extracts relationships from conversation content.
-    /// </summary>
-    /// <param name="content">The conversation content to analyze.</param>
-    /// <param name="sessionContext">Session context for isolation.</param>
-    /// <param name="memoryId">The memory ID this content belongs to.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>List of extracted relationships.</returns>
-    Task<IEnumerable<Relationship>> ExtractRelationshipsAsync(
-        string content, 
-        SessionContext sessionContext, 
-        int memoryId, 
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Extracts both entities and relationships from conversation content in a single operation.
     /// More efficient than calling both methods separately.
     /// </summary>
