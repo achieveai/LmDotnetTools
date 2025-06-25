@@ -26,6 +26,15 @@ public interface ILmConfigService
     Task<IAgent> CreateAgentAsync(string capability, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates an agent for a specific model ID and capability, bypassing the automatic model selection.
+    /// </summary>
+    /// <param name="modelId">The specific model ID to use (from models.json)</param>
+    /// <param name="capability">The required capability for fallback JSON schema generation</param>
+    /// <param name="cancellationToken">Cancellation token for the operation</param>
+    /// <returns>Configured agent instance for the specified model</returns>
+    Task<IAgent> CreateAgentWithModelAsync(string modelId, string capability, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates an embedding service using the optimal embedding model.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the operation</param>

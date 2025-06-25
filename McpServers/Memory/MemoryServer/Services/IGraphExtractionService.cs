@@ -14,12 +14,14 @@ public interface IGraphExtractionService
     /// <param name="content">The conversation content to analyze.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="memoryId">The memory ID this content belongs to.</param>
+    /// <param name="modelId">Optional specific model ID to use instead of automatic selection.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of extracted entities.</returns>
     Task<IEnumerable<Entity>> ExtractEntitiesAsync(
         string content, 
         SessionContext sessionContext, 
-        int memoryId, 
+        int memoryId,
+        string? modelId = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -29,12 +31,14 @@ public interface IGraphExtractionService
     /// <param name="content">The conversation content to analyze.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="memoryId">The memory ID this content belongs to.</param>
+    /// <param name="modelId">Optional specific model ID to use instead of automatic selection.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Tuple containing extracted entities and relationships.</returns>
     Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
         string content, 
         SessionContext sessionContext, 
-        int memoryId, 
+        int memoryId,
+        string? modelId = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -45,6 +49,7 @@ public interface IGraphExtractionService
     /// <param name="existingRelationships">Existing relationships in the session.</param>
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="memoryId">The memory ID this content belongs to.</param>
+    /// <param name="modelId">Optional specific model ID to use instead of automatic selection.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Graph update instructions.</returns>
     Task<GraphUpdateInstructions> AnalyzeGraphUpdatesAsync(
@@ -53,6 +58,7 @@ public interface IGraphExtractionService
         IEnumerable<Relationship> existingRelationships,
         SessionContext sessionContext,
         int memoryId,
+        string? modelId = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -60,11 +66,13 @@ public interface IGraphExtractionService
     /// </summary>
     /// <param name="entities">Raw extracted entities.</param>
     /// <param name="sessionContext">Session context for validation.</param>
+    /// <param name="modelId">Optional specific model ID to use instead of automatic selection.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Validated and cleaned entities.</returns>
     Task<IEnumerable<Entity>> ValidateAndCleanEntitiesAsync(
         IEnumerable<Entity> entities,
         SessionContext sessionContext,
+        string? modelId = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -72,10 +80,12 @@ public interface IGraphExtractionService
     /// </summary>
     /// <param name="relationships">Raw extracted relationships.</param>
     /// <param name="sessionContext">Session context for validation.</param>
+    /// <param name="modelId">Optional specific model ID to use instead of automatic selection.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Validated and cleaned relationships.</returns>
     Task<IEnumerable<Relationship>> ValidateAndCleanRelationshipsAsync(
         IEnumerable<Relationship> relationships,
         SessionContext sessionContext,
+        string? modelId = null,
         CancellationToken cancellationToken = default);
 } 

@@ -125,6 +125,43 @@ public class LmConfigService : ILmConfigService
     }
 
     /// <summary>
+    /// Creates an agent for a specific model ID and capability, bypassing the automatic model selection.
+    /// </summary>
+    public Task<IAgent> CreateAgentWithModelAsync(string modelId, string capability, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            _logger.LogInformation("CreateAgentWithModelAsync called with modelId: {ModelId}, capability: {Capability}", modelId, capability);
+            
+            // Validate that the model exists in configuration
+            var model = _appConfig.GetModel(modelId);
+            if (model == null)
+            {
+                _logger.LogError("Model {ModelId} not found in configuration", modelId);
+                throw new InvalidOperationException($"Model '{modelId}' not found in configuration. Available models: {string.Join(", ", _appConfig.Models.Select(m => m.Id))}");
+            }
+            
+            // Validate that the model supports the required capability (optional validation)
+            var capabilitySupported = model.HasCapability(capability);
+            if (!capabilitySupported)
+            {
+                _logger.LogWarning("Model {ModelId} may not fully support capability {Capability}, but proceeding with user request", modelId, capability);
+            }
+            
+            // Return UnifiedAgent directly - it will handle model resolution, provider dispatching, 
+            // and model name translation when GenerateReplyAsync is called with the specific modelId
+            _logger.LogInformation("Successfully created UnifiedAgent for specific model: {ModelId}", modelId);
+            
+            return Task.FromResult<IAgent>(_unifiedAgent);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create agent for model: {ModelId}, capability: {Capability}", modelId, capability);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Creates an embedding service using environment variables.
     /// </summary>
     public Task<IEmbeddingService> CreateEmbeddingServiceAsync(CancellationToken cancellationToken = default)

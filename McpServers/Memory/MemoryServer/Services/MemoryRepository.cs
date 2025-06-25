@@ -562,7 +562,23 @@ public class MemoryRepository : IMemoryRepository
     private static string EscapeFts5Query(string query)
     {
         // Escape FTS5 special characters
-        return query.Replace("\"", "\"\"");
+        // FTS5 special characters: " ( ) * + - / : < = > ^ | ~ #
+        return query
+            .Replace("\"", "\"\"")  // Escape double quotes
+            .Replace("/", " ")      // Replace forward slash with space (common in search)
+            .Replace("(", " ")      // Replace parentheses with spaces
+            .Replace(")", " ")
+            .Replace("*", " ")      // Replace wildcard characters
+            .Replace("+", " ")
+            .Replace("-", " ")
+            .Replace(":", " ")      // Replace colon (used for field searches)
+            .Replace("<", " ")      // Replace comparison operators
+            .Replace("=", " ")
+            .Replace(">", " ")
+            .Replace("^", " ")      // Replace boost operator
+            .Replace("|", " ")      // Replace OR operator
+            .Replace("~", " ")      // Replace NOT operator
+            .Replace("#", " ");     // Replace hash symbol (used in work item IDs)
     }
 
     /// <summary>

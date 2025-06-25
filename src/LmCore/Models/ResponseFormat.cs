@@ -102,11 +102,10 @@ public sealed record JsonSchemaObject
     public IReadOnlyList<string>? Required { get; init; }
 
     /// <summary>
-    /// Indicates if additional properties are allowed
+    /// Whether additional properties are allowed in the object
     /// </summary>
     [JsonPropertyName("additionalProperties")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public bool AdditionalProperties { get; init; } = true;
+    public bool AdditionalProperties { get; init; } = false;
 
     /// <summary>
     /// Description of the schema object
@@ -245,6 +244,12 @@ public sealed record JsonSchemaProperty
     [JsonPropertyName("required")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Required { get; init; }
+
+    /// <summary>
+    /// Whether additional properties are allowed in the object (for object-type properties)
+    /// </summary>
+    [JsonPropertyName("additionalProperties")]
+    public bool AdditionalProperties { get; init; } = false;
 
     /// <summary>
     /// Enum values for string type properties

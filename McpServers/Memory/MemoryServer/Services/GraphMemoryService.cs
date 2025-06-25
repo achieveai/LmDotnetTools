@@ -51,7 +51,7 @@ public class GraphMemoryService : IGraphMemoryService
                 memory.Content,
                 sessionContext,
                 memory.Id,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             _logger.LogDebug("Extracted {EntityCount} entities and {RelationshipCount} relationships",
                 entities.Count(), relationships.Count());
@@ -533,7 +533,7 @@ public class GraphMemoryService : IGraphMemoryService
             var memories = new List<Memory>();
 
             // Extract potential entity names from the query
-            var queryEntities = await _extractionService.ExtractEntitiesAsync(query, sessionContext, memoryId: 0, cancellationToken);
+            var queryEntities = await _extractionService.ExtractEntitiesAsync(query, sessionContext, memoryId: 0, cancellationToken: cancellationToken);
 
             // For each extracted entity, find related entities and their memories
             foreach (var entity in queryEntities.Take(3)) // Limit to avoid too many traversals
@@ -644,7 +644,7 @@ public class GraphMemoryService : IGraphMemoryService
         try
         {
             // Extract entities from query
-            var queryEntities = await _extractionService.ExtractEntitiesAsync(query, sessionContext, memoryId: 0, cancellationToken);
+            var queryEntities = await _extractionService.ExtractEntitiesAsync(query, sessionContext, memoryId: 0, cancellationToken: cancellationToken);
             results.RelevantEntities.AddRange(queryEntities);
 
             // Get entities from memory results
