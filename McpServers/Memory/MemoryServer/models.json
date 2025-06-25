@@ -485,7 +485,7 @@
        },
        {
          "name": "OpenRouter",
-         "model_name": "google/gemini-2.5-flash",
+         "model_name": "google/gemini-2.5-flash-preview-05-20",
          "priority": 2,
          "pricing": {
            "prompt_per_million": 0.165,

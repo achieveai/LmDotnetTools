@@ -44,7 +44,8 @@ public class GraphExtractionService : IGraphExtractionService
   public async Task<IEnumerable<Entity>> ExtractEntitiesAsync(
     string content, 
     SessionContext sessionContext, 
-    int memoryId, 
+    int memoryId,
+    string? modelId = null,
     CancellationToken cancellationToken = default)
   {
     try
@@ -52,10 +53,25 @@ public class GraphExtractionService : IGraphExtractionService
       _logger.LogInformation("Extracting entities from content for memory {MemoryId} in session {SessionContext}", 
         memoryId, sessionContext);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
+      // Create agent based on whether a specific model ID is provided
+      IAgent agent;
+      GenerateReplyOptions generateOptions;
+      
+      if (!string.IsNullOrEmpty(modelId))
+      {
+        _logger.LogInformation("Using specific model {ModelId} for entity extraction", modelId);
+        agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "entity_extraction", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "entity_extraction", cancellationToken);
+      }
+      else
+      {
+        _logger.LogInformation("Using gpt-4.1-nano as default model for entity extraction");
+        agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "entity_extraction", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "entity_extraction", cancellationToken);
+      }
+
       var promptChain = _promptReader.GetPromptChain("entity_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("entity_extraction", cancellationToken);
       var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
@@ -76,7 +92,8 @@ public class GraphExtractionService : IGraphExtractionService
         {
           ["extraction_reasoning"] = e.Reasoning ?? "",
           ["extraction_timestamp"] = DateTime.UtcNow,
-          ["source_memory_id"] = memoryId
+          ["source_memory_id"] = memoryId,
+          ["model_used"] = modelId ?? "gpt-4.1-nano"
         }
       }).ToList();
 
@@ -95,7 +112,8 @@ public class GraphExtractionService : IGraphExtractionService
   public async Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
     string content, 
     SessionContext sessionContext, 
-    int memoryId, 
+    int memoryId,
+    string? modelId = null,
     CancellationToken cancellationToken = default)
   {
     try
@@ -103,10 +121,25 @@ public class GraphExtractionService : IGraphExtractionService
       _logger.LogInformation("Extracting combined graph data from content for memory {MemoryId} in session {SessionContext}", 
         memoryId, sessionContext);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
+      // Create agent based on whether a specific model ID is provided
+      IAgent agent;
+      GenerateReplyOptions generateOptions;
+      
+      if (!string.IsNullOrEmpty(modelId))
+      {
+        _logger.LogInformation("Using specific model {ModelId} for graph data extraction", modelId);
+        agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "combined_extraction", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "combined_extraction", cancellationToken);
+      }
+      else
+      {
+        _logger.LogInformation("Using gpt-4.1-nano as default model for graph data extraction");
+        agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "combined_extraction", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "combined_extraction", cancellationToken);
+      }
+
       var promptChain = _promptReader.GetPromptChain("combined_extraction");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("combined_extraction", cancellationToken);
       var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
@@ -127,7 +160,8 @@ public class GraphExtractionService : IGraphExtractionService
         {
           ["extraction_reasoning"] = e.Reasoning ?? "",
           ["extraction_timestamp"] = DateTime.UtcNow,
-          ["source_memory_id"] = memoryId
+          ["source_memory_id"] = memoryId,
+          ["model_used"] = modelId ?? "gpt-4.1-nano"
         }
       }).ToList();
 
@@ -147,7 +181,8 @@ public class GraphExtractionService : IGraphExtractionService
         {
           ["extraction_reasoning"] = r.Reasoning ?? "",
           ["extraction_timestamp"] = DateTime.UtcNow,
-          ["source_memory_id"] = memoryId
+          ["source_memory_id"] = memoryId,
+          ["model_used"] = modelId ?? "gpt-4.1-nano"
         }
       }).ToList();
 
@@ -169,6 +204,7 @@ public class GraphExtractionService : IGraphExtractionService
     IEnumerable<Relationship> existingRelationships,
     SessionContext sessionContext,
     int memoryId,
+    string? modelId = null,
     CancellationToken cancellationToken = default)
   {
     try
@@ -192,7 +228,23 @@ public class GraphExtractionService : IGraphExtractionService
         r.TemporalContext 
       }), _jsonOptions);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
+      // Create agent based on whether a specific model ID is provided
+      IAgent agent;
+      GenerateReplyOptions generateOptions;
+      
+      if (!string.IsNullOrEmpty(modelId))
+      {
+        _logger.LogInformation("Using specific model {ModelId} for graph update analysis", modelId);
+        agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "graph_update_analysis", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "graph_update_analysis", cancellationToken);
+      }
+      else
+      {
+        _logger.LogInformation("Using gpt-4.1-nano as default model for graph update analysis");
+        agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "graph_update_analysis", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "graph_update_analysis", cancellationToken);
+      }
+
       var promptChain = _promptReader.GetPromptChain("graph_update_analysis");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> 
       { 
@@ -201,7 +253,6 @@ public class GraphExtractionService : IGraphExtractionService
         ["existing_relationships_json"] = relationshipsJson
       });
       
-      var generateOptions = await CreateGenerateReplyOptionsAsync("graph_update_analysis", cancellationToken);
       var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       var responseText = ExtractTextFromResponse(response);
       var updateInstructions = ParseUpdateInstructionsFromJson(responseText);
@@ -221,6 +272,7 @@ public class GraphExtractionService : IGraphExtractionService
   public async Task<IEnumerable<Entity>> ValidateAndCleanEntitiesAsync(
     IEnumerable<Entity> entities,
     SessionContext sessionContext,
+    string? modelId = null,
     CancellationToken cancellationToken = default)
   {
     try
@@ -239,10 +291,25 @@ public class GraphExtractionService : IGraphExtractionService
         e.Confidence 
       }), _jsonOptions);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
+      // Create agent based on whether a specific model ID is provided
+      IAgent agent;
+      GenerateReplyOptions generateOptions;
+      
+      if (!string.IsNullOrEmpty(modelId))
+      {
+        _logger.LogInformation("Using specific model {ModelId} for entity validation", modelId);
+        agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "entity_validation", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "entity_validation", cancellationToken);
+      }
+      else
+      {
+        _logger.LogInformation("Using gpt-4.1-nano as default model for entity validation");
+        agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "entity_validation", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "entity_validation", cancellationToken);
+      }
+
       var promptChain = _promptReader.GetPromptChain("entity_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["entities_json"] = entitiesJson });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("entity_validation", cancellationToken);
       var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
@@ -281,6 +348,7 @@ public class GraphExtractionService : IGraphExtractionService
   public async Task<IEnumerable<Relationship>> ValidateAndCleanRelationshipsAsync(
     IEnumerable<Relationship> relationships,
     SessionContext sessionContext,
+    string? modelId = null,
     CancellationToken cancellationToken = default)
   {
     try
@@ -300,10 +368,25 @@ public class GraphExtractionService : IGraphExtractionService
         r.TemporalContext 
       }), _jsonOptions);
 
-      var agent = await _lmConfigService.CreateAgentAsync("small-model;json_schema", cancellationToken);
+      // Create agent based on whether a specific model ID is provided
+      IAgent agent;
+      GenerateReplyOptions generateOptions;
+      
+      if (!string.IsNullOrEmpty(modelId))
+      {
+        _logger.LogInformation("Using specific model {ModelId} for relationship validation", modelId);
+        agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "relationship_validation", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "relationship_validation", cancellationToken);
+      }
+      else
+      {
+        _logger.LogInformation("Using gpt-4.1-nano as default model for relationship validation");
+        agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "relationship_validation", cancellationToken);
+        generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "relationship_validation", cancellationToken);
+      }
+
       var promptChain = _promptReader.GetPromptChain("relationship_validation");
       var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["relationships_json"] = relationshipsJson });
-      var generateOptions = await CreateGenerateReplyOptionsAsync("relationship_validation", cancellationToken);
       var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
       
       var responseText = ExtractTextFromResponse(response);
@@ -352,17 +435,16 @@ public class GraphExtractionService : IGraphExtractionService
     string capability, 
     CancellationToken cancellationToken = default)
   {
-    try
+    // Try to use LmConfig for optimal model selection
+    if (_lmConfigService != null)
     {
-      // Use LmConfig for optimal model selection based on capability
-      // Request small, cost-effective models with JSON schema support for graph extraction
-      var modelConfig = await _lmConfigService.GetOptimalModelAsync("small-model;json_schema", cancellationToken);
+      var modelConfig = await _lmConfigService.GetOptimalModelAsync(capability, cancellationToken);
       if (modelConfig != null)
       {
         var options = new GenerateReplyOptions
         {
           ModelId = modelConfig.Id, // UnifiedAgent will translate this to the effective model name
-          Temperature = 0.0f, // Use low temperature for consistent extraction
+          Temperature = 0.0f, // Low temperature for consistent extraction
           MaxToken = 2000 // Reasonable limit for graph extraction
         };
 
@@ -370,26 +452,64 @@ public class GraphExtractionService : IGraphExtractionService
         if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
         {
           options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
-          _logger.LogDebug("Using structured output with JSON schema for capability {Capability} with model {ModelId}", 
-            capability, modelConfig.Id);
         }
         else if (modelConfig.HasCapability("json_mode"))
         {
           options = options with { ResponseFormat = ResponseFormat.JSON };
-          _logger.LogDebug("Using JSON mode for capability {Capability} with model {ModelId}", 
-            capability, modelConfig.Id);
         }
 
         return options;
       }
+    }
+    
+    // Fallback to basic configuration
+    return CreateBasicGenerateReplyOptions(capability);
+  }
 
-      // Fallback to basic configuration if no model found
-      return CreateBasicGenerateReplyOptions(capability);
+  /// <summary>
+  /// Creates GenerateReplyOptions for a specific model ID, bypassing automatic model selection.
+  /// </summary>
+  private Task<GenerateReplyOptions> CreateGenerateReplyOptionsWithModelAsync(
+    string modelId,
+    string capability, 
+    CancellationToken cancellationToken = default)
+  {
+    try
+    {
+      // Get the specific model configuration
+      var appConfig = _lmConfigService.GetConfiguration();
+      var modelConfig = appConfig.GetModel(modelId);
+      
+      if (modelConfig == null)
+      {
+        _logger.LogWarning("Model {ModelId} not found, falling back to basic options", modelId);
+        return Task.FromResult(CreateBasicGenerateReplyOptions(capability));
+      }
+
+      var options = new GenerateReplyOptions
+      {
+        ModelId = modelId, // Use the specific model ID directly
+        Temperature = 0.0f, // Low temperature for consistent extraction
+        MaxToken = 2000 // Reasonable limit for graph extraction
+      };
+
+      // Add JSON schema if model supports structured output
+      if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
+      {
+        options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
+      }
+      else if (modelConfig.HasCapability("json_mode"))
+      {
+        options = options with { ResponseFormat = ResponseFormat.JSON };
+      }
+
+      _logger.LogDebug("Created GenerateReplyOptions for model {ModelId} with capability {Capability}", modelId, capability);
+      return Task.FromResult(options);
     }
     catch (Exception ex)
     {
-      _logger.LogWarning(ex, "Failed to create optimal GenerateReplyOptions for capability {Capability}, using fallback", capability);
-      return CreateBasicGenerateReplyOptions(capability);
+      _logger.LogWarning(ex, "Failed to create options for model {ModelId}, falling back to basic options", modelId);
+      return Task.FromResult(CreateBasicGenerateReplyOptions(capability));
     }
   }
 

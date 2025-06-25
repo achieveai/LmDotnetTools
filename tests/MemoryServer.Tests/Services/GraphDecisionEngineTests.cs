@@ -262,7 +262,7 @@ public class GraphDecisionEngineTests
             new Entity { Name = "John", Type = "person", UserId = "user123", Confidence = 0.2f },
             new SessionContext { UserId = "user123" },
             GraphDecisionOperation.NONE,
-            "low confidence"
+            "lower confidence"
         }
     };
 
