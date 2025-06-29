@@ -1,4 +1,6 @@
 using MemoryServer.Models;
+using MemoryServer.DocumentSegmentation.Services;
+using MemoryServer.DocumentSegmentation.Models;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Services;
@@ -11,6 +13,7 @@ public class MemoryService : IMemoryService
     private readonly IMemoryRepository _memoryRepository;
     private readonly IGraphMemoryService _graphMemoryService;
     private readonly IEmbeddingManager _embeddingManager;
+    private readonly IDocumentSegmentationService? _documentSegmentationService;
     private readonly ILogger<MemoryService> _logger;
     private readonly MemoryOptions _options;
     private readonly LLMOptions _llmOptions;
@@ -21,11 +24,13 @@ public class MemoryService : IMemoryService
         IGraphMemoryService graphMemoryService,
         IEmbeddingManager embeddingManager,
         ILogger<MemoryService> logger,
-        IOptions<MemoryServerOptions> options)
+        IOptions<MemoryServerOptions> options,
+        IDocumentSegmentationService? documentSegmentationService = null)
     {
         _memoryRepository = memoryRepository;
         _graphMemoryService = graphMemoryService;
         _embeddingManager = embeddingManager;
+        _documentSegmentationService = documentSegmentationService; // Optional dependency
         _logger = logger;
         _options = options.Value.Memory;
         _llmOptions = options.Value.LLM;
@@ -88,9 +93,54 @@ public class MemoryService : IMemoryService
                 // Don't throw - memory was successfully saved, graph processing is supplementary
             }
         }
+        // Process document segmentation if enabled and service is available
+        if (_documentSegmentationService != null)
+        {
+            try
+            {
+                _logger.LogDebug("Checking if memory {MemoryId} should be segmented", memory.Id);
+                
+                var shouldSegment = await _documentSegmentationService.ShouldSegmentAsync(
+                    content, DocumentType.Generic, cancellationToken);
+
+                if (shouldSegment)
+                {
+                    _logger.LogDebug("Starting document segmentation for memory {MemoryId}", memory.Id);
+                    
+                    var segmentationRequest = new DocumentSegmentationRequest
+                    {
+                        DocumentType = DocumentType.Generic,
+                        Strategy = SegmentationStrategy.TopicBased // Default strategy
+                    };
+
+                    var segmentationResult = await _documentSegmentationService.SegmentDocumentAsync(
+                        content, segmentationRequest, sessionContext, cancellationToken);
+
+                    if (segmentationResult.IsComplete && segmentationResult.Segments.Any())
+                    {
+                        _logger.LogInformation("Document segmentation completed for memory {MemoryId}: {SegmentCount} segments created",
+                            memory.Id, segmentationResult.Segments.Count);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("Document segmentation was attempted for memory {MemoryId} but no segments were created",
+                            memory.Id);
+                    }
+                }
+                else
+                {
+                    _logger.LogDebug("Memory {MemoryId} does not require segmentation", memory.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to process document segmentation for memory {MemoryId}. Memory was saved but segmentation failed.", memory.Id);
+                // Don't throw - memory was successfully saved, segmentation is supplementary
+            }
+        }
         else
         {
-            _logger.LogDebug("Graph processing is disabled for memory {MemoryId}", memory.Id);
+            _logger.LogDebug("Document segmentation service is not available for memory {MemoryId}", memory.Id);
         }
 
         return memory;

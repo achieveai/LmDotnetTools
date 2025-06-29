@@ -65,7 +65,7 @@ namespace LmTestUtils.Tests
         }
 
         [Fact]
-        public async Task GenerateCacheKey_ShouldGenerateSHA256Hash_BasedOnRequestShape()
+        public void GenerateCacheKey_ShouldGenerateSHA256Hash_BasedOnRequestShape()
         {
             // Arrange
             var testRequest1 = new
@@ -343,7 +343,7 @@ namespace LmTestUtils.Tests
         }
 
         [Fact]
-        public void MiddlewareChain_ShouldExecuteInCorrectOrder()
+        public async Task MiddlewareChain_ShouldExecuteInCorrectOrder()
         {
             // Arrange
             var handler = MockHttpHandlerBuilder.Create()
@@ -355,7 +355,7 @@ namespace LmTestUtils.Tests
             var content = new StringContent("""{"test": "request"}""", System.Text.Encoding.UTF8, "application/json");
 
             // Act
-            var response = httpClient.PostAsync("https://api.test.com/test", content).Result;
+            var response = await httpClient.PostAsync("https://api.test.com/test", content);
 
             // Assert
             Assert.Equal(1, capture.RequestCount);
@@ -363,7 +363,7 @@ namespace LmTestUtils.Tests
             Assert.Contains("test", capture.LastRequestBody);
             
             // Verify response was also generated
-            var responseContent = response.Content.ReadAsStringAsync().Result;
+            var responseContent = await response.Content.ReadAsStringAsync();
             Assert.Contains("response", responseContent);
         }
 

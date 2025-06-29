@@ -3,6 +3,9 @@ using MemoryServer.Models;
 using MemoryServer.Services;
 using MemoryServer.Tools;
 using MemoryServer.Utils;
+using MemoryServer.DocumentSegmentation.Services;
+using MemoryServer.DocumentSegmentation.Models;
+using MemoryServer.DocumentSegmentation.Integration;
 using Microsoft.Extensions.Options;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -32,6 +35,8 @@ public static class ServiceCollectionExtensions
       configuration.GetSection("MemoryServer:Database"));
     services.Configure<MemoryServerOptions>(
       configuration.GetSection("MemoryServer"));
+    services.Configure<DocumentSegmentationOptions>(
+      configuration.GetSection("MemoryServer:DocumentSegmentation"));
 
     // Register Database Session Pattern infrastructure
     services.AddDatabaseServices(environment);
@@ -75,8 +80,84 @@ public static class ServiceCollectionExtensions
     // Register LmConfig integration
     services.AddScoped<ILmConfigService, LmConfigService>();
 
+    // Register Document Segmentation services (Phase 1)
+    services.AddDocumentSegmentationServices();
+
     // Register MCP tools
     services.AddScoped<MemoryMcpTools>();
+
+    return services;
+  }
+
+  public static IServiceCollection AddDocumentSegmentationServices(this IServiceCollection services)
+  {
+    // Document Segmentation services - Phase 1 implementation
+    
+    // Core segmentation service interface - implemented in Week 3
+    services.AddScoped<IDocumentSegmentationService, DocumentSegmentationService>();
+
+    // Specialized segmentation services
+    services.AddScoped<ITopicBasedSegmentationService, TopicBasedSegmentationService>();
+    services.AddScoped<IStructureBasedSegmentationService, StructureBasedSegmentationService>();
+    services.AddScoped<INarrativeBasedSegmentationService, NarrativeBasedSegmentationService>();
+    services.AddScoped<IHybridSegmentationService, HybridSegmentationService>();
+
+    // LLM integration services
+    services.AddScoped<ILlmProviderIntegrationService, LlmProviderIntegrationService>();
+
+    // Quality assessment services
+    services.AddScoped<ISegmentationQualityAssessmentService, SegmentationQualityAssessmentService>();
+
+    // Prompt management service - implemented in Week 2  
+    services.AddScoped<ISegmentationPromptManager, SegmentationPromptManager>();
+
+    // Repository for segment storage - implemented in Week 2
+    services.AddScoped<IDocumentSegmentRepository, DocumentSegmentRepository>();
+
+    // Document size detection service - implemented in Week 2
+    services.AddScoped<IDocumentSizeAnalyzer, DocumentSizeAnalyzer>();
+
+    // Error handling and resilience services - Phase 2 error handling
+    services.AddErrorHandlingServices();
+
+    // Session context integration is built into all services through dependency injection
+    // All services accept SessionContext parameter and use Database Session Pattern
+
+    return services;
+  }
+
+  public static IServiceCollection AddErrorHandlingServices(this IServiceCollection services)
+  {
+    // Register resilience configurations with default values
+    services.AddSingleton<CircuitBreakerConfiguration>(_ => new CircuitBreakerConfiguration
+    {
+      FailureThreshold = 5,
+      TimeoutMs = 30000,
+      MaxTimeoutMs = 300000,
+      ExponentialFactor = 2.0
+    });
+
+    services.AddSingleton<RetryConfiguration>(_ => new RetryConfiguration
+    {
+      MaxRetries = 3,
+      BaseDelayMs = 1000,
+      ExponentialFactor = 2.0,
+      MaxDelayMs = 30000,
+      JitterPercent = 0.1
+    });
+
+    services.AddSingleton<GracefulDegradationConfiguration>(_ => new GracefulDegradationConfiguration
+    {
+      FallbackTimeoutMs = 5000,
+      RuleBasedQualityScore = 0.7,
+      RuleBasedMaxProcessingMs = 10000,
+      MaxPerformanceDegradationPercent = 0.2
+    });
+
+    // Register resilience services
+    services.AddSingleton<ICircuitBreakerService, CircuitBreakerService>();
+    services.AddSingleton<IRetryPolicyService, RetryPolicyService>();
+    services.AddScoped<IResilienceService, ResilienceService>();
 
     return services;
   }

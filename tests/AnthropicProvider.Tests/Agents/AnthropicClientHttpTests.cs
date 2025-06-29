@@ -73,7 +73,7 @@ public class AnthropicClientHttpTests
     }
 
     [Fact]
-    public async Task CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
+    public void CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
@@ -106,8 +106,7 @@ public class AnthropicClientHttpTests
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(
         HttpStatusCode[] statusCodes, 
-        bool shouldSucceed, 
-        int expectedRetries)
+        bool shouldSucceed)
     {
         // Arrange
         var successResponse = CreateAnthropicSuccessResponse("Success", "claude-3-sonnet-20240229");
@@ -361,16 +360,14 @@ public class AnthropicClientHttpTests
         yield return new object[]
         {
             new[] { HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests, HttpStatusCode.OK },
-            true, // should succeed
-            2     // expected retries
+            true // should succeed
         };
 
         // Scenario: Non-retryable error (Bad Request)
         yield return new object[]
         {
             new[] { HttpStatusCode.BadRequest },
-            false, // should fail
-            0      // expected retries (no retry)
+            false // should fail
         };
 
         // Scenario: Max retries exceeded
@@ -382,16 +379,14 @@ public class AnthropicClientHttpTests
                 HttpStatusCode.ServiceUnavailable, 
                 HttpStatusCode.ServiceUnavailable 
             },
-            false, // should fail after max retries
-            3      // expected retries
+            false // should fail after max retries
         };
 
         // Scenario: Success on first try
         yield return new object[]
         {
             new[] { HttpStatusCode.OK },
-            true, // should succeed
-            0     // expected retries
+            true // should succeed
         };
     }
 

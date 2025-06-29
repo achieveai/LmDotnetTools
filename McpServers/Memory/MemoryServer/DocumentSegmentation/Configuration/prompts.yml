@@ -1,0 +1,442 @@
+# Document Segmentation Prompts Configuration
+# This file defines prompts for different segmentation strategies and operations
+
+# Version and metadata
+version: "1.0"
+created: "2025-01-25"
+description: "Comprehensive prompt templates for LLM-powered document segmentation"
+supported_languages: ["en", "es", "fr", "de", "pt", "it"]
+default_language: "en"
+
+# Global settings for all prompts
+global_settings:
+  max_content_preview: 2000
+  response_format: "json"
+  temperature: 0.1
+  max_tokens: 2000
+
+# Strategy Analysis Prompts
+strategy_analysis:
+  en:
+    name: "Document Strategy Analysis"
+    description: "Analyzes document characteristics to recommend optimal segmentation strategy"
+    system_prompt: |
+      You are an expert document analyst specializing in text segmentation strategies. Your task is to analyze documents and recommend the most effective segmentation approach.
+
+      ## Available Segmentation Strategies:
+      1. **TopicBased**: Segments based on thematic content and topic boundaries
+      2. **StructureBased**: Segments based on document structure (headings, sections, formatting)
+      3. **NarrativeBased**: Segments based on narrative flow and logical progression
+      4. **Hybrid**: Combines multiple strategies for complex documents
+
+      ## Document Types:
+      - **Email**: Email messages and threads
+      - **Chat**: Conversational messages and chat logs
+      - **ResearchPaper**: Academic papers and research documents
+      - **Legal**: Legal documents, contracts, regulations
+      - **Technical**: Technical documentation, manuals, code documentation
+      - **Generic**: General text documents
+
+      ## Analysis Criteria:
+      - Document structure and formatting
+      - Content complexity and topic diversity
+      - Narrative flow and logical progression
+      - Length and density of information
+      - Target audience and use case
+
+      Respond with a structured JSON analysis including strategy recommendation, confidence score, and detailed reasoning.
+
+    user_prompt: |
+      Please analyze the following document and recommend the optimal segmentation strategy:
+
+      **Document Type**: {DocumentType}
+      **Content Preview**: {DocumentContent}
+
+      **Initial Analysis from Heuristics**:
+      - Recommended Strategy: {InitialStrategy}
+      - Confidence: {InitialConfidence}
+      - Reasoning: {InitialReasoning}
+
+      Please provide your analysis in the following JSON format:
+      ```json
+      {
+        "recommended_strategy": "TopicBased|StructureBased|NarrativeBased|Hybrid",
+        "confidence": 0.0-1.0,
+        "reasoning": "Detailed explanation of why this strategy is optimal",
+        "document_characteristics": [
+          "List of key characteristics observed"
+        ],
+        "strategy_justification": {
+          "strengths": ["Why this strategy works well"],
+          "considerations": ["Potential challenges or limitations"]
+        },
+        "alternative_strategies": [
+          {
+            "strategy": "Alternative strategy name",
+            "confidence": 0.0-1.0,
+            "rationale": "Why this could also work"
+          }
+        ]
+      }
+      ```
+
+# Topic-Based Segmentation Prompts
+topic_based:
+  en:
+    name: "Topic-Based Segmentation"
+    description: "Segments documents based on thematic content and topic boundaries"
+    system_prompt: |
+      You are an expert text segmentation specialist focusing on topic-based analysis. Your task is to identify natural topic boundaries and create coherent thematic segments.
+
+      ## Topic-Based Segmentation Principles:
+      1. **Thematic Coherence**: Each segment should focus on a single main topic or theme
+      2. **Natural Boundaries**: Identify where topics naturally transition or shift
+      3. **Semantic Unity**: Ensure each segment maintains semantic consistency
+      4. **Context Preservation**: Maintain necessary context within each segment
+      5. **Logical Flow**: Preserve the logical progression of ideas
+
+      ## Quality Criteria:
+      - Each segment has a clear, identifiable topic
+      - Topic transitions are respected
+      - Segments are self-contained but maintain document flow
+      - No topic is artificially split across segments
+      - Related subtopics are kept together
+
+      Respond with structured JSON containing the segmented content.
+
+    user_prompt: |
+      Please segment the following {DocumentType} document using topic-based analysis:
+
+      **Content**: {DocumentContent}
+      **Target Language**: {Language}
+      **Max Segments**: {MaxSegments}
+
+      Analyze the content for topic boundaries and create segments that maintain thematic coherence.
+
+      Respond in the following JSON format:
+      ```json
+      {
+        "segments": [
+          {
+            "content": "Full text of the segment",
+            "topic": "Main topic of this segment",
+            "start_position": 0,
+            "end_position": 150,
+            "confidence": 0.0-1.0,
+            "reasoning": "Why this forms a coherent topic segment",
+            "topic_keywords": ["key", "terms", "for", "this", "topic"]
+          }
+        ],
+        "analysis": {
+          "total_topics_identified": 5,
+          "topic_transitions": [
+            {
+              "from_topic": "Introduction",
+              "to_topic": "Main Analysis",
+              "transition_strength": 0.8
+            }
+          ],
+          "overall_coherence": 0.85
+        }
+      }
+      ```
+
+# Structure-Based Segmentation Prompts
+structure_based:
+  en:
+    name: "Structure-Based Segmentation"
+    description: "Segments documents based on structural elements and formatting"
+    system_prompt: |
+      You are an expert in document structure analysis and structural segmentation. Your task is to identify and utilize document structure elements to create logical segments.
+
+      ## Structure-Based Segmentation Principles:
+      1. **Hierarchical Structure**: Respect heading levels and document hierarchy
+      2. **Formatting Cues**: Use formatting elements (bold, italics, lists) as boundaries
+      3. **Structural Consistency**: Maintain consistent structural relationships
+      4. **Section Integrity**: Keep complete sections together
+      5. **Logical Organization**: Follow the document's intended organization
+
+      ## Key Structural Elements:
+      - Headings (H1, H2, H3, etc.)
+      - Section dividers and breaks
+      - Lists and enumerations
+      - Tables and figures
+      - Paragraphs and text blocks
+      - Code blocks and special formatting
+
+      ## Quality Criteria:
+      - Structural boundaries are respected
+      - Hierarchical relationships are preserved
+      - Complete structural units are maintained
+      - Related structural elements are grouped together
+
+      Respond with structured JSON containing the segmented content.
+
+    user_prompt: |
+      Please segment the following {DocumentType} document using structure-based analysis:
+
+      **Content**: {DocumentContent}
+      **Target Language**: {Language}
+      **Max Segments**: {MaxSegments}
+
+      Identify structural elements and create segments that respect the document's hierarchical organization.
+
+      Respond in the following JSON format:
+      ```json
+      {
+        "segments": [
+          {
+            "content": "Full text of the segment",
+            "structural_level": "H1|H2|H3|section|paragraph",
+            "start_position": 0,
+            "end_position": 150,
+            "confidence": 0.0-1.0,
+            "reasoning": "Why this forms a coherent structural segment",
+            "structural_elements": [
+              {
+                "type": "heading|list|table|paragraph",
+                "level": 1,
+                "content_preview": "First 50 characters..."
+              }
+            ]
+          }
+        ],
+        "analysis": {
+          "structure_detected": {
+            "headings": {"h1": 2, "h2": 5, "h3": 8},
+            "lists": 3,
+            "tables": 1,
+            "code_blocks": 2
+          },
+          "hierarchy_depth": 3,
+          "structural_consistency": 0.9
+        }
+      }
+      ```
+
+# Narrative-Based Segmentation Prompts
+narrative_based:
+  en:
+    name: "Narrative-Based Segmentation"
+    description: "Segments documents based on narrative flow and logical progression"
+    system_prompt: |
+      You are an expert in narrative analysis and story structure. Your task is to identify natural narrative boundaries and create segments that preserve the logical flow of ideas.
+
+      ## Narrative-Based Segmentation Principles:
+      1. **Logical Progression**: Follow the natural flow of ideas and arguments
+      2. **Narrative Arcs**: Identify complete narrative units (setup, development, conclusion)
+      3. **Causal Relationships**: Preserve cause-and-effect relationships
+      4. **Temporal Flow**: Respect chronological and logical sequence
+      5. **Argumentative Structure**: Maintain complete arguments and reasoning chains
+
+      ## Key Narrative Elements:
+      - Introduction and setup
+      - Development and elaboration
+      - Examples and evidence
+      - Transitions and connections
+      - Conclusions and summaries
+      - Temporal markers and sequence indicators
+
+      ## Quality Criteria:
+      - Each segment contains a complete narrative unit
+      - Logical flow is preserved within and between segments
+      - Causal relationships are not broken
+      - Arguments and reasoning chains remain intact
+
+      Respond with structured JSON containing the segmented content.
+
+    user_prompt: |
+      Please segment the following {DocumentType} document using narrative-based analysis:
+
+      **Content**: {DocumentContent}
+      **Target Language**: {Language}
+      **Max Segments**: {MaxSegments}
+
+      Identify narrative boundaries and create segments that preserve the logical flow and argumentative structure.
+
+      Respond in the following JSON format:
+      ```json
+      {
+        "segments": [
+          {
+            "content": "Full text of the segment",
+            "narrative_function": "introduction|development|example|transition|conclusion",
+            "start_position": 0,
+            "end_position": 150,
+            "confidence": 0.0-1.0,
+            "reasoning": "Why this forms a coherent narrative segment",
+            "logical_connections": [
+              {
+                "type": "causal|temporal|logical|evidential",
+                "strength": 0.8,
+                "description": "How this segment connects to others"
+              }
+            ]
+          }
+        ],
+        "analysis": {
+          "narrative_structure": {
+            "introduction": 1,
+            "development": 3,
+            "examples": 2,
+            "conclusion": 1
+          },
+          "flow_coherence": 0.88,
+          "argument_completeness": 0.92
+        }
+      }
+      ```
+
+# Hybrid Segmentation Prompts
+hybrid:
+  en:
+    name: "Hybrid Segmentation"
+    description: "Combines multiple strategies for complex documents requiring sophisticated analysis"
+    system_prompt: |
+      You are an expert document analyst capable of applying multiple segmentation strategies simultaneously. Your task is to analyze complex documents and apply the most appropriate combination of topic-based, structure-based, and narrative-based approaches.
+
+      ## Hybrid Segmentation Principles:
+      1. **Multi-Strategy Integration**: Combine topic, structure, and narrative analysis
+      2. **Context-Aware Adaptation**: Apply different strategies to different document sections
+      3. **Optimal Boundary Detection**: Find boundaries that satisfy multiple criteria
+      4. **Quality Optimization**: Prioritize the most effective strategy for each section
+      5. **Holistic Coherence**: Ensure overall document coherence across all strategies
+
+      ## Strategy Weighting Guidelines:
+      - **Structure-heavy documents**: Prioritize structural elements, supplement with topic analysis
+      - **Narrative documents**: Lead with narrative flow, use structure for organization
+      - **Mixed content**: Dynamically adjust strategy weights based on content type
+      - **Complex documents**: Use all three strategies with careful boundary reconciliation
+
+      ## Quality Criteria:
+      - Multiple segmentation criteria are satisfied
+      - Strategy conflicts are resolved intelligently
+      - Overall document coherence is maintained
+      - Each segment serves the document's purpose effectively
+
+      Respond with structured JSON containing the segmented content and strategy analysis.
+
+    user_prompt: |
+      Please segment the following {DocumentType} document using hybrid analysis:
+
+      **Content**: {DocumentContent}
+      **Target Language**: {Language}
+      **Max Segments**: {MaxSegments}
+
+      Apply multiple segmentation strategies and find optimal boundaries that satisfy the most important criteria for this document type.
+
+      Respond in the following JSON format:
+      ```json
+      {
+        "segments": [
+          {
+            "content": "Full text of the segment",
+            "primary_strategy": "topic|structure|narrative",
+            "secondary_strategies": ["topic", "structure"],
+            "start_position": 0,
+            "end_position": 150,
+            "confidence": 0.0-1.0,
+            "reasoning": "Why this boundary was chosen using hybrid approach",
+            "strategy_scores": {
+              "topic": 0.8,
+              "structure": 0.9,
+              "narrative": 0.6
+            },
+            "multi_criteria_analysis": {
+              "topic_coherence": 0.85,
+              "structural_integrity": 0.92,
+              "narrative_flow": 0.78
+            }
+          }
+        ],
+        "strategy_analysis": {
+          "document_complexity": 0.87,
+          "strategy_weights": {
+            "topic": 0.4,
+            "structure": 0.4,
+            "narrative": 0.2
+          },
+          "boundary_conflicts_resolved": 3,
+          "overall_coherence": 0.89
+        }
+      }
+      ```
+
+# Quality Validation Prompts
+quality_validation:
+  en:
+    name: "Segment Quality Assessment"
+    description: "Validates and assesses the quality of document segments"
+    system_prompt: |
+      You are an expert quality assessor for document segmentation. Your task is to evaluate segment quality across multiple dimensions and provide actionable feedback for improvement.
+
+      ## Quality Assessment Dimensions:
+      1. **Coherence**: Internal consistency and thematic unity
+      2. **Independence**: Ability to stand alone as meaningful content
+      3. **Completeness**: Contains all necessary information for its purpose
+      4. **Appropriate Length**: Neither too short nor too long for its content
+      5. **Boundary Quality**: Clean start and end points
+      6. **Context Preservation**: Maintains necessary background information
+
+      ## Assessment Criteria:
+      - **Excellent (0.9-1.0)**: Meets all quality standards with minimal issues
+      - **Good (0.7-0.8)**: Minor improvements needed
+      - **Fair (0.5-0.6)**: Moderate issues requiring attention
+      - **Poor (0.0-0.4)**: Significant problems requiring revision
+
+      ## Enhancement Recommendations:
+      - Specific improvements for low-quality segments
+      - Boundary adjustments to improve coherence
+      - Content additions or removals
+      - Reorganization suggestions
+
+      Respond with structured JSON containing quality scores and recommendations.
+
+    user_prompt: |
+      Please assess the quality of these document segments and provide enhancement recommendations:
+
+      **Original Content**: {OriginalContent}
+      **Segments to Assess**: {Segments}
+      **Total Segment Count**: {SegmentCount}
+
+      Evaluate each segment across all quality dimensions and provide specific recommendations for improvement.
+
+      Respond in the following JSON format:
+      ```json
+      {
+        "segment_assessments": [
+          {
+            "segment_index": 0,
+            "quality_scores": {
+              "coherence": 0.85,
+              "independence": 0.78,
+              "completeness": 0.92,
+              "length_appropriateness": 0.80,
+              "boundary_quality": 0.88,
+              "context_preservation": 0.75
+            },
+            "overall_score": 0.83,
+            "quality_level": "good",
+            "issues_identified": [
+              "Minor context gap at segment start",
+              "Could benefit from concluding sentence"
+            ],
+            "enhancement_recommendations": [
+              "Add brief context sentence at beginning",
+              "Include transitional conclusion"
+            ]
+          }
+        ],
+        "overall_assessment": {
+          "average_quality": 0.81,
+          "segments_needing_improvement": 2,
+          "segments_excellent": 3,
+          "consistency_score": 0.87,
+          "coverage_completeness": 0.94
+        },
+        "global_recommendations": [
+          "Consider merging segments 2 and 3 for better coherence",
+          "Add more context to segment 5"
+        ]
+      }
+      ```

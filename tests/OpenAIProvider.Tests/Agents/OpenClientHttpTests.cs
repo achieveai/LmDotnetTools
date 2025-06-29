@@ -58,7 +58,9 @@ public class OpenClientHttpTests
 
         // Assert
         Assert.NotNull(response);
-        Assert.Equal("Test response", response.Choices[0].Message.Content?.Get<string>());
+        Assert.NotNull(response.Choices);
+        Assert.True(response.Choices.Count > 0);
+        Assert.Equal("Test response", response.Choices![0]!.Message!.Content?.Get<string>());
         
         // Verify performance tracking
         var metrics = _performanceTracker.GetProviderStatistics("OpenAI");
@@ -69,7 +71,7 @@ public class OpenClientHttpTests
     }
 
     [Fact]
-    public async Task CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
+    public void CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
@@ -77,7 +79,7 @@ public class OpenClientHttpTests
     }
 
     [Fact]
-    public async Task CreateChatCompletionsAsync_WithInvalidUrl_ShouldThrowValidationException()
+    public void CreateChatCompletionsAsync_WithInvalidUrl_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
@@ -90,8 +92,7 @@ public class OpenClientHttpTests
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(
         HttpStatusCode[] statusCodes, 
-        bool shouldSucceed, 
-        int expectedRetries)
+        bool shouldSucceed)
     {
         // Arrange
         var successResponse = ChatCompletionTestData.CreateSuccessfulResponse(
@@ -214,16 +215,14 @@ public class OpenClientHttpTests
         yield return new object[]
         {
             new[] { HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests, HttpStatusCode.OK },
-            true, // should succeed
-            2     // expected retries
+            true // should succeed
         };
 
         // Scenario: Non-retryable error (Bad Request)
         yield return new object[]
         {
             new[] { HttpStatusCode.BadRequest },
-            false, // should fail
-            0      // expected retries (no retry)
+            false // should fail
         };
 
         // Scenario: Max retries exceeded
@@ -235,16 +234,14 @@ public class OpenClientHttpTests
                 HttpStatusCode.ServiceUnavailable, 
                 HttpStatusCode.ServiceUnavailable 
             },
-            false, // should fail after max retries
-            3      // expected retries
+            false // should fail after max retries
         };
 
         // Scenario: Success on first try
         yield return new object[]
         {
             new[] { HttpStatusCode.OK },
-            true, // should succeed
-            0     // expected retries
+            true // should succeed
         };
     }
 

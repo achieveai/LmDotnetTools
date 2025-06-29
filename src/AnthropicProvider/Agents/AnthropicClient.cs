@@ -163,9 +163,9 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                         HttpCompletionOption.ResponseHeadersRead,
                         cancellationToken);
                 },
-                async (httpResponse) =>
+                (httpResponse) =>
                 {
-                    return httpResponse.Content;
+                    return Task.FromResult(httpResponse.Content);
                 },
                 cancellationToken: cancellationToken);
             
