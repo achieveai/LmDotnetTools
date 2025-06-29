@@ -22,15 +22,20 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="FluentAssertions" Version="7.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.5" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
     <PackageReference Include="ModelContextProtocol" Version="0.2.0-preview.2" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.5" />
+    <PackageReference Include="dotenv.net" Version="3.2.1" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\McpServers\Memory\MemoryServer\MemoryServer.csproj" />
+    <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
+    <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
+    <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
   </ItemGroup>
 
   <ItemGroup>

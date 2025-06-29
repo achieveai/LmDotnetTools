@@ -617,7 +617,68 @@ public class TestSqliteSession : ISqliteSession
             
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.id;
-            END"
+            END",
+
+            // Document Segmentation tables (for testing)
+            @"CREATE TABLE IF NOT EXISTS document_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_document_id INTEGER NOT NULL,
+                segment_id TEXT UNIQUE NOT NULL,
+                sequence_number INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                title TEXT,
+                summary TEXT,
+                coherence_score REAL DEFAULT 0.0,
+                independence_score REAL DEFAULT 0.0,
+                topic_consistency_score REAL DEFAULT 0.0,
+                user_id TEXT NOT NULL,
+                agent_id TEXT,
+                run_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                metadata TEXT
+            )",
+
+            @"CREATE TABLE IF NOT EXISTS segment_relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_segment_id TEXT NOT NULL,
+                target_segment_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                strength REAL DEFAULT 1.0,
+                user_id TEXT NOT NULL,
+                agent_id TEXT,
+                run_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                metadata TEXT
+            )",
+
+            // Document segments FTS5 table for full-text search (testing)
+            @"CREATE VIRTUAL TABLE IF NOT EXISTS document_segments_fts USING fts5(
+                content,
+                title,
+                summary,
+                content='document_segments',
+                content_rowid='id'
+            )",
+
+            // FTS5 triggers for document segments automatic content indexing
+            @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_insert AFTER INSERT ON document_segments BEGIN
+                INSERT INTO document_segments_fts(rowid, content, title, summary) VALUES (new.id, new.content, new.title, new.summary);
+            END",
+
+            @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_update AFTER UPDATE ON document_segments BEGIN
+                UPDATE document_segments_fts SET content = new.content, title = new.title, summary = new.summary WHERE rowid = new.id;
+            END",
+
+            @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_delete AFTER DELETE ON document_segments BEGIN
+                DELETE FROM document_segments_fts WHERE rowid = old.id;
+            END",
+
+            // Test indexes for document segments
+            @"CREATE INDEX IF NOT EXISTS idx_test_document_segments_parent ON document_segments(parent_document_id)",
+            @"CREATE INDEX IF NOT EXISTS idx_test_document_segments_session ON document_segments(user_id, agent_id, run_id)",
+            @"CREATE INDEX IF NOT EXISTS idx_test_segment_relationships_session ON segment_relationships(user_id, agent_id, run_id)"
         };
     }
 }

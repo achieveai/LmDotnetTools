@@ -7,7 +7,7 @@ namespace LmTestUtils.Tests;
 public class RequestCaptureTests
 {
     [Fact]
-    public void RequestCapture_GetRequestAs_WorksWithOpenAIChatCompletionRequest()
+    public async Task RequestCapture_GetRequestAs_WorksWithOpenAIChatCompletionRequest()
     {
         // Arrange - Create a realistic OpenAI ChatCompletionRequest
         var handler = MockHttpHandlerBuilder.Create()
@@ -62,7 +62,7 @@ public class RequestCaptureTests
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
         // Act - Make HTTP request to trigger capture
-        var response = httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content).Result;
+        var response = await httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
 
         // Assert - Test that GetRequestAs<ChatCompletionRequest>() works
         Assert.Equal(1, requestCapture.RequestCount);
@@ -96,7 +96,7 @@ public class RequestCaptureTests
     }
 
     [Fact]
-    public void ToolCapture_ShouldProvideStructuredAccessToToolData()
+    public async Task ToolCapture_ShouldProvideStructuredAccessToToolData()
     {
         // Arrange - Use MockHttpHandlerBuilder to create proper request capture
         var handler = MockHttpHandlerBuilder.Create()
@@ -150,7 +150,7 @@ public class RequestCaptureTests
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
         // Act - Make HTTP request to trigger capture
-        var response = httpClient.PostAsync("https://api.anthropic.com/v1/messages", content).Result;
+        var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages", content);
 
         // Assert - Test structured tool access  
         Assert.Equal(1, requestCapture.RequestCount);
@@ -184,7 +184,7 @@ public class RequestCaptureTests
     }
 
     [Fact]
-    public void RequestCapture_StructuredAssertions_AreSuperiorToStringBased()
+    public async Task RequestCapture_StructuredAssertions_AreSuperiorToStringBased()
     {
         // This test demonstrates why structured assertions are better than string-based ones
         
@@ -220,7 +220,7 @@ public class RequestCaptureTests
 
         var jsonContent = JsonSerializer.Serialize(requestData);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-        var response = httpClient.PostAsync("https://api.anthropic.com/v1/messages", content).Result;
+        var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages", content);
 
         var anthropicRequest = requestCapture.GetAnthropicRequest()!;
 

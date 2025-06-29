@@ -22,8 +22,6 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     private readonly Dictionary<string, ToolCall> _partialToolCallsById = new();
     // Dictionary to track partial tool calls by their Index when ID is not available
     private readonly Dictionary<int, ToolCall> _partialToolCallsByIndex = new();
-    // Last seen tool call index - helps detect new tool calls even without explicit indexes
-    private int _nextImplicitIndex = 0;
     private IMessage? _lastMessage = null;
     private ToolFormatter? _formatter = null;
 

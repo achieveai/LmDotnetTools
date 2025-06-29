@@ -31,9 +31,10 @@ public record AppConfig
         if (Models != null)
         {
             System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
+            return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
         }
         
-        return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
+        return null;
     }
 
     /// <summary>
@@ -45,7 +46,8 @@ public record AppConfig
     {
         System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModelsWithCapability called with capability: {capability ?? "NULL"}");
         System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
-        if (Models != null)
+        
+        if (Models != null && !string.IsNullOrEmpty(capability))
         {
             System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
             var matchingModels = Models.Where(m => m.HasCapability(capability)).ToList();

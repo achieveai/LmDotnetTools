@@ -49,22 +49,23 @@ public class DataDrivenFunctionToolTests
         // Assert - Compare with expected response
         var expectedResponses = _testDataManager.LoadFinalResponse(
             testName,
-            ProviderType.Anthropic)!;
+            ProviderType.Anthropic);
         if (expectedResponses == null)
         {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response);
+            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? new List<IMessage>());
+            return; // Skip comparison if no expected data exists yet
         }
 
         Assert.NotNull(response);
 
         // Account for the extra UsageMessage that was added to the API response
-        var responseWithoutUsage = response.Where(r => !(r is UsageMessage)).ToList();
+        var responseWithoutUsage = response!.Where(r => !(r is UsageMessage)).ToList();
 
         // There should be one UsageMessage in the response
         Assert.Single(response, r => r is UsageMessage);
 
         // Check that the remaining messages match what we expected
-        Assert.Equal(expectedResponses.Count(), responseWithoutUsage.Count());
+        Assert.Equal(expectedResponses.Count(), responseWithoutUsage.Count);
 
         foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseWithoutUsage))
         {
