@@ -325,6 +325,87 @@
      ]
    },
    {
+     "id": "gpt-4o-mini",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp", "gif"],
+         "max_image_size": 20971520,
+         "max_images_per_message": 30
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-long-context", "structured-output", "small-model"],
+       "performance": {
+         "typical_latency": "00:00:01.5",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 120.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenAI",
+         "model_name": "gpt-4o-mini",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.15,
+           "completion_per_million": 0.6
+         },
+         "tags": ["cost-effective", "fast", "balanced", "small-model"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "openai/gpt-4o-mini",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.15,
+           "completion_per_million": 0.6
+         },
+         "sub_providers": [
+           {
+             "name": "OpenAI",
+             "model_name": "gpt-4o-mini",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Azure OpenAI",
+             "model_name": "gpt-4o-mini",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.6
+             }
+           }
+         ],
+         "tags": ["fallback", "cost-effective", "openai-compatible", "small-model"]
+       }
+     ]
+   },
+   {
      "id": "gemini-2.5-pro",
      "is_reasoning": true,
      "capabilities": {

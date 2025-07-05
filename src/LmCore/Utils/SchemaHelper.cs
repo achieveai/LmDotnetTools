@@ -36,17 +36,40 @@ public static class SchemaHelper
     };
 
     /// <summary>
+    /// Cache to store already generated schema objects keyed by .NET type.
+    /// Creation can be expensive, so we compute once and reuse.
+    /// </summary>
+    private static readonly Dictionary<Type, JsonSchemaObject> _schemaCache = new();
+    private static readonly object _lock = new();
+
+    /// <summary>
     /// Creates a JsonSchemaObject from a .NET Type
     /// </summary>
     /// <param name="type">The .NET type to convert</param>
     /// <returns>A JsonSchemaObject representing the type</returns>
     public static JsonSchemaObject CreateJsonSchemaFromType(Type type)
     {
-        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
-        JsonSchemaObject originalSchema = JsonSerializer.Deserialize<JsonSchemaObject>(dotnetSchema, SchemaDeserializationOptions)!;
-        JsonSchemaObject transformedSchema = TransformSchemaUnions(originalSchema);
-        
-        return transformedSchema;
+        // Fast path - return cached schema if present
+        if (_schemaCache.TryGetValue(type, out var cached))
+        {
+            return cached;
+        }
+
+        lock (_lock)
+        {
+            if (_schemaCache.TryGetValue(type, out cached))
+            {
+                return cached;
+            }
+
+            JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
+            JsonSchemaObject originalSchema = JsonSerializer.Deserialize<JsonSchemaObject>(dotnetSchema, SchemaDeserializationOptions)!;
+            JsonSchemaObject transformedSchema = TransformSchemaUnions(originalSchema);
+
+            _schemaCache[type] = transformedSchema;
+
+            return transformedSchema;
+        }
     }
 
     /// <summary>

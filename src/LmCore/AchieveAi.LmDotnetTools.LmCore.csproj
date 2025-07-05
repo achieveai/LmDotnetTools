@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -12,7 +12,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
     <PackageReference Include="Scriban" Version="6.2.1" />
     <PackageReference Include="System.Memory.Data" Version="9.0.5" />
-    <PackageReference Include="Microsoft.AspNetCore.WebUtilities" Version="9.0.5" />
+    <PackageReference Include="Microsoft.AspNetCore.WebUtilities" Version="9.0.5" Condition=" '$(TargetFramework)' == 'net9.0' " />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
 
