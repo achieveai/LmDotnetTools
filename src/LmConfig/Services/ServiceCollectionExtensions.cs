@@ -80,12 +80,34 @@ public static class ServiceCollectionExtensions
         if (!File.Exists(configFilePath))
             throw new FileNotFoundException($"Configuration file not found: {configFilePath}");
 
-        // Load configuration from file
+        // If the JSON has a root object matching AppConfig (e.g., models[] at root), deserialize directly.
+        try
+        {
+            var json = File.ReadAllText(configFilePath);
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                ReadCommentHandling = JsonCommentHandling.Skip,
+                AllowTrailingCommas = true
+            };
+
+            var appConfig = JsonSerializer.Deserialize<AppConfig>(json, options);
+            if (appConfig != null && appConfig.Models != null && appConfig.Models.Any())
+            {
+                return services.AddLmConfig(appConfig);
+            }
+        }
+        catch (JsonException)
+        {
+            // fall back to configuration section path below
+        }
+
+        // Otherwise treat file as standard configuration with "LmConfig" section
         var configBuilder = new ConfigurationBuilder()
             .AddJsonFile(configFilePath, optional: false, reloadOnChange: true);
-        
+
         var configuration = configBuilder.Build();
-        
+
         return services.AddLmConfig(configuration);
     }
 
