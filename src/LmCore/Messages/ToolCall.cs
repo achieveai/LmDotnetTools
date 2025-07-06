@@ -8,6 +8,7 @@ public record struct ToolCall(
     [property: JsonPropertyName("function_name")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? FunctionName,
+
     [property: JsonPropertyName("function_args")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? FunctionArgs)
