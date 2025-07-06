@@ -186,6 +186,8 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         if (type == typeof(ToolsCallUpdateMessage)) return "tools_call_update";
         if (type == typeof(ToolsCallAggregateMessage)) return "tools_call_aggregate";
         if (type == typeof(UsageMessage)) return "usage";
+        if (type == typeof(ReasoningMessage)) return "reasoning";
+        if (type == typeof(ReasoningUpdateMessage)) return "reasoning_update";
 
         // If not a known type, fallback to name conversion
         string typeName = type.Name;
@@ -282,6 +284,8 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             "tools_call_update" => typeof(ToolsCallUpdateMessage),
             "tools_call_aggregate" => typeof(ToolsCallAggregateMessage),
             "usage" => typeof(UsageMessage),
+            "reasoning" => typeof(ReasoningMessage),
+            "reasoning_update" => typeof(ReasoningUpdateMessage),
             _ => null
         };
     }
