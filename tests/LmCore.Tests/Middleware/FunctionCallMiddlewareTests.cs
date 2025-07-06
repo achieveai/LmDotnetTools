@@ -960,43 +960,11 @@ public class FunctionCallMiddlewareTests
 
         var context = new MiddlewareContext(messages, options);
 
-        // Create HTTP client with mock response that includes multiple tool calls (replaces record/playback)
-        var jsonResponse = @"
-        {
-            ""id"": ""chatcmpl-test"",
-            ""object"": ""chat.completion"",
-            ""created"": 1234567890,
-            ""model"": ""meta-llama/llama-4-maverick"",
-            ""choices"": [{
-                ""index"": 0,
-                ""message"": {
-                    ""role"": ""assistant"",
-                    ""content"": """",
-                    ""tool_calls"": [{
-                        ""id"": ""call_test123"",
-                        ""type"": ""function"",
-                        ""function"": {
-                            ""name"": ""python-mcp.list_directory"",
-                            ""arguments"": ""{\""relative_path\"": \""\""}\""}""
-                        }
-                    }, {
-                        ""id"": ""call_test456"",
-                        ""type"": ""function"",
-                        ""function"": {
-                            ""name"": ""python-mcp.list_directory"",
-                            ""arguments"": ""{\""relative_path\"": \""code\""}""
-                        }
-                    }]
-                },
-                ""finish_reason"": ""tool_calls""
-            }],
-            ""usage"": {
-                ""prompt_tokens"": 150,
-                ""completion_tokens"": 50,
-                ""total_tokens"": 200
-            }
-        }";
-        var handler = CreateSimpleSseStreamHandler([ jsonResponse ]);
+        // Create HTTP client with streaming response that includes multiple tool calls (replaces record/playback)
+        var streamingResponse = CreateMultipleToolCallStreamingResponse();
+        var handler = FakeHttpMessageHandler.CreateRetryHandler(
+            failureCount: 0, // No failures, just success
+            successResponse: streamingResponse);
 
         var httpClient = new HttpClient(handler);
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
@@ -1328,6 +1296,187 @@ public class FunctionCallMiddlewareTests
                 @object = "chat.completion.chunk",
                 created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 model = "gpt-4",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new { },
+                        finish_reason = "tool_calls"
+                    }
+                }
+            })
+        };
+
+        var sseResponse = string.Join("\n\n", chunks.Select(chunk => $"data: {chunk}"));
+        return sseResponse + "\n\ndata: [DONE]\n\n";
+    }
+
+    /// <summary>
+    /// Creates a streaming response that contains multiple tool calls for testing middleware
+    /// </summary>
+    private static string CreateMultipleToolCallStreamingResponse()
+    {
+        var chunks = new List<string>
+        {
+            // Start with role
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test456",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "meta-llama/llama-4-maverick",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new {
+                            role = "assistant",
+                            content = string.Empty
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+            
+            // First tool call start
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test456",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "meta-llama/llama-4-maverick",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new
+                        {
+                            tool_calls = new[]
+                            {
+                                new
+                                {
+                                    index = 0,
+                                    id = "call_test123",
+                                    type = "function",
+                                    function = new
+                                    {
+                                        name = "python-mcp.list_directory",
+                                        arguments = ""
+                                    }
+                                }
+                            }
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+            
+            // First tool call arguments
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test456",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "meta-llama/llama-4-maverick",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new
+                        {
+                            tool_calls = new[]
+                            {
+                                new
+                                {
+                                    index = 0,
+                                    function = new
+                                    {
+                                        arguments = "{\"relative_path\": \"\"}"
+                                    }
+                                }
+                            }
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+
+            // Second tool call start
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test456",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "meta-llama/llama-4-maverick",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new
+                        {
+                            tool_calls = new[]
+                            {
+                                new
+                                {
+                                    index = 1,
+                                    id = "call_test456",
+                                    type = "function",
+                                    function = new
+                                    {
+                                        name = "python-mcp.list_directory",
+                                        arguments = ""
+                                    }
+                                }
+                            }
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+            
+            // Second tool call arguments
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test456",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "meta-llama/llama-4-maverick",
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new
+                        {
+                            tool_calls = new[]
+                            {
+                                new
+                                {
+                                    index = 1,
+                                    function = new
+                                    {
+                                        arguments = "{\"relative_path\": \"code\"}"
+                                    }
+                                }
+                            }
+                        },
+                        finish_reason = (string?)null
+                    }
+                }
+            }),
+            
+            // End with tool_calls finish reason
+            JsonSerializer.Serialize(new
+            {
+                id = "chatcmpl-test456",
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = "meta-llama/llama-4-maverick",
                 choices = new[]
                 {
                     new
