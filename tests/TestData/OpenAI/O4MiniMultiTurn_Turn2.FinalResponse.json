@@ -1,0 +1,25 @@
+[
+  {
+    "$type": "reasoning",
+    "reasoning": "gAAAAABoadV3Gis6ytkuYHhR7mA-Q2QTU31ZYd0is2pNwse1ukA6qBRBKF59N9ky6E43HX_oM9qplUU51iKzf2TdxUmAaOid3PvpRa6I0Sm7l6r_6qKJLq79bEfmg6rnB3JABBqaCW777iky2htOYfFtT58bC3gUdua4H9EBt1mT1qRPQoVoICIrVY-SjhZRAa9SrN02g6295riRn6DexCnZmQogpC7b8q5WjqHym5PBxGdFPEs2KEYGEtBK8vhoMktH4DP7FdIRcKyZFIpgK28w4lE4WPtRJwOCRcnf3inp-RCJRnN_yFYwciLa3PHqwMOu_mM1TtD_enoRbBszdfSDr8b_gufqnQUnJFw4W9h1PGF_dXI1z0gJ0d5wtDT35xxMtO9ci0zYwK2THjcG42f_oN_8SwV2pIEht9iAO1YhzGfgRILVyFfo8isnntYjpontugbamS0oBw-O-9oX615nUvnOZWuEn-os_HrcPDntIrmIHHG2RqNYjK5PtCXnHywVjwZdotFKXfk-cYesrMOGYgZ_dyCgLuuokuRPty2uop9YzNm_WKOooEQI1FC29gjRAcPKoXf_ZdsjhKxm427uJKDmtT_rF1w5crSK66Wzmg-vFkEpZOKayyZtECRSbVvuSmrhdAXlgb1dQz47eJE1c1Dc7re96S5qOb9kRM9HLiiJE8ucYNs_s19E1t61KhoQVVyhdV4aWWZiJG5JzpEBZXu-zduq2PNIVjBafyHAIfJJcqitYq8YR-fH8leSHkIjfTdvvkvs5UH0e4-0hjqCDr50jltn6zi-df5NRG83ilYQeAcfJEWpm-G2Qj9N1qagWJY-0izTmIPNoABIOo-pvXCU2Y0qLMNtATgGaGMoUGmbJ8Pr3iid7bWktNNZ_rrkK4_F86l2bMmbJhP-qGnzYodWfZf537cc7T7ofRMfZCU9i-OOvQh1qw-hJN1gJCguQvSYgKcIc8sLeD7B9Vj8HbPcEOQw47UdTK9QFzYlvHfPCdCbxhed2ENMSSubhBYWw5lKzIPnO38P4rlgz1m-zvIhgzJG8apbKW2P89aQ6KOs3AuI8qRCNJZOaF6JUF--7BMZmhliMNv6sOejhi2kblgF-AKCXBwHn0zyfGSjtkwAUp3vR0nEuVGKZm3AkFNABuvpUeIDunDWebk7So7AOoyudH0vPg==",
+    "visibility": 2,
+    "role": "assistant"
+  },
+  {
+    "$type": "text",
+    "text": "You\u2019re welcome! Let me know if you have any other questions.",
+    "role": "assistant",
+    "isThinking": false,
+    "completion_id": "gen-1751766390-xzUMthq0Q2WCFMkKQB5k"
+  },
+  {
+    "$type": "usage",
+    "usage": {
+      "prompt_tokens": 246,
+      "completion_tokens": 20,
+      "total_tokens": 266
+    },
+    "role": "assistant",
+    "generationId": "gen-1751766390-xzUMthq0Q2WCFMkKQB5k"
+  }
+]

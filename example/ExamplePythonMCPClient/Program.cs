@@ -14,7 +14,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
 public static class Program
 {
-    public static async Task Main()
+    public static async Task MainAnthropic()
     {
         // Load environment variables from .env file
         LoadEnvironmentVariables();
@@ -195,6 +195,176 @@ data can be used and few insights based on this data.";
 
         await Task.WhenAll(
           pythonMcpClients.Select(client => client.DisposeAsync().AsTask()));
+
+        Console.WriteLine("\nPress any key to exit...");
+        Console.ReadLine();
+    }
+
+    public static async Task Main()
+    {
+        // Load environment variables from .env file
+        LoadEnvironmentVariables();
+
+        string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
+        string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
+        string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
+        string PROMPTS_PATH = Path.Combine(
+            GetWorkspaceRootPath(),
+            "example",
+            "ExamplePythonMCPClient",
+            "prompts.yaml");
+
+        Console.WriteLine("Example Python MCP Client Demo - DeepSeek R1 Reasoning");
+
+        // === MCP client setup (identical to Main) ===
+        var pythonTransport = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "python-mcp",
+            Command = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
+            Arguments = [
+                "--image",
+                "pyexec:latest",
+                "--code-dir",
+                GetWorkspaceRootPath() + "/.code_workspace"
+            ]
+        });
+
+        var thinkingTransport = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "thinking",
+            Command = "npx",
+            Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+        });
+
+        var memoryTransport = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "memory",
+            Command = "npx",
+            Arguments = ["-y", "@modelcontextprotocol/server-memory"]
+        });
+
+        var transports = new[] { pythonTransport, thinkingTransport, memoryTransport };
+        var clientIds = new[] { "python-mcp", "thinking", "memory" };
+
+        // var pythonMcpClients = await Task.WhenAll(transports.Select(transport => McpClientFactory.CreateAsync(transport)));
+
+        try
+        {
+            // var tools = await Task.WhenAll(pythonMcpClients.Select(client => client.ListToolsAsync().AsTask()));
+            // foreach (var tool in tools.SelectMany(t => t))
+            // {
+            //     Console.WriteLine($"- {tool.Name}: {tool.Description}");
+            // }
+
+            // === LLM agent setup ===
+            var kvStore = new SqliteKvStore(KV_STORE_PATH, CachingMiddleware.S_jsonSerializerOptions);
+            var cachingMiddleware = new CachingMiddleware(kvStore);
+
+            var openClient = new OpenClient(API_KEY, API_URL);
+            var deepSeekAgent = new OpenClientAgent("DeepSeek", openClient) as IStreamingAgent;
+            // deepSeekAgent = deepSeekAgent.WithMiddleware(cachingMiddleware);
+
+            var llmAgent = deepSeekAgent;
+
+            // === Pipeline with MCP middleware ===
+            // var mcpClientDictionary = clientIds.Zip(pythonMcpClients.Zip(tools)).ToDictionary(pair => pair.First, pair => pair.Second.First);
+            var mcpMiddlewareFactory = new McpMiddlewareFactory();
+            var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
+
+            var theogent = llmAgent
+                .WithMiddleware(consolePrinterMiddleware)
+                // .WithMiddleware(await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary))
+                .WithMiddleware(new MessageUpdateJoinerMiddleware());
+
+            // === DeepSeek reasoning specific options ===
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "deepseek/deepseek-r1-0528:free",
+                Temperature = 0f,
+                MaxToken = 4096 * 2,
+                ExtraProperties = new Dictionary<string, object?>
+                {
+                    ["reasoning"] = new Dictionary<string, object?>
+                    {
+                        ["effort"] = "medium",
+                        ["max_tokens"] = 1024
+                    }
+                }.ToImmutableDictionary()
+            };
+
+            Console.WriteLine("Enter a reasoning task to complete:");
+            var task = Console.ReadLine() ?? "Explain the steps to balance a redox reaction.";
+
+            string? previousPlan = null;
+            string? progress = null;
+
+            var promptReader = new PromptReader(PROMPTS_PATH);
+            var dict = new Dictionary<string, object> { ["task"] = task };
+
+            if (previousPlan != null) dict["previous_plan"] = previousPlan;
+            if (progress != null) dict["progress"] = progress;
+
+            var plannerPrompt = promptReader
+                .GetPromptChain("UniAgentLoop")
+                .PromptMessages(dict);
+
+            do
+            {
+                bool contLoop = false;
+                var repliesStream = await theogent.GenerateReplyStreamingAsync(plannerPrompt, options);
+
+                var replyMessages = new List<IMessage>();
+                await foreach (var reply in repliesStream)
+                {
+                    WriteToConsole(reply);
+                    contLoop = contLoop || reply is ToolsCallAggregateMessage;
+
+                    if (reply is not UsageMessage)
+                    {
+                        replyMessages.Add(reply);
+                    }
+                }
+
+                if (replyMessages.Count > 1)
+                {
+                    plannerPrompt.Add(
+                        new CompositeMessage
+                        {
+                            FromAgent = "UniAgentLoop",
+                            GenerationId = replyMessages[0].GenerationId,
+                            Role = Role.Assistant,
+                            Messages = replyMessages.ToImmutableList(),
+                        });
+                }
+                else if (replyMessages.Count == 1)
+                {
+                    plannerPrompt.Add(replyMessages[0]);
+                }
+
+                if (!contLoop)
+                {
+                    Console.WriteLine("What's Next (q/quit to quit)?");
+                    var x = Console.ReadLine()?.Trim() ?? "";
+
+                    if (x.Equals("quit", StringComparison.OrdinalIgnoreCase) || x.Equals("q", StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+
+                    plannerPrompt.Add(new TextMessage { Text = x, Role = Role.User });
+                }
+            }
+            while (true);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"\nError: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+        }
+        finally
+        {
+            // await Task.WhenAll(pythonMcpClients.Select(client => client.DisposeAsync().AsTask()));
+        }
 
         Console.WriteLine("\nPress any key to exit...");
         Console.ReadLine();

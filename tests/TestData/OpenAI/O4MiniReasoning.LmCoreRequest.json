@@ -1,0 +1,18 @@
+{
+  "messages": [
+    {
+      "$type": "text",
+      "text": "Explain why the sky appears blue. Provide your chain-of-thought.",
+      "role": "user",
+      "isThinking": false
+    }
+  ],
+  "options": {
+    "model": "o4-mini",
+    "temperature": 0,
+    "reasoning": {
+      "effort": "medium",
+      "max_tokens": 512
+    }
+  }
+}

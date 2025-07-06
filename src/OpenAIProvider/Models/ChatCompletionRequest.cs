@@ -5,6 +5,8 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using System.Linq;
+using System.Collections.Generic;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -108,7 +110,8 @@ public record ChatCompletionRequest
         GenerateReplyOptions? options,
         string? model = null)
     {
-        var chatMessages = messages.SelectMany(m => FromMessage(m)).ToList();
+        // Translate with reasoning merge logic
+        var chatMessages = MergeReasoningIntoAssistant(messages).ToList();
         if (options != null)
         {
             return new ChatCompletionRequest(
@@ -191,14 +194,27 @@ public record ChatCompletionRequest
                 return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
-                return [new ChatMessage {
-                    Role = ChatMessage.ToRoleEnum(textMessage.Role),
-                    Content = textMessage.GetText() != null
-                        ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
-                        : null
-                }];
+                {
+                    var cm = new ChatMessage {
+                        Role = ChatMessage.ToRoleEnum(textMessage.Role),
+                        Content = textMessage.GetText() != null
+                            ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
+                            : null
+                    };
+
+                    if (textMessage.Metadata != null && textMessage.Metadata.TryGetValue("reasoning", out var rVal) && rVal is string rStr)
+                    {
+                        cm.Reasoning = rStr;
+                    }
+                    else if (textMessage.Metadata != null && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal) && dVal is List<ChatMessage.ReasoningDetail> details)
+                    {
+                        cm.ReasoningDetails = details;
+                    }
+
+                    return [cm];
+                }
             case ICanGetToolCalls toolCallMessage:
-                return [new ChatMessage {
+                var toolChat = new ChatMessage {
                     Role = RoleEnum.Assistant,
                     ToolCalls = toolCallMessage.GetToolCalls()!.Select(tc =>
                         new FunctionContent(
@@ -210,11 +226,108 @@ public record ChatCompletionRequest
                                 Index = tc.Index
                             }
                         ).ToList()
-                }];
+                };
+
+                if (toolCallMessage.Metadata != null && toolCallMessage.Metadata.TryGetValue("reasoning", out var tr) && tr is string rs)
+                {
+                    toolChat.Reasoning = rs;
+                }
+                else if (toolCallMessage.Metadata != null && toolCallMessage.Metadata.TryGetValue("reasoning_details", out var rd) && rd is List<ChatMessage.ReasoningDetail> list)
+                {
+                    toolChat.ReasoningDetails = list;
+                }
+
+                return [toolChat];
             case UsageMessage _:
                 return [];
             default:
                 throw new ArgumentException("Unsupported message type");
+        }
+    }
+
+    private static IEnumerable<ChatMessage> MergeReasoningIntoAssistant(IEnumerable<IMessage> source)
+    {
+        var reasoningBuffer = new List<ReasoningMessage>();
+
+        foreach (var m in source)
+        {
+            switch (m)
+            {
+                case ReasoningMessage r:
+                    reasoningBuffer.Add(r);
+                    continue;
+                case ReasoningUpdateMessage u:
+                    reasoningBuffer.Add(new ReasoningMessage
+                    {
+                        Role = u.Role,
+                        Reasoning = u.Reasoning,
+                        FromAgent = u.FromAgent,
+                        GenerationId = u.GenerationId,
+                        Visibility = ReasoningVisibility.Plain
+                    });
+                    continue;
+
+                case TextMessage txt:
+                case ToolsCallMessage tc:
+                case ToolsCallAggregateMessage agg:
+                    {
+                        var produced = FromMessage(m).ToList();
+                        foreach (var ch in produced)
+                        {
+                            if (reasoningBuffer.Count > 0)
+                            {
+                                // Prefer encrypted reasoning blocks. If any encrypted messages exist, drop plain ones.
+                                List<ReasoningMessage> selected;
+                                if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted))
+                                {
+                                    selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted).ToList();
+                                }
+                                else if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary))
+                                {
+                                    selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary).ToList();
+                                }
+                                else
+                                {
+                                    selected = reasoningBuffer.ToList();
+                                }
+
+                                if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)
+                                {
+                                    // Single plain-text reasoning ⇒ emit "reasoning" field
+                                    ch.Reasoning = selected[0].Reasoning;
+                                }
+                                else
+                                {
+                                    // Multiple or encrypted ⇒ use reasoning_details array
+                                    ch.ReasoningDetails = selected.Select(p => new ChatMessage.ReasoningDetail
+                                    {
+                                        Type = p.Visibility == ReasoningVisibility.Encrypted
+                                                ? "reasoning.encrypted"
+                                                : p.Visibility == ReasoningVisibility.Summary
+                                                    ? "reasoning.summary"
+                                                    : "reasoning",
+                                        Data = p.Reasoning
+                                    }).ToList();
+                                }
+                                reasoningBuffer.Clear();
+                            }
+                            yield return ch;
+                        }
+                        break;
+                    }
+
+                default:
+                    // For other message types (system/user/tool etc.) just forward conversion without merging
+                    if (m is TextUpdateMessage || m is ToolsCallUpdateMessage || m is ReasoningUpdateMessage)
+                    {
+                        // never send update messages in ChatCompletionRequest
+                        continue;
+                    }
+
+                    foreach (var ch in FromMessage(m))
+                        yield return ch;
+                    break;
+            }
         }
     }
 
@@ -246,7 +359,19 @@ public record ChatCompletionRequest
         {
             foreach (var kvp in options.ExtraProperties)
             {
-                parameters[kvp.Key] = JsonValue.Create(kvp.Value);
+                if (kvp.Value is null)
+                {
+                    parameters[kvp.Key] = null;
+                }
+                else if (kvp.Value is JsonNode node)
+                {
+                    parameters[kvp.Key] = node;
+                }
+                else
+                {
+                    // Use JsonSerializer to convert arbitrary objects (including dictionaries/arrays) into JsonNode
+                    parameters[kvp.Key] = System.Text.Json.JsonSerializer.SerializeToNode(kvp.Value);
+                }
             }
         }
 

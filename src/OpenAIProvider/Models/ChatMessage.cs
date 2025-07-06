@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -30,6 +31,34 @@ public record ChatMessage
 
     [JsonPropertyName("content")]
     public Union<string, Union<TextContent, ImageContent>[]>? Content { get; set; }
+
+    [JsonPropertyName("reasoning")]
+    public string? Reasoning { get; set; }
+
+    // Some providers (e.g., OpenAI o-series) return a duplicate field "reasoning_content"
+    // that mirrors "reasoning". We need to *read* it during deserialization but must **not**
+    // emit it when serializing outbound requests (it would duplicate `reasoning`).
+    [JsonPropertyName("reasoning_content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? ReasoningContent
+    {
+        // Write-only for deserialization; getter intentionally returns null so the
+        // serializer skips the property.
+        get => null;
+        set => Reasoning = value;
+    }
+
+    // Some providers (Claude, OpenAI o-series) return encrypted or structured reasoning inside an array.
+    // We model the minimal shape we need: a `type` discriminator and `data` payload.
+    [JsonPropertyName("reasoning_details")]
+    public List<ReasoningDetail>? ReasoningDetails { get; set; }
+
+    public record ReasoningDetail
+    {
+        [JsonPropertyName("type")] public string? Type { get; set; }
+        [JsonPropertyName("data")] public string? Data { get; set; }
+        // Some providers (OpenAI o-series) put summary text under a "summary" field instead of "data".
+        [JsonPropertyName("summary")] public string? Summary { get; set; }
+    }
 
     private IEnumerable<IMessage> ToMessages(
         string? name,
@@ -75,6 +104,49 @@ public record ChatMessage
                     GenerationId = Id
                 };
             }
+        }
+
+        // Reasoning handling – emit all reasoning blocks, but prioritize reasoning_details visibility when text matches.
+        var processedReasoningTexts = new HashSet<string>(StringComparer.Ordinal);
+
+        // First, process reasoning_details to capture proper visibility
+        if (ReasoningDetails?.Count > 0)
+        {
+            foreach (var detail in ReasoningDetails.Where(d => d.Type != null && d.Type.StartsWith("reasoning", StringComparison.OrdinalIgnoreCase)))
+            {
+                var detailText = detail.Data ?? detail.Summary;
+                if (string.IsNullOrEmpty(detailText)) continue;
+
+                var visibility = detail.Type!.EndsWith("encrypted", StringComparison.OrdinalIgnoreCase)
+                    ? AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Encrypted
+                    : detail.Type.EndsWith("summary", StringComparison.OrdinalIgnoreCase)
+                        ? AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Summary
+                        : AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Plain;
+
+                yield return new AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningMessage
+                {
+                    Role = ToRole(role!.Value),
+                    Reasoning = detailText!,
+                    FromAgent = name,
+                    GenerationId = Id,
+                    Visibility = visibility
+                };
+
+                processedReasoningTexts.Add(detailText);
+            }
+        }
+
+        // Then, emit top-level reasoning only if it wasn't already processed with proper visibility
+        if (!string.IsNullOrEmpty(Reasoning) && !processedReasoningTexts.Contains(Reasoning))
+        {
+            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningMessage
+            {
+                Role = ToRole(role!.Value),
+                Reasoning = Reasoning!,
+                FromAgent = name,
+                GenerationId = Id,
+                Visibility = AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Plain
+            };
         }
 
         if (Content == null)

@@ -1,0 +1,88 @@
+---
+description: When writing unit tests requiring LLM calls.
+alwaysApply: false
+---
+# Hybrid Real/Mock Data Unit‐Testing Guideline
+
+_Why_: when we depend on a 3rd-party LLM endpoint we want strong coverage of our **translation layer** without hammering the live service on every CI run.  We therefore combine one **real, captured** request/response pair with deterministic **replay** assertions.
+
+This document explains the pattern already used for function-calling tests and now extended to **reasoning** payloads.
+
+---
+
+## 1. Terminology
+
+| Term                | Meaning                                                     |
+|---------------------|-------------------------------------------------------------|
+| *Live round-trip*   | One manual call to the real provider that we freeze to disk |
+| *Replay run*        | Regular `dotnet test` that deserialises the JSON artefacts  |
+| *Gold-file*         | The canonical JSON file stored under `tests/TestData/…`     |
+
+---
+
+## 2. Directory layout
+
+```
+ tests/
+   TestData/
+     OpenAI/              # provider-specific
+       MyCase.LmCoreRequest.json  # frozen request (user msgs + options)
+       MyCase.FinalResponse.json  # frozen **LmCore** response after translation
+     Anthropic/
+     Common/
+```
+
+*Never* store the raw vendor JSON here – those go under `tests/TestFiles/` so we can exercise multiple translation scenarios without polluting the canonical data.
+
+---
+
+## 3. `ProviderTestDataManager`
+
+Helper that hides path logic & `JsonSerializerOptions` so tests don’t repeat boilerplate.  API:
+
+* `SaveLmCoreRequest()` / `LoadLmCoreRequest()`
+* `SaveFinalResponse()` / `LoadFinalResponse()`
+* `GetTestCaseNames()` – discovery for `[Theory]` data-driven suites
+
+Json options mirror the provider naming policies (camelCase) but also register our custom converters (`UnionJsonConverter`, shadow-property converter, etc.).
+
+---
+
+## 4. Writing a new hybrid test
+
+1. **Call the real provider once** (manually or via a script) and dump the raw JSON under `tests/TestFiles/`.
+2. In the unit-test translate that JSON → `IMessage[]` via the provider factory/parsers.
+3. **Save** the request and translated response **only if** the gold-files don’t exist:
+
+```csharp
+var mgr = new ProviderTestDataManager();
+if (!File.Exists(mgr.GetTestDataPath(name, ProviderType.OpenAI, DataType.LmCoreRequest)))
+    mgr.SaveLmCoreRequest(name, ProviderType.OpenAI, messages, options);
+
+if (mgr.LoadFinalResponse(name, ProviderType.OpenAI) is null)
+    mgr.SaveFinalResponse(name, ProviderType.OpenAI, translatedMsgs);
+```
+
+4. On every run after that we simply `Load*` and assert invariants (order, message types, important content).
+
+## 5. Streaming / delta tests
+
+For streaming APIs we feed the sequence of provider deltas into the corresponding *builder* (`TextMessageBuilder`, `ReasoningMessageBuilder`, etc.) and assert the final built message equals the stored gold-file.
+
+---
+
+## 6. Gotchas
+
+* Keep provider-specific IDs deterministic (e.g. strip UUIDs if not relevant) before serialising.
+* Be mindful of fields that providers may change (timestamps); exclude them from equality assertions or store only the stable subset.
+* If the translation logic legitimately changes, delete the old gold-files and commit the updated versions along with the refactor.
+
+---
+
+## 7. Updating existing cases
+
+Run the test once with `DELETE_OLD_GOLD=1 dotnet test`; the helper recognises the env-var and overwrites existing files.  CI blocks such changes unless the new JSON is committed.
+
+---
+
+By following this approach we achieve rapid, deterministic CI while still grounding our converters in **real** provider payloads. 
