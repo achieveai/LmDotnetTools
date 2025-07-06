@@ -1,0 +1,5734 @@
+{
+  "Interactions": [
+    {
+      "SerializedRequest": {
+        "model": "o4-mini",
+        "temperature": 0,
+        "max_tokens": 4096,
+        "stream": true,
+        "n": 1,
+        "stop": [],
+        "messages": [
+          {
+            "role": "user",
+            "index": 0,
+            "content": "Which number is larger \u2013 9.11 or 9.9? Explain your reasoning."
+          }
+        ]
+      },
+      "SerializedResponseFragments": [
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "**Compar",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "**Compar"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "ing",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "ing"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " numbers",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " numbers"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " effectively",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " effectively"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "**\n\nThe",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "**\n\nThe"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " user",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " user"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " wants",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " wants"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " to",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " to"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " know",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " know"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " which",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " which"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " number",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " number"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " larger",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " larger"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ":",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": ":"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "11",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "11"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " or",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " or"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " I",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " I"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "\u2019ll",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "\u2019ll"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " compare",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " compare"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " them",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " them"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ",",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": ","
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " starting",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " starting"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " with",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " with"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " the",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " the"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " integer",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " integer"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " part",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " part"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " Both",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " Both"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " have",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " have"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ",",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": ","
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " so",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " so"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " I",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " I"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " look",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " look"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " at",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " at"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " the",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " the"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " decimal",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " decimal"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " parts",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " parts"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ":",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": ":"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " .",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " ."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "11",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "11"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " versus",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " versus"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " .",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " ."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " Since",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " Since"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " .",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " ."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 0",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 0"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " and",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " and"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " .",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " ."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "11",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "11"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 0",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 0"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "11",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "11"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ",",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": ","
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " it",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " it"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "\u2019s",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "\u2019s"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " clear",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " clear"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " that",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " that"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 0",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 0"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " greater",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " greater"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " than",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " than"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 0",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 0"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "11",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "11"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " Thus",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " Thus"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ",",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": ","
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " larger",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " larger"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " I",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " I"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " could",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " could"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " rewrite",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " rewrite"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " as",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " as"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "90",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "90"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " and",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " and"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " show",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " show"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " that",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " that"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 0",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 0"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "90",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "90"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " still",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " still"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " greater",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " greater"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " than",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " than"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 0",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 0"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "11",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "11"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " So",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " So"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " the",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " the"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " final",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " final"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " answer",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " answer"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " that",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " that"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " 9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " 9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": "9",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "9"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " is",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " is"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": " larger",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": " larger"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": ".",
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.summary",
+                    "summary": "."
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "",
+                "reasoning": null,
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.encrypted",
+                    "data": "gAAAAABoag8a43GuD_cmbtZiri8-FjVzwGuMC3M6NR4lmteav31eEdBIbojUE--k5Yn7uRZJ5XrqLR7sQKi37Yl6Ns93bIEdC2Y2lsEhx6GmRlwMjjKObKkljkFgs5yAjhH8A_f-QC6bZEIDb8dhPh7U3Jtl8JuUscrF7XwCsEPWFU0x0-e9yjXPebGmxkdbI0v6-5gsy9S6o7_pWIkmvSjXIbNmhogFMfz5Jll5tV_8tyqYb8gfEhV1MChl4tQGn0wGJqtcKPT4sHb98GFwlEQaRqMYAPBq2oC2c-HcYcN7i8pq1YxpJu9H1bfJ0hdWAncLDnCMQk4Hlk-Pu742SU1IVXLgyFfyOIN_L9or9X9XcBNveGqeteiU26HoQ-dIwoRk8b9Pt2yHF7gMnvcvLcRhUpuY73A97qdH_3RYaIrZBL32mQBUTImLF7ueR1owQKHHcjnHkGUX__i2M09gT6GmbB3gFSZcD8bpAQnLvlCQKXLLZ3h9XYKTy6b8Oves9owI5-gqc1zCn5chZyyuFvl6c9qfLN46lrZc2TlnKNpLB7IwWKZ6pLo3yvgVbHzEJ0DUZlzvN6EjwK3Bqsv5CdSI2mdal63BLY7-kJdGjt_oGw3yIDgqsKVFPrIIFTczT6Xnp8iTCxzyiQRDjh498foTOPxDpoIs12IUIds_7Sg-0xRjuTgBmsfoPZoBxMWsAcID5tY0-1TzRuIrMjV8RtgwTdFfiwkZfSJxFE7MEazq3PkyiM-19gOh2Bz89H7Wbi64_Tp3wmdaAn9Tr7dbu_RHyLJVs8QaByQp5gHeZKujf3tfuqUq7tWJUP7_uaeULe4RfuInCvdGibmkUMFmhS8X2lgbZDmZoWbYKUdL97XOlIrh9nDG9GMNyq5uV2LjlAngbuxFKerE3ZPuLv8y1kqM9CP1h-hzQHzQJkyncVfIWKuAfhT-hCGGMOEl3s51BOT-GjU6e6_Zta3Ua0zandlJUjc6Rirc2ryJyR_GJlX4l7QsuXOBjkjqGw0XvJl1-1FI8PNGpTG41EHpW-lrdiPnttIAFzBNwXjvElH1xi7u9HsUxTDtVo-gc2RDxvFJ3pBpL_wqOJsMN5B5yRep2-MP2ldZQfEwhExyd1VCbb9Ybr0BNoZqOoIkG0uSNkkuHMRfn15zwYPrA-V5gBxpPa7vSFNaSZzqh7t48isdFBBHFoyEinkbPJxjcM7rG-75aJsJ-Jp3KaXxYBSwresDYpzkUxrENMgix24WklyelVXSy-4DI9zMmKP8ourQ2YLe-yZ0OncSYubyxluwY08bZVqzsn9Fk4unwnQyFa8gW_hfHdE_VXzhDJuJvfggnGCpZb89zmSrRQZ4hSphwUfi0rdmt4SpVmgmo4vqG5kiiSlMId5GtMm4ZU7G-3lslT2iyuU9oBBEo1Ztj9-s3dvtvRxvdupSJfQojsVFWS7NC6vd0blhAcjFN7F3Nw7WMDgMqsMes_u0epG7DJzIKL8lxKagDjo1XCF25nC1orKPGGPn6BgKY9Ho12x3H0iLq7hvk0UtuWQ0XBr1OEOsOrSC85RELrjFps9P3J4bg3-AmyJMBoVubmPBL4dbD04KRF3v6IjqUbJwZJAE2UpmKlVzr6MPB34q5K-Dubdw_xwN_lHUxP696IhlRtS3KOXZrGo5VFYiY3skWJLntrQu96pE8wYU-27nCASDnemulHKNuBmiXrQrkivT9Nz6vU-HrP1c6Q4rMfHTF0_aJW_Vhj6fZhhhSxA33aSw4EJ4rBwuZLo1vVWqSYiy6e6GGYAHi-MHNxh9o4JbGFQieU-REZzvR8pfbnWki0uBsTthEA9lwS4T9ES1tByaGGY=",
+                    "id": "rs_686a0f162c188190a9e6d0e9d7b8e587",
+                    "provider": "openai"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " is"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " the"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " larger"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " number"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  \n\n"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "Here"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "\u2019s"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " why"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ":"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  \n"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "1"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " Both"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " numbers"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " have"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " the"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " same"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " whole"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "-"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "number"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " part"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ","
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  \n"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "2"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " Look"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " at"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " the"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " decimal"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " parts"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ":"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  \n"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " -"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "11"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " has"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " a"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " decimal"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " part"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " of"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "0"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "11"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " ("
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "ele"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "ven"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " hundred"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "ths"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ")"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  \n"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " -"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " has"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " a"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " decimal"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " part"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " of"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "0"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " ("
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "nine"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " tent"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "hs"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ")"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  \n"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "3"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " Since"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "0"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " ="
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "0"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "90"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " is"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " greater"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " than"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "0"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "11"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ","
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " adding"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " it"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " to"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " gives"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " a"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " bigger"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " total"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "  \n\n"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "Therefore"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ","
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " \u003E"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": " "
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "9"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "11"
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": "."
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": "stop",
+              "native_finish_reason": "stop",
+              "logprobs": null
+            }
+          ]
+        },
+        {
+          "id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+          "provider": "OpenAI",
+          "model": "openai/o4-mini",
+          "object": "chat.completion.chunk",
+          "created": 1751781141,
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": null,
+              "native_finish_reason": null,
+              "logprobs": null
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 25,
+            "completion_tokens": 388,
+            "total_tokens": 413
+          }
+        }
+      ],
+      "IsStreaming": true,
+      "RecordedAt": "2025-07-06T05:52:27.0373435Z",
+      "Provider": "OpenAI"
+    }
+  ]
+}

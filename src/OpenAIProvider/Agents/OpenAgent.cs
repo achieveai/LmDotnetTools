@@ -108,11 +108,11 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                     {
                         Content = new(string.Empty)
                     },
-                Usage = new OpenUsage
+                Usage = item.Usage == null ? null : new OpenUsage
                 {
                     ModelId = item.Model,
-                    PromptTokens = item.Usage?.PromptTokens ?? 0,
-                    CompletionTokens = item.Usage?.CompletionTokens ?? 0,
+                    PromptTokens = item.Usage.PromptTokens,
+                    CompletionTokens = item.Usage.CompletionTokens,
                 }
             };
 
