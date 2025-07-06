@@ -20,6 +20,10 @@ public record Usage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int TotalTokens { get; init; }
 
+    [JsonPropertyName("total_cost")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public double? TotalCost { get; init; }
+
     [JsonPropertyName("completion_token_details")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CompletionTokenDetails? CompletionTokenDetails { get; init; }
