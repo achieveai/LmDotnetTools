@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -36,18 +37,25 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             cancellationToken)!;
 
         double? totalCost = null;
-        if (response.Usage != null
-            && response.Usage.ExtraProperties != null
-            && response.Usage.ExtraProperties.ContainsKey("estimated_cost"))
+        Usage? coreUsage = null;
+        
+        if (response.Usage != null)
         {
-            totalCost = response.Usage.ExtraProperties["estimated_cost"] switch
+            // Convert to core usage for ExtraProperties operations
+            coreUsage = response.Usage.ToCoreUsage();
+            
+            if (coreUsage.ExtraProperties != null
+                && coreUsage.ExtraProperties.ContainsKey("estimated_cost"))
             {
-                JsonElement element => element.GetDouble(),
-                double value => value,
-                _ => null
-            };
+                totalCost = coreUsage.ExtraProperties["estimated_cost"] switch
+                {
+                    JsonElement element => element.GetDouble(),
+                    double value => value,
+                    _ => null
+                };
 
-            response.Usage = response.Usage.SetExtraProperty("estimated_cost", totalCost);
+                coreUsage = coreUsage.SetExtraProperty("estimated_cost", totalCost);
+            }
         }
 
         var openMessage = new OpenMessage

@@ -40,8 +40,8 @@ public class ChatCompletionResponse
     public List<Choice>? Choices { get; set; }
 
     /// <summary>
-    /// Gets or Sets Usage
+    /// Gets or Sets Usage - Provider-specific usage that supports both OpenAI and OpenRouter formats
     /// </summary>
     [JsonPropertyName("usage")]
-    public Usage? Usage { get; set; }
+    public OpenAIProviderUsage? Usage { get; set; }
 }

@@ -24,9 +24,23 @@ public record Usage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public double? TotalCost { get; init; }
 
-    [JsonPropertyName("completion_token_details")]
+    // OpenAI-style nested token details - generic approach
+    [JsonPropertyName("input_tokens_details")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public CompletionTokenDetails? CompletionTokenDetails { get; init; }
+    public InputTokenDetails? InputTokenDetails { get; init; }
+
+    [JsonPropertyName("output_tokens_details")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public OutputTokenDetails? OutputTokenDetails { get; init; }
+
+    // Unified access properties for convenience
+    [JsonIgnore]
+    public int TotalReasoningTokens => 
+        OutputTokenDetails?.ReasoningTokens ?? 0;
+
+    [JsonIgnore]
+    public int TotalCachedTokens => 
+        InputTokenDetails?.CachedTokens ?? 0;
 
     [JsonIgnore]
     public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
@@ -87,9 +101,22 @@ public record Usage
     }
 }
 
-public record CompletionTokenDetails
+/// <summary>
+/// OpenAI-style input token details structure
+/// </summary>
+public record InputTokenDetails
+{
+    [JsonPropertyName("cached_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int CachedTokens { get; init; }
+}
+
+/// <summary>
+/// OpenAI-style output token details structure
+/// </summary>
+public record OutputTokenDetails
 {
     [JsonPropertyName("reasoning_tokens")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public int ReasoningTokens { get; set; }
+    public int ReasoningTokens { get; init; }
 }
