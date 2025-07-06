@@ -209,6 +209,12 @@ public class OpenClient : BaseHttpService, IOpenClient
 
                 if (res != null)
                 {
+                    // Apply filtering logic to reduce noise in streaming output
+                    if (ShouldSkipStreamingResponse(res))
+                    {
+                        continue;
+                    }
+
                     yield return res;
                 }
             }
@@ -218,6 +224,68 @@ public class OpenClient : BaseHttpService, IOpenClient
             stream?.Dispose();
             response?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Determines whether a streaming response should be skipped to reduce noise.
+    /// </summary>
+    /// <param name="response">The streaming response to evaluate</param>
+    /// <returns>True if the response should be skipped, false otherwise</returns>
+    private static bool ShouldSkipStreamingResponse(ChatCompletionResponse response)
+    {
+        // Skip responses with zero-token usage ONLY if they don't have finish_reason
+        // The final usage message (with non-zero tokens) carries cost information and should be preserved
+        if (response.Usage != null &&
+            response.Usage.PromptTokens == 0 &&
+            response.Usage.CompletionTokens == 0 &&
+            response.Usage.TotalTokens == 0)
+        {
+            // Zero-token usage entries are uninformative and unnecessarily bloat the stream.
+            // Providers often emit dozens or hundreds of these fragments before the real
+            // (non-zero) usage summary arrives.  We therefore drop **all** zero-token usage
+            // deltas regardless of finish_reason to keep the streaming output compact.
+
+            return true;
+        }
+
+        // Skip responses with no useful information: empty content, reasoning, and tool calls.
+        if (response.Choices?.Count > 0)
+        {
+            var delta = response.Choices[0].Delta;
+            if (delta != null)
+            {
+                // Check if content is empty or null
+                var hasContent = false;
+                if (delta.Content != null)
+                {
+                    if (delta.Content.Is<string>())
+                    {
+                        var contentStr = delta.Content.Get<string>();
+                        hasContent = !string.IsNullOrEmpty(contentStr);
+                    }
+                    else
+                    {
+                        // For non-string content (like image arrays), consider it as having content
+                        hasContent = true;
+                    }
+                }
+
+                // Check if reasoning is empty or null
+                var hasReasoning = !string.IsNullOrEmpty(delta.Reasoning) || 
+                                 !string.IsNullOrEmpty(delta.ReasoningContent);
+
+                // Check if there are tool calls present
+                var hasToolCalls = delta.ToolCalls?.Count > 0;
+
+                // Skip if both content and reasoning are empty
+                if (!hasContent && !hasReasoning && !hasToolCalls)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false; // Don't skip this response
     }
 
 

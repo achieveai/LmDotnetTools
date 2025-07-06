@@ -96,9 +96,14 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 ref activeBuilder,
                 ref activeBuilderType);
 
-            // Only emit the message if it's not an update message
-            bool isUpdateMessage = message.GetType().Name.Contains("Update");
-            if (!isUpdateMessage)
+            // Only emit the message if it's not being accumulated by a builder
+            bool isBeingAccumulated = activeBuilder != null && 
+                (message is TextUpdateMessage || 
+                 message is ReasoningUpdateMessage || 
+                 message is ToolsCallUpdateMessage ||
+                 (message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage)));
+            
+            if (!isBeingAccumulated)
             {
                 yield return processedMessage;
             }
@@ -132,6 +137,11 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         else if (message is TextUpdateMessage textUpdate)
         {
             return ProcessTextUpdate(textUpdate, ref activeBuilder, ref activeBuilderType);
+        }
+        // For reasoning update messages
+        else if (message is ReasoningUpdateMessage reasoningUpdate)
+        {
+            return ProcessReasoningUpdate(reasoningUpdate, ref activeBuilder, ref activeBuilderType);
         }
 
         return message;
@@ -202,6 +212,38 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
 
             // Return the current accumulated state
             return builder.Build();
+        }
+    }
+
+    private IMessage ProcessReasoningUpdate(
+        ReasoningUpdateMessage reasoningUpdate,
+        ref IMessageBuilder? activeBuilder,
+        ref Type? activeBuilderType)
+    {
+        Type builderType = typeof(ReasoningMessage);
+
+        if (activeBuilder == null || activeBuilderType != builderType)
+        {
+            // Create a new builder for the first update
+            var builder = new ReasoningMessageBuilder
+            {
+                FromAgent = reasoningUpdate.FromAgent,
+                Role = reasoningUpdate.Role,
+                GenerationId = reasoningUpdate.GenerationId,
+                Visibility = ReasoningVisibility.Plain // Default to Plain for updates
+            };
+            activeBuilder = builder;
+            activeBuilderType = builderType;
+            builder.Add(reasoningUpdate);
+            // Return the original update for the first time
+            return reasoningUpdate;
+        }
+        else
+        {
+            // Add to existing builder
+            var builder = (ReasoningMessageBuilder)activeBuilder;
+            builder.Add(reasoningUpdate);
+            return reasoningUpdate;
         }
     }
 }

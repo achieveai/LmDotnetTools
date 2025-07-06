@@ -161,10 +161,18 @@ public record ChatMessage
                 throw new InvalidOperationException("Content is null");
             }
 
+            var contentText = Content.Get<string>()!;
+            
+            // For streaming messages, skip empty content to reduce noise
+            if (isStreaming && string.IsNullOrEmpty(contentText))
+            {
+                yield break; // Don't emit anything for empty streaming content
+            }
+
             yield return new TextMessage
             {
                 Role = ToRole(role!.Value),
-                Text = Content.Get<string>()!,
+                Text = contentText,
                 FromAgent = name,
                 GenerationId = Id
             };

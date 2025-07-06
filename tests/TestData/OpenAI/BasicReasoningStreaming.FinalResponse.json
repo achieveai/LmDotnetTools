@@ -1,0 +1,8816 @@
+[
+  {
+    "$type": "reasoning",
+    "reasoning": "I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " need",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " to",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " determine",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " number",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " between",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " At",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " first",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " glance",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " might",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " seem",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " because",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " bigger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " in",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " part",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " but",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " know",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u0027s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " not",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " how",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimals",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " work",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " Decimals",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " are",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " based",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " on",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " place",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " value",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " should",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " think",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " about",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " digits",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " after",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " point",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Both",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " numbers",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " have",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " whole",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " number",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " part",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " need",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " to",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " compare",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " parts",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ":",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " same",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " because",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " hundred",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "ths",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " more",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " hundred",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "ths",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Let",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " me",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " write",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " them",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " with",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " same",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " number",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " of",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " places",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " to",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " make",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " it",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " easier",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " has",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " two",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " places",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " has",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " one",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " So",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " can",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " write",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Now",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " comparing",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Since",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " whole",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " number",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " part",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " same",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " (",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "),",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " look",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " at",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " tenth",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " place",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "In",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " tenth",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " digit",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "1",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "In",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " tenth",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " digit",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "1",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Therefore",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " can",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " also",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " think",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " of",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " them",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " fractions",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "911",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "99",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "10",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " same",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "990",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Now",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " comparing",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "911",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "990",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Since",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " denominators",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " are",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " same",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " compare",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " numerators",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ":",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "911",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "990",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "990",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "911",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "990",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "911",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Thus",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "990",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "911",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Yes",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Another",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " way",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ":",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " subtract",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " them",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " minus",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " =",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ?\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " -",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " =",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "79",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " positive",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "If",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " do",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " -",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " =",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " -",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " =",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " -",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "79",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " negative",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " smaller",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "All",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " methods",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " show",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "But",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " recall",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " sometimes",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " people",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " get",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " confused",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " with",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimals",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " like",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " thinking",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " because",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " but",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u0027s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " incorrect",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " because",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " means",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "10",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " less",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "/",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "100",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " eleven",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " hundred",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "ths",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " while",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " nine",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " tenth",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ninety",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " hundred",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "ths",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " yes",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " \u003E",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "So",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " no",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " doubt",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "The",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " question",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " or",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " think",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u0027ve",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " confirmed",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " it",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "But",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " just",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " to",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " be",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " thorough",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " there",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " any",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " trick",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " here",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "?",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " Like",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " repeating",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " or",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " something",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "?",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " But",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " no",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " it",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u0027s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " written",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " terminating",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Similarly",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " terminating",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "So",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " straightforward",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Perhaps",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " in",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " some",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " contexts",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " but",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " think",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " for",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " standard",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " comparison",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " it",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u0027s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " clear",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "So",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "The",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " question",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " says",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " \u0022",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "which",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " number",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " \u2013",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " or",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "?\u0022",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " need",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " to",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " explain",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " reasoning",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "So",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u0027ll",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " say",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ":",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " because",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " when",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " comparing",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " parts",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "To",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " be",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " precise",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ":",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " Since",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " both",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " have",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " same",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " whole",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " number",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " part",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " (",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "),",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " we",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " compare",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " parts",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " can",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " be",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " written",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " comparing",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " to",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "0",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " tenth",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " digit",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "1",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " \u003E",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "Therefore",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " \u003E",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " ",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "I",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " think",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u0027s",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " solid",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".\n",
+    "visibility": 0,
+    "role": "assistant"
+  },
+  {
+    "$type": "text_update",
+    "text": "To",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " determine",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " which",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " number",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " larger",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " between",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " and",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " compare",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " their",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " decimal",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " parts",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " since",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " whole",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " number",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " part",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ")",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " same",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " for",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " both",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " has",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " a",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " decimal",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " part",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " of",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "ele",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "ven",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " hundred",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "ths",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ").\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " has",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " a",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " decimal",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " part",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " of",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "nine",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " tenth",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "s",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "),",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " which",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " equivalent",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " to",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "90",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "nin",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "ety",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " hundred",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "ths",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ")",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " when",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " written",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " with",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " two",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " decimal",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " places",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " for",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " easier",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " comparison",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "Now",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " compare",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "90",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " and",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ":\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "90",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " has",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " a",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " tenth",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "s",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " digit",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " of",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " while",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " has",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " a",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " tenth",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "s",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " digit",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " of",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "1",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " Since",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " greater",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " than",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "1",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "90",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " larger",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " than",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "Therefore",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " larger",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " than",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "**",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "Alternative",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " approach",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " using",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " fractions",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ":",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "**\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "911",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "/",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "100",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "99",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "/",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "10",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "990",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "/",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "100",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "\n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "Compare",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "911",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "/",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "100",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " and",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "990",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "/",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "100",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ":\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " Since",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " denominators",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " are",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " same",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " compare",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " numerators",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ":",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "911",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " and",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "990",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "990",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " \u003E",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "911",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " so",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "990",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "/",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "100",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " \u003E",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "911",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "/",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "100",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " Thus",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " \u003E",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".\n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "**",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "Ver",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "ification",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " by",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " subtraction",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ":",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "**\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " -",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "90",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " -",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "79",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "positive",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " so",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " larger",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ").\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " Alternatively",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " -",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " -",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "90",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " -",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "79",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "negative",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " so",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " smaller",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ").\n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "All",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " methods",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " confirm",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " that",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " larger",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " than",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7",
+    "isUpdate": true,
+    "isThinking": false,
+    "is_streaming": true,
+    "completion_id": "gen-1751781283-3zO3vPZ6jkBV9YsfoKj7"
+  }
+]

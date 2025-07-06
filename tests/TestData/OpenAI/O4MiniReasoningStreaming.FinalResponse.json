@@ -1,0 +1,2006 @@
+[
+  {
+    "$type": "reasoning",
+    "reasoning": "**Compar",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "ing",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " numbers",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " effectively",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "**\n\nThe",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " user",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " wants",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " to",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " know",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " which",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " number",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ":",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " or",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u2019ll",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " compare",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " them",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " starting",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " with",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " integer",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " part",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " Both",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " have",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " so",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " look",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " at",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " decimal",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " parts",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ":",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " .",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " versus",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " .",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " Since",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " .",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 0",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " .",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 0",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " it",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "\u2019s",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " clear",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 0",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 0",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " Thus",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ",",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " I",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " could",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " rewrite",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " as",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " and",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " show",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 0",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "90",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " still",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " greater",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " than",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 0",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "11",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " So",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " the",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " final",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " answer",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " that",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " 9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": "9",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " is",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": " larger",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "reasoning",
+    "reasoning": ".",
+    "visibility": 1,
+    "role": "assistant"
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " larger",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " number",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  \n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "Here",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "\u2019s",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " why",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ":",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  \n",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "1",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " Both",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " numbers",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " have",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " same",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " whole",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "-",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "number",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " part",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  \n",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "2",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " Look",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " at",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " the",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " decimal",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " parts",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ":",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  \n",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " -",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " has",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " a",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " decimal",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " part",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " of",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "ele",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "ven",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " hundred",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "ths",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ")",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  \n",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " -",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " has",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " a",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " decimal",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " part",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " of",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " (",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "nine",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " tent",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "hs",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ")",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  \n",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "3",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " Since",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " =",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "90",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " is",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " greater",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " than",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "0",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " adding",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " it",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " to",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " gives",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " a",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " bigger",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " total",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "  \n\n",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "Therefore",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ",",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " \u003E",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": " ",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "9",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": "11",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  },
+  {
+    "$type": "text_update",
+    "text": ".",
+    "role": "assistant",
+    "generationId": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "isUpdate": true,
+    "isThinking": false,
+    "completion_id": "gen-1751781141-yar7gFkZNodKc4v41urT",
+    "is_streaming": true
+  }
+]

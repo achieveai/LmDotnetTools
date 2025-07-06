@@ -109,8 +109,11 @@ public record OpenMessage
             }
         }
 
-        // Then, if we have usage data, add a dedicated UsageMessage
-        if (Usage != null)
+        // Then, if we have usage data with actual token counts, add a dedicated UsageMessage.
+        // Streaming scenarios often emit an intermediate usage delta with zero tokens; this
+        // is filtered upstream. The final usage update may still have zero tokens for some
+        // providers – in that case we omit the UsageMessage entirely to avoid noise.
+        if (Usage != null && (Usage.PromptTokens > 0 || Usage.CompletionTokens > 0))
         {
             messages.Add(new UsageMessage
             {

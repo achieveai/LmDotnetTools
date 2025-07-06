@@ -1,0 +1,18 @@
+{
+  "messages": [
+    {
+      "$type": "text",
+      "text": "Which number is larger \u2013 9.11 or 9.9? Explain your reasoning.",
+      "role": "user",
+      "isThinking": false
+    }
+  ],
+  "options": {
+    "model": "o4-mini",
+    "temperature": 0,
+    "reasoning": {
+      "effort": "medium",
+      "max_tokens": 512
+    }
+  }
+}

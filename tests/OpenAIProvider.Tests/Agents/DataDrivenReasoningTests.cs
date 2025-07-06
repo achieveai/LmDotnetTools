@@ -63,7 +63,7 @@ public class DataDrivenReasoningTests
     {
         var mgr = new ProviderTestDataManager();
         return mgr.GetTestCaseNames(ProviderType.OpenAI)
-            .Where(name => name.Contains("Reasoning"))
+            .Where(name => name.Contains("Reasoning") && !name.EndsWith("Streaming"))
             .Select(n => new object[] { n });
     }
 
