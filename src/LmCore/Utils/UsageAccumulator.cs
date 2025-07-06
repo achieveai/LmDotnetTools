@@ -143,8 +143,9 @@ public class UsageAccumulator
                 CompletionTokens = completionTokens,
                 // Recalculate total based on prompt and completion
                 TotalTokens = Math.Max(_accumulatedUsage.PromptTokens, coreUsage.PromptTokens) + completionTokens,
-                // Keep completion token details if available
-                CompletionTokenDetails = coreUsage.CompletionTokenDetails ?? _accumulatedUsage.CompletionTokenDetails,
+                // Keep input and output token details if available
+                InputTokenDetails = coreUsage.InputTokenDetails ?? _accumulatedUsage.InputTokenDetails,
+                OutputTokenDetails = coreUsage.OutputTokenDetails ?? _accumulatedUsage.OutputTokenDetails,
                 // Merge extra properties
                 ExtraProperties = MergeExtraProperties(_accumulatedUsage.ExtraProperties, coreUsage.ExtraProperties)
             };

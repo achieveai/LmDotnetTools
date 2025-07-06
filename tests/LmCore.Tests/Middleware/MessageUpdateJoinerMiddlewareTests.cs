@@ -109,12 +109,13 @@ public class MessageUpdateJoinerMiddlewareTests
             PromptTokens = 10,
             CompletionTokens = 10,
             TotalTokens = 20,
-            CompletionTokenDetails = null,
+            OutputTokenDetails = null,
         };
 
         var usageMessage = new UsageMessage
         {
             Usage = usage,
+            FromAgent = "test-agent",
             Role = Role.Assistant
         };
 
