@@ -31,7 +31,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     .Where(f => !functionMap.ContainsKey(f))
                     .ToList();
 
-                if (missingFunctions.Any() || functionMap.Count != functions.Count())
+                // Removing following check ` || functionMap.Count != functions.Count()`
+                if (missingFunctions.Any())
                 {
                     throw new ArgumentException(
                         $"The following functions do not have corresponding entries in the function map: {string.Join(", ", missingFunctions)}",

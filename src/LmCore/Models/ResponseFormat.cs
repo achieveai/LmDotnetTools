@@ -426,7 +426,7 @@ public class JsonSchemaObjectBuilder
         return new JsonSchemaObject
         {
             Type = _type,
-            Properties = _properties.Count > 0 ? _properties : null,
+            Properties = _properties,
             Required = _required.Count > 0 ? _required : null,
             AdditionalProperties = _additionalProperties,
             Description = _description

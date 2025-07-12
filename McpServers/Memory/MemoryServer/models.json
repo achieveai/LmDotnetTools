@@ -1239,7 +1239,7 @@
      ]
    },
    {
-     "id": "deepseek-r1-distill-llama-70b",
+     "id": "deepseek-r1-llama-70b",
      "is_reasoning": true,
      "capabilities": {
        "thinking": {
@@ -1264,10 +1264,10 @@
          "supported_tool_types": ["function"]
        },
        "token_limits": {
-         "max_context_tokens": 65536,
+         "max_context_tokens": 131072,
          "max_output_tokens": 4096,
          "max_reasoning_tokens": 32768,
-         "recommended_max_prompt_tokens": 60000
+         "recommended_max_prompt_tokens": 120000
        },
        "response_formats": {
          "supports_json_mode": true,
@@ -1305,22 +1305,12 @@
          "tags": ["ultra-fast", "reasoning", "distilled"]
        },
        {
-         "name": "DeepSeek",
-         "model_name": "deepseek-r1-distill-llama-70b",
-         "priority": 3,
-         "pricing": {
-           "prompt_per_million": 2.0,
-           "completion_per_million": 2.0
-         },
-         "tags": ["reasoning", "cost-effective", "distilled", "function-calling"]
-       },
-       {
          "name": "OpenRouter",
          "model_name": "deepseek/deepseek-r1-distill-llama-70b",
          "priority": 4,
          "pricing": {
-           "prompt_per_million": 2.2,
-           "completion_per_million": 2.2
+           "prompt_per_million": 0.20,
+           "completion_per_million": 0.60
          },
          "sub_providers": [
            {
@@ -1334,7 +1324,7 @@
            },
            {
              "name": "Together AI",
-             "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+             "model_name": "deepseek-ai/deepseek-r1-distill-llama-70b",
              "priority": 2,
              "pricing": {
                "prompt_per_million": 2.5,
@@ -1786,6 +1776,200 @@
            }
          ],
          "tags": ["free", "cost-effective", "openai-compatible", "nano-model"]
+       }
+     ]
+   },
+   {
+     "id": "Qwen-2.5-72B",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["function-calling", "multilingual", "coding", "mcp", "nano-model"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 140.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "Groq",
+         "model_name": "qwen-2.5-32b-instruct",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 1.2,
+           "completion_per_million": 3.6
+         },
+         "tags": ["ultra-fast", "dense", "multilingual", "coding"]
+       },
+       {
+         "name": "Alibaba Cloud",
+         "model_name": "Qwen-2.5-72B",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 1.2,
+           "completion_per_million": 3.6
+         },
+         "tags": ["dense", "multilingual", "coding", "balanced"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "Qwen/Qwen-2.5-72B",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 1.0,
+           "completion_per_million": 3.0
+         },
+         "tags": ["cost-effective", "reliable", "dense"]
+       },
+       {
+         "name": "OpenRouter",
+         "model_name": "qwen/qwen-2.5-72b-instruct",
+         "priority": 4,
+         "pricing": {
+           "prompt_per_million": 1.32,
+           "completion_per_million": 3.96
+         },
+         "sub_providers": [
+           {
+             "name": "Alibaba Cloud",
+             "model_name": "qwen3-32b",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 1.2,
+               "completion_per_million": 3.6
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "Qwen/Qwen3-32B",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 1.0,
+               "completion_per_million": 3.0
+             }
+           },
+           {
+             "name": "Together AI",
+             "model_name": "Qwen/Qwen3-32B",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 1.35,
+               "completion_per_million": 4.05
+             }
+           },
+           {
+             "name": "Fireworks AI",
+             "model_name": "accounts/fireworks/models/qwen3-32b-instruct",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 1.4,
+               "completion_per_million": 4.2
+             }
+           }
+         ],
+         "tags": ["fallback", "dense", "openai-compatible", "small-model"]
+               }
+      ]
+    },
+   {
+     "id": "deepseek-v3",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "Custom",
+         "supports_budget_tokens": false,
+         "supports_thinking_type": false,
+         "max_thinking_tokens": 32768,
+         "is_built_in": true,
+         "is_exposed": true,
+         "parameter_name": "reasoning_effort"
+       },
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 163840,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 150000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["reasoning", "function-calling", "long-context", "cost-effective"],
+       "performance": {
+         "typical_latency": "00:00:03",
+         "max_latency": "00:00:15",
+         "tokens_per_second": 100.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenRouter",
+         "model_name": "deepseek/deepseek-chat-v3-0324",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.28,
+           "completion_per_million": 0.88
+         },
+         "sub_providers": [
+           {
+             "name": "DeepSeek",
+             "model_name": "deepseek-chat-v3-0324",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.28,
+               "completion_per_million": 0.88
+             }
+           }
+         ],
+         "tags": ["fallback", "reasoning", "openai-compatible"]
+       },
+       {
+         "name": "DeepInfra",
+         "model_name": "deepseek-ai/DeepSeek-V3",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.38,
+           "completion_per_million": 0.89
+         },
+         "tags": ["cost-effective", "reliable"]
        }
      ]
    }

@@ -31,6 +31,7 @@ public record AppConfig
         if (Models != null)
         {
             System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
+            modelId = modelId.Contains('[') ? modelId.Substring(0, modelId.IndexOf("[")) : modelId;
             return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
         }
         
