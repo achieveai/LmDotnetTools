@@ -24,17 +24,24 @@ public static class ServiceCollectionExtensions
         if (options == null)
             throw new ArgumentNullException(nameof(options));
 
-        options.Validate();
+        var validationErrors = options.Validate();
+        if (validationErrors.Count > 0)
+        {
+            throw new ArgumentException($"Invalid cache options: {string.Join(", ", validationErrors)}", nameof(options));
+        }
 
         // Register the options
         services.AddSingleton(options);
 
         // Register the file-based cache store
-        services.AddSingleton<IKvStore>(provider =>
+        services.AddSingleton<FileKvStore>(provider =>
         {
             var cacheOptions = provider.GetRequiredService<LlmCacheOptions>();
             return new FileKvStore(cacheOptions.CacheDirectory);
         });
+        
+        // Register IKvStore as alias to FileKvStore
+        services.AddSingleton<IKvStore>(provider => provider.GetRequiredService<FileKvStore>());
 
         // Register factory for creating caching HttpClients
         services.AddSingleton<ICachingHttpClientFactory, CachingHttpClientFactory>();
@@ -160,8 +167,21 @@ public static class ServiceCollectionExtensions
     public static async Task<CacheStatistics> GetCacheStatisticsAsync(this IServiceCollection services)
     {
         var serviceProvider = services.BuildServiceProvider();
-        var cache = serviceProvider.GetRequiredService<IKvStore>();
-        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
+        var cache = serviceProvider.GetService<IKvStore>();
+        var options = serviceProvider.GetService<LlmCacheOptions>();
+
+        if (cache == null || options == null)
+        {
+            return new CacheStatistics
+            {
+                ItemCount = 0,
+                TotalSizeBytes = 0,
+                CacheDirectory = string.Empty,
+                IsEnabled = false,
+                MaxItems = 0,
+                MaxSizeBytes = 0
+            };
+        }
 
         var fileStore = cache as FileKvStore;
         if (fileStore != null)
@@ -200,7 +220,12 @@ public static class ServiceCollectionExtensions
     public static async Task ClearLlmCacheAsync(this IServiceCollection services)
     {
         var serviceProvider = services.BuildServiceProvider();
-        var cache = serviceProvider.GetRequiredService<IKvStore>();
+        var cache = serviceProvider.GetService<IKvStore>();
+
+        if (cache == null)
+        {
+            return; // No cache configured, nothing to clear
+        }
 
         var fileStore = cache as FileKvStore;
         if (fileStore != null)

@@ -2,6 +2,7 @@ using System.IO;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Extensions;
 using AchieveAi.LmDotnetTools.Misc.Storage;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -62,9 +63,10 @@ public class LlmCacheIntegrationTests
         _serviceProvider = _services.BuildServiceProvider();
 
         // Assert
-        var kvStore = _serviceProvider.GetService<FileKvStore>();
+        var kvStore = _serviceProvider.GetService<IKvStore>();
         Assert.IsNotNull(kvStore);
-        Assert.AreEqual(_testCacheDirectory, kvStore.CacheDirectory);
+        Assert.IsInstanceOfType(kvStore, typeof(FileKvStore));
+        Assert.AreEqual(_testCacheDirectory, ((FileKvStore)kvStore).CacheDirectory);
 
         var registeredOptions = _serviceProvider.GetService<LlmCacheOptions>();
         Assert.IsNotNull(registeredOptions);
@@ -93,9 +95,10 @@ public class LlmCacheIntegrationTests
         _serviceProvider = _services.BuildServiceProvider();
 
         // Assert
-        var kvStore = _serviceProvider.GetService<FileKvStore>();
+        var kvStore = _serviceProvider.GetService<IKvStore>();
         Assert.IsNotNull(kvStore);
-        Assert.AreEqual(_testCacheDirectory, kvStore.CacheDirectory);
+        Assert.IsInstanceOfType(kvStore, typeof(FileKvStore));
+        Assert.AreEqual(_testCacheDirectory, ((FileKvStore)kvStore).CacheDirectory);
 
         // Note: Options would be configured via IOptions<T> pattern in real apps
         // For this test, we're just verifying the services are registered
@@ -197,14 +200,13 @@ public class LlmCacheIntegrationTests
         _serviceProvider = _services.BuildServiceProvider();
 
         // Act
-        var stats = await _serviceProvider.GetCacheStatisticsAsync();
+        var stats = await _services.GetCacheStatisticsAsync();
 
         // Assert
         Assert.IsNotNull(stats);
         Assert.IsTrue(stats.IsEnabled);
         Assert.AreEqual(_testCacheDirectory, stats.CacheDirectory);
-        Assert.AreEqual(0, stats.TotalItems); // No items cached yet
-        Assert.AreEqual(TimeSpan.FromHours(1), stats.ConfiguredExpiration);
+        Assert.AreEqual(0, stats.ItemCount); // No items cached yet
         Assert.AreEqual(500, stats.MaxItems);
         Assert.AreEqual(1024 * 1024 * 10, stats.MaxSizeBytes);
     }
@@ -216,13 +218,13 @@ public class LlmCacheIntegrationTests
         _serviceProvider = _services.BuildServiceProvider();
 
         // Act
-        var stats = await _serviceProvider.GetCacheStatisticsAsync();
+        var stats = await _services.GetCacheStatisticsAsync();
 
         // Assert
         Assert.IsNotNull(stats);
         Assert.IsFalse(stats.IsEnabled);
-        Assert.IsNull(stats.CacheDirectory);
-        Assert.AreEqual(0, stats.TotalItems);
+        Assert.AreEqual(string.Empty, stats.CacheDirectory);
+        Assert.AreEqual(0, stats.ItemCount);
     }
 
     #endregion
@@ -251,7 +253,7 @@ public class LlmCacheIntegrationTests
         Assert.AreEqual(1, initialCount);
 
         // Act
-        await _serviceProvider.ClearLlmCacheAsync();
+        await _services.ClearLlmCacheAsync();
 
         // Assert
         var finalCount = await kvStore.GetCountAsync();
@@ -265,7 +267,7 @@ public class LlmCacheIntegrationTests
         _serviceProvider = _services.BuildServiceProvider();
 
         // Act & Assert - should not throw
-        await _serviceProvider.ClearLlmCacheAsync();
+        await _services.ClearLlmCacheAsync();
     }
 
     #endregion
