@@ -1,331 +1,335 @@
-# LmDotNet File-Based LLM Caching System
+# LmDotNet Misc Tools
 
-A high-performance, file-based caching solution for LLM requests in the LmDotNet ecosystem. This system provides transparent caching of LLM API requests and responses using configurable file storage with SHA256-based naming.
+This package provides miscellaneous utilities for LmDotNet, including **HTTP-level caching** for LLM requests.
 
 ## Features
 
-- **File-based storage**: Uses individual files with SHA256 names for cache entries
-- **Configurable directory**: Store cache files in any directory you specify
-- **Transparent caching**: Drop-in replacement for IOpenClient with automatic cache management
-- **Cache expiration**: Configurable TTL with automatic cleanup
-- **Size limits**: Configure maximum cache size and item count
-- **Dependency injection**: Full DI container integration with multiple configuration options
-- **Environment configuration**: Configure via environment variables
-- **Streaming support**: Caches both regular and streaming LLM responses
-- **Comprehensive testing**: 53+ unit and integration tests
+- **HTTP-Level Caching**: Cache HTTP requests and responses at the HttpClient level
+- **SHA256-Based Cache Keys**: Generate cache keys from URL + POST body content
+- **File-Based Storage**: Store cached responses as individual files with SHA256 filenames
+- **Configurable Options**: Extensive configuration via code, configuration files, or environment variables
+- **Provider-Agnostic**: Works with any HTTP-based LLM provider (OpenAI, Anthropic, etc.)
+- **Thread-Safe**: Concurrent cache access with proper synchronization
+- **Expiration Support**: Automatic cache expiration with configurable timeouts
 
 ## Quick Start
 
-### 1. Basic Setup with Dependency Injection
+### Basic Usage
 
 ```csharp
 using AchieveAi.LmDotnetTools.Misc.Extensions;
+using AchieveAi.LmDotnetTools.Misc.Http;
 
+// Configure services
 var services = new ServiceCollection();
+services.AddLlmFileCacheFromEnvironment(); // Uses environment variables
+// OR
+services.AddLlmFileCache(options => {
+    options.CacheDirectory = @"C:\MyApp\Cache";
+    options.CacheExpiration = TimeSpan.FromHours(24);
+});
 
-// Add file-based LLM caching with default settings
+// Create caching HttpClient for OpenAI
+var httpClient = services.CreateCachingOpenAIClient(
+    apiKey: "your-api-key",
+    baseUrl: "https://api.openai.com/v1");
+
+// Use the HttpClient with any OpenAI provider
+var openAiClient = new OpenClient(httpClient, "https://api.openai.com/v1");
+```
+
+### Factory Pattern
+
+```csharp
+// Register the factory
+services.AddLlmFileCache(options => { /* configure */ });
+
+// Use the factory
+var serviceProvider = services.BuildServiceProvider();
+var factory = serviceProvider.GetRequiredService<ICachingHttpClientFactory>();
+
+// Create different clients
+var openAiClient = factory.CreateForOpenAI("api-key", "https://api.openai.com/v1");
+var anthropicClient = factory.CreateForAnthropic("api-key", "https://api.anthropic.com");
+```
+
+### Wrapping Existing HttpClients
+
+```csharp
+// Wrap an existing HttpClient with caching
+var existingClient = new HttpClient();
+var cachedClient = services.WrapWithCache(existingClient);
+```
+
+## Configuration
+
+### Code Configuration
+
+```csharp
 services.AddLlmFileCache(options =>
 {
     options.CacheDirectory = @"C:\MyApp\LlmCache";
     options.EnableCaching = true;
     options.CacheExpiration = TimeSpan.FromHours(24);
     options.MaxCacheItems = 10_000;
+    options.MaxCacheSizeBytes = 1_073_741_824; // 1 GB
+    options.CleanupOnStartup = true;
 });
-
-// Add and wrap your OpenAI client with caching
-services.AddCachedOpenAIClient("your-openai-api-key");
-
-var serviceProvider = services.BuildServiceProvider();
-var client = serviceProvider.GetRequiredService<IOpenClient>();
-
-// Use the client normally - caching is transparent
-var response = await client.CreateChatCompletionsAsync(request);
 ```
 
-### 2. Environment Variable Configuration
-
-Set environment variables for configuration:
-
-```bash
-# Windows
-set LLM_CACHE_DIRECTORY=C:\MyApp\Cache
-set LLM_CACHE_ENABLED=true
-set LLM_CACHE_EXPIRATION_HOURS=24
-set LLM_CACHE_MAX_ITEMS=5000
-set LLM_CACHE_MAX_SIZE_MB=100
-
-# Linux/Mac
-export LLM_CACHE_DIRECTORY=/var/cache/myapp/llm
-export LLM_CACHE_ENABLED=true
-export LLM_CACHE_EXPIRATION_HOURS=24
-export LLM_CACHE_MAX_ITEMS=5000
-export LLM_CACHE_MAX_SIZE_MB=100
-```
-
-Then register services:
-
-```csharp
-services.AddLlmFileCacheFromEnvironment();
-```
-
-### 3. Configuration from appsettings.json
-
-Add to your `appsettings.json`:
+### Configuration File (appsettings.json)
 
 ```json
 {
   "LlmCache": {
-    "CacheDirectory": "C:\\MyApp\\Cache",
+    "CacheDirectory": "C:\\MyApp\\LlmCache",
     "EnableCaching": true,
-    "CacheExpiration": "1.00:00:00",
+    "CacheExpiration": "24:00:00",
     "MaxCacheItems": 10000,
-    "MaxCacheSizeBytes": 104857600,
+    "MaxCacheSizeBytes": 1073741824,
     "CleanupOnStartup": true
   }
 }
 ```
 
-Register services:
-
 ```csharp
-services.AddLlmFileCache(configuration);
+services.AddLlmFileCache(configuration, "LlmCache");
 ```
-
-## Configuration Options
-
-### LlmCacheOptions Properties
-
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `CacheDirectory` | `string` | `%LocalAppData%\AchieveAI\LmDotNet\Cache` | Directory where cache files are stored |
-| `EnableCaching` | `bool` | `true` | Enable/disable caching |
-| `CacheExpiration` | `TimeSpan?` | `24 hours` | Cache entry expiration time (null = never expires) |
-| `MaxCacheItems` | `int?` | `10,000` | Maximum number of cached items (null = no limit) |
-| `MaxCacheSizeBytes` | `long?` | `1 GB` | Maximum cache size in bytes (null = no limit) |
-| `CleanupOnStartup` | `bool` | `true` | Clean expired entries on startup |
 
 ### Environment Variables
 
-| Variable | Type | Description |
-|----------|------|-------------|
-| `LLM_CACHE_DIRECTORY` | `string` | Cache directory path |
-| `LLM_CACHE_ENABLED` | `bool` | Enable/disable caching |
-| `LLM_CACHE_EXPIRATION_HOURS` | `double` | Cache expiration in hours |
-| `LLM_CACHE_MAX_ITEMS` | `int` | Maximum cached items |
-| `LLM_CACHE_MAX_SIZE_MB` | `long` | Maximum cache size in MB |
-| `LLM_CACHE_CLEANUP_ON_STARTUP` | `bool` | Cleanup on startup |
-
-## Advanced Usage
-
-### Manual Client Wrapping
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_CACHE_DIRECTORY` | Cache directory path | `%LocalAppData%\AchieveAI\LmDotNet\Cache` |
+| `LLM_CACHE_ENABLED` | Enable/disable caching | `true` |
+| `LLM_CACHE_EXPIRATION_HOURS` | Cache expiration in hours | `24` |
+| `LLM_CACHE_MAX_ITEMS` | Maximum cached items | `10000` |
+| `LLM_CACHE_MAX_SIZE_BYTES` | Maximum cache size in bytes | `1073741824` |
+| `LLM_CACHE_CLEANUP_ON_STARTUP` | Clean up expired items on startup | `true` |
 
 ```csharp
-// Create your own client
-var openAiClient = new OpenClient("your-api-key");
-
-// Wrap with caching
-var kvStore = new FileKvStore(@"C:\MyCache");
-var options = new LlmCacheOptions 
-{ 
-    CacheDirectory = @"C:\MyCache",
-    CacheExpiration = TimeSpan.FromMinutes(30)
-};
-
-var cachedClient = new FileCachingClient(openAiClient, kvStore, options);
-
-// Use normally
-var response = await cachedClient.CreateChatCompletionsAsync(request);
+services.AddLlmFileCacheFromEnvironment();
 ```
 
-### Decorator Pattern
+## How It Works
+
+### HTTP-Level Caching
+
+The caching system works at the HTTP level using a custom `HttpMessageHandler`:
+
+1. **Request Interception**: `CachingHttpMessageHandler` intercepts HTTP requests
+2. **Cache Key Generation**: Creates SHA256 hash from URL + POST body content
+3. **Cache Lookup**: Checks if a cached response exists and is not expired
+4. **Response Caching**: Stores successful HTTP responses for future use
+5. **Transparent Operation**: No changes needed to existing provider code
+
+### Cache Key Generation
 
 ```csharp
-services.AddTransient<IOpenClient, OpenClient>();
-services.AddLlmFileCache(options);
-
-// Decorate existing registration with caching
-services.DecorateOpenClientWithFileCache();
+// Cache key is generated from:
+// - Full URL (including query parameters)
+// - POST body content (JSON request)
+// - Authorization scheme (not the actual token)
+var cacheKey = SHA256(url + postBody + authScheme);
 ```
-
-### Factory Pattern
-
-```csharp
-services.AddLlmFileCache(options);
-services.AddCachedOpenClientFactory();
-
-// Get factory and wrap any client
-var factory = serviceProvider.GetRequiredService<Func<IOpenClient, IOpenClient>>();
-var originalClient = new OpenClient("api-key");
-var cachedClient = factory(originalClient);
-```
-
-## Cache Management
-
-### Statistics
-
-```csharp
-var stats = await serviceProvider.GetCacheStatisticsAsync();
-Console.WriteLine($"Cache enabled: {stats.IsEnabled}");
-Console.WriteLine($"Cached items: {stats.TotalItems}");
-Console.WriteLine($"Cache directory: {stats.CacheDirectory}");
-Console.WriteLine($"Max items: {stats.MaxItems}");
-Console.WriteLine($"Expiration: {stats.ConfiguredExpiration}");
-```
-
-### Clear Cache
-
-```csharp
-// Clear all cached items
-await serviceProvider.ClearLlmCacheAsync();
-```
-
-### Direct Cache Access
-
-```csharp
-var kvStore = serviceProvider.GetRequiredService<FileKvStore>();
-
-// Get cache count
-var count = await kvStore.GetCountAsync();
-
-// Clear cache
-await kvStore.ClearAsync();
-
-// Manual cache operations
-await kvStore.SetAsync("key", "value");
-var value = await kvStore.GetAsync<string>("key");
-```
-
-## Architecture
-
-### Components
-
-1. **FileKvStore**: Core file-based key-value storage with SHA256 naming
-2. **LlmCacheOptions**: Configuration and validation
-3. **FileCachingClient**: IOpenClient wrapper providing transparent caching
-4. **ServiceCollectionExtensions**: DI registration helpers
 
 ### File Storage
 
-- Cache files are stored with SHA256-based names for uniqueness
-- Each request generates a unique cache key based on request content
-- Files are stored as JSON in the configured directory
-- Expired entries are cleaned up automatically (optional)
+- Each cached response is stored as `{SHA256_HASH}.json`
+- Files are stored in the configured cache directory
+- Automatic directory creation and cleanup
+- Thread-safe file operations
 
-### Key Generation
+## Architecture
 
-Cache keys are generated using SHA256 hash of the serialized request:
-
-```csharp
-var requestJson = JsonSerializer.Serialize(request, jsonOptions);
-var hashBytes = SHA256.ComputeHash(Encoding.UTF8.GetBytes(requestJson));
-var cacheKey = Convert.ToBase64String(hashBytes);
 ```
-
-## Performance Considerations
-
-### Benefits
-
-- **Reduced API costs**: Avoid duplicate requests to expensive LLM APIs
-- **Faster responses**: Cached responses return immediately
-- **Offline capability**: Cached responses available when APIs are unavailable
-- **File-based**: No external dependencies, works anywhere
-
-### Best Practices
-
-1. **Set appropriate expiration**: Balance freshness vs. cache hit rate
-2. **Monitor cache size**: Use `MaxCacheSizeBytes` to prevent disk overflow
-3. **Choose cache location**: Use fast storage (SSD) for better performance
-4. **Regular cleanup**: Enable `CleanupOnStartup` for automatic maintenance
-
-### Cache Hit Optimization
-
-- Identical requests (same model, messages, parameters) will hit cache
-- Minor differences in request will result in cache miss
-- Consider normalizing requests before caching for better hit rates
-
-## Testing
-
-The system includes comprehensive tests covering:
-
-- File storage operations (CRUD, cleanup, error handling)
-- Cache configuration and validation
-- Service registration and dependency injection
-- Integration scenarios
-- Environment variable parsing
-- Cache statistics and management
-
-Run tests:
-
-```bash
-dotnet test tests/Misc.Tests/Misc.Tests.csproj
+HttpClient Request
+       ↓
+CachingHttpMessageHandler
+       ↓
+Cache Key Generation (SHA256)
+       ↓
+Cache Lookup (FileKvStore)
+       ↓
+Cache Hit? → Return Cached Response
+       ↓
+Cache Miss → Forward to Real HTTP Handler
+       ↓
+Cache Successful Response
+       ↓
+Return Response to Client
 ```
 
 ## Integration with AchieveAI
 
-When AchieveAI integrates with LmDotNet, you can add caching by:
+When AchieveAI adopts LmDotNet, they can integrate caching in several ways:
 
-1. **During LmDotNet setup**:
+### Option 1: Factory Pattern
+
 ```csharp
-services.AddLlmFileCache(options => {
-    options.CacheDirectory = @"C:\AchieveAI\Cache";
-    options.CacheExpiration = TimeSpan.FromHours(6);
-});
+// In AchieveAI's service registration
+services.AddLlmFileCacheFromEnvironment();
 
-// When registering LmDotNet providers
-services.AddTransient<IOpenClient>(provider => {
-    var client = new OpenClient(apiKey);
-    var factory = provider.GetRequiredService<Func<IOpenClient, IOpenClient>>();
-    return factory(client); // Returns cached version
-});
+// When creating LLM clients
+var factory = serviceProvider.GetRequiredService<ICachingHttpClientFactory>();
+var httpClient = factory.CreateForOpenAI(apiKey, baseUrl);
+var llmClient = new OpenClient(httpClient, baseUrl);
 ```
 
-2. **Decorator pattern**:
-```csharp
-// Register your LmDotNet client normally
-services.AddTransient<IOpenClient, OpenClient>();
+### Option 2: HttpClient Wrapping
 
-// Add caching
-services.AddLlmFileCache(configuration);
-services.DecorateOpenClientWithFileCache();
+```csharp
+// Wrap existing HttpClient creation
+var originalClient = CreateHttpClient(apiKey, baseUrl);
+var cachedClient = services.WrapWithCache(originalClient);
+var llmClient = new OpenClient(cachedClient, baseUrl);
 ```
 
-This ensures all LLM requests go through the caching layer automatically.
+### Option 3: Direct Integration
+
+```csharp
+// Direct use of CachingHttpClientFactory
+var httpClient = CachingHttpClientFactory.CreateForOpenAIWithCache(
+    apiKey, baseUrl, cache, options, timeout, headers, logger);
+```
+
+## Performance Considerations
+
+### Cache Hits
+- **Instant Response**: Cached responses return immediately
+- **No Network Overhead**: Eliminates HTTP round trips
+- **Cost Savings**: Reduces LLM API usage costs
+
+### Cache Misses
+- **Minimal Overhead**: SHA256 hashing is very fast
+- **Async Caching**: Response caching doesn't block the request
+- **Graceful Degradation**: Caching errors don't affect actual requests
+
+### Memory Usage
+- **File-Based Storage**: Minimal memory footprint
+- **Stream Processing**: Large responses handled efficiently
+- **Cleanup**: Automatic expired item removal
+
+## Monitoring and Diagnostics
+
+### Cache Statistics
+
+```csharp
+var stats = await services.GetCacheStatisticsAsync();
+Console.WriteLine($"Cache Items: {stats.ItemCount}");
+Console.WriteLine($"Cache Size: {stats.TotalSizeBytes} bytes");
+Console.WriteLine($"Utilization: {stats.ItemUtilizationPercent:F1}%");
+```
+
+### Cache Management
+
+```csharp
+// Clear all cached items
+await services.ClearLlmCacheAsync();
+
+// Check cache statistics
+var stats = await services.GetCacheStatisticsAsync();
+if (stats.SizeUtilizationPercent > 90)
+{
+    // Implement cache cleanup logic
+}
+```
+
+## Error Handling
+
+The caching system is designed to be resilient:
+
+- **Cache Failures**: Never block actual HTTP requests
+- **Expired Items**: Automatically ignored and cleaned up
+- **File System Errors**: Gracefully degraded to direct requests
+- **Serialization Errors**: Logged but don't affect functionality
+
+## Testing
+
+### Unit Testing
+
+```csharp
+[Test]
+public async Task CachingHttpClient_CachesSuccessfulRequests()
+{
+    var cache = new FileKvStore(tempDirectory);
+    var options = new LlmCacheOptions { EnableCaching = true };
+    
+    var httpClient = CachingHttpClientFactory.CreateForOpenAIWithCache(
+        "test-key", "https://api.test.com", cache, options);
+    
+    // First request - cache miss
+    var response1 = await httpClient.PostAsync("/chat/completions", content);
+    
+    // Second request - cache hit
+    var response2 = await httpClient.PostAsync("/chat/completions", content);
+    
+    // Both responses should be identical
+    Assert.That(await response1.Content.ReadAsStringAsync(), 
+                Is.EqualTo(await response2.Content.ReadAsStringAsync()));
+}
+```
+
+### Integration Testing
+
+```csharp
+[Test]
+public async Task EndToEnd_CachingWithRealProvider()
+{
+    var services = new ServiceCollection();
+    services.AddLlmFileCache(options => {
+        options.CacheDirectory = Path.GetTempPath();
+        options.EnableCaching = true;
+    });
+    
+    var httpClient = services.CreateCachingOpenAIClient(
+        Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
+        "https://api.openai.com/v1");
+    
+    var client = new OpenClient(httpClient, "https://api.openai.com/v1");
+    
+    // Test caching with real API calls
+    var request = new ChatCompletionRequest { /* ... */ };
+    var response1 = await client.CreateChatCompletionsAsync(request);
+    var response2 = await client.CreateChatCompletionsAsync(request);
+    
+    // Second response should be from cache
+}
+```
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Permission denied**: Ensure the process has write access to the cache directory
-2. **Disk space**: Monitor cache size and set appropriate limits
-3. **Cache misses**: Verify request serialization is consistent
-4. **Performance**: Use SSD storage for cache directory
+1. **Cache Not Working**
+   - Check `EnableCaching` is `true`
+   - Verify cache directory permissions
+   - Ensure requests are identical (same URL + body)
+
+2. **High Memory Usage**
+   - Reduce `MaxCacheItems` or `MaxCacheSizeBytes`
+   - Enable `CleanupOnStartup`
+   - Implement periodic cache cleanup
+
+3. **Slow Performance**
+   - Check cache directory is on fast storage (SSD)
+   - Verify cache hit rate with statistics
+   - Consider cache expiration settings
 
 ### Debugging
 
-Enable logging to see cache operations:
+Enable detailed logging:
 
 ```csharp
-// Cache statistics
-var stats = await serviceProvider.GetCacheStatisticsAsync();
-Console.WriteLine(stats.ToString());
-
-// Manual cache inspection
-var kvStore = serviceProvider.GetRequiredService<FileKvStore>();
-await foreach (var key in await kvStore.EnumerateKeysAsync())
-{
-    Console.WriteLine($"Cached key: {key}");
-}
+services.AddLogging(builder => builder.SetMinimumLevel(LogLevel.Debug));
 ```
 
-## Contributing
-
-To contribute to the caching system:
-
-1. Add tests for new functionality
-2. Follow existing patterns for configuration
-3. Ensure thread safety for concurrent access
-4. Update documentation for new features
+Log output will include:
+- Cache hits/misses with keys
+- File operations and errors
+- Performance timings
+- Cache statistics
 
 ## License
 
-This caching system is part of the AchieveAI LmDotNet project. 
+This project is licensed under the MIT License. 
