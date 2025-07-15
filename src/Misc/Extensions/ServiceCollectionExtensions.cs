@@ -1,10 +1,10 @@
-using AchieveAi.LmDotnetTools.Misc.Clients;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Storage;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
+using AchieveAi.LmDotnetTools.Misc.Utils;
+using AchieveAi.LmDotnetTools.Misc.Http;
 
 namespace AchieveAi.LmDotnetTools.Misc.Extensions;
 
@@ -14,71 +14,62 @@ namespace AchieveAi.LmDotnetTools.Misc.Extensions;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds LLM file-based caching services to the service collection.
+    /// Registers LLM file caching services with the specified options.
     /// </summary>
-    /// <param name="services">The service collection to add services to</param>
-    /// <param name="configuration">Configuration to read LLM cache options from</param>
+    /// <param name="services">The service collection</param>
+    /// <param name="options">Cache configuration options</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCache(
-        this IServiceCollection services,
-        IConfiguration configuration)
+    public static IServiceCollection AddLlmFileCache(this IServiceCollection services, LlmCacheOptions options)
     {
-        // Configure LlmCacheOptions from configuration
-        services.Configure<LlmCacheOptions>(configuration.GetSection("LlmCache"));
-        
-        // Register FileKvStore as singleton for caching
-        services.AddSingleton<FileKvStore>(serviceProvider =>
-        {
-            var options = serviceProvider.GetRequiredService<IOptions<LlmCacheOptions>>().Value;
-            return new FileKvStore(options.CacheDirectory);
-        });
+        if (options == null)
+            throw new ArgumentNullException(nameof(options));
 
-        return services;
-    }
+        options.Validate();
 
-    /// <summary>
-    /// Adds LLM file-based caching services to the service collection with explicit options.
-    /// </summary>
-    /// <param name="services">The service collection to add services to</param>
-    /// <param name="options">The LLM cache options to use</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCache(
-        this IServiceCollection services,
-        LlmCacheOptions options)
-    {
-        if (options == null) throw new ArgumentNullException(nameof(options));
-
-        // Validate options
-        var validationErrors = options.Validate();
-        if (validationErrors.Any())
-        {
-            throw new ArgumentException($"Invalid cache options: {string.Join(", ", validationErrors)}", nameof(options));
-        }
-
-        // Register options as singleton
+        // Register the options
         services.AddSingleton(options);
-        
-        // Register FileKvStore as singleton for caching
-        services.AddSingleton<FileKvStore>(serviceProvider =>
+
+        // Register the file-based cache store
+        services.AddSingleton<IKvStore>(provider =>
         {
-            var cacheOptions = serviceProvider.GetRequiredService<LlmCacheOptions>();
+            var cacheOptions = provider.GetRequiredService<LlmCacheOptions>();
             return new FileKvStore(cacheOptions.CacheDirectory);
         });
 
+        // Register factory for creating caching HttpClients
+        services.AddSingleton<ICachingHttpClientFactory, CachingHttpClientFactory>();
+
         return services;
     }
 
     /// <summary>
-    /// Adds LLM file-based caching services to the service collection with configuration action.
+    /// Registers LLM file caching services with configuration from IConfiguration.
     /// </summary>
-    /// <param name="services">The service collection to add services to</param>
-    /// <param name="configureOptions">Action to configure the LLM cache options</param>
+    /// <param name="services">The service collection</param>
+    /// <param name="configuration">Configuration instance</param>
+    /// <param name="configurationSection">Configuration section name (defaults to "LlmCache")</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCache(
-        this IServiceCollection services,
-        Action<LlmCacheOptions> configureOptions)
+    public static IServiceCollection AddLlmFileCache(this IServiceCollection services, IConfiguration configuration, string configurationSection = "LlmCache")
     {
-        if (configureOptions == null) throw new ArgumentNullException(nameof(configureOptions));
+        if (configuration == null)
+            throw new ArgumentNullException(nameof(configuration));
+
+        var options = new LlmCacheOptions();
+        configuration.GetSection(configurationSection).Bind(options);
+
+        return services.AddLlmFileCache(options);
+    }
+
+    /// <summary>
+    /// Registers LLM file caching services with configuration from action.
+    /// </summary>
+    /// <param name="services">The service collection</param>
+    /// <param name="configureOptions">Action to configure cache options</param>
+    /// <returns>The service collection for chaining</returns>
+    public static IServiceCollection AddLlmFileCache(this IServiceCollection services, Action<LlmCacheOptions> configureOptions)
+    {
+        if (configureOptions == null)
+            throw new ArgumentNullException(nameof(configureOptions));
 
         var options = new LlmCacheOptions();
         configureOptions(options);
@@ -87,220 +78,233 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds LLM file-based caching services with environment variable configuration.
+    /// Registers LLM file caching services with configuration from environment variables.
     /// </summary>
-    /// <param name="services">The service collection to add services to</param>
+    /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCacheFromEnvironment(
-        this IServiceCollection services)
+    public static IServiceCollection AddLlmFileCacheFromEnvironment(this IServiceCollection services)
     {
         var options = LlmCacheOptions.FromEnvironment();
         return services.AddLlmFileCache(options);
     }
 
     /// <summary>
-    /// Decorates an existing IOpenClient registration with file-based caching.
+    /// Creates a caching HttpClient for OpenAI-compatible APIs.
     /// </summary>
     /// <param name="services">The service collection</param>
-    /// <returns>The service collection for chaining</returns>
-    /// <remarks>
-    /// This method assumes that an IOpenClient and LLM caching services are already registered.
-    /// It replaces the existing IOpenClient registration with a cached version.
-    /// </remarks>
-    public static IServiceCollection DecorateOpenClientWithFileCache(
-        this IServiceCollection services)
+    /// <param name="apiKey">The API key for authentication</param>
+    /// <param name="baseUrl">The base URL for the API</param>
+    /// <param name="timeout">Optional timeout (defaults to 5 minutes)</param>
+    /// <param name="headers">Optional additional headers</param>
+    /// <returns>Configured HttpClient with caching</returns>
+    public static HttpClient CreateCachingOpenAIClient(this IServiceCollection services, 
+        string apiKey, 
+        string baseUrl, 
+        TimeSpan? timeout = null,
+        IReadOnlyDictionary<string, string>? headers = null)
     {
-        // Find existing IOpenClient registration
-        var existingDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IOpenClient));
-        if (existingDescriptor == null)
-        {
-            throw new InvalidOperationException("No IOpenClient registration found. Register an IOpenClient before decorating with cache.");
-        }
+        var serviceProvider = services.BuildServiceProvider();
+        var cache = serviceProvider.GetRequiredService<IKvStore>();
+        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
+        var logger = serviceProvider.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        // Remove existing registration
-        services.Remove(existingDescriptor);
-
-        // Register the cached version
-        services.AddTransient<IOpenClient>(serviceProvider =>
-        {
-            // Create the original client using the existing descriptor
-            IOpenClient innerClient;
-            if (existingDescriptor.ImplementationFactory != null)
-            {
-                innerClient = (IOpenClient)existingDescriptor.ImplementationFactory(serviceProvider);
-            }
-            else if (existingDescriptor.ImplementationType != null)
-            {
-                innerClient = (IOpenClient)ActivatorUtilities.CreateInstance(serviceProvider, existingDescriptor.ImplementationType);
-            }
-            else if (existingDescriptor.ImplementationInstance != null)
-            {
-                innerClient = (IOpenClient)existingDescriptor.ImplementationInstance;
-            }
-            else
-            {
-                throw new InvalidOperationException("Unable to resolve IOpenClient from existing registration.");
-            }
-
-            // Get caching dependencies
-            var kvStore = serviceProvider.GetRequiredService<FileKvStore>();
-            var options = serviceProvider.GetService<LlmCacheOptions>() ?? 
-                         serviceProvider.GetService<IOptions<LlmCacheOptions>>()?.Value ?? 
-                         new LlmCacheOptions();
-
-            // Return cached client
-            return new FileCachingClient(innerClient, kvStore, options);
-        });
-
-        return services;
+        return Http.CachingHttpClientFactory.CreateForOpenAIWithCache(
+            apiKey, baseUrl, cache, options, timeout, headers, logger);
     }
 
     /// <summary>
-    /// Creates a cached IOpenClient factory that can wrap any IOpenClient with file-based caching.
+    /// Creates a caching HttpClient for Anthropic APIs.
     /// </summary>
     /// <param name="services">The service collection</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddCachedOpenClientFactory(
-        this IServiceCollection services)
+    /// <param name="apiKey">The API key for authentication</param>
+    /// <param name="baseUrl">The base URL for the API</param>
+    /// <param name="timeout">Optional timeout (defaults to 5 minutes)</param>
+    /// <param name="headers">Optional additional headers</param>
+    /// <returns>Configured HttpClient with caching</returns>
+    public static HttpClient CreateCachingAnthropicClient(this IServiceCollection services, 
+        string apiKey, 
+        string baseUrl, 
+        TimeSpan? timeout = null,
+        IReadOnlyDictionary<string, string>? headers = null)
     {
-        services.AddTransient<Func<IOpenClient, IOpenClient>>(serviceProvider =>
-        {
-            return innerClient =>
-            {
-                var kvStore = serviceProvider.GetRequiredService<FileKvStore>();
-                var options = serviceProvider.GetService<LlmCacheOptions>() ?? 
-                             serviceProvider.GetService<IOptions<LlmCacheOptions>>()?.Value ?? 
-                             new LlmCacheOptions();
+        var serviceProvider = services.BuildServiceProvider();
+        var cache = serviceProvider.GetRequiredService<IKvStore>();
+        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
+        var logger = serviceProvider.GetService<ILogger<CachingHttpMessageHandler>>();
 
-                return new FileCachingClient(innerClient, kvStore, options);
+        return Http.CachingHttpClientFactory.CreateForAnthropicWithCache(
+            apiKey, baseUrl, cache, options, timeout, headers, logger);
+    }
+
+    /// <summary>
+    /// Wraps an existing HttpClient with caching capabilities.
+    /// </summary>
+    /// <param name="services">The service collection</param>
+    /// <param name="existingClient">The existing HttpClient to wrap</param>
+    /// <returns>New HttpClient with caching capabilities</returns>
+    public static HttpClient WrapWithCache(this IServiceCollection services, HttpClient existingClient)
+    {
+        var serviceProvider = services.BuildServiceProvider();
+        var cache = serviceProvider.GetRequiredService<IKvStore>();
+        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
+        var logger = serviceProvider.GetService<ILogger<CachingHttpMessageHandler>>();
+
+        return Http.CachingHttpClientFactory.WrapWithCache(existingClient, cache, options, logger);
+    }
+
+    /// <summary>
+    /// Gets cache statistics for monitoring and diagnostics.
+    /// </summary>
+    /// <param name="services">The service collection</param>
+    /// <returns>Cache statistics</returns>
+    public static async Task<CacheStatistics> GetCacheStatisticsAsync(this IServiceCollection services)
+    {
+        var serviceProvider = services.BuildServiceProvider();
+        var cache = serviceProvider.GetRequiredService<IKvStore>();
+        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
+
+        var fileStore = cache as FileKvStore;
+        if (fileStore != null)
+        {
+            var count = await fileStore.GetCountAsync();
+            var directory = new DirectoryInfo(fileStore.CacheDirectory);
+            var totalSize = directory.Exists ? directory.GetFiles().Sum(f => f.Length) : 0;
+
+            return new CacheStatistics
+            {
+                ItemCount = count,
+                TotalSizeBytes = totalSize,
+                CacheDirectory = fileStore.CacheDirectory,
+                IsEnabled = options.EnableCaching,
+                MaxItems = options.MaxCacheItems ?? 0,
+                MaxSizeBytes = options.MaxCacheSizeBytes ?? 0
             };
-        });
-
-        return services;
-    }
-
-    /// <summary>
-    /// Adds a complete LLM file caching setup with OpenAI client integration.
-    /// </summary>
-    /// <param name="services">The service collection</param>
-    /// <param name="openAiApiKey">OpenAI API key</param>
-    /// <param name="baseUrl">OpenAI base URL (optional)</param>
-    /// <param name="cacheOptions">Cache configuration options (optional)</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddCachedOpenAIClient(
-        this IServiceCollection services,
-        string openAiApiKey,
-        string? baseUrl = null,
-        LlmCacheOptions? cacheOptions = null)
-    {
-        if (string.IsNullOrEmpty(openAiApiKey))
-            throw new ArgumentException("OpenAI API key cannot be null or empty", nameof(openAiApiKey));
-
-        // Add caching services
-        services.AddLlmFileCache(cacheOptions ?? new LlmCacheOptions());
-
-        // Register OpenAI client
-        services.AddTransient<IOpenClient>(serviceProvider =>
-        {
-            var client = new OpenClient(openAiApiKey, baseUrl ?? "https://api.openai.com/v1");
-            
-            // Wrap with caching
-            var kvStore = serviceProvider.GetRequiredService<FileKvStore>();
-            var options = serviceProvider.GetService<LlmCacheOptions>() ?? new LlmCacheOptions();
-            
-            return new FileCachingClient(client, kvStore, options);
-        });
-
-        return services;
-    }
-
-    /// <summary>
-    /// Gets cache statistics from the registered cache store.
-    /// </summary>
-    /// <param name="serviceProvider">The service provider</param>
-    /// <returns>A task that returns cache statistics</returns>
-    public static async Task<CacheStatistics> GetCacheStatisticsAsync(this IServiceProvider serviceProvider)
-    {
-        var kvStore = serviceProvider.GetService<FileKvStore>();
-        if (kvStore == null)
-        {
-            return new CacheStatistics { IsEnabled = false };
         }
 
-        var options = serviceProvider.GetService<LlmCacheOptions>() ?? 
-                     serviceProvider.GetService<IOptions<LlmCacheOptions>>()?.Value;
-
-        var count = await kvStore.GetCountAsync();
-        
         return new CacheStatistics
         {
-            IsEnabled = options?.EnableCaching ?? true,
-            CacheDirectory = kvStore.CacheDirectory,
-            TotalItems = count,
-            ConfiguredExpiration = options?.CacheExpiration,
-            MaxItems = options?.MaxCacheItems,
-            MaxSizeBytes = options?.MaxCacheSizeBytes
+            ItemCount = 0,
+            TotalSizeBytes = 0,
+            CacheDirectory = options.CacheDirectory,
+            IsEnabled = options.EnableCaching,
+            MaxItems = options.MaxCacheItems ?? 0,
+            MaxSizeBytes = options.MaxCacheSizeBytes ?? 0
         };
     }
 
     /// <summary>
-    /// Clears the LLM cache through the service provider.
+    /// Clears all cached items.
     /// </summary>
-    /// <param name="serviceProvider">The service provider</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>A task representing the cache clear operation</returns>
-    public static async Task ClearLlmCacheAsync(this IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
+    /// <param name="services">The service collection</param>
+    /// <returns>Task representing the clear operation</returns>
+    public static async Task ClearLlmCacheAsync(this IServiceCollection services)
     {
-        var kvStore = serviceProvider.GetService<FileKvStore>();
-        if (kvStore != null)
+        var serviceProvider = services.BuildServiceProvider();
+        var cache = serviceProvider.GetRequiredService<IKvStore>();
+
+        var fileStore = cache as FileKvStore;
+        if (fileStore != null)
         {
-            await kvStore.ClearAsync(cancellationToken);
+            await fileStore.ClearAsync();
         }
     }
 }
 
 /// <summary>
-/// Statistics about the LLM cache.
+/// Interface for factory that creates caching HttpClients.
+/// </summary>
+public interface ICachingHttpClientFactory
+{
+    /// <summary>
+    /// Creates an HttpClient with caching for OpenAI-compatible APIs.
+    /// </summary>
+    HttpClient CreateForOpenAI(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null);
+
+    /// <summary>
+    /// Creates an HttpClient with caching for Anthropic APIs.
+    /// </summary>
+    HttpClient CreateForAnthropic(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null);
+
+    /// <summary>
+    /// Wraps an existing HttpClient with caching.
+    /// </summary>
+    HttpClient WrapWithCache(HttpClient existingClient);
+}
+
+/// <summary>
+/// Factory implementation for creating caching HttpClients.
+/// </summary>
+public class CachingHttpClientFactory : ICachingHttpClientFactory
+{
+    private readonly IKvStore _cache;
+    private readonly LlmCacheOptions _options;
+    private readonly ILogger<CachingHttpMessageHandler>? _logger;
+
+    public CachingHttpClientFactory(IKvStore cache, LlmCacheOptions options, ILogger<CachingHttpMessageHandler>? logger = null)
+    {
+        _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _logger = logger;
+    }
+
+    public HttpClient CreateForOpenAI(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null)
+    {
+        return Http.CachingHttpClientFactory.CreateForOpenAIWithCache(apiKey, baseUrl, _cache, _options, timeout, headers, _logger);
+    }
+
+    public HttpClient CreateForAnthropic(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null)
+    {
+        return Http.CachingHttpClientFactory.CreateForAnthropicWithCache(apiKey, baseUrl, _cache, _options, timeout, headers, _logger);
+    }
+
+    public HttpClient WrapWithCache(HttpClient existingClient)
+    {
+        return Http.CachingHttpClientFactory.WrapWithCache(existingClient, _cache, _options, _logger);
+    }
+}
+
+/// <summary>
+/// Statistics about the cache for monitoring and diagnostics.
 /// </summary>
 public class CacheStatistics
 {
+    /// <summary>
+    /// Number of items currently in the cache.
+    /// </summary>
+    public int ItemCount { get; set; }
+
+    /// <summary>
+    /// Total size of cached items in bytes.
+    /// </summary>
+    public long TotalSizeBytes { get; set; }
+
+    /// <summary>
+    /// Cache directory path.
+    /// </summary>
+    public string CacheDirectory { get; set; } = string.Empty;
+
     /// <summary>
     /// Whether caching is enabled.
     /// </summary>
     public bool IsEnabled { get; set; }
 
     /// <summary>
-    /// The cache directory path.
+    /// Maximum number of items allowed in cache.
     /// </summary>
-    public string? CacheDirectory { get; set; }
-
-    /// <summary>
-    /// Total number of cached items.
-    /// </summary>
-    public int TotalItems { get; set; }
-
-    /// <summary>
-    /// Configured cache expiration time.
-    /// </summary>
-    public TimeSpan? ConfiguredExpiration { get; set; }
-
-    /// <summary>
-    /// Maximum number of cached items allowed.
-    /// </summary>
-    public int? MaxItems { get; set; }
+    public int MaxItems { get; set; }
 
     /// <summary>
     /// Maximum cache size in bytes.
     /// </summary>
-    public long? MaxSizeBytes { get; set; }
+    public long MaxSizeBytes { get; set; }
 
     /// <summary>
-    /// Returns a string representation of the cache statistics.
+    /// Cache utilization as a percentage (0-100).
     /// </summary>
-    public override string ToString()
-    {
-        return $"Cache Statistics: Enabled={IsEnabled}, Directory='{CacheDirectory}', " +
-               $"Items={TotalItems}, Expiration={ConfiguredExpiration}, " +
-               $"MaxItems={MaxItems}, MaxSize={MaxSizeBytes} bytes";
-    }
+    public double ItemUtilizationPercent => MaxItems > 0 ? (double)ItemCount / MaxItems * 100 : 0;
+
+    /// <summary>
+    /// Size utilization as a percentage (0-100).
+    /// </summary>
+    public double SizeUtilizationPercent => MaxSizeBytes > 0 ? (double)TotalSizeBytes / MaxSizeBytes * 100 : 0;
 } 

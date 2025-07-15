@@ -273,7 +273,7 @@ public class LlmCacheIntegrationTests
     #region Factory Tests
 
     [TestMethod]
-    public void AddCachedOpenClientFactory_RegistersFactoryCorrectly()
+    public void ICachingHttpClientFactory_RegistersFactoryCorrectly()
     {
         // Arrange
         var options = new LlmCacheOptions
@@ -283,21 +283,22 @@ public class LlmCacheIntegrationTests
         };
 
         _services.AddLlmFileCache(options);
-        _services.AddCachedOpenClientFactory();
         _serviceProvider = _services.BuildServiceProvider();
 
         // Act
-        var factory = _serviceProvider.GetService<Func<IOpenClient, IOpenClient>>();
+        var factory = _serviceProvider.GetService<ICachingHttpClientFactory>();
 
         // Assert
         Assert.IsNotNull(factory);
         
-        // Test the factory with a mock client
-        var mockClient = new MockOpenClient();
-        var cachedClient = factory(mockClient);
+        // Test the factory creates HttpClient instances
+        var openAiClient = factory.CreateForOpenAI("test-key", "https://api.openai.com/v1");
+        var anthropicClient = factory.CreateForAnthropic("test-key", "https://api.anthropic.com");
         
-        Assert.IsNotNull(cachedClient);
-        Assert.IsInstanceOfType(cachedClient, typeof(AchieveAi.LmDotnetTools.Misc.Clients.FileCachingClient));
+        Assert.IsNotNull(openAiClient);
+        Assert.IsNotNull(anthropicClient);
+        Assert.IsInstanceOfType(openAiClient, typeof(HttpClient));
+        Assert.IsInstanceOfType(anthropicClient, typeof(HttpClient));
     }
 
     #endregion
