@@ -1,6 +1,9 @@
 using System.IO;
+using System.Net.Http;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Extensions;
+using AchieveAi.LmDotnetTools.Misc.Http;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
@@ -105,15 +108,15 @@ public class LlmCacheIntegrationTests
     }
 
     [TestMethod]
-    public void AddLlmFileCache_WithConfigurationAction_RegistersServicesCorrectly()
+    public void AddLlmFileCache_WithDirectOptions_RegistersServicesCorrectly()
     {
         // Act
-        _services.AddLlmFileCache(options =>
+        _services.AddLlmFileCache(new LlmCacheOptions
         {
-            options.CacheDirectory = _testCacheDirectory;
-            options.EnableCaching = true;
-            options.CacheExpiration = TimeSpan.FromMinutes(30);
-            options.MaxCacheItems = 1000;
+            CacheDirectory = _testCacheDirectory,
+            EnableCaching = true,
+            CacheExpiration = TimeSpan.FromMinutes(30),
+            MaxCacheItems = 1000
         });
         _serviceProvider = _services.BuildServiceProvider();
 
@@ -272,10 +275,10 @@ public class LlmCacheIntegrationTests
 
     #endregion
 
-    #region Factory Tests
+    #region Handler Builder Tests
 
     [TestMethod]
-    public void ICachingHttpClientFactory_RegistersFactoryCorrectly()
+    public void IHttpHandlerBuilder_RegistersCacheWrapper()
     {
         // Arrange
         var options = new LlmCacheOptions
@@ -288,19 +291,13 @@ public class LlmCacheIntegrationTests
         _serviceProvider = _services.BuildServiceProvider();
 
         // Act
-        var factory = _serviceProvider.GetService<ICachingHttpClientFactory>();
+        var builder = _serviceProvider.GetService<IHttpHandlerBuilder>();
 
         // Assert
-        Assert.IsNotNull(factory);
-        
-        // Test the factory creates HttpClient instances
-        var openAiClient = factory.CreateForOpenAI("test-key", "https://api.openai.com/v1");
-        var anthropicClient = factory.CreateForAnthropic("test-key", "https://api.anthropic.com");
-        
-        Assert.IsNotNull(openAiClient);
-        Assert.IsNotNull(anthropicClient);
-        Assert.IsInstanceOfType(openAiClient, typeof(HttpClient));
-        Assert.IsInstanceOfType(anthropicClient, typeof(HttpClient));
+        Assert.IsNotNull(builder);
+
+        var handler = builder!.Build(new HttpClientHandler());
+        Assert.IsInstanceOfType(handler, typeof(CachingHttpMessageHandler));
     }
 
     #endregion
@@ -384,9 +381,8 @@ public class LlmCacheIntegrationTests
 
         // Assert
         Assert.IsFalse(string.IsNullOrEmpty(defaultDir));
-        Assert.IsTrue(defaultDir.Contains("AchieveAI"));
-        Assert.IsTrue(defaultDir.Contains("LmDotNet"));
-        Assert.IsTrue(defaultDir.Contains("Cache"));
+        Assert.IsTrue(defaultDir.Contains("LLM_CACHE"));
+        Assert.IsTrue(Path.IsPathRooted(defaultDir)); // Should be an absolute path
         
         // Should be a valid path
         var validationOptions = new LlmCacheOptions { CacheDirectory = defaultDir };
@@ -441,4 +437,44 @@ public class LlmCacheIntegrationTests
     }
 
     #endregion
+
+    [TestMethod]
+    public void LlmCacheOptions_ImmutableRecord_WorksCorrectly()
+    {
+        // Arrange
+        var originalOptions = new LlmCacheOptions
+        {
+            CacheDirectory = "./OriginalCache",
+            EnableCaching = true,
+            CacheExpiration = TimeSpan.FromHours(24),
+            MaxCacheItems = 1000
+        };
+
+        // Act - Create a variation using 'with' expression
+        var modifiedOptions = originalOptions with 
+        { 
+            CacheDirectory = "./ModifiedCache",
+            CacheExpiration = TimeSpan.FromHours(48)
+        };
+
+        // Assert - Original is unchanged
+        Assert.AreEqual("./OriginalCache", originalOptions.CacheDirectory);
+        Assert.AreEqual(TimeSpan.FromHours(24), originalOptions.CacheExpiration);
+        Assert.AreEqual(1000, originalOptions.MaxCacheItems);
+
+        // Assert - Modified has new values
+        Assert.AreEqual("./ModifiedCache", modifiedOptions.CacheDirectory);
+        Assert.AreEqual(TimeSpan.FromHours(48), modifiedOptions.CacheExpiration);
+        Assert.AreEqual(1000, modifiedOptions.MaxCacheItems); // Unchanged property
+
+        // Assert - Value equality works
+        var duplicateOptions = new LlmCacheOptions
+        {
+            CacheDirectory = "./OriginalCache",
+            EnableCaching = true,
+            CacheExpiration = TimeSpan.FromHours(24),
+            MaxCacheItems = 1000
+        };
+        Assert.AreEqual(originalOptions, duplicateOptions);
+    }
 } 
