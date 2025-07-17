@@ -14,7 +14,58 @@ This package provides miscellaneous utilities for LmDotNet, including **HTTP-lev
 
 ## Quick Start
 
-### Basic Usage
+### Basic Usage with Improved Defaults
+
+```csharp
+using AchieveAi.LmDotnetTools.Misc.Extensions;
+using AchieveAi.LmDotnetTools.Misc.Http;
+
+// Configure services with sensible defaults
+var services = new ServiceCollection();
+services.AddLlmFileCacheFromEnvironment(); // Uses defaults if no env vars set
+
+// Create caching HttpClient for OpenAI - cache will be stored in ./LLM_CACHE
+var httpClient = services.CreateCachingOpenAIClient(
+    apiKey: "your-api-key",
+    baseUrl: "https://api.openai.com/v1");
+
+// Use the HttpClient with any OpenAI provider
+var openAiClient = new OpenClient(httpClient, "https://api.openai.com/v1");
+```
+
+### Improved Defaults (No Configuration Required)
+
+The caching system now uses sensible defaults that work out of the box:
+
+- **Cache Directory**: `./LLM_CACHE` (in current working directory)
+- **Caching Enabled**: `true`
+- **Cache Expiration**: `24 hours`
+- **Max Cache Items**: `10,000`
+- **Max Cache Size**: `1 GB`
+- **Cleanup on Startup**: `false` (keeps implementation simple)
+
+### Immutable Configuration
+
+`LlmCacheOptions` is now an immutable record, providing:
+- **Thread Safety**: Configuration cannot be modified after creation
+- **Value Equality**: Records provide structural equality by default
+- **Immutability**: Prevents accidental configuration changes
+- **Better Testing**: Easier to create test configurations
+
+```csharp
+// Create immutable configuration
+var options = new LlmCacheOptions
+{
+    CacheDirectory = "./MyCache",
+    EnableCaching = true,
+    CacheExpiration = TimeSpan.FromHours(48)
+};
+
+// Use with method to create variations
+var testOptions = options with { CacheDirectory = "./TestCache" };
+```
+
+### Legacy Usage (More Configuration)
 
 ```csharp
 using AchieveAi.LmDotnetTools.Misc.Extensions;
@@ -24,9 +75,9 @@ using AchieveAi.LmDotnetTools.Misc.Http;
 var services = new ServiceCollection();
 services.AddLlmFileCacheFromEnvironment(); // Uses environment variables
 // OR
-services.AddLlmFileCache(options => {
-    options.CacheDirectory = @"C:\MyApp\Cache";
-    options.CacheExpiration = TimeSpan.FromHours(24);
+services.AddLlmFileCache(new LlmCacheOptions {
+    CacheDirectory = "./MyCustomCache",
+    CacheExpiration = TimeSpan.FromHours(48)
 });
 
 // Create caching HttpClient for OpenAI
@@ -66,14 +117,14 @@ var cachedClient = services.WrapWithCache(existingClient);
 ### Code Configuration
 
 ```csharp
-services.AddLlmFileCache(options =>
+services.AddLlmFileCache(new LlmCacheOptions
 {
-    options.CacheDirectory = @"C:\MyApp\LlmCache";
-    options.EnableCaching = true;
-    options.CacheExpiration = TimeSpan.FromHours(24);
-    options.MaxCacheItems = 10_000;
-    options.MaxCacheSizeBytes = 1_073_741_824; // 1 GB
-    options.CleanupOnStartup = true;
+    CacheDirectory = "./LLM_CACHE",  // Current directory + LLM_CACHE
+    EnableCaching = true,
+    CacheExpiration = TimeSpan.FromHours(24),
+    MaxCacheItems = 10_000,
+    MaxCacheSizeBytes = 1_073_741_824, // 1 GB
+    CleanupOnStartup = false  // Keep it simple
 });
 ```
 
@@ -82,12 +133,12 @@ services.AddLlmFileCache(options =>
 ```json
 {
   "LlmCache": {
-    "CacheDirectory": "C:\\MyApp\\LlmCache",
+    "CacheDirectory": "./LLM_CACHE",
     "EnableCaching": true,
-    "CacheExpiration": "24:00:00",
+    "CacheExpirationHours": 24,
     "MaxCacheItems": 10000,
     "MaxCacheSizeBytes": 1073741824,
-    "CleanupOnStartup": true
+    "CleanupOnStartup": false
   }
 }
 ```
@@ -100,12 +151,12 @@ services.AddLlmFileCache(configuration, "LlmCache");
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LLM_CACHE_DIRECTORY` | Cache directory path | `%LocalAppData%\AchieveAI\LmDotNet\Cache` |
+| `LLM_CACHE_DIRECTORY` | Cache directory path | `./LLM_CACHE` (current directory) |
 | `LLM_CACHE_ENABLED` | Enable/disable caching | `true` |
 | `LLM_CACHE_EXPIRATION_HOURS` | Cache expiration in hours | `24` |
 | `LLM_CACHE_MAX_ITEMS` | Maximum cached items | `10000` |
-| `LLM_CACHE_MAX_SIZE_BYTES` | Maximum cache size in bytes | `1073741824` |
-| `LLM_CACHE_CLEANUP_ON_STARTUP` | Clean up expired items on startup | `true` |
+| `LLM_CACHE_MAX_SIZE_MB` | Maximum cache size in megabytes | `1024` |
+| `LLM_CACHE_CLEANUP_ON_STARTUP` | Clean up expired items on startup | `false` |
 
 ```csharp
 services.AddLlmFileCacheFromEnvironment();

@@ -1,10 +1,13 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Http;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
 
 namespace AchieveAi.LmDotnetTools.Misc.Extensions;
 
@@ -21,6 +24,11 @@ public static class ServiceCollectionExtensions
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddLlmFileCache(this IServiceCollection services, LlmCacheOptions options)
     {
+        // Guard against duplicate registration – if cache options have already been added we assume the
+        // cache pipeline has been wired up previously and simply return the collection unchanged.
+        if (services.Any(sd => sd.ServiceType == typeof(LlmCacheOptions)))
+            return services;
+
         if (options == null)
             throw new ArgumentNullException(nameof(options));
 
@@ -30,21 +38,39 @@ public static class ServiceCollectionExtensions
             throw new ArgumentException($"Invalid cache options: {string.Join(", ", validationErrors)}", nameof(options));
         }
 
-        // Register the options
-        services.AddSingleton(options);
+        // Register the options (idempotent)
+        services.TryAddSingleton(options);
 
-        // Register the file-based cache store
-        services.AddSingleton<FileKvStore>(provider =>
+        // Register the file-based cache store (idempotent)
+        services.TryAddSingleton<FileKvStore>(provider =>
         {
             var cacheOptions = provider.GetRequiredService<LlmCacheOptions>();
             return new FileKvStore(cacheOptions.CacheDirectory);
         });
-        
-        // Register IKvStore as alias to FileKvStore
-        services.AddSingleton<IKvStore>(provider => provider.GetRequiredService<FileKvStore>());
 
-        // Register factory for creating caching HttpClients
-        services.AddSingleton<ICachingHttpClientFactory, CachingHttpClientFactory>();
+        // Register IKvStore as alias to FileKvStore (idempotent)
+        services.TryAddSingleton<IKvStore>(provider => provider.GetRequiredService<FileKvStore>());
+
+        // Ensure an IHttpHandlerBuilder exists and wire-up the cache wrapper only once
+        services.TryAddSingleton<IHttpHandlerBuilder>(sp =>
+        {
+            var hb    = new HandlerBuilder();
+            var store = sp.GetRequiredService<IKvStore>();
+            var opts  = sp.GetRequiredService<LlmCacheOptions>();
+            hb.Use(AchieveAi.LmDotnetTools.Misc.Http.StandardWrappers.WithKvCache(store, opts));
+            return hb;
+        });
+
+        // If a builder was already registered earlier, attach the cache wrapper now (avoids duplicates)
+        var existingBuilder = services.BuildServiceProvider().GetService<IHttpHandlerBuilder>() as HandlerBuilder;
+        if (existingBuilder != null && !ReferenceEquals(existingBuilder, null))
+        {
+            existingBuilder.Use(AchieveAi.LmDotnetTools.Misc.Http.StandardWrappers.WithKvCache(
+                services.BuildServiceProvider().GetRequiredService<IKvStore>(),
+                services.BuildServiceProvider().GetRequiredService<LlmCacheOptions>()));
+        }
+
+        // Legacy CachingHttpClientFactory registration removed – caching is now handled through the injected IHttpHandlerBuilder pipeline.
 
         return services;
     }
@@ -61,28 +87,22 @@ public static class ServiceCollectionExtensions
         if (configuration == null)
             throw new ArgumentNullException(nameof(configuration));
 
-        var options = new LlmCacheOptions();
-        configuration.GetSection(configurationSection).Bind(options);
+        var section = configuration.GetSection(configurationSection);
+        var options = new LlmCacheOptions
+        {
+            CacheDirectory = section.GetValue<string>("CacheDirectory") ?? LlmCacheOptions.GetDefaultCacheDirectory(),
+            EnableCaching = section.GetValue<bool>("EnableCaching", true),
+            CacheExpiration = section.GetValue<int?>("CacheExpirationHours") is int hours && hours > 0 
+                ? TimeSpan.FromHours(hours) : TimeSpan.FromHours(24),
+            MaxCacheItems = section.GetValue<int?>("MaxCacheItems") is int items && items > 0 ? items : 10_000,
+            MaxCacheSizeBytes = section.GetValue<long?>("MaxCacheSizeBytes") is long bytes && bytes > 0 ? bytes : 1_073_741_824,
+            CleanupOnStartup = section.GetValue<bool>("CleanupOnStartup", false)
+        };
 
         return services.AddLlmFileCache(options);
     }
 
-    /// <summary>
-    /// Registers LLM file caching services with configuration from action.
-    /// </summary>
-    /// <param name="services">The service collection</param>
-    /// <param name="configureOptions">Action to configure cache options</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCache(this IServiceCollection services, Action<LlmCacheOptions> configureOptions)
-    {
-        if (configureOptions == null)
-            throw new ArgumentNullException(nameof(configureOptions));
 
-        var options = new LlmCacheOptions();
-        configureOptions(options);
-
-        return services.AddLlmFileCache(options);
-    }
 
     /// <summary>
     /// Registers LLM file caching services with configuration from environment variables.
@@ -104,19 +124,22 @@ public static class ServiceCollectionExtensions
     /// <param name="timeout">Optional timeout (defaults to 5 minutes)</param>
     /// <param name="headers">Optional additional headers</param>
     /// <returns>Configured HttpClient with caching</returns>
-    public static HttpClient CreateCachingOpenAIClient(this IServiceCollection services, 
-        string apiKey, 
-        string baseUrl, 
+    public static HttpClient CreateCachingOpenAIClient(this IServiceCollection services,
+        string apiKey,
+        string baseUrl,
         TimeSpan? timeout = null,
         IReadOnlyDictionary<string, string>? headers = null)
     {
-        var serviceProvider = services.BuildServiceProvider();
-        var cache = serviceProvider.GetRequiredService<IKvStore>();
-        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
-        var logger = serviceProvider.GetService<ILogger<CachingHttpMessageHandler>>();
+        var sp = services.BuildServiceProvider();
+        var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
+        var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        return Http.CachingHttpClientFactory.CreateForOpenAIWithCache(
-            apiKey, baseUrl, cache, options, timeout, headers, logger);
+        return AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
+            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(apiKey, baseUrl, AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.OpenAI),
+            handlerBuilder,
+            timeout,
+            headers,
+            logger);
     }
 
     /// <summary>
@@ -128,19 +151,22 @@ public static class ServiceCollectionExtensions
     /// <param name="timeout">Optional timeout (defaults to 5 minutes)</param>
     /// <param name="headers">Optional additional headers</param>
     /// <returns>Configured HttpClient with caching</returns>
-    public static HttpClient CreateCachingAnthropicClient(this IServiceCollection services, 
-        string apiKey, 
-        string baseUrl, 
+    public static HttpClient CreateCachingAnthropicClient(this IServiceCollection services,
+        string apiKey,
+        string baseUrl,
         TimeSpan? timeout = null,
         IReadOnlyDictionary<string, string>? headers = null)
     {
-        var serviceProvider = services.BuildServiceProvider();
-        var cache = serviceProvider.GetRequiredService<IKvStore>();
-        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
-        var logger = serviceProvider.GetService<ILogger<CachingHttpMessageHandler>>();
+        var sp = services.BuildServiceProvider();
+        var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
+        var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        return Http.CachingHttpClientFactory.CreateForAnthropicWithCache(
-            apiKey, baseUrl, cache, options, timeout, headers, logger);
+        return AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
+            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(apiKey, baseUrl, AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.Anthropic),
+            handlerBuilder,
+            timeout,
+            headers,
+            logger);
     }
 
     /// <summary>
@@ -151,12 +177,24 @@ public static class ServiceCollectionExtensions
     /// <returns>New HttpClient with caching capabilities</returns>
     public static HttpClient WrapWithCache(this IServiceCollection services, HttpClient existingClient)
     {
-        var serviceProvider = services.BuildServiceProvider();
-        var cache = serviceProvider.GetRequiredService<IKvStore>();
-        var options = serviceProvider.GetRequiredService<LlmCacheOptions>();
-        var logger = serviceProvider.GetService<ILogger<CachingHttpMessageHandler>>();
+        if (existingClient == null) throw new ArgumentNullException(nameof(existingClient));
 
-        return Http.CachingHttpClientFactory.WrapWithCache(existingClient, cache, options, logger);
+        var sp = services.BuildServiceProvider();
+        var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
+        var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
+
+        var newClient = AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
+            provider: null,
+            pipeline: handlerBuilder,
+            timeout: existingClient.Timeout,
+            headers: null,
+            logger: logger);
+
+        newClient.BaseAddress = existingClient.BaseAddress;
+        foreach (var h in existingClient.DefaultRequestHeaders)
+            newClient.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+
+        return newClient;
     }
 
     /// <summary>
@@ -235,59 +273,7 @@ public static class ServiceCollectionExtensions
     }
 }
 
-/// <summary>
-/// Interface for factory that creates caching HttpClients.
-/// </summary>
-public interface ICachingHttpClientFactory
-{
-    /// <summary>
-    /// Creates an HttpClient with caching for OpenAI-compatible APIs.
-    /// </summary>
-    HttpClient CreateForOpenAI(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null);
-
-    /// <summary>
-    /// Creates an HttpClient with caching for Anthropic APIs.
-    /// </summary>
-    HttpClient CreateForAnthropic(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null);
-
-    /// <summary>
-    /// Wraps an existing HttpClient with caching.
-    /// </summary>
-    HttpClient WrapWithCache(HttpClient existingClient);
-}
-
-/// <summary>
-/// Factory implementation for creating caching HttpClients.
-/// </summary>
-public class CachingHttpClientFactory : ICachingHttpClientFactory
-{
-    private readonly IKvStore _cache;
-    private readonly LlmCacheOptions _options;
-    private readonly ILogger<CachingHttpMessageHandler>? _logger;
-
-    public CachingHttpClientFactory(IKvStore cache, LlmCacheOptions options, ILogger<CachingHttpMessageHandler>? logger = null)
-    {
-        _cache = cache ?? throw new ArgumentNullException(nameof(cache));
-        _options = options ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger;
-    }
-
-    public HttpClient CreateForOpenAI(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null)
-    {
-        return Http.CachingHttpClientFactory.CreateForOpenAIWithCache(apiKey, baseUrl, _cache, _options, timeout, headers, _logger);
-    }
-
-    public HttpClient CreateForAnthropic(string apiKey, string baseUrl, TimeSpan? timeout = null, IReadOnlyDictionary<string, string>? headers = null)
-    {
-        return Http.CachingHttpClientFactory.CreateForAnthropicWithCache(apiKey, baseUrl, _cache, _options, timeout, headers, _logger);
-    }
-
-    public HttpClient WrapWithCache(HttpClient existingClient)
-    {
-        return Http.CachingHttpClientFactory.WrapWithCache(existingClient, _cache, _options, _logger);
-    }
-}
-
+// NOTE: Legacy ICachingHttpClientFactory interface and its implementation have been removed in favour of the IHttpHandlerBuilder-driven pipeline approach.
 /// <summary>
 /// Statistics about the cache for monitoring and diagnostics.
 /// </summary>

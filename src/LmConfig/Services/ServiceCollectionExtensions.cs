@@ -8,6 +8,7 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Services;
 
@@ -213,6 +214,14 @@ public static class ServiceCollectionExtensions
         // Register core services
         services.AddSingleton<IModelResolver, ModelResolver>();
         services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
+        services.AddSingleton<IHttpHandlerBuilder>(sp =>
+        {
+            var builder = new HandlerBuilder();
+
+            builder.Use(LmConfigStandardWrappers.WithRetry());
+
+            return builder;
+        });
         
         // Register the unified agent
         services.AddScoped<UnifiedAgent>();
