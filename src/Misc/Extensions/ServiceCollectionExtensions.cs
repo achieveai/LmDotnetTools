@@ -51,23 +51,37 @@ public static class ServiceCollectionExtensions
         // Register IKvStore as alias to FileKvStore (idempotent)
         services.TryAddSingleton<IKvStore>(provider => provider.GetRequiredService<FileKvStore>());
 
-        // Ensure an IHttpHandlerBuilder exists and wire-up the cache wrapper only once
-        services.TryAddSingleton<IHttpHandlerBuilder>(sp =>
-        {
-            var hb    = new HandlerBuilder();
-            var store = sp.GetRequiredService<IKvStore>();
-            var opts  = sp.GetRequiredService<LlmCacheOptions>();
-            hb.Use(AchieveAi.LmDotnetTools.Misc.Http.StandardWrappers.WithKvCache(store, opts));
-            return hb;
-        });
+        // Ensure a single IHttpHandlerBuilder and attach the cache wrapper without building a temporary provider
+        var builderDescriptor = services.FirstOrDefault(sd => sd.ServiceType == typeof(IHttpHandlerBuilder));
 
-        // If a builder was already registered earlier, attach the cache wrapper now (avoids duplicates)
-        var existingBuilder = services.BuildServiceProvider().GetService<IHttpHandlerBuilder>() as HandlerBuilder;
-        if (existingBuilder != null && !ReferenceEquals(existingBuilder, null))
+        if (builderDescriptor == null)
         {
-            existingBuilder.Use(AchieveAi.LmDotnetTools.Misc.Http.StandardWrappers.WithKvCache(
-                services.BuildServiceProvider().GetRequiredService<IKvStore>(),
-                services.BuildServiceProvider().GetRequiredService<LlmCacheOptions>()));
+            // No builder yet – register a new one with the cache wrapper pre-attached
+            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            {
+                var hb = new HandlerBuilder();
+                var store = sp.GetRequiredService<IKvStore>();
+                var opts  = sp.GetRequiredService<LlmCacheOptions>();
+                hb.Use(StandardWrappers.WithKvCache(store, opts));
+                return hb;
+            });
+        }
+        else
+        {
+            // Builder already registered – replace the descriptor with one that adds our wrapper lazily
+            services.Remove(builderDescriptor);
+
+            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            {
+                var innerBuilder = (builderDescriptor.ImplementationInstance as HandlerBuilder)
+                                   ?? (builderDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder)
+                                   ?? new HandlerBuilder();
+
+                var store = sp.GetRequiredService<IKvStore>();
+                var opts  = sp.GetRequiredService<LlmCacheOptions>();
+                innerBuilder.Use(StandardWrappers.WithKvCache(store, opts));
+                return innerBuilder;
+            });
         }
 
         // Legacy CachingHttpClientFactory registration removed – caching is now handled through the injected IHttpHandlerBuilder pipeline.

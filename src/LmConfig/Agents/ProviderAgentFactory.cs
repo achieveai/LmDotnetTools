@@ -5,6 +5,7 @@ using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Agents;
 
@@ -16,6 +17,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ProviderAgentFactory> _logger;
+    private readonly IHttpHandlerBuilder _handlerBuilder;
 
     // Mapping of provider names to their compatibility types
     private static readonly Dictionary<string, string> ProviderCompatibility = new()
@@ -37,10 +39,11 @@ public class ProviderAgentFactory : IProviderAgentFactory
         { "Replicate", "Replicate" }
     };
 
-    public ProviderAgentFactory(IServiceProvider serviceProvider, ILogger<ProviderAgentFactory> logger)
+    public ProviderAgentFactory(IServiceProvider serviceProvider, ILogger<ProviderAgentFactory> logger, IHttpHandlerBuilder handlerBuilder)
     {
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _handlerBuilder = handlerBuilder ?? throw new ArgumentNullException(nameof(handlerBuilder));
     }
 
     public IAgent CreateAgent(ProviderResolution resolution)
@@ -166,45 +169,17 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     private IAnthropicClient CreateAnthropicClient(ProviderResolution resolution)
     {
-        // Get API key from environment
-        var apiKey = resolution.Connection.GetApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException(
-                $"API key not found for provider '{resolution.EffectiveProviderName}'. " +
-                $"Please set the environment variable '{resolution.Connection.ApiKeyEnvironmentVariable}'.");
-        }
-
-        // Create HTTP client using shared factory
-        var httpClient = HttpClientFactory.CreateForAnthropic(
-            apiKey,
-            resolution.Connection.EndpointUrl,
-            resolution.Connection.Timeout,
-            resolution.Connection.Headers);
-
-        // Create Anthropic client
+        var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
+        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, Http.ProviderType.Anthropic);
+        var httpClient = Http.HttpClientFactory.Create(providerCfg, _handlerBuilder, resolution.Connection.Timeout, resolution.Connection.Headers, _logger);
         return new AnthropicClient(httpClient);
     }
 
     private IOpenClient CreateOpenAIClient(ProviderResolution resolution)
     {
-        // Get API key from environment
-        var apiKey = resolution.Connection.GetApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException(
-                $"API key not found for provider '{resolution.EffectiveProviderName}'. " +
-                $"Please set the environment variable '{resolution.Connection.ApiKeyEnvironmentVariable}'.");
-        }
-
-        // Create HTTP client using shared factory
-        var httpClient = HttpClientFactory.CreateForOpenAI(
-            apiKey,
-            resolution.Connection.EndpointUrl,
-            resolution.Connection.Timeout,
-            resolution.Connection.Headers);
-
-        // Create OpenAI client
+        var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
+        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, Http.ProviderType.OpenAI);
+        var httpClient = Http.HttpClientFactory.Create(providerCfg, _handlerBuilder, resolution.Connection.Timeout, resolution.Connection.Headers, _logger);
         return new OpenClient(httpClient, resolution.Connection.EndpointUrl);
     }
 } 
