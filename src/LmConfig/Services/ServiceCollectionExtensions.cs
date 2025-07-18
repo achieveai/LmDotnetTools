@@ -214,14 +214,31 @@ public static class ServiceCollectionExtensions
         // Register core services
         services.AddSingleton<IModelResolver, ModelResolver>();
         services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
-        services.AddSingleton<IHttpHandlerBuilder>(sp =>
+        // Ensure a single IHttpHandlerBuilder and attach the retry wrapper.
+        var hbDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IHttpHandlerBuilder));
+
+        if (hbDescriptor == null)
         {
-            var builder = new HandlerBuilder();
+            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            {
+                var b = new HandlerBuilder();
+                b.Use(LmConfigStandardWrappers.WithRetry());
+                return b;
+            });
+        }
+        else
+        {
+            services.Remove(hbDescriptor);
+            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            {
+                var inner = (hbDescriptor.ImplementationInstance as HandlerBuilder)
+                            ?? (hbDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder)
+                            ?? new HandlerBuilder();
 
-            builder.Use(LmConfigStandardWrappers.WithRetry());
-
-            return builder;
-        });
+                inner.Use(LmConfigStandardWrappers.WithRetry());
+                return inner;
+            });
+        }
         
         // Register the unified agent
         services.AddScoped<UnifiedAgent>();
