@@ -572,6 +572,157 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         Assert.NotNull(usageMessage);
     }
 
+    [Fact]
+    public async Task InvokeStreamingAsync_WithExistingUsageMessage_ShouldEnhanceWithOpenRouterCost()
+    {
+        // Arrange: Setup OpenRouter fallback response
+        const string completionId = "chatcmpl-test123";
+        
+        // Use the same helper method as working tests
+        var generationResponse = CreateOpenRouterGenerationResponse("openai/gpt-4", 25, 12, 0.001425);
+        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
+        var httpClient = new HttpClient(httpHandler);
+
+        // Create a UsageMessage without cost information that should be enhanced
+        var existingUsageMessage = new UsageMessage
+        {
+            Usage = new Usage
+            {
+                PromptTokens = 25,
+                CompletionTokens = 12,
+                TotalTokens = 37,
+                TotalCost = null // No cost information initially
+            },
+            Role = Role.Assistant,
+            FromAgent = "test-agent",
+            GenerationId = completionId
+        };
+
+        // Create test messages including the existing usage message
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Role = Role.User, Text = "Hello!" },
+            existingUsageMessage
+        };
+
+        var fakeAgent = new FakeStreamingAgent(messages);
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
+
+        var context = new MiddlewareContext(
+            new[] { new TextMessage { Role = Role.User, Text = "Hello" } },
+            new GenerateReplyOptions());
+
+        // Act
+        var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
+        var result = new List<IMessage>();
+        await foreach (var message in messageStream)
+        {
+            result.Add(message);
+        }
+
+        // Assert
+        // Debug what we actually received
+        var usageMessages = result.OfType<UsageMessage>().ToList();
+        
+        // We should have at least one UsageMessage
+        Assert.NotEmpty(usageMessages);
+        
+        var finalUsageMessage = usageMessages.Last();
+        Assert.NotNull(finalUsageMessage);
+        
+        // Debug output
+        Console.WriteLine($"Total messages: {result.Count}");
+        Console.WriteLine($"UsageMessage count: {usageMessages.Count}");
+        Console.WriteLine($"Final UsageMessage TotalCost: {finalUsageMessage.Usage.TotalCost}");
+        Console.WriteLine($"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}");
+        Console.WriteLine($"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}");
+        
+        Assert.NotNull(finalUsageMessage.Usage.TotalCost);
+        Assert.Equal(0.001425, finalUsageMessage.Usage.TotalCost);
+        Assert.Equal(25, finalUsageMessage.Usage.PromptTokens);
+        Assert.Equal(12, finalUsageMessage.Usage.CompletionTokens);
+        
+        // Verify that it was enhanced by our middleware
+        Assert.True(finalUsageMessage.Usage.ExtraProperties?.ContainsKey("enhanced_by"));
+        Assert.Equal("openrouter_middleware", finalUsageMessage.Usage.ExtraProperties?["enhanced_by"]);
+    }
+
+    [Fact]
+    public async Task InvokeStreamingAsync_WithTokenDiscrepancies_ShouldLogWarningsAndUseOpenRouterValues()
+    {
+        // Arrange: Setup OpenRouter response with different token counts than existing usage
+        const string completionId = "chatcmpl-discrepancy-test";
+        
+        // Use the same helper method as working tests with different token counts
+        var generationResponse = CreateOpenRouterGenerationResponse("openai/gpt-4", 30, 15, 0.002000);
+        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
+        var httpClient = new HttpClient(httpHandler);
+
+        // Create a UsageMessage with existing usage data that differs from OpenRouter
+        var existingUsageMessage = new UsageMessage
+        {
+            Usage = new Usage
+            {
+                PromptTokens = 25,       // Will be revised to 30
+                CompletionTokens = 12,   // Will be revised to 15
+                TotalTokens = 37,        // Will be recalculated to 45
+                TotalCost = null         // Will be set to 0.002000
+            },
+            Role = Role.Assistant,
+            FromAgent = "test-agent",
+            GenerationId = completionId
+        };
+
+        var messages = new List<IMessage>
+        {
+            new TextMessage { Role = Role.User, Text = "Hello!" },
+            existingUsageMessage
+        };
+
+        var fakeAgent = new FakeStreamingAgent(messages);
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
+
+        var context = new MiddlewareContext(
+            new[] { new TextMessage { Role = Role.User, Text = "Hello" } },
+            new GenerateReplyOptions());
+
+        // Act
+        var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
+        var result = new List<IMessage>();
+        await foreach (var message in messageStream)
+        {
+            result.Add(message);
+        }
+
+        // Assert
+        // Debug what we actually received
+        var usageMessages = result.OfType<UsageMessage>().ToList();
+        
+        Console.WriteLine($"Total messages: {result.Count}");
+        Console.WriteLine($"UsageMessage count: {usageMessages.Count}");
+        
+        var finalUsageMessage = usageMessages.Last();
+        Assert.NotNull(finalUsageMessage);
+        
+        Console.WriteLine($"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}");
+        Console.WriteLine($"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}");
+        Console.WriteLine($"Final UsageMessage TotalTokens: {finalUsageMessage.Usage.TotalTokens}");
+        Console.WriteLine($"Final UsageMessage TotalCost: {finalUsageMessage.Usage.TotalCost}");
+        Console.WriteLine($"Final UsageMessage has token_discrepancies_resolved: {finalUsageMessage.Usage.ExtraProperties?.ContainsKey("token_discrepancies_resolved")}");
+        
+        // Verify OpenRouter values were used (revised token counts)
+        Assert.Equal(30, finalUsageMessage.Usage.PromptTokens);      // Updated from 25
+        Assert.Equal(15, finalUsageMessage.Usage.CompletionTokens);  // Updated from 12
+        Assert.Equal(45, finalUsageMessage.Usage.TotalTokens);       // Recalculated (30 + 15)
+        Assert.Equal(0.002000, finalUsageMessage.Usage.TotalCost);   // Set from OpenRouter
+        
+        // Verify discrepancy metadata flags
+        Assert.True(finalUsageMessage.Usage.ExtraProperties?.ContainsKey("token_discrepancies_resolved"));
+        Assert.Equal(true, finalUsageMessage.Usage.ExtraProperties?["token_discrepancies_resolved"]);
+        Assert.Equal("used_openrouter_values", finalUsageMessage.Usage.ExtraProperties?["resolution_strategy"]);
+        Assert.Equal("openrouter_middleware", finalUsageMessage.Usage.ExtraProperties?["enhanced_by"]);
+    }
+
     #endregion
 
     public void Dispose()

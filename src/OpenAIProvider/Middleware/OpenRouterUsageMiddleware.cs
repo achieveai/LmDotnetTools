@@ -132,7 +132,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     }
 
     /// <summary>
-    /// Processes messages for synchronous scenarios.
+    /// Processes messages for synchronous scenarios, holding back UsageMessage objects and emitting a single enhanced UsageMessage at the end.
     /// </summary>
     private async Task<IEnumerable<IMessage>> ProcessMessagesAsync(
         IEnumerable<IMessage> messages,
@@ -143,48 +143,85 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         if (!messageList.Any())
             return messageList;
 
-        var lastMessage = messageList.Last();
-        var usageMessage = await CreateUsageMessageAsync(lastMessage, isStreaming, cancellationToken);
+        // Separate UsageMessage objects from other messages
+        var nonUsageMessages = messageList.Where(m => !(m is UsageMessage)).ToList();
+        var usageMessages = messageList.OfType<UsageMessage>().ToList();
 
-        if (usageMessage != null)
+        // Start with non-usage messages
+        var result = new List<IMessage>(nonUsageMessages);
+
+        // Create the final enhanced UsageMessage
+        UsageMessage? finalUsageMessage = null;
+
+        if (usageMessages.Any())
         {
-            messageList.Add(usageMessage);
+            // We have UsageMessage(s) from the response - enhance the last one
+            var lastUsageMessage = usageMessages.Last();
+            _logger.LogDebug("Processing existing UsageMessage with {PromptTokens} prompt tokens and {CompletionTokens} completion tokens", 
+                lastUsageMessage.Usage.PromptTokens, lastUsageMessage.Usage.CompletionTokens);
+            finalUsageMessage = await CreateUsageMessageAsync(lastUsageMessage, isStreaming, cancellationToken);
+        }
+        else if (nonUsageMessages.Any())
+        {
+            // No UsageMessage in response - try to create one from the last non-usage message
+            var lastMessage = nonUsageMessages.Last();
+            finalUsageMessage = await CreateUsageMessageAsync(lastMessage, isStreaming, cancellationToken);
         }
 
-        return messageList;
+        // Add the final enhanced UsageMessage
+        if (finalUsageMessage != null)
+        {
+            result.Add(finalUsageMessage);
+        }
+
+        return result;
     }
 
     /// <summary>
-    /// Processes streaming messages, buffering the final message for enrichment.
+    /// Processes streaming messages, holding back UsageMessage objects and emitting a single enhanced UsageMessage at the end.
     /// </summary>
     private async IAsyncEnumerable<IMessage> ProcessStreamingMessagesAsync(
         IAsyncEnumerable<IMessage> messageStream,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        IMessage? previousMessage = null;
+        IMessage? lastNonUsageMessage = null;
+        UsageMessage? bufferedUsageMessage = null;
 
         await foreach (var message in messageStream.WithCancellation(cancellationToken))
         {
-            // Forward the previous message (if any) immediately
-            if (previousMessage != null)
+            if (message is UsageMessage usageMsg)
             {
-                yield return previousMessage;
+                // Hold back UsageMessage - don't emit it yet
+                bufferedUsageMessage = usageMsg;
+                _logger.LogDebug("Buffered UsageMessage with {PromptTokens} prompt tokens and {CompletionTokens} completion tokens", 
+                    usageMsg.Usage.PromptTokens, usageMsg.Usage.CompletionTokens);
             }
-
-            // Buffer current message as the potential final message
-            previousMessage = message;
+            else
+            {
+                // Forward non-UsageMessage immediately
+                yield return message;
+                lastNonUsageMessage = message;
+            }
         }
 
-        // Process the final buffered message and emit usage message if available
-        if (previousMessage != null)
+        // Now create the final enhanced UsageMessage
+        UsageMessage? finalUsageMessage = null;
+
+        if (bufferedUsageMessage != null)
         {
-            yield return previousMessage;
-            
-            var usageMessage = await CreateUsageMessageAsync(previousMessage, isStreaming: true, cancellationToken);
-            if (usageMessage != null)
-            {
-                yield return usageMessage;
-            }
+            // We have a UsageMessage from the stream - enhance it
+            finalUsageMessage = await CreateUsageMessageAsync(bufferedUsageMessage, isStreaming: true, cancellationToken);
+        }
+        else if (lastNonUsageMessage != null)
+        {
+            // No UsageMessage in stream - try to create one from the last message
+            finalUsageMessage = await CreateUsageMessageAsync(lastNonUsageMessage, isStreaming: true, cancellationToken);
+        }
+
+        // Emit the final enhanced UsageMessage
+        if (finalUsageMessage != null)
+        {
+            yield return finalUsageMessage;
         }
     }
 
@@ -196,15 +233,24 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         bool isStreaming,
         CancellationToken cancellationToken)
     {
+        _logger.LogDebug("[DIAGNOSTIC] CreateUsageMessageAsync called with message type: {MessageType}", message.GetType().Name);
+        
         // Extract completion ID from metadata
         var completionId = GetCompletionId(message);
+        _logger.LogDebug("[DIAGNOSTIC] Completion ID extracted: {CompletionId}", completionId ?? "NULL");
+        
         if (string.IsNullOrEmpty(completionId))
             return null;
 
         // Check for inline usage data first (Requirement 2.2 & 2.3)
         var inlineUsage = GetInlineUsageFromMessage(message);
+        _logger.LogDebug("[DIAGNOSTIC] Inline usage found: {HasInlineUsage}, TotalTokens: {TotalTokens}", 
+            inlineUsage != null, inlineUsage?.TotalTokens ?? 0);
+            
         if (inlineUsage != null && inlineUsage.TotalTokens > 0)
         {
+            _logger.LogDebug("[DIAGNOSTIC] Using inline usage data - skipping enhancement");
+            
             // Log successful inline usage enrichment with structured format (Requirement 11.1)
             _logger.LogInformation("Usage data enriched: {{completionId: {CompletionId}, model: {Model}, promptTokens: {PromptTokens}, completionTokens: {CompletionTokens}, totalCost: {TotalCost:F6}, cached: {Cached}}}",
                 completionId, 
@@ -218,10 +264,71 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             return CreateUsageMessage(message, inlineUsage, completionId);
         }
 
-        // Check if message already has sufficient usage data from other sources
+        // Check if message already has usage data from other sources (e.g., existing UsageMessage)
         var existingUsage = GetUsageFromMessage(message);
+        _logger.LogDebug("[DIAGNOSTIC] Existing usage found: {HasExistingUsage}, TotalTokens: {TotalTokens}, TotalCost: {TotalCost}", 
+            existingUsage != null, existingUsage?.TotalTokens ?? 0, existingUsage?.TotalCost);
+            
         if (existingUsage != null && existingUsage.TotalTokens > 0)
+        {
+            // Check if we need to enhance with OpenRouter cost data
+            // We should enhance if:
+            // 1. No cost information is available (TotalCost is null or 0), OR
+            // 2. This is a UsageMessage (indicating it came from upstream middleware) and we want to add OpenRouter-specific cost data
+            bool shouldEnhanceWithOpenRouter = 
+                (existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0) ||
+                (message is UsageMessage);
+
+            _logger.LogDebug("[DIAGNOSTIC] Enhancement check: TotalCost={TotalCost}, IsUsageMessage={IsUsageMessage}, ShouldEnhance={ShouldEnhance}", 
+                existingUsage.TotalCost, message is UsageMessage, shouldEnhanceWithOpenRouter);
+
+            if (shouldEnhanceWithOpenRouter)
+            {
+                _logger.LogDebug("[DIAGNOSTIC] Attempting OpenRouter enhancement for completion {CompletionId}", completionId);
+                
+                // Try to get enhanced usage from OpenRouter generation endpoint
+                var openRouterUsage = await GetCostStatsWithRetryAsync(completionId, isStreaming, cancellationToken);
+                
+                _logger.LogDebug("[DIAGNOSTIC] OpenRouter API result: {HasResult}, PromptTokens: {PromptTokens}, TotalCost: {TotalCost}", 
+                    openRouterUsage != null, openRouterUsage?.PromptTokens ?? 0, openRouterUsage?.TotalCost);
+                
+                if (openRouterUsage != null)
+                {
+                    _logger.LogDebug("[DIAGNOSTIC] Merging usage data - existing vs OpenRouter");
+                    
+                    // Merge existing usage with OpenRouter cost data
+                    var enhancedUsage = MergeUsageData(existingUsage, openRouterUsage);
+                    
+                    _logger.LogDebug("[DIAGNOSTIC] Merged result: PromptTokens: {PromptTokens}, TotalCost: {TotalCost}", 
+                        enhancedUsage.PromptTokens, enhancedUsage.TotalCost);
+                    
+                    // Log successful usage enhancement
+                    _logger.LogInformation("Usage data enhanced with OpenRouter cost: {{completionId: {CompletionId}, model: {Model}, promptTokens: {PromptTokens}, completionTokens: {CompletionTokens}, originalCost: {OriginalCost:F6}, enhancedCost: {EnhancedCost:F6}, cached: {Cached}}}",
+                        completionId, 
+                        enhancedUsage.ExtraProperties?.GetValueOrDefault("model")?.ToString() ?? "unknown",
+                        enhancedUsage.PromptTokens,
+                        enhancedUsage.CompletionTokens,
+                        existingUsage.TotalCost ?? 0.0,
+                        enhancedUsage.TotalCost ?? 0.0,
+                        enhancedUsage.ExtraProperties?.GetValueOrDefault("is_cached")?.ToString() ?? "false");
+
+                    return CreateUsageMessage(message, enhancedUsage, completionId);
+                }
+                else
+                {
+                    _logger.LogDebug("[DIAGNOSTIC] OpenRouter API returned no data - using existing usage");
+                }
+            }
+            else
+            {
+                _logger.LogDebug("[DIAGNOSTIC] Enhancement not needed - using existing usage as-is");
+            }
+
+            // Return existing usage if no enhancement was needed or possible
             return CreateUsageMessage(message, existingUsage, completionId);
+        }
+
+        _logger.LogDebug("[DIAGNOSTIC] No existing usage found - attempting fallback to OpenRouter API");
 
         // Try to get usage from OpenRouter generation endpoint as fallback
         var fallbackUsage = await GetCostStatsWithRetryAsync(completionId, isStreaming, cancellationToken);
@@ -550,6 +657,85 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                 .Add("open_usage", openUsage)
                 .Add("source", "openrouter_fallback")
         };
+    }
+
+    /// <summary>
+    /// Merges two Usage objects, prioritizing the 'new' usage for fields that are not zero or null.
+    /// Handles cases where OpenRouter provides revised token counts by logging warnings and using the updated values.
+    /// </summary>
+    private Usage MergeUsageData(Usage existingUsage, Usage newUsage)
+    {
+        // Check for token count discrepancies and log warnings if found
+        bool hasTokenDiscrepancies = false;
+        
+        if (existingUsage.PromptTokens != 0 && newUsage.PromptTokens != 0 && existingUsage.PromptTokens != newUsage.PromptTokens)
+        {
+            _logger.LogWarning("Token count discrepancy detected: Existing PromptTokens={ExistingPromptTokens}, OpenRouter PromptTokens={NewPromptTokens}. Using OpenRouter values as they are typically more accurate.",
+                existingUsage.PromptTokens, newUsage.PromptTokens);
+            hasTokenDiscrepancies = true;
+        }
+        
+        if (existingUsage.CompletionTokens != 0 && newUsage.CompletionTokens != 0 && existingUsage.CompletionTokens != newUsage.CompletionTokens)
+        {
+            _logger.LogWarning("Token count discrepancy detected: Existing CompletionTokens={ExistingCompletionTokens}, OpenRouter CompletionTokens={NewCompletionTokens}. Using OpenRouter values as they are typically more accurate.",
+                existingUsage.CompletionTokens, newUsage.CompletionTokens);
+            hasTokenDiscrepancies = true;
+        }
+        
+        if (existingUsage.TotalTokens != 0 && newUsage.TotalTokens != 0 && existingUsage.TotalTokens != newUsage.TotalTokens)
+        {
+            _logger.LogWarning("Token count discrepancy detected: Existing TotalTokens={ExistingTotalTokens}, OpenRouter TotalTokens={NewTotalTokens}. Using OpenRouter values as they are typically more accurate.",
+                existingUsage.TotalTokens, newUsage.TotalTokens);
+            hasTokenDiscrepancies = true;
+        }
+
+        // Determine which values to use - prioritize OpenRouter data when available and non-zero
+        var finalPromptTokens = newUsage.PromptTokens > 0 ? newUsage.PromptTokens : existingUsage.PromptTokens;
+        var finalCompletionTokens = newUsage.CompletionTokens > 0 ? newUsage.CompletionTokens : existingUsage.CompletionTokens;
+        var finalTotalTokens = newUsage.TotalTokens > 0 ? newUsage.TotalTokens : existingUsage.TotalTokens;
+        
+        // If we used OpenRouter token counts, recalculate total tokens to ensure consistency
+        if (newUsage.PromptTokens > 0 && newUsage.CompletionTokens > 0)
+        {
+            finalTotalTokens = finalPromptTokens + finalCompletionTokens;
+        }
+
+        return new Usage
+        {
+            PromptTokens = finalPromptTokens,
+            CompletionTokens = finalCompletionTokens,
+            TotalTokens = finalTotalTokens,
+            TotalCost = newUsage.TotalCost ?? existingUsage.TotalCost,
+            ExtraProperties = MergeExtraProperties(existingUsage.ExtraProperties, newUsage.ExtraProperties, hasTokenDiscrepancies)
+        };
+    }
+
+    /// <summary>
+    /// Merges extra properties from two Usage objects, prioritizing new values.
+    /// </summary>
+    private static ImmutableDictionary<string, object?> MergeExtraProperties(
+        ImmutableDictionary<string, object?>? existing, 
+        ImmutableDictionary<string, object?>? newProps,
+        bool hasTokenDiscrepancies = false)
+    {
+        var result = existing ?? ImmutableDictionary<string, object?>.Empty;
+        
+        if (newProps != null)
+        {
+            result = result.AddRange(newProps);
+        }
+        
+        // Always mark that this was enhanced by the OpenRouter middleware
+        result = result.SetItem("enhanced_by", "openrouter_middleware");
+        
+        // Add a flag if token discrepancies were found and resolved
+        if (hasTokenDiscrepancies)
+        {
+            result = result.SetItem("token_discrepancies_resolved", true);
+            result = result.SetItem("resolution_strategy", "used_openrouter_values");
+        }
+        
+        return result;
     }
 
     /// <summary>
