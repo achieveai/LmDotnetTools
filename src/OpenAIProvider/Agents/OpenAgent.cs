@@ -3,19 +3,24 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
 public class OpenClientAgent : IStreamingAgent, IDisposable
 {
     private IOpenClient _client;
+    private readonly ILogger _logger;
 
     public OpenClientAgent(
         string name,
-        IOpenClient client)
+        IOpenClient client,
+        ILogger? logger = null)
     {
         _client = client;
         Name = name;
+        _logger = logger ?? NullLogger.Instance;
     }
     public string Name { get; }
 
@@ -30,6 +35,9 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         CancellationToken cancellationToken = default)
     {
         var request = ChatCompletionRequest.FromMessages(messages, options);
+        
+        _logger.LogDebug("OpenAgent generating reply - Model: {Model}, Agent: {AgentName}, MessageCount: {MessageCount}", 
+            request.Model, Name, request.Messages.Count);
 
         var response = await _client.CreateChatCompletionsAsync(
             request,
@@ -48,7 +56,23 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             };
 
             response.Usage = response.Usage.SetExtraProperty("estimated_cost", totalCost);
+            
+            _logger.LogDebug("Cost extracted from response - CompletionId: {CompletionId}, EstimatedCost: {EstimatedCost}", 
+                response.Id, totalCost);
         }
+        else
+        {
+            _logger.LogDebug("No cost data in response extra properties - CompletionId: {CompletionId}, HasUsage: {HasUsage}, HasExtraProperties: {HasExtraProperties}", 
+                response.Id, response.Usage != null, response.Usage?.ExtraProperties != null);
+        }
+
+        var openUsage = new OpenUsage
+        {
+            ModelId = response.Model,
+            PromptTokens = response.Usage?.PromptTokens ?? 0,
+            CompletionTokens = response.Usage?.CompletionTokens ?? 0,
+            TotalCost = totalCost,
+        };
 
         var openMessage = new OpenMessage
         {
@@ -57,16 +81,18 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 .Choices!
                 .First()
                 .Message!,
-            Usage = new OpenUsage
-            {
-                ModelId = response.Model,
-                PromptTokens = response.Usage?.PromptTokens ?? 0,
-                CompletionTokens = response.Usage?.CompletionTokens ?? 0,
-                TotalCost = totalCost,
-            }
+            Usage = openUsage
         };
 
-        return openMessage.ToMessages();
+        _logger.LogInformation("OpenMessage created - CompletionId: {CompletionId}, Model: {Model}, PromptTokens: {PromptTokens}, CompletionTokens: {CompletionTokens}, TotalCost: {TotalCost}, Agent: {AgentName}", 
+            openMessage.CompletionId, openUsage.ModelId, openUsage.PromptTokens, openUsage.CompletionTokens, openUsage.TotalCost, Name);
+
+        var resultMessages = openMessage.ToMessages();
+        
+        _logger.LogDebug("OpenMessage converted to {MessageCount} IMessage objects - CompletionId: {CompletionId}", 
+            resultMessages.Count(), openMessage.CompletionId);
+
+        return resultMessages;
     }
 
     public virtual async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -77,6 +103,9 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         var request = ChatCompletionRequest.FromMessages(messages, options)
             with
         { Stream = true };
+
+        _logger.LogDebug("OpenAgent generating streaming reply - Model: {Model}, Agent: {AgentName}, MessageCount: {MessageCount}", 
+            request.Model, Name, request.Messages.Count);
 
         // Return the streaming response as an IAsyncEnumerable
         return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
@@ -92,28 +121,38 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
         string completionId = string.Empty;
         string modelId = string.Empty;
+        int totalChunks = 0;
+        bool hasUsageData = false;
+        
         await foreach (var item in response)
         {
             modelId = modelId.Length == 0 ? item.Model ?? modelId : modelId;
             completionId = completionId.Length == 0
                 ? item.Id!
                 : completionId;
+            
+            totalChunks++;
+            
+            if (item.Usage != null)
+            {
+                hasUsageData = true;
+                _logger.LogDebug("Usage data in streaming chunk - CompletionId: {CompletionId}, PromptTokens: {PromptTokens}, CompletionTokens: {CompletionTokens}", 
+                    completionId, item.Usage.PromptTokens, item.Usage.CompletionTokens);
+            }
 
             var openMessage = new OpenMessage
             {
                 CompletionId = completionId,
-                ChatMessage = item.Choices != null && item.Choices.Count > 0
-                    ? item.Choices!.First().Message ?? item.Choices!.First().Delta!
-                    : new ChatMessage()
-                    {
-                        Content = new(string.Empty)
-                    },
-                Usage = item.Usage == null ? null : new OpenUsage
+                ChatMessage = item.Choices!.First().Delta!,
+                Usage = item.Usage != null ? new OpenUsage
                 {
-                    ModelId = item.Model,
+                    ModelId = modelId,
                     PromptTokens = item.Usage.PromptTokens,
                     CompletionTokens = item.Usage.CompletionTokens,
-                }
+                    TotalCost = item.Usage.ExtraProperties?.TryGetValue("estimated_cost", out var cost) == true 
+                        ? cost as double? 
+                        : null,
+                } : null
             };
 
             foreach (var message in openMessage.ToStreamingMessage())
@@ -121,5 +160,8 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 yield return message;
             }
         }
+        
+        _logger.LogInformation("Streaming completed - CompletionId: {CompletionId}, Model: {Model}, TotalChunks: {TotalChunks}, HadUsageData: {HadUsageData}, Agent: {AgentName}", 
+            completionId, modelId, totalChunks, hasUsageData, Name);
     }
 }
