@@ -12,7 +12,7 @@
     "temperature": 0,
     "reasoning": {
       "effort": "medium",
-      "max_tokens": 512
+      "max_completion_tokens": 512
     }
   }
 }
