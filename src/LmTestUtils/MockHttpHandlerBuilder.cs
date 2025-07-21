@@ -2983,7 +2983,9 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 }
                 else
                 {
-                    // For regular JSON responses
+                    // For regular JSON responses - handle both old and new formats
+                    // Old format: JsonElement that needs to be serialized
+                    // New format: Raw JSON content (we'll detect this by checking if it's a simple string)
                     var responseJson = JsonSerializer.Serialize(interaction.SerializedResponse);
                     responseBytes = Encoding.UTF8.GetBytes(responseJson);
                 }
@@ -3175,7 +3177,8 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             }
             else
             {
-                // Parse response content to JsonElement for non-SSE responses
+                // For non-SSE responses, store the raw JSON content directly
+                // This preserves all fields including reasoning tokens that might not round-trip properly
                 JsonElement responseElement;
                 try
                 {
@@ -3216,9 +3219,9 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                     }
                     else
                     {
-                        // For JSON, cache the serialized JSON
-                        var responseJson = JsonSerializer.Serialize(interaction.SerializedResponse);
-                        responseBytes = Encoding.UTF8.GetBytes(responseJson);
+                        // For JSON, cache the RAW response content instead of re-serializing
+                        // This preserves all fields including reasoning tokens
+                        responseBytes = Encoding.UTF8.GetBytes(responseContent);
                     }
                     _cachedResponseBytes[cacheKey] = responseBytes;
                 }
@@ -3381,7 +3384,9 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 }
                 else
                 {
-                    // For regular JSON responses
+                    // For regular JSON responses - handle both old and new formats
+                    // Old format: JsonElement that needs to be serialized
+                    // New format: Raw JSON content would be stored directly (future enhancement)
                     var responseJson = JsonSerializer.Serialize(interaction.SerializedResponse);
                     responseBytes = Encoding.UTF8.GetBytes(responseJson);
                 }

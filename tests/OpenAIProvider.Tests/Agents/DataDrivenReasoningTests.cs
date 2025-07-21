@@ -168,7 +168,7 @@ public class DataDrivenReasoningTests
                 ["reasoning"] = new Dictionary<string, object?>
                 {
                     ["effort"] = "medium",
-                    ["max_tokens"] = 512
+                    ["max_completion_tokens"] = 512
                 }
             }.ToImmutableDictionary()
         };
