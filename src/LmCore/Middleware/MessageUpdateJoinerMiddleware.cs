@@ -210,8 +210,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             // Convert the update to a TextMessage for the builder
             builder.Add(textUpdateMessage);
 
-            // Return the current accumulated state
-            return builder.Build();
+            // Return the original update to maintain streaming behavior
+            return textUpdateMessage;
         }
     }
 

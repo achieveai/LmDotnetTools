@@ -104,7 +104,8 @@ public sealed record JsonSchemaObject
     /// <summary>
     /// Whether additional properties are allowed in the object
     /// </summary>
-    [JsonPropertyName("additionalProperties")]
+    [JsonPropertyName("additional_properties")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool AdditionalProperties { get; init; } = false;
 
     /// <summary>
@@ -249,6 +250,7 @@ public sealed record JsonSchemaProperty
     /// Whether additional properties are allowed in the object (for object-type properties)
     /// </summary>
     [JsonPropertyName("additionalProperties")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool AdditionalProperties { get; init; } = false;
 
     /// <summary>
@@ -297,25 +299,37 @@ public sealed record JsonSchemaProperty
     /// Creates a new string property with the given description
     /// </summary>
     public static JsonSchemaProperty String(string? description = null) =>
-        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["string", "null"]), Description = description };
+        new JsonSchemaProperty {
+            Type = JsonSchemaTypeHelper.ToType("string"),
+            Description = description,
+        };
 
     /// <summary>
     /// Creates a new number property with the given description
     /// </summary>
     public static JsonSchemaProperty Number(string? description = null) =>
-        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["number", "null"]), Description = description };
+        new JsonSchemaProperty {
+            Type = JsonSchemaTypeHelper.ToType("number"),
+            Description = description,
+        };
 
     /// <summary>
     /// Creates a new integer property with the given description
     /// </summary>
     public static JsonSchemaProperty Integer(string? description = null) =>
-        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["integer", "null"]), Description = description };
+        new JsonSchemaProperty {
+            Type = JsonSchemaTypeHelper.ToType("integer"),
+            Description = description,
+        };
 
     /// <summary>
     /// Creates a new boolean property with the given description
     /// </summary>
     public static JsonSchemaProperty Boolean(string? description = null) =>
-        new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["boolean", "null"]), Description = description };
+        new JsonSchemaProperty {
+            Type = JsonSchemaTypeHelper.ToType("boolean"),
+            Description = description,
+        };
 
     /// <summary>
     /// Creates a new array property with the given item schema and description
@@ -327,7 +341,7 @@ public sealed record JsonSchemaProperty
     {
         return new JsonSchemaProperty
         {
-            Type = JsonSchemaTypeHelper.ToType(["array", "null"]),
+            Type = JsonSchemaTypeHelper.ToType("array"),
             Description = description,
             Items = items
         };
@@ -376,7 +390,7 @@ public class JsonSchemaObjectBuilder
     private readonly string _type;
     private readonly Dictionary<string, JsonSchemaProperty> _properties = new();
     private readonly List<string> _required = new();
-    private bool _additionalProperties = true;
+    private bool _additionalProperties = false;
     private string? _description;
 
     /// <summary>
@@ -426,7 +440,7 @@ public class JsonSchemaObjectBuilder
         return new JsonSchemaObject
         {
             Type = _type,
-            Properties = _properties.Count > 0 ? _properties : null,
+            Properties = _properties,
             Required = _required.Count > 0 ? _required : null,
             AdditionalProperties = _additionalProperties,
             Description = _description

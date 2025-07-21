@@ -1,10 +1,14 @@
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Middleware;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Configuration;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Agents;
 
@@ -16,6 +20,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ProviderAgentFactory> _logger;
+    private readonly IHttpHandlerBuilder _handlerBuilder;
 
     // Mapping of provider names to their compatibility types
     private static readonly Dictionary<string, string> ProviderCompatibility = new()
@@ -37,10 +42,11 @@ public class ProviderAgentFactory : IProviderAgentFactory
         { "Replicate", "Replicate" }
     };
 
-    public ProviderAgentFactory(IServiceProvider serviceProvider, ILogger<ProviderAgentFactory> logger)
+    public ProviderAgentFactory(IServiceProvider serviceProvider, ILogger<ProviderAgentFactory> logger, IHttpHandlerBuilder handlerBuilder)
     {
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _handlerBuilder = handlerBuilder ?? throw new ArgumentNullException(nameof(handlerBuilder));
     }
 
     public IAgent CreateAgent(ProviderResolution resolution)
@@ -154,7 +160,16 @@ public class ProviderAgentFactory : IProviderAgentFactory
             
             // Create agent with the resolved model name
             var agentName = $"{resolution.EffectiveProviderName}-{resolution.EffectiveModelName}";
-            return new OpenClientAgent(agentName, client);
+            var agent = new OpenClientAgent(agentName, client) as IAgent;
+
+            // Automatically inject OpenRouter usage middleware if this is an OpenRouter provider
+            // and the middleware is enabled (Requirement 12.1-12.2)
+            if (string.Equals(resolution.EffectiveProviderName, "OpenRouter", StringComparison.OrdinalIgnoreCase))
+            {
+                agent = InjectOpenRouterUsageMiddlewareIfEnabled(agent);
+            }
+
+            return agent;
         }
         catch (Exception ex)
         {
@@ -166,45 +181,76 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     private IAnthropicClient CreateAnthropicClient(ProviderResolution resolution)
     {
-        // Get API key from environment
-        var apiKey = resolution.Connection.GetApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException(
-                $"API key not found for provider '{resolution.EffectiveProviderName}'. " +
-                $"Please set the environment variable '{resolution.Connection.ApiKeyEnvironmentVariable}'.");
-        }
-
-        // Create HTTP client using shared factory
-        var httpClient = HttpClientFactory.CreateForAnthropic(
-            apiKey,
-            resolution.Connection.EndpointUrl,
-            resolution.Connection.Timeout,
-            resolution.Connection.Headers);
-
-        // Create Anthropic client
+        var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
+        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, Http.ProviderType.Anthropic);
+        var httpClient = Http.HttpClientFactory.Create(providerCfg, _handlerBuilder, resolution.Connection.Timeout, resolution.Connection.Headers, _logger);
         return new AnthropicClient(httpClient);
     }
 
     private IOpenClient CreateOpenAIClient(ProviderResolution resolution)
     {
-        // Get API key from environment
-        var apiKey = resolution.Connection.GetApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException(
-                $"API key not found for provider '{resolution.EffectiveProviderName}'. " +
-                $"Please set the environment variable '{resolution.Connection.ApiKeyEnvironmentVariable}'.");
-        }
-
-        // Create HTTP client using shared factory
-        var httpClient = HttpClientFactory.CreateForOpenAI(
-            apiKey,
-            resolution.Connection.EndpointUrl,
-            resolution.Connection.Timeout,
-            resolution.Connection.Headers);
-
-        // Create OpenAI client
+        var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
+        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, Http.ProviderType.OpenAI);
+        var httpClient = Http.HttpClientFactory.Create(providerCfg, _handlerBuilder, resolution.Connection.Timeout, resolution.Connection.Headers, _logger);
         return new OpenClient(httpClient, resolution.Connection.EndpointUrl);
+    }
+
+    /// <summary>
+    /// Injects OpenRouter usage middleware if enabled via configuration (Requirement 12.1-12.2).
+    /// </summary>
+    /// <param name="agent">The base agent to wrap with middleware</param>
+    /// <returns>The agent, optionally wrapped with OpenRouter usage middleware</returns>
+    private IAgent InjectOpenRouterUsageMiddlewareIfEnabled(IAgent agent)
+    {
+        try
+        {
+            // Get configuration from DI
+            var configuration = _serviceProvider.GetService<IConfiguration>();
+            if (configuration == null)
+            {
+                _logger.LogWarning("IConfiguration not available in DI container. Skipping OpenRouter usage middleware injection.");
+                return agent;
+            }
+
+            // Check if usage middleware is enabled
+            var enableUsageMiddleware = EnvironmentVariables.GetEnableUsageMiddleware(configuration);
+            if (!enableUsageMiddleware)
+            {
+                _logger.LogDebug("OpenRouter usage middleware is disabled");
+                return agent;
+            }
+
+            // Get OpenRouter API key for usage lookup
+            var openRouterApiKey = EnvironmentVariables.GetOpenRouterApiKey(configuration);
+            if (string.IsNullOrWhiteSpace(openRouterApiKey))
+            {
+                _logger.LogWarning("OpenRouter usage middleware is enabled but OPENROUTER_API_KEY is missing. " +
+                                 "Skipping middleware injection. Set ENABLE_USAGE_MIDDLEWARE=false to disable this warning.");
+                return agent;
+            }
+
+            // Create and inject the usage middleware
+            var middlewareLogger = _serviceProvider.GetService<ILogger<OpenRouterUsageMiddleware>>() ??
+                                 throw new InvalidOperationException("Logger<OpenRouterUsageMiddleware> not found in DI container");
+
+            var usageMiddleware = new OpenRouterUsageMiddleware(
+                openRouterApiKey: openRouterApiKey,
+                logger: middlewareLogger);
+
+            _logger.LogDebug("Injecting OpenRouter usage middleware for agent");
+
+            // Wrap the agent with middleware using the extension method
+            if (agent is IStreamingAgent streamingAgent)
+            {
+                return streamingAgent.WithMiddleware(usageMiddleware);
+            }
+
+            throw new InvalidOperationException("OpenRouter usage middleware requires a streaming agent");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to inject OpenRouter usage middleware. Continuing without middleware.");
+            return agent;
+        }
     }
 } 
