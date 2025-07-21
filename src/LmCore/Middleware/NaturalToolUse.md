@@ -11,6 +11,7 @@ This middleware pair:
 4. **Delegates** actual tool invocation to `FunctionCallMiddleware`
 
 Benefits:
+
 - Captures chain-of-thought in one pass  
 - Reduces prompt tokens  
 - Maintains full JSON-schema validation
@@ -30,6 +31,7 @@ NaturalToolUseMiddleware
 Implements `IMiddleware` & `IStreamingMiddleware`.
 
 Constructor:
+
 ```csharp
 public NaturalToolUseMiddleware(
     IEnumerable<FunctionContract> functions,
@@ -39,10 +41,12 @@ public NaturalToolUseMiddleware(
 ```
 
 Responsibilities:
+
 1. Creates both `NaturalToolUseParserMiddleware` and `FunctionCallMiddleware`.
 2. Modifies the Context's Agent to be wrapped with `NaturalToolUseParserMiddleware` and then `FunctionCallMiddleware`.
    Note: Take a look at `MiddlewareExtensions`.
 3. Internally use wrapped Agent for both `InvokeAsync` and `InvokeStreamingAsync`.
+
 ---
 
 ### NaturalToolUseParserMiddleware
@@ -50,6 +54,7 @@ Responsibilities:
 Implements `IMiddleware` & `IStreamingMiddleware`.
 
 Constructor:
+
 ```csharp
 public NaturalToolUseParserMiddleware(
     IEnumerable<FunctionContract> functions,
@@ -59,7 +64,9 @@ public NaturalToolUseParserMiddleware(
 
 Responsibilities:
 0. **Prompt Injection**:
-   - Render `functions` as Markdown and append to system prompt
+
+- Render `functions` as Markdown and append to system prompt
+
 1. **Parsing**:
    - Buffer streaming tokens until end-of-message
    - Detect fenced `<tool_name>`..`</tool_name>` blocks (note, only blocks with tool names are valid).
@@ -114,6 +121,7 @@ Responsibilities:
 Tool Name: `GetWeather`
 
 **Schema Definition:**
+
 ```json
 {
   "type": "object",
@@ -133,6 +141,7 @@ Tool Name: `GetWeather`
 ```
 
 **Example User Input:**
+
 ```
 What's the weather like in San Francisco today?
 ```
@@ -141,14 +150,14 @@ What's the weather like in San Francisco today?
 
 I'll get the weather for San Francisco today in Fahrenheit.
 
-<GetWeather>
+<tool_call name="GetWeather">
 ```json
 {
   "location": "San Francisco, CA",
   "unit": "fahrenheit"
 }
 ```
-</GetWeather>
+</tool_call>
 
 **Explanation:**
 The language model interprets the user's natural language query and extracts the relevant information into a structured JSON format based on the provided schema. The middleware then processes this JSON to invoke the appropriate tool or API to fetch the weather data for San Francisco in Fahrenheit.
@@ -158,6 +167,7 @@ The language model interprets the user's natural language query and extracts the
 ToolName: `BookRestaurant`
 
 **Schema Definition:**
+
 ```json
 {
   "type": "object",
@@ -184,6 +194,7 @@ ToolName: `BookRestaurant`
 ```
 
 **Example User Input:**
+
 ```
 Book a table at Chez Paul for 4 people on 2025-05-15 at 7 PM.
 ```
@@ -192,7 +203,7 @@ Book a table at Chez Paul for 4 people on 2025-05-15 at 7 PM.
 
 I'll book a restaurant reservation for Chez Paul for 4 people on 2025-05-15 at 7 PM.
 
-<BookRestaurant>
+<tool_call name=BookRestaurant>
 ```json
 {
   "restaurantName": "Chez Paul",
@@ -201,7 +212,7 @@ I'll book a restaurant reservation for Chez Paul for 4 people on 2025-05-15 at 7
   "numberOfPeople": 4
 }
 ```
-</BookRestaurant>
+</tool_call>
 
 **Explanation:**
 The model parses the user's request and fills in the structured JSON according to the schema. This JSON data is then used by the middleware to call the appropriate booking tool or API with the exact parameters needed for the reservation.
@@ -221,6 +232,7 @@ These examples demonstrate how natural language input from users can be converte
 ## Markdown Schema for Function Contracts
 
 The Markdown representation of function contracts follows a structured format as implemented in `FunctionContractExtensions.cs`:
+
 - **Heading**: Uses the function name as an H2 heading (e.g., `## functionName`)
 - **Description**: Includes a brief description if provided (e.g., `Description: This function does...`)
 - **Parameters**: Lists parameters with their name, required/optional status, and description. Complex schemas are included as indented JSON code blocks.
@@ -240,6 +252,7 @@ When a `ToolCallAggregateMessage` is received as part of the `InvokeAsync` or `I
 **Original `ToolCallAggregateMessage`:**
 
 A `ToolCallAggregateMessage` contains two key components:
+
 1. `ToolsCallMessage`: The original tool call with function name and arguments
 2. `ToolsCallResult`: The result returned from that tool call
 
@@ -265,18 +278,21 @@ When processed by the middleware, this aggregate message decomposes into the fol
 1. **Text before the tool call** (if any) becomes a `TextMessage` with the Assistant role
 
 2. **The tool call itself** becomes formatted as a natural tool call within text:
+
    ```
-   <GetWeather>
+   <tool_call name=GetWeather>
    ```json
    {
      "location": "San Francisco, CA",
      "unit": "celsius"
    }
    ```
-   </GetWeather>
+
+   </tool_call>
    ```
 
 3. **The tool result** becomes a separate `TextMessage` with the User role:
+
    ```json
    {
      "temperature": 18, 

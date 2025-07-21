@@ -46,12 +46,12 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
         double? totalCost = null;
         Usage? coreUsage = null;
-        
+
         if (response.Usage != null)
         {
             // Convert to core usage for ExtraProperties operations
             coreUsage = response.Usage.ToCoreUsage();
-            
+
             if (coreUsage.ExtraProperties != null
                 && coreUsage.ExtraProperties.ContainsKey("estimated_cost"))
             {
@@ -62,44 +62,59 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                     _ => null
                 };
 
-            response.Usage = response.Usage.SetExtraProperty("estimated_cost", totalCost);
-            
-            _logger.LogDebug("Cost extracted from response - CompletionId: {CompletionId}, EstimatedCost: {EstimatedCost}", 
-                response.Id, totalCost);
+                _logger.LogDebug("Cost extracted from response - CompletionId: {CompletionId}, EstimatedCost: {EstimatedCost}",
+                    response.Id, totalCost);
+            }
+            else
+            {
+                _logger.LogDebug("No cost data in response extra properties - CompletionId: {CompletionId}, HasUsage: {HasUsage}, HasExtraProperties: {HasExtraProperties}",
+                    response.Id,
+                    response.Usage != null,
+                    response.Usage?.ExtraProperties != null);
+            }
+
+            var openUsage = new OpenUsage
+            {
+                ModelId = response.Model,
+                PromptTokens = response.Usage?.PromptTokens ?? 0,
+                CompletionTokens = response.Usage?.CompletionTokens ?? 0,
+                TotalCost = totalCost,
+            };
+
+            var openMessage = new OpenMessage
+            {
+                CompletionId = response.Id!,
+                ChatMessage = response
+                    .Choices!
+                    .First()
+                    .Message!,
+                Usage = openUsage
+            };
+
+            _logger.LogInformation("OpenMessage created - CompletionId: {CompletionId}, Model: {Model}, PromptTokens: {PromptTokens}, CompletionTokens: {CompletionTokens}, TotalCost: {TotalCost}, Agent: {AgentName}",
+                openMessage.CompletionId, openUsage.ModelId, openUsage.PromptTokens, openUsage.CompletionTokens, openUsage.TotalCost, Name);
+
+            var resultMessages = openMessage.ToMessages();
+
+            _logger.LogDebug("OpenMessage converted to {MessageCount} IMessage objects - CompletionId: {CompletionId}",
+                resultMessages.Count(), openMessage.CompletionId);
+
+            return resultMessages;
         }
         else
         {
-            _logger.LogDebug("No cost data in response extra properties - CompletionId: {CompletionId}, HasUsage: {HasUsage}, HasExtraProperties: {HasExtraProperties}", 
-                response.Id, response.Usage != null, response.Usage?.ExtraProperties != null);
+           _logger.LogWarning("No usage data in response - CompletionId: {CompletionId}, Model: {Model}, Agent: {AgentName}",
+                response.Id, response.Model, Name);
+
+            return (new OpenMessage
+            {
+                CompletionId = response.Id!,
+                ChatMessage = response
+                    .Choices!
+                    .First()
+                    .Message!,
+            }).ToMessages();
         }
-
-        var openUsage = new OpenUsage
-        {
-            ModelId = response.Model,
-            PromptTokens = response.Usage?.PromptTokens ?? 0,
-            CompletionTokens = response.Usage?.CompletionTokens ?? 0,
-            TotalCost = totalCost,
-        };
-
-        var openMessage = new OpenMessage
-        {
-            CompletionId = response.Id!,
-            ChatMessage = response
-                .Choices!
-                .First()
-                .Message!,
-            Usage = openUsage
-        };
-
-        _logger.LogInformation("OpenMessage created - CompletionId: {CompletionId}, Model: {Model}, PromptTokens: {PromptTokens}, CompletionTokens: {CompletionTokens}, TotalCost: {TotalCost}, Agent: {AgentName}", 
-            openMessage.CompletionId, openUsage.ModelId, openUsage.PromptTokens, openUsage.CompletionTokens, openUsage.TotalCost, Name);
-
-        var resultMessages = openMessage.ToMessages();
-        
-        _logger.LogDebug("OpenMessage converted to {MessageCount} IMessage objects - CompletionId: {CompletionId}", 
-            resultMessages.Count(), openMessage.CompletionId);
-
-        return resultMessages;
     }
 
     public virtual async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -107,8 +122,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var request = ChatCompletionRequest.FromMessages(messages, options)
-            with
+        var request = ChatCompletionRequest.FromMessages(messages, options) with
         { Stream = true };
 
         _logger.LogDebug("OpenAgent generating streaming reply - Model: {Model}, Agent: {AgentName}, MessageCount: {MessageCount}", 

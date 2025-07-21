@@ -165,7 +165,7 @@ public static class FunctionContractMarkdownExtensions
         // Add example section
         markdown.AppendLine("Example:");
         markdown.AppendLine();
-        markdown.AppendLine($"<{function.Name}>");
+        markdown.AppendLine($"<tool_call name=\"{function.Name}\">");
         markdown.AppendLine("```json");
 
         // Create a simple example object with the parameters
@@ -187,7 +187,7 @@ public static class FunctionContractMarkdownExtensions
 
         markdown.AppendLine(exampleJson);
         markdown.AppendLine("```");
-        markdown.AppendLine($"</{function.Name}>");
+        markdown.AppendLine("</tool_call>");
 
         return markdown.ToString();
     }

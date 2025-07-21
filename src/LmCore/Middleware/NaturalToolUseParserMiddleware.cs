@@ -6,6 +6,184 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
+// Data structures for parsed chunks
+public abstract class ParsedChunk {}
+
+public class TextChunk : ParsedChunk 
+{
+    public string Text { get; set; } = string.Empty;
+    public TextChunk() {}
+    public TextChunk(string text) => Text = text;
+}
+
+public class ToolCallChunk : ParsedChunk 
+{
+    public string ToolName { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+    public string RawMatch { get; set; } = string.Empty;
+    
+    public ToolCallChunk() {}
+    public ToolCallChunk(string toolName, string content, string rawMatch)
+    {
+        ToolName = toolName;
+        Content = content;
+        RawMatch = rawMatch;
+    }
+}
+
+public class PartialToolCallMatch
+{
+    public int StartIndex { get; set; } = -1;
+    public string PartialPattern { get; set; } = string.Empty;
+    public bool IsMatch => StartIndex >= 0;
+    
+    public PartialToolCallMatch() {}
+    public PartialToolCallMatch(int startIndex, string partialPattern)
+    {
+        StartIndex = startIndex;
+        PartialPattern = partialPattern;
+    }
+    
+    public static PartialToolCallMatch NoMatch => new();
+}
+
+public class SafeTextResult
+{
+    public string SafeText { get; set; } = string.Empty;
+    public string RemainingBuffer { get; set; } = string.Empty;
+    
+    public SafeTextResult() {}
+    public SafeTextResult(string safeText, string remainingBuffer)
+    {
+        SafeText = safeText;
+        RemainingBuffer = remainingBuffer;
+    }
+}
+
+// Component 1: Text parser for complete tool calls
+public class ToolCallTextParser
+{
+    private static readonly Regex ToolCallPattern = new(@"<tool_call\s+name\s*=\s*[""']([a-zA-Z0-9_]+)[""']\s*>(.*?)</tool_call>", RegexOptions.Singleline | RegexOptions.Compiled);
+    
+    public List<ParsedChunk> Parse(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return new List<ParsedChunk>();
+            
+        var chunks = new List<ParsedChunk>();
+        var matches = ToolCallPattern.Matches(text);
+        
+        if (matches.Count == 0)
+        {
+            chunks.Add(new TextChunk(text));
+            return chunks;
+        }
+        
+        var currentIndex = 0;
+        foreach (Match match in matches)
+        {
+            // Add text before this tool call
+            if (match.Index > currentIndex)
+            {
+                var prefixText = text.Substring(currentIndex, match.Index - currentIndex);
+                if (!string.IsNullOrEmpty(prefixText))
+                    chunks.Add(new TextChunk(prefixText));
+            }
+            
+            // Add the tool call chunk
+            var toolName = match.Groups[1].Value;
+            var content = match.Groups[2].Value.Trim();
+            chunks.Add(new ToolCallChunk(toolName, content, match.Value));
+            
+            currentIndex = match.Index + match.Length;
+        }
+        
+        // Add remaining text after last tool call
+        if (currentIndex < text.Length)
+        {
+            var suffixText = text.Substring(currentIndex);
+            if (!string.IsNullOrEmpty(suffixText))
+                chunks.Add(new TextChunk(suffixText));
+        }
+        
+        return chunks;
+    }
+}
+
+// Component 2: Detector for partial tool call patterns 
+public class PartialToolCallDetector
+{
+    // Simpler approach: detect incomplete tool calls that should be held back
+    // We'll use multiple patterns to handle different scenarios
+    private static readonly Regex[] PartialPatterns = {
+        // 1. Incomplete opening tag patterns: <, <t, <tool_call, <tool_call name="test
+        new Regex(@"<(?:t(?:o(?:o(?:l(?:_(?:c(?:a(?:l(?:l(?:\s+[^>]*)?)?)?)?)?)?)?)?)?)?$", RegexOptions.Compiled),
+        
+        // 2. Complete opening tag but no closing: <tool_call name="test">...content but no </tool_call>
+        new Regex(@"<tool_call\s+[^>]*>(?:(?!</tool_call>).)*$", RegexOptions.Compiled | RegexOptions.Singleline),
+        
+        // 3. Incomplete closing tag: ...content</tool_call but missing final >
+        new Regex(@"</tool_call$", RegexOptions.Compiled),
+        new Regex(@"</tool_cal$", RegexOptions.Compiled),
+        new Regex(@"</tool_ca$", RegexOptions.Compiled),
+        new Regex(@"</tool_c$", RegexOptions.Compiled),
+        new Regex(@"</tool_$", RegexOptions.Compiled),
+        new Regex(@"</tool$", RegexOptions.Compiled),
+        new Regex(@"</too$", RegexOptions.Compiled),
+        new Regex(@"</to$", RegexOptions.Compiled),
+        new Regex(@"</t$", RegexOptions.Compiled),
+        new Regex(@"</$", RegexOptions.Compiled)
+    };
+    
+    public PartialToolCallMatch DetectPartialStart(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return PartialToolCallMatch.NoMatch;
+            
+        foreach (var pattern in PartialPatterns)
+        {
+            var match = pattern.Match(text);
+            if (match.Success)
+            {
+                var startIndex = match.Index;
+                var partialPattern = text.Substring(startIndex);
+                return new PartialToolCallMatch(startIndex, partialPattern);
+            }
+        }
+        
+        return PartialToolCallMatch.NoMatch;
+    }
+}
+
+// Component 3: Safe text extractor
+public class SafeTextExtractor
+{
+    private readonly PartialToolCallDetector _detector;
+    
+    public SafeTextExtractor(PartialToolCallDetector detector)
+    {
+        _detector = detector ?? throw new ArgumentNullException(nameof(detector));
+    }
+    
+    public SafeTextResult ExtractSafeText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return new SafeTextResult(string.Empty, string.Empty);
+            
+        var partialMatch = _detector.DetectPartialStart(text);
+        
+        if (!partialMatch.IsMatch)
+        {
+            return new SafeTextResult(text, string.Empty);
+        }
+        
+        var safeText = text.Substring(0, partialMatch.StartIndex);
+        var remainingBuffer = text.Substring(partialMatch.StartIndex);
+        
+        return new SafeTextResult(safeText, remainingBuffer);
+    }
+}
+
 /// <summary>
 /// Middleware for parsing natural tool use calls from LLM responses.
 /// Detects inline tool calls within fenced blocks and splits them into text and tool call messages.
@@ -17,6 +195,11 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
     private readonly IAgent? _fallbackParser;
     private readonly string? _name;
     private bool _isFirstInvocation = true;
+    
+    // New parsing components
+    private readonly ToolCallTextParser _textParser;
+    private readonly PartialToolCallDetector _partialDetector;
+    private readonly SafeTextExtractor _safeTextExtractor;
 
     public NaturalToolUseParserMiddleware(
         IEnumerable<FunctionContract> functions,
@@ -28,6 +211,11 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         _schemaValidator = schemaValidator;
         _fallbackParser = fallbackParser;
         _name = name ?? nameof(NaturalToolUseParserMiddleware);
+        
+        // Initialize parsing components
+        _textParser = new ToolCallTextParser();
+        _partialDetector = new PartialToolCallDetector();
+        _safeTextExtractor = new SafeTextExtractor(_partialDetector);
     }
 
     public string? Name => _name;
