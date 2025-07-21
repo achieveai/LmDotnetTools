@@ -107,7 +107,7 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string validToolCall = "Here's the weather: <GetWeather>\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</GetWeather>";
+        string validToolCall = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(validToolCall);
         _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
@@ -129,7 +129,7 @@ public class NaturalToolUseParserMiddlewareTests
         var middleware = CreateMiddleware();
 
         // Create a response with proper tool call format but invalid JSON inside
-        string invalidJsonToolCall = "Let me get that weather: <GetWeather>\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_json\": true,\n}\n```\n</GetWeather>";
+        string invalidJsonToolCall = "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_json\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the JSON (invalid schema)
@@ -173,7 +173,7 @@ public class NaturalToolUseParserMiddlewareTests
         var middleware = CreateMiddleware();
 
         // Create a response with a tool name that doesn't exist in the function contracts
-        string unknownToolCall = "Let me search for that: <NonExistentTool>\n```json\n{\n  \"query\": \"test search\"\n}\n```\n</NonExistentTool>";
+        string unknownToolCall = "Let me search for that: <tool_call name=\"NonExistentTool\">\n```json\n{\n  \"query\": \"test search\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(unknownToolCall);
 
         // Act & Assert
@@ -208,7 +208,7 @@ public class NaturalToolUseParserMiddlewareTests
     {
         // Arrange
         // The full text containing a tool call
-        string fullText = "Here's the weather: <GetWeather>\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</GetWeather>";
+        string fullText = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
 
         _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 

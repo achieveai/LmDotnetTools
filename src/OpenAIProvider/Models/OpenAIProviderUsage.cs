@@ -45,6 +45,9 @@ public record OpenAIProviderUsage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int CachedTokens { get; init; }
 
+    [JsonExtensionData]
+    public IReadOnlyDictionary<string, object?> ExtraProperties { get; init; } = new Dictionary<string, object?>();
+
     // Unified access properties with precedence logic
     [JsonIgnore]
     public int TotalReasoningTokens => 
@@ -70,7 +73,8 @@ public record OpenAIProviderUsage
             PromptTokens = PromptTokens,
             CompletionTokens = CompletionTokens,
             TotalTokens = TotalTokens,
-            TotalCost = TotalCost
+            TotalCost = TotalCost,
+            ExtraProperties = ExtraProperties.ToImmutableDictionary()
         };
 
         // Convert nested token details if present
