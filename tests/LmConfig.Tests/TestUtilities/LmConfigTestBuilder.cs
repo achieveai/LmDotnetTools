@@ -150,6 +150,7 @@ public class LmConfigTestBuilder
         services.AddLogging();
         services.AddSingleton(Options.Create(BuildConfig()));
         services.AddSingleton<IModelResolver, ModelResolver>();
+        services.AddSingleton<IHttpHandlerBuilder, HandlerBuilder>();
         services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
         services.AddScoped<UnifiedAgent>();
         
