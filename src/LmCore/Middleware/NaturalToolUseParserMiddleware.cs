@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -63,7 +64,8 @@ public class SafeTextResult
 // Component 1: Text parser for complete tool calls
 public class ToolCallTextParser
 {
-    private static readonly Regex ToolCallPattern = new(@"<tool_call\s+name\s*=\s*[""']([a-zA-Z0-9_]+)[""']\s*>(.*?)</tool_call>", RegexOptions.Singleline | RegexOptions.Compiled);
+    // Simplified regex - just extract tool name and content, don't worry about content format
+    private static readonly Regex ToolCallPattern = new(@"<tool_call\s+name\s*=\s*[""']([^""']+)[""']\s*>(.*?)</tool_call>", RegexOptions.Singleline | RegexOptions.Compiled);
     
     public List<ParsedChunk> Parse(string text)
     {
@@ -113,16 +115,16 @@ public class ToolCallTextParser
 // Component 2: Detector for partial tool call patterns 
 public class PartialToolCallDetector
 {
-    // Simpler approach: detect incomplete tool calls that should be held back
-    // We'll use multiple patterns to handle different scenarios
+    // Check if text contains any opening tool_call tags without matching closing tags
+    private static readonly Regex OpeningTagPattern = new(@"<tool_call\s+[^>]*>", RegexOptions.Compiled);
+    private static readonly Regex ClosingTagPattern = new(@"</tool_call>", RegexOptions.Compiled);
+    
+    // Patterns for detecting incomplete tags at the end
     private static readonly Regex[] PartialPatterns = {
         // 1. Incomplete opening tag patterns: <, <t, <tool_call, <tool_call name="test
         new Regex(@"<(?:t(?:o(?:o(?:l(?:_(?:c(?:a(?:l(?:l(?:\s+[^>]*)?)?)?)?)?)?)?)?)?)?$", RegexOptions.Compiled),
         
-        // 2. Complete opening tag but no closing: <tool_call name="test">...content but no </tool_call>
-        new Regex(@"<tool_call\s+[^>]*>(?:(?!</tool_call>).)*$", RegexOptions.Compiled | RegexOptions.Singleline),
-        
-        // 3. Incomplete closing tag: ...content</tool_call but missing final >
+        // 2. Incomplete closing tag: ...content</tool_call but missing final >
         new Regex(@"</tool_call$", RegexOptions.Compiled),
         new Regex(@"</tool_cal$", RegexOptions.Compiled),
         new Regex(@"</tool_ca$", RegexOptions.Compiled),
@@ -139,7 +141,45 @@ public class PartialToolCallDetector
     {
         if (string.IsNullOrEmpty(text))
             return PartialToolCallMatch.NoMatch;
+        
+        // First check for unmatched opening tags anywhere in the text
+        var openMatches = OpeningTagPattern.Matches(text);
+        var closeMatches = ClosingTagPattern.Matches(text);
+        
+        if (openMatches.Count > closeMatches.Count)
+        {
+            // We have more opening tags than closing tags - find the first unmatched opening tag
+            var matchedCloses = new HashSet<int>();
             
+            // Mark all properly closed tool calls
+            foreach (Match closeMatch in closeMatches)
+            {
+                // Find the last opening tag before this closing tag
+                Match? correspondingOpen = null;
+                foreach (Match openMatch in openMatches)
+                {
+                    if (openMatch.Index < closeMatch.Index && !matchedCloses.Contains(openMatch.Index))
+                    {
+                        correspondingOpen = openMatch;
+                    }
+                }
+                if (correspondingOpen != null)
+                {
+                    matchedCloses.Add(correspondingOpen.Index);
+                }
+            }
+            
+            // Find the first unmatched opening tag
+            foreach (Match openMatch in openMatches)
+            {
+                if (!matchedCloses.Contains(openMatch.Index))
+                {
+                    return new PartialToolCallMatch(openMatch.Index, text.Substring(openMatch.Index));
+                }
+            }
+        }
+        
+        // Then check for incomplete tags at the end
         foreach (var pattern in PartialPatterns)
         {
             var match = pattern.Match(text);
@@ -190,6 +230,10 @@ public class SafeTextExtractor
 /// </summary>
 public class NaturalToolUseParserMiddleware : IStreamingMiddleware
 {
+    // Shared regex patterns to eliminate duplication
+    private static readonly Regex JsonCodeBlockPattern = new(@"```(?:json)?\s*([\s\S]*?)\s*```", RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex ToolCallPattern = new(@"<tool_call\s+name\s*=\s*[""']([^""']+)[""']\s*>(.*?)</tool_call>", RegexOptions.Singleline | RegexOptions.Compiled);
+
     private readonly IEnumerable<FunctionContract> _functions;
     private readonly IJsonSchemaValidator? _schemaValidator;
     private readonly IAgent? _fallbackParser;
@@ -220,6 +264,82 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     public string? Name => _name;
 
+    /// <summary>
+    /// Extracts JSON content from code blocks, handling both labeled and unlabeled blocks.
+    /// </summary>
+    private static string? TryExtractJsonFromContent(string content)
+    {
+        var match = JsonCodeBlockPattern.Match(content);
+        return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
+    /// <summary>
+    /// Unified method for processing tool calls with validation and fallback logic.
+    /// </summary>
+    private async Task<IEnumerable<IMessage>> ProcessToolCallAsync(
+        string toolName, 
+        string content, 
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var jsonText = TryExtractJsonFromContent(content);
+            if (jsonText != null)
+            {
+                var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+                if (contract != null && contract.Parameters != null && _schemaValidator != null)
+                {
+                    string schemaString = contract.Parameters.ToString() ?? string.Empty;
+                    if (_schemaValidator.Validate(jsonText, schemaString))
+                    {
+                        var toolCall = new ToolCall
+                        {
+                            FunctionName = toolName,
+                            FunctionArgs = jsonText,
+                            ToolCallId = Guid.NewGuid().ToString()
+                        };
+                        return new IMessage[] { new ToolsCallMessage { ToolCalls = new[] { toolCall }.ToImmutableList(), Role = Role.Assistant } };
+                    }
+                    else if (_fallbackParser != null)
+                    {
+                        return await UseFallbackParserAsync(content, toolName, cancellationToken);
+                    }
+                    else
+                    {
+                        throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
+                    }
+                }
+                else if (_fallbackParser != null)
+                {
+                    return await UseFallbackParserAsync(content, toolName, cancellationToken);
+                }
+                else
+                {
+                    throw new ToolUseParsingException($"Tool {toolName} not found or no schema validator provided");
+                }
+            }
+            else if (_fallbackParser != null)
+            {
+                return await UseFallbackParserAsync(content, toolName, cancellationToken);
+            }
+            else
+            {
+                throw new ToolUseParsingException($"No JSON content found for tool call {toolName}");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_fallbackParser != null)
+            {
+                return await UseFallbackParserAsync(content, toolName, cancellationToken);
+            }
+            else
+            {
+                throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
+            }
+        }
+    }
+
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
@@ -245,7 +365,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
             modifiedContext.Options,
             cancellationToken);
 
-        return await ProcessStreamingRepliesAsync(streamingReplies, cancellationToken);
+        return ProcessStreamingRepliesAsync(streamingReplies, cancellationToken);
     }
 
     private MiddlewareContext PrepareContext(MiddlewareContext context)
@@ -298,29 +418,114 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         return processedReplies;
     }
 
-    private async Task<IAsyncEnumerable<IMessage>> ProcessStreamingRepliesAsync(IAsyncEnumerable<IMessage> streamingReplies, CancellationToken cancellationToken)
+    private IAsyncEnumerable<IMessage> ProcessStreamingRepliesAsync(IAsyncEnumerable<IMessage> streamingReplies, CancellationToken cancellationToken)
     {
-        List<IMessage> accumulatedMessages = new List<IMessage>();
+        return ProcessStreamingRepliesInternalAsync(streamingReplies, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<IMessage> ProcessStreamingRepliesInternalAsync(
+        IAsyncEnumerable<IMessage> streamingReplies, 
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        // State for buffering TextUpdateMessages
+        var textBuffer = new StringBuilder();
+        var bufferedUpdates = new List<TextUpdateMessage>();
+        TextUpdateMessage? templateUpdate = null;
+
         await foreach (var reply in streamingReplies.WithCancellation(cancellationToken))
         {
-            accumulatedMessages.Add(reply);
-        }
-
-        List<IMessage> processedMessages = new List<IMessage>();
-        foreach (var msg in accumulatedMessages)
-        {
-            if (msg is TextMessage textMsg)
+            // Handle TextUpdateMessage with streaming logic
+            if (reply is TextUpdateMessage textUpdate)
             {
-                var processed = await ProcessTextMessageAsync(textMsg, cancellationToken);
-                processedMessages.AddRange(processed);
+                // Store template for creating new messages
+                templateUpdate ??= textUpdate;
+
+                // Add to buffer
+                textBuffer.Append(textUpdate.Text);
+                bufferedUpdates.Add(textUpdate);
+
+                // Check if remaining buffer contains complete tool calls
+                if (textBuffer.Length > 0)
+                {
+                    var parsedChunks = _textParser.Parse(textBuffer.ToString());
+                    var hasToolCalls = parsedChunks.Any(chunk => chunk is ToolCallChunk);
+
+
+                    if (hasToolCalls)
+                    {
+                        // Process complete tool calls and emit results
+                        await foreach (var message in ProcessParsedChunksAsync(parsedChunks, templateUpdate, cancellationToken))
+                        {
+                            yield return message;
+                        }
+
+                        // Clear buffer after processing
+                        textBuffer.Clear();
+                        bufferedUpdates.Clear();
+                    }
+                }
+
+                // Try to extract safe text that can be emitted immediately
+                var safeTextResult = _safeTextExtractor.ExtractSafeText(textBuffer.ToString());
+
+                if (!string.IsNullOrEmpty(safeTextResult.SafeText))
+                {
+                    var safeTextLen = safeTextResult.SafeText.Length;
+                    int returned = 0;
+                    foreach (var item in bufferedUpdates)
+                    {
+                        if (safeTextLen < item.Text.Length)
+                        {
+                            break;
+                        }
+
+                        returned++;
+                        safeTextLen -= item.Text.Length;
+                        yield return item;
+                    }
+
+                    if (returned > 0)
+                    {
+                        textBuffer.Clear();
+                        bufferedUpdates = bufferedUpdates.Skip(returned).ToList();
+                        bufferedUpdates.ForEach(b => textBuffer.Append(b.Text));
+                    }
+                }
             }
+            // Handle complete TextMessage (legacy support)
             else
             {
-                processedMessages.Add(msg);
+                foreach (var message in bufferedUpdates)
+                {
+                    yield return message;
+                }
+
+                textBuffer.Clear();
+                bufferedUpdates.Clear();
+
+                if (reply is TextMessage textMsg)
+                {
+                    // Flush any buffered text first
+                    var processed = await ProcessTextMessageAsync(textMsg, cancellationToken);
+                    foreach (var processedMsg in processed)
+                    {
+                        yield return processedMsg;
+                    }
+                }
+                // Pass through other message types unchanged
+                else
+                {
+                    yield return reply;
+                }
             }
         }
 
-        return new AsyncEnumerableWrapper<IMessage>(processedMessages);
+        // Flush any remaining buffered text at the end
+        foreach (var message in bufferedUpdates)
+        {
+            yield return message;
+        }
+
     }
 
     private async Task<IEnumerable<IMessage>> ProcessTextMessageAsync(TextMessage textMessage, CancellationToken cancellationToken)
@@ -328,9 +533,8 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         var text = textMessage.Text;
         var messages = new List<IMessage>();
 
-        // Check if there are tool calls in the format <toolName>...
-        var toolCallPattern = new Regex(@"<([a-zA-Z0-9_]+)>(.*?)</\1>", RegexOptions.Singleline);
-        var matches = toolCallPattern.Matches(text).Cast<Match>().ToList();
+        // Check if there are tool calls in the format <tool_call name="...">...</tool_call>
+        var matches = ToolCallPattern.Matches(text).Cast<Match>().ToList();
 
         if (matches.Count == 0)
         {
@@ -358,49 +562,8 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
             try
             {
-                // Extract JSON from content, looking for code blocks
-                var jsonMatch = Regex.Match(content, @"```(?:json)?\s*([\s\S]*?)\s*```", RegexOptions.Singleline);
-                if (jsonMatch.Success)
-                {
-                    var jsonText = jsonMatch.Groups[1].Value.Trim();
-                    var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
-                    if (contract != null && contract.Parameters != null && _schemaValidator != null)
-                    {
-                        // Using ToString() as a workaround - ideally should use the schema property directly
-                        string schemaString = contract.Parameters.ToString() ?? string.Empty;
-                        if (_schemaValidator.Validate(jsonText, schemaString))
-                        {
-                            messages.Add(new TextMessage { Text = $"Tool Call: {toolName} with args {jsonText}", Role = Role.Assistant });
-                        }
-                        else if (_fallbackParser != null)
-                        {
-                            var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
-                            messages.AddRange(fallbackMessages);
-                        }
-                        else
-                        {
-                            throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
-                        }
-                    }
-                    else if (_fallbackParser != null)
-                    {
-                        var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
-                        messages.AddRange(fallbackMessages);
-                    }
-                    else
-                    {
-                        throw new ToolUseParsingException($"Tool {toolName} not found or no schema validator provided");
-                    }
-                }
-                else if (_fallbackParser != null)
-                {
-                    var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
-                    messages.AddRange(fallbackMessages);
-                }
-                else
-                {
-                    throw new ToolUseParsingException($"No JSON content found for tool call {toolName}");
-                }
+                var toolCallMessages = await ProcessToolCallAsync(toolName, content, cancellationToken);
+                messages.AddRange(toolCallMessages);
             }
             catch (Exception ex)
             {
@@ -438,54 +601,8 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
             result.Add(new TextMessage { Text = prefixText, Role = Role.Assistant });
         }
 
-        try
-        {
-            var jsonMatch = Regex.Match(text, @"```json[\s\S]*?```", RegexOptions.Singleline);
-            if (!jsonMatch.Success)
-            {
-                jsonMatch = Regex.Match(text, @"```[\s\S]*?```", RegexOptions.Singleline);
-            }
-
-            if (jsonMatch.Success)
-            {
-                var jsonText = jsonMatch.Value.Trim('`').Replace("json", "").Trim();
-                var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
-                if (contract != null && _schemaValidator != null)
-                {
-                    result.Add(new TextMessage { Text = jsonText, Role = Role.Assistant });
-                }
-                else if (_fallbackParser != null)
-                {
-                    var fallbackMessages = await UseFallbackParserAsync(text, toolName, cancellationToken);
-                    result.AddRange(fallbackMessages);
-                }
-                else
-                {
-                    throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
-                }
-            }
-            else if (_fallbackParser != null)
-            {
-                var fallbackMessages = await UseFallbackParserAsync(text, toolName, cancellationToken);
-                result.AddRange(fallbackMessages);
-            }
-            else
-            {
-                throw new ToolUseParsingException($"No JSON content found for tool call {toolName}");
-            }
-        }
-        catch (Exception ex)
-        {
-            if (_fallbackParser != null)
-            {
-                var fallbackMessages = await UseFallbackParserAsync(text, toolName, cancellationToken);
-                result.AddRange(fallbackMessages);
-            }
-            else
-            {
-                throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
-            }
-        }
+        var toolCallMessages = await ProcessToolCallAsync(toolName, text, cancellationToken);
+        result.AddRange(toolCallMessages);
 
         return result;
     }
@@ -509,7 +626,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         {
             try
             {
-                var jsonText = ExtractJsonFromText(fallbackReply.Text);
+                var jsonText = TryExtractJsonFromContent(fallbackReply.Text) ?? fallbackReply.Text;
                 var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
                 if (contract != null && _schemaValidator != null)
                 {
@@ -525,20 +642,54 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         throw new ToolUseParsingException($"Fallback parser failed to generate valid JSON for {toolName}");
     }
 
-    private string ExtractJsonFromText(string text)
+    private static TextUpdateMessage CreateTextUpdateMessage(string text, TextUpdateMessage template)
     {
-        var jsonMatch = Regex.Match(text, @"```json[\s\S]*?```", RegexOptions.Singleline);
-        if (!jsonMatch.Success)
+        return new TextUpdateMessage
         {
-            jsonMatch = Regex.Match(text, @"```[\s\S]*?```", RegexOptions.Singleline);
-        }
+            Text = text,
+            Role = template.Role,
+            FromAgent = template.FromAgent,
+            Metadata = template.Metadata,
+            GenerationId = template.GenerationId,
+            IsThinking = template.IsThinking
+        };
+    }
 
-        if (jsonMatch.Success)
+    private async IAsyncEnumerable<IMessage> ProcessParsedChunksAsync(
+        List<ParsedChunk> parsedChunks, 
+        TextUpdateMessage template, 
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        foreach (var chunk in parsedChunks)
         {
-            return jsonMatch.Value.Trim('`').Replace("json", "").Trim();
+            if (chunk is TextChunk textChunk)
+            {
+                if (!string.IsNullOrEmpty(textChunk.Text))
+                {
+                    yield return CreateTextUpdateMessage(textChunk.Text, template);
+                }
+            }
+            else if (chunk is ToolCallChunk toolCallChunk)
+            {
+                // Process the tool call and create ToolsCallMessage
+                var toolCallMessages = await ProcessToolCallChunkAsync(toolCallChunk, template, cancellationToken);
+                foreach (var message in toolCallMessages)
+                {
+                    yield return message;
+                }
+            }
         }
+    }
 
-        return text;
+    private async Task<IEnumerable<IMessage>> ProcessToolCallChunkAsync(
+        ToolCallChunk toolCallChunk, 
+        TextUpdateMessage template, 
+        CancellationToken cancellationToken)
+    {
+        return await ProcessToolCallAsync(
+            toolCallChunk.ToolName,
+            toolCallChunk.Content,
+            cancellationToken);
     }
 }
 
