@@ -46,7 +46,7 @@ public record OpenAIProviderUsage
     public int CachedTokens { get; init; }
 
     [JsonExtensionData]
-    public IReadOnlyDictionary<string, object?> ExtraProperties { get; init; } = new Dictionary<string, object?>();
+    public IDictionary<string, object> ExtraProperties { get; init; } = new Dictionary<string, object>();
 
     // Unified access properties with precedence logic
     [JsonIgnore]

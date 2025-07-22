@@ -1,7 +1,7 @@
 {
  "models": [
    {
-     "id": "claude-3-sonnet",
+     "id": "claude-4-sonnet",
      "is_reasoning": true,
      "capabilities": {
        "thinking": {
@@ -50,7 +50,7 @@
      "providers": [
        {
          "name": "Anthropic",
-         "model_name": "claude-3-sonnet-20240229",
+         "model_name": "claude-4-sonnet",
          "priority": 2,
          "pricing": {
            "prompt_per_million": 3.0,
@@ -60,7 +60,7 @@
        },
        {
          "name": "OpenRouter",
-         "model_name": "anthropic/claude-3-sonnet",
+         "model_name": "anthropic/claude-4-sonnet",
          "priority": 1,
          "pricing": {
            "prompt_per_million": 3.0,
@@ -69,7 +69,7 @@
          "sub_providers": [
            {
              "name": "Anthropic",
-             "model_name": "claude-3-sonnet-20240229",
+             "model_name": "claude-4-sonnet",
              "priority": 1,
              "pricing": {
                "prompt_per_million": 3.0,
@@ -78,7 +78,7 @@
            },
            {
              "name": "AWS Bedrock",
-             "model_name": "anthropic.claude-3-sonnet-20240229-v1:0",
+             "model_name": "anthropic.claude-4-sonnet",
              "priority": 2,
              "pricing": {
                "prompt_per_million": 3.0,
@@ -598,6 +598,69 @@
      ]
    },
    {
+     "id": "gemini-2.5-flash-lite",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": true,
+         "supports_audio": false,
+         "supports_video": false,
+         "supported_image_formats": ["jpeg", "png", "webp"],
+         "max_image_size": 10485760,
+         "max_images_per_message": 20
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 1048576,
+         "max_output_tokens": 16384,
+         "recommended_max_prompt_tokens": 1000000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": true
+       },
+       "supports_streaming": true,
+       "supported_features": ["multimodal", "function-calling", "ultra-fast", "cost-optimized", "nano-model"],
+       "performance": {
+         "typical_latency": "00:00:01",
+         "max_latency": "00:00:06",
+         "tokens_per_second": 250.0,
+         "quality_tier": "good"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenRouter",
+         "model_name": "google/gemini-2.5-flash-lite-preview-06-17",
+         "priority": 2,
+         "pricing": {
+           "prompt_per_million": 0.10,
+           "completion_per_million": 0.4,
+           "images_per_1000": 0.10
+         },
+         "sub_providers": [
+           {
+             "name": "Google AI Studio",
+             "model_name": "gemini-2.0-flash-lite",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.10,
+               "completion_per_million": 0.4
+             }
+           }
+         ],
+         "tags": ["fallback", "ultra-fast", "openai-compatible", "nano-model"]
+       }
+     ]
+   },
+   {
      "id": "gemini-2.0-flash-lite",
      "is_reasoning": false,
      "capabilities": {
@@ -821,8 +884,8 @@
          "model_name": "llama-4-scout",
          "priority": 1,
          "pricing": {
-           "prompt_per_million": 0.11,
-           "completion_per_million": 0.34
+           "prompt_per_million": 0.65,
+           "completion_per_million": 0.85
          },
          "tags": ["world-record-speed", "moe", "multimodal", "nano-model"]
        },
@@ -841,8 +904,8 @@
          "model_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct-FP8",
          "priority": 3,
          "pricing": {
-           "prompt_per_million": 0.15,
-           "completion_per_million": 0.5
+           "prompt_per_million": 0.08,
+           "completion_per_million": 0.30
          },
          "tags": ["cost-effective", "reliable", "moe", "nano-model"]
        },
@@ -851,8 +914,8 @@
          "model_name": "meta-llama/llama-4-scout",
          "priority": 4,
          "pricing": {
-           "prompt_per_million": 0.18,
-           "completion_per_million": 0.59
+           "prompt_per_million": 0.08,
+           "completion_per_million": 0.30
          },
          "sub_providers": [
            {
@@ -936,78 +999,160 @@
      },
      "providers": [
        {
-         "name": "Cerebras",
-         "model_name": "llama-4-maverick",
+         "name": "DeepInfra",
+         "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
          "priority": 1,
          "pricing": {
-           "prompt_per_million": 1.35,
-           "completion_per_million": 1.35
+           "prompt_per_million": 0.15,
+           "completion_per_million": 0.6,
+           "images_per_1000": 0.6684
          },
-         "tags": ["arena-leader", "moe", "multimodal", "premium-speed", "small-model"]
+         "tags": ["cost-effective", "reliable", "moe", "multimodal", "small-model"]
+       },
+       {
+         "name": "Cerebras",
+         "model_name": "llama-4-maverick-17b-128e-instruct",
+         "priority": 7,
+         "pricing": {
+           "prompt_per_million": 0.2,
+           "completion_per_million": 0.6
+         },
+         "tags": ["world-record-speed", "moe", "small-model"]
        },
        {
          "name": "Groq",
-         "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
-         "priority": 2,
+         "model_name": "meta-llama/llama-4-maverick-17b-128e-instruct",
+         "priority": 8,
          "pricing": {
-           "prompt_per_million": 1.35,
-           "completion_per_million": 1.35
+           "prompt_per_million": 0.2,
+           "completion_per_million": 0.6
          },
-         "tags": ["ultra-fast", "moe", "arena-leader", "small-model"]
-       },
-       {
-         "name": "DeepInfra",
-         "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-         "priority": 3,
-         "pricing": {
-           "prompt_per_million": 1.5,
-           "completion_per_million": 1.5
-         },
-         "tags": ["cost-effective", "reliable", "moe", "small-model"]
+         "tags": ["ultra-fast", "moe", "small-model"]
        },
        {
          "name": "OpenRouter",
          "model_name": "meta-llama/llama-4-maverick",
-         "priority": 4,
+         "priority": 15,
          "pricing": {
-           "prompt_per_million": 1.8,
-           "completion_per_million": 1.8
+           "prompt_per_million": 0.15,
+           "completion_per_million": 0.6
          },
          "sub_providers": [
            {
-             "name": "Together AI",
-             "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
-             "priority": 1,
-             "pricing": {
-               "prompt_per_million": 1.8,
-               "completion_per_million": 1.8
-             }
-           },
-           {
              "name": "DeepInfra",
              "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Parasail",
+             "model_name": "parasail-llama-4-maverick-instruct-fp8",
              "priority": 2,
              "pricing": {
-               "prompt_per_million": 1.5,
-               "completion_per_million": 1.5
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.85
              }
            },
            {
-             "name": "Replicate",
-             "model_name": "meta/llama-4-maverick-instruct",
+             "name": "NovitaAI",
+             "model_name": "meta-llama/llama-4-maverick-17b-128e-instruct-fp8",
              "priority": 3,
              "pricing": {
-               "prompt_per_million": 2.0,
-               "completion_per_million": 2.0
+               "prompt_per_million": 0.17,
+               "completion_per_million": 0.85
              }
            },
            {
-             "name": "Fireworks AI",
-             "model_name": "accounts/fireworks/models/llama-4-maverick-instruct",
+             "name": "Lambda",
+             "model_name": "llama-4-maverick-17b-128e-instruct-fp8",
              "priority": 4,
              "pricing": {
-               "prompt_per_million": 1.75,
-               "completion_per_million": 1.75
+               "prompt_per_million": 0.18,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Baseten",
+             "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+             "priority": 5,
+             "pricing": {
+               "prompt_per_million": 0.19,
+               "completion_per_million": 0.72
+             }
+           },
+           {
+             "name": "Friendli",
+             "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+             "priority": 6,
+             "pricing": {
+               "prompt_per_million": 0.2,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Cerebras",
+             "model_name": "llama-4-maverick-17b-128e-instruct",
+             "priority": 7,
+             "pricing": {
+               "prompt_per_million": 0.2,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Groq",
+             "model_name": "meta-llama/llama-4-maverick-17b-128e-instruct",
+             "priority": 8,
+             "pricing": {
+               "prompt_per_million": 0.2,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Fireworks",
+             "model_name": "accounts/fireworks/models/llama4-maverick-instruct-basic",
+             "priority": 9,
+             "pricing": {
+               "prompt_per_million": 0.22,
+               "completion_per_million": 0.88
+             }
+           },
+           {
+             "name": "GMICloud",
+             "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+             "priority": 10,
+             "pricing": {
+               "prompt_per_million": 0.25,
+               "completion_per_million": 0.8
+             }
+           },
+           {
+             "name": "Together",
+             "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+             "priority": 11,
+             "pricing": {
+               "prompt_per_million": 0.27,
+               "completion_per_million": 0.85
+             }
+           },
+           {
+             "name": "Google Vertex",
+             "model_name": "llama-4-maverick-17b-128e-instruct-maas",
+             "priority": 12,
+             "pricing": {
+               "prompt_per_million": 0.35,
+               "completion_per_million": 1.15
+             }
+           },
+           {
+             "name": "SambaNova",
+             "model_name": "Llama-4-Maverick-17B-128E-Instruct",
+             "priority": 13,
+             "pricing": {
+               "prompt_per_million": 0.63,
+               "completion_per_million": 1.8
              }
            }
          ],
@@ -1141,6 +1286,219 @@
      ]
    },
    {
+     "id": "deepseek-r1",
+     "is_reasoning": true,
+     "capabilities": {
+       "thinking": {
+         "type": "DeepSeek",
+         "supports_budget_tokens": false,
+         "supports_thinking_type": false,
+         "max_thinking_tokens": 32768,
+         "is_built_in": true,
+         "is_exposed": true,
+         "parameter_name": "reasoning_effort"
+       },
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": false,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 163840,
+         "max_output_tokens": 32768,
+         "max_reasoning_tokens": 32768,
+         "recommended_max_prompt_tokens": 150000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["reasoning", "function-calling", "long-context", "cost-effective"],
+       "performance": {
+         "typical_latency": "00:00:04",
+         "max_latency": "00:00:25",
+         "tokens_per_second": 45.0,
+         "quality_tier": "premium"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenRouter",
+         "model_name": "deepseek/deepseek-r1-0528",
+         "priority": 18,
+         "pricing": {
+           "prompt_per_million": 0.272,
+           "completion_per_million": 0.272
+         },
+         "sub_providers": [
+           {
+             "name": "Chutes",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.272,
+               "completion_per_million": 0.272
+             }
+           },
+           {
+             "name": "Targon",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.5,
+               "completion_per_million": 2.0
+             }
+           },
+           {
+             "name": "InferenceNet",
+             "model_name": "deepseek/deepseek-r1-0528/fp-8",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 0.5,
+               "completion_per_million": 2.15
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 0.5,
+               "completion_per_million": 2.15
+             }
+           },
+           {
+             "name": "Crusoe",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 5,
+             "pricing": {
+               "prompt_per_million": 0.5,
+               "completion_per_million": 2.18
+             }
+           },
+           {
+             "name": "Lambda",
+             "model_name": "deepseek-r1-0528",
+             "priority": 6,
+             "pricing": {
+               "prompt_per_million": 0.5,
+               "completion_per_million": 2.18
+             }
+           },
+           {
+             "name": "DeepSeek",
+             "model_name": "deepseek-reasoner",
+             "priority": 7,
+             "pricing": {
+               "prompt_per_million": 0.55,
+               "completion_per_million": 2.19
+             }
+           },
+           {
+             "name": "NovitaAI",
+             "model_name": "deepseek/deepseek-r1-0528",
+             "priority": 8,
+             "pricing": {
+               "prompt_per_million": 0.7,
+               "completion_per_million": 2.5
+             }
+           },
+           {
+             "name": "Parasail",
+             "model_name": "parasail-deepseek-r1-0528",
+             "priority": 9,
+             "pricing": {
+               "prompt_per_million": 0.79,
+               "completion_per_million": 4.0
+             }
+           },
+           {
+             "name": "GMICloud",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 10,
+             "pricing": {
+               "prompt_per_million": 0.8,
+               "completion_per_million": 2.3
+             }
+           },
+           {
+             "name": "Nebius AI Studio",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 11,
+             "pricing": {
+               "prompt_per_million": 0.8,
+               "completion_per_million": 2.4
+             }
+           },
+           {
+             "name": "Google Vertex",
+             "model_name": "deepseek-r1-0528-maas",
+             "priority": 12,
+             "pricing": {
+               "prompt_per_million": 1.35,
+               "completion_per_million": 5.4
+             }
+           },
+           {
+             "name": "Baseten",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 13,
+             "pricing": {
+               "prompt_per_million": 2.55,
+               "completion_per_million": 5.95
+             }
+           },
+           {
+             "name": "Together",
+             "model_name": "deepseek-ai/DeepSeek-R1",
+             "priority": 14,
+             "pricing": {
+               "prompt_per_million": 3.0,
+               "completion_per_million": 7.0
+             }
+           },
+           {
+             "name": "Friendli",
+             "model_name": "deepseek-ai/DeepSeek-R1-0528",
+             "priority": 15,
+             "pricing": {
+               "prompt_per_million": 3.0,
+               "completion_per_million": 7.0
+             }
+           },
+           {
+             "name": "Fireworks",
+             "model_name": "accounts/fireworks/models/deepseek-r1-0528",
+             "priority": 16,
+             "pricing": {
+               "prompt_per_million": 3.0,
+               "completion_per_million": 8.0
+             }
+           },
+           {
+             "name": "SambaNova",
+             "model_name": "DeepSeek-R1-0528",
+             "priority": 17,
+             "pricing": {
+               "prompt_per_million": 5.0,
+               "completion_per_million": 7.0
+             }
+           }
+         ],
+         "tags": ["fallback", "reasoning", "openai-compatible", "latest"]
+       }
+     ]
+   },
+   {
      "id": "deepseek-r1-distill-qwen-1.5b",
      "is_reasoning": true,
      "capabilities": {
@@ -1195,16 +1553,6 @@
            "completion_per_million": 0.18
          },
          "tags": ["reasoning", "ultra-cost-effective", "distilled", "math-expert"]
-       },
-       {
-         "name": "Together AI",
-         "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-         "priority": 2,
-         "pricing": {
-           "prompt_per_million": 0.2,
-           "completion_per_million": 0.2
-         },
-         "tags": ["reasoning", "ultra-cost-effective", "distilled"]
        },
        {
          "name": "OpenRouter",
@@ -1284,56 +1632,147 @@
        }
      },
      "providers": [
-       {
-         "name": "Cerebras",
-         "model_name": "deepseek-r1-distill-llama-70b",
-         "priority": 1,
-         "pricing": {
-           "prompt_per_million": 2.0,
-           "completion_per_million": 2.0
-         },
-         "tags": ["world-record-speed", "reasoning", "distilled"]
-       },
-       {
-         "name": "Groq",
-         "model_name": "deepseek-r1-distill-llama-70b",
-         "priority": 2,
-         "pricing": {
-           "prompt_per_million": 2.0,
-           "completion_per_million": 2.0
-         },
-         "tags": ["ultra-fast", "reasoning", "distilled"]
-       },
-       {
+      {
          "name": "OpenRouter",
-         "model_name": "deepseek/deepseek-r1-distill-llama-70b",
-         "priority": 4,
+         "model_name": "deepseek/deepseek-r1",
+         "priority": 3,
          "pricing": {
-           "prompt_per_million": 0.20,
-           "completion_per_million": 0.60
+           "prompt_per_million": 0.5,
+           "completion_per_million": 2.15
          },
          "sub_providers": [
-           {
-             "name": "DeepSeek",
-             "model_name": "deepseek-r1-distill-llama-70b",
-             "priority": 1,
-             "pricing": {
-               "prompt_per_million": 2.0,
-               "completion_per_million": 2.0
-             }
-           },
-           {
-             "name": "Together AI",
-             "model_name": "deepseek-ai/deepseek-r1-distill-llama-70b",
-             "priority": 2,
-             "pricing": {
-               "prompt_per_million": 2.5,
-               "completion_per_million": 2.5
-             }
-           }
-         ],
-         "tags": ["fallback", "reasoning", "cost-effective"]
-       }
+          {
+            "name": "Chutes",
+            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+            "priority": 1,
+            "pricing": {
+              "prompt_per_million": 0.05,
+              "completion_per_million": 0.05
+            },
+            "tags": ["reasoning", "ultra-cost-effective", "distilled", "experimental"]
+          },
+          {
+            "name": "DeepInfra",
+            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+            "priority": 2,
+            "pricing": {
+              "prompt_per_million": 0.1,
+              "completion_per_million": 0.4
+            },
+            "tags": ["reasoning", "cost-effective", "distilled", "fp8"]
+          },
+          {
+            "name": "InferenceNet",
+            "model_name": "deepseek/r1-distill-llama-70b/fp-8",
+            "priority": 3,
+            "pricing": {
+              "prompt_per_million": 0.1,
+              "completion_per_million": 0.4
+            },
+            "tags": ["reasoning", "cost-effective", "distilled", "fp8"]
+          },
+          {
+            "name": "Lambda",
+            "model_name": "deepseek-llama3.3-70b",
+            "priority": 4,
+            "pricing": {
+              "prompt_per_million": 0.2,
+              "completion_per_million": 0.6
+            },
+            "tags": ["reasoning", "cost-effective", "distilled", "fp8"]
+          },
+          {
+            "name": "Phala",
+            "model_name": "phala/deepseek-r1-70b",
+            "priority": 5,
+            "pricing": {
+              "prompt_per_million": 0.2,
+              "completion_per_million": 0.7
+            },
+            "tags": ["reasoning", "cost-effective", "distilled", "privacy"]
+          },
+          {
+            "name": "GMICloud",
+            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+            "priority": 6,
+            "pricing": {
+              "prompt_per_million": 0.25,
+              "completion_per_million": 0.75
+            },
+            "tags": ["reasoning", "cost-effective", "distilled", "bf16"]
+          },
+          {
+            "name": "Nebius",
+            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+            "priority": 7,
+            "pricing": {
+              "prompt_per_million": 0.25,
+              "completion_per_million": 0.75
+            },
+            "tags": ["reasoning", "cost-effective", "distilled", "fp8", "eu"]
+          },
+          {
+            "name": "SambaNova",
+            "model_name": "DeepSeek-R1-Distill-Llama-70B",
+            "priority": 8,
+            "pricing": {
+              "prompt_per_million": 0.7,
+              "completion_per_million": 1.4
+            },
+            "tags": ["reasoning", "fast", "distilled", "bf16"]
+          },
+          {
+            "name": "Groq",
+            "model_name": "deepseek-r1-distill-llama-70b",
+            "priority": 9,
+            "pricing": {
+              "prompt_per_million": 0.75,
+              "completion_per_million": 0.99
+            },
+            "tags": ["reasoning", "ultra-fast", "distilled"]
+          },
+          {
+            "name": "NovitaAI",
+            "model_name": "deepseek/deepseek-r1-distill-llama-70b",
+            "priority": 10,
+            "pricing": {
+              "prompt_per_million": 0.8,
+              "completion_per_million": 0.8
+            },
+            "tags": ["reasoning", "moderate-cost", "distilled"]
+          },
+          {
+            "name": "Together",
+            "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+            "priority": 11,
+            "pricing": {
+              "prompt_per_million": 2.0,
+              "completion_per_million": 2.0
+            },
+            "tags": ["reasoning", "premium", "distilled"]
+          },
+          {
+            "name": "Cerebras",
+            "model_name": "deepseek-r1-distill-llama-70b",
+            "priority": 12,
+            "pricing": {
+              "prompt_per_million": 2.2,
+              "completion_per_million": 2.5
+            },
+            "tags": ["reasoning", "world-record-speed", "distilled"]
+          },
+          {
+            "name": "OpenRouter",
+            "model_name": "deepseek/deepseek-r1-distill-llama-70b",
+            "priority": 13,
+            "pricing": {
+              "prompt_per_million": 0.05,
+              "completion_per_million": 0.05
+            },
+            "tags": ["fallback", "reasoning", "cost-effective", "distilled"]
+          }
+        ]
+      }
      ]
    },
    {
@@ -1455,15 +1894,6 @@
      "id": "qwen3-30b-a3b",
      "is_reasoning": true,
      "capabilities": {
-       "thinking": {
-         "type": "Custom",
-         "supports_budget_tokens": true,
-         "supports_thinking_type": true,
-         "max_thinking_tokens": 32768,
-         "is_built_in": true,
-         "is_exposed": true,
-         "parameter_name": "enable_thinking"
-       },
        "multimodal": {
          "supports_images": false,
          "supports_audio": false,
@@ -1487,73 +1917,137 @@
          "supports_json_schema": true
        },
        "supports_streaming": true,
-       "supported_features": ["thinking", "function-calling", "moe", "multilingual", "cost-effective", "nano-model"],
+       "supported_features": ["thinking", "function-calling", "moe", "multilingual", "agent-tasks", "small-model"],
        "performance": {
-         "typical_latency": "00:00:02",
-         "max_latency": "00:00:10",
-         "tokens_per_second": 150.0,
+         "typical_latency": "00:00:01.5",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 140.0,
          "quality_tier": "high"
        }
      },
      "providers": [
        {
+         "name": "DeepInfra",
+         "model_name": "Qwen/Qwen3-30B-A3B",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.08,
+           "completion_per_million": 0.29
+         },
+         "tags": ["ultra-cost-effective", "thinking", "moe", "reasoning"]
+       },
+       {
          "name": "Groq",
          "model_name": "qwen3-30b-a3b",
-         "priority": 1,
+         "priority": 8,
          "pricing": {
            "prompt_per_million": 1.0,
            "completion_per_million": 3.0
          },
-         "tags": ["ultra-fast", "thinking", "moe", "cost-effective"]
+         "tags": ["ultra-fast", "thinking", "moe", "premium"]
        },
        {
          "name": "Alibaba Cloud",
          "model_name": "qwen3-30b-a3b",
-         "priority": 2,
+         "priority": 9,
          "pricing": {
            "prompt_per_million": 1.0,
            "completion_per_million": 3.0
          },
-         "tags": ["thinking", "moe", "cost-effective", "multilingual"]
+         "tags": ["thinking", "moe", "official", "multilingual"]
        },
        {
          "name": "OpenRouter",
-         "model_name": "qwen/qwen3-30b-a3b:free",
-         "priority": 3,
+         "model_name": "qwen/qwen3-30b-a3b",
+         "priority": 10,
          "pricing": {
-           "prompt_per_million": 0.0,
-           "completion_per_million": 0.0
+           "prompt_per_million": 0.088,
+           "completion_per_million": 0.32
          },
          "sub_providers": [
            {
+             "name": "DeepInfra",
+             "model_name": "Qwen/Qwen3-30B-A3B",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.08,
+               "completion_per_million": 0.29
+             }
+           },
+           {
+             "name": "InferenceNet",
+             "model_name": "qwen/qwen3-30b-a3b/fp8",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.08,
+               "completion_per_million": 0.29
+             }
+           },
+           {
+             "name": "Parasail",
+             "model_name": "parasail-qwen3-30b-a3b",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 0.09,
+               "completion_per_million": 0.5
+             }
+           },
+           {
+             "name": "Nebius AI Studio",
+             "model_name": "Qwen/Qwen3-30B-A3B",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 0.1,
+               "completion_per_million": 0.3
+             }
+           },
+           {
+             "name": "NovitaAI",
+             "model_name": "qwen/qwen3-30b-a3b-fp8",
+             "priority": 5,
+             "pricing": {
+               "prompt_per_million": 0.1,
+               "completion_per_million": 0.45
+             }
+           },
+           {
+             "name": "Friendli",
+             "model_name": "Qwen/Qwen3-30B-A3B",
+             "priority": 6,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.6
+             }
+           },
+           {
+             "name": "Fireworks",
+             "model_name": "accounts/fireworks/models/qwen3-30b-a3b",
+             "priority": 7,
+             "pricing": {
+               "prompt_per_million": 0.15,
+               "completion_per_million": 0.6
+             }
+           },
+           {
              "name": "Alibaba Cloud",
              "model_name": "qwen3-30b-a3b",
-             "priority": 1,
+             "priority": 8,
              "pricing": {
                "prompt_per_million": 1.0,
                "completion_per_million": 3.0
              }
            },
            {
-             "name": "Community providers",
-             "model_name": "qwen3-30b-a3b",
-             "priority": 2,
-             "pricing": {
-               "prompt_per_million": 0.0,
-               "completion_per_million": 0.0
-             }
-           },
-           {
              "name": "Hyperbolic",
              "model_name": "Qwen/Qwen3-30B-A3B",
-             "priority": 3,
+             "priority": 9,
              "pricing": {
                "prompt_per_million": 0.8,
                "completion_per_million": 2.4
              }
            }
          ],
-         "tags": ["free", "thinking", "moe", "openai-compatible", "small-model"]
+         "tags": ["fallback", "thinking", "moe", "openai-compatible", "small-model"]
        }
      ]
    },
@@ -1970,6 +2464,214 @@
            "completion_per_million": 0.89
          },
          "tags": ["cost-effective", "reliable"]
+       }
+     ]
+   },
+   {
+     "id": "moonshotai-kimi-k2",
+     "is_reasoning": false,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 128,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["function-calling", "moe", "agentic", "coding"],
+       "performance": {
+         "typical_latency": "00:00:02",
+         "max_latency": "00:00:10",
+         "tokens_per_second": 80.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenRouter",
+         "model_name": "moonshotai/kimi-k2",
+         "priority": 1,
+         "pricing": {
+           "prompt_per_million": 0.3,
+           "completion_per_million": 0.3
+         },
+         "sub_providers": [
+           {
+             "name": "Chutes",
+             "model_name": "moonshotai/Kimi-K2-Instruct",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.302,
+               "completion_per_million": 0.302
+             }
+           },
+           {
+             "name": "Targon",
+             "model_name": "moonshotai/Kimi-K2-Instruct",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.14,
+               "completion_per_million": 2.49
+             }
+           },
+           {
+             "name": "DeepInfra",
+             "model_name": "moonshotai/Kimi-K2-Instruct",
+             "priority": 3,
+             "pricing": {
+               "prompt_per_million": 0.55,
+               "completion_per_million": 2.2
+             }
+           },
+           {
+             "name": "NovitaAI",
+             "model_name": "moonshotai/kimi-k2-instruct",
+             "priority": 4,
+             "pricing": {
+               "prompt_per_million": 0.57,
+               "completion_per_million": 2.3
+             }
+           },
+           {
+             "name": "Baseten",
+             "model_name": "moonshotai/Kimi-K2-Instruct",
+             "priority": 5,
+             "pricing": {
+               "prompt_per_million": 0.6,
+               "completion_per_million": 2.5
+             }
+           },
+           {
+             "name": "Moonshot AI",
+             "model_name": "kimi-k2-0711-preview",
+             "priority": 6,
+             "pricing": {
+               "prompt_per_million": 0.6,
+               "completion_per_million": 2.5
+             }
+           },
+           {
+             "name": "Together",
+             "model_name": "moonshotai/Kimi-K2-Instruct",
+             "priority": 7,
+             "pricing": {
+               "prompt_per_million": 1.0,
+               "completion_per_million": 3.0
+             }
+           },
+           {
+             "name": "Groq",
+             "model_name": "moonshotai/kimi-k2-instruct",
+             "priority": 8,
+             "pricing": {
+               "prompt_per_million": 1.0,
+               "completion_per_million": 3.0
+             }
+           },
+           {
+             "name": "GMICloud",
+             "model_name": "moonshotai/Kimi-K2-Instruct",
+             "priority": 9,
+             "pricing": {
+               "prompt_per_million": 1.0,
+               "completion_per_million": 3.0
+             }
+           },
+           {
+             "name": "Parasail",
+             "model_name": "parasail-kimi-k2-instruct",
+             "priority": 10,
+             "pricing": {
+               "prompt_per_million": 1.5,
+               "completion_per_million": 4.0
+             }
+           }
+         ],
+         "tags": ["fallback", "moe", "agentic", "openai-compatible"]
+       }
+     ]
+   },
+   {
+     "id": "grok-3-mini-beta",
+     "is_reasoning": true,
+     "capabilities": {
+       "multimodal": {
+         "supports_images": false,
+         "supports_audio": false,
+         "supports_video": false
+       },
+       "function_calling": {
+         "supports_tools": true,
+         "supports_parallel_calls": true,
+         "supports_tool_choice": true,
+         "max_tools_per_request": 64,
+         "supported_tool_types": ["function"]
+       },
+       "token_limits": {
+         "max_context_tokens": 131072,
+         "max_output_tokens": 32768,
+         "recommended_max_prompt_tokens": 120000
+       },
+       "response_formats": {
+         "supports_json_mode": true,
+         "supports_structured_output": true,
+         "supports_json_schema": false
+       },
+       "supports_streaming": true,
+       "supported_features": ["reasoning", "function-calling", "transparent-thinking", "math", "small-model"],
+       "performance": {
+         "typical_latency": "00:00:01.5",
+         "max_latency": "00:00:08",
+         "tokens_per_second": 180.0,
+         "quality_tier": "high"
+       }
+     },
+     "providers": [
+       {
+         "name": "OpenRouter",
+         "model_name": "x-ai/grok-3-mini-beta",
+         "priority": 3,
+         "pricing": {
+           "prompt_per_million": 0.33,
+           "completion_per_million": 0.55
+         },
+         "sub_providers": [
+           {
+             "name": "xAI",
+             "model_name": "grok-3-mini-beta",
+             "priority": 1,
+             "pricing": {
+               "prompt_per_million": 0.3,
+               "completion_per_million": 0.5
+             }
+           },
+           {
+             "name": "xAI Fast",
+             "model_name": "grok-3-mini-fast-beta",
+             "priority": 2,
+             "pricing": {
+               "prompt_per_million": 0.6,
+               "completion_per_million": 4.0
+             }
+           }
+         ],
+         "tags": ["fallback", "reasoning", "openai-compatible", "small-model"]
        }
      ]
    }

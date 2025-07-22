@@ -1,4 +1,8 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Collections.Generic;
+using System.Linq;
+using Json.Schema;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
@@ -9,166 +13,144 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 /// </summary>
 public class JsonSchemaValidator : IJsonSchemaValidator
 {
-    /// <summary>
-    /// Validates the provided JSON string against the specified schema.
-    /// </summary>
-    /// <param name="json">The JSON string to validate.</param>
-    /// <param name="schema">The schema object to validate against. Expected to be a FunctionContract or JsonSchemaObject.</param>
-    /// <returns>True if the JSON validates against the schema; otherwise, false.</returns>
-    public bool Validate(string json, object schema)
+    // JsonSerializerOptions with Union converter for proper serialization
+    public static readonly JsonSerializerOptions SchemaSerializationOptions = new()
     {
-        if (string.IsNullOrEmpty(json) || schema == null)
-            return false;
+        Converters = 
+        {
+            new UnionJsonConverter<string, IReadOnlyList<string>>()
+        }
+    };
 
+    // --- Implementation using JsonSchema.Net (simplified) -------------------------
+
+    /// <inheritdoc />
+    public bool Validate(string json, object schema)
+        => ValidateDetailed(json, schema).IsValid;
+
+    /// <inheritdoc />
+    public SchemaValidationResult ValidateDetailed(string json, object schema)
+    {
+        // Basic checks
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new SchemaValidationResult(false, new List<string> { "Input json is null or empty" });
+        }
+
+        if (schema is null)
+        {
+            return new SchemaValidationResult(false, new List<string> { "Schema is null" });
+        }
+
+        JsonNode? dataNode;
         try
         {
-            using var jsonDoc = JsonDocument.Parse(json);
-            var rootElement = jsonDoc.RootElement;
-
-            if (schema is FunctionContract functionContract)
-            {
-                return ValidateAgainstFunctionContract(rootElement, functionContract);
-            }
-            else if (schema is JsonSchemaObject jsonSchema)
-            {
-                return ValidateAgainstSchema(rootElement, jsonSchema);
-            }
-            return false;
+            dataNode = JsonNode.Parse(json);
         }
         catch (JsonException)
         {
-            return false;
+            return new SchemaValidationResult(false, new List<string> { "Invalid JSON payload" });
+        }
+
+        Json.Schema.JsonSchema jsonSchema;
+
+        try
+        {
+            jsonSchema = schema switch
+            {
+                string schemaText => Json.Schema.JsonSchema.FromText(schemaText),
+                Models.JsonSchemaObject schemaObj => Json.Schema.JsonSchema.FromText(JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)),
+                FunctionContract funcContract => BuildSchemaFromFunctionContract(funcContract),
+                _ => throw new InvalidOperationException($"Unsupported schema type: {schema.GetType().Name}")
+            };
+        }
+        catch (Exception ex)
+        {
+            return new SchemaValidationResult(false, new List<string> { $"Failed to parse schema: {ex.Message}" });
+        }
+
+        Console.WriteLine($"[DEBUG] Validating JSON: {json}");
+
+        try
+        {
+            var evaluationOptions = new EvaluationOptions 
+            { 
+                OutputFormat = OutputFormat.Hierarchical 
+            };
+
+            var result = jsonSchema.Evaluate(dataNode, evaluationOptions);
+            var isValid = result.IsValid;
+            var errors = ExtractValidationErrors(result);
+
+            Console.WriteLine($"[DEBUG] Validation result: IsValid={isValid}, HasErrors={errors.Count > 0}");
+
+            return new SchemaValidationResult(isValid, errors);
+        }
+        catch (Exception ex)
+        {
+            return new SchemaValidationResult(false, new List<string> { $"Validation error: {ex.Message}" });
         }
     }
 
-    private bool ValidateAgainstFunctionContract(JsonElement element, FunctionContract contract)
+    private Json.Schema.JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
     {
-        if (contract.Parameters == null || !contract.Parameters.Any())
-            return true;
-
-        if (element.ValueKind != JsonValueKind.Object)
-            return false;
-
-        foreach (var param in contract.Parameters)
+        var root = new JsonObject
         {
-            if (param.IsRequired && !element.TryGetProperty(param.Name, out var propElement))
-                return false;
+            ["type"] = "object"
+        };
 
-            if (element.TryGetProperty(param.Name, out var propertyElement) && param.ParameterType != null)
+        var properties = new JsonObject();
+        var required = new JsonArray();
+
+        if (contract.Parameters is not null)
+        {
+            foreach (var param in contract.Parameters)
             {
-                if (!ValidateAgainstSchema(propertyElement, param.ParameterType))
-                    return false;
+                // Create a simple schema node with just the type
+                var paramSchemaNode = JsonSerializer.SerializeToNode(param.ParameterType, SchemaSerializationOptions);
+                properties[param.Name] = paramSchemaNode;
+
+                if (param.IsRequired)
+                {
+                    required.Add(param.Name);
+                }
             }
         }
 
-        return true;
+        if (properties.Count > 0)
+        {
+            root["properties"] = properties;
+        }
+
+        if (required.Count > 0)
+        {
+            root["required"] = required;
+        }
+
+        var schemaText = root.ToJsonString();
+        Console.WriteLine($"[DEBUG] Generated schema text: {schemaText}");
+        return Json.Schema.JsonSchema.FromText(schemaText);
     }
 
-    private bool ValidateAgainstSchema(JsonElement element, JsonSchemaObject schema)
+    private static List<string> ExtractValidationErrors(EvaluationResults result)
     {
-        if (schema == null)
-            return true;
-
-        switch (schema.Type.GetTypeString())
+        var errors = new List<string>();
+        
+        if (result.HasErrors)
         {
-            case "string":
-                if (element.ValueKind != JsonValueKind.String)
-                    return false;
-                if (schema.Enum != null && schema.Enum.Count > 0)
-                    return schema.Enum.Contains(element.GetString());
-                return true;
-            case "integer":
-            case "number":
-                if (element.ValueKind != JsonValueKind.Number)
-                    return false;
-                if (schema.Minimum.HasValue && element.GetDouble() < schema.Minimum.Value)
-                    return false;
-                if (schema.Maximum.HasValue && element.GetDouble() > schema.Maximum.Value)
-                    return false;
-                return true;
-            case "boolean":
-                return element.ValueKind == JsonValueKind.True || element.ValueKind == JsonValueKind.False;
-            case "array":
-                if (element.ValueKind != JsonValueKind.Array)
-                    return false;
-                var arrayElements = element.EnumerateArray().ToList();
-                if (schema.MinItems.HasValue && arrayElements.Count < schema.MinItems.Value)
-                    return false;
-                if (schema.MaxItems.HasValue && arrayElements.Count > schema.MaxItems.Value)
-                    return false;
-                if (schema.UniqueItems)
+            // Extract error details from the evaluation result
+            foreach (var detail in result.Details)
+            {
+                if (detail.HasErrors)
                 {
-                    var elementStrings = arrayElements.Select(e => e.ToString()).ToList();
-                    if (elementStrings.Distinct().Count() != elementStrings.Count)
-                        return false;
+                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"]?.ToString()) 
+                        ? detail.Errors["error"].ToString() 
+                        : $"Validation failed at '{detail.InstanceLocation}'";
+                    errors.Add(errorMessage);
                 }
-                if (schema.Items == null)
-                    return true;
-                return arrayElements.All(item => ValidateAgainstSchema(item, schema.Items));
-            case "object":
-                if (element.ValueKind != JsonValueKind.Object)
-                    return false;
-                if (schema.Properties == null || schema.Properties.Count == 0)
-                    return true;
-                foreach (var prop in schema.Properties)
-                {
-                    if (schema.Required != null && schema.Required.Contains(prop.Key) && !element.TryGetProperty(prop.Key, out _))
-                        return false;
-                    if (element.TryGetProperty(prop.Key, out var propElement))
-                    {
-                        if (!ValidateAgainstProperty(propElement, prop.Value))
-                            return false;
-                    }
-                }
-                return true;
-            default:
-                return false;
+            }
         }
-    }
 
-    private bool ValidateAgainstProperty(JsonElement element, JsonSchemaProperty property)
-    {
-        if (property == null)
-            return true;
-
-        switch (property.Type.GetTypeString())
-        {
-            case "string":
-                if (element.ValueKind != JsonValueKind.String)
-                    return false;
-                if (property.Enum != null && property.Enum.Count > 0)
-                    return property.Enum.Contains(element.GetString());
-                return true;
-            case "integer":
-            case "number":
-                if (element.ValueKind != JsonValueKind.Number)
-                    return false;
-                if (property.Minimum.HasValue && element.GetDouble() < property.Minimum.Value)
-                    return false;
-                if (property.Maximum.HasValue && element.GetDouble() > property.Maximum.Value)
-                    return false;
-                return true;
-            case "boolean":
-                return element.ValueKind == JsonValueKind.True || element.ValueKind == JsonValueKind.False;
-            case "array":
-                if (element.ValueKind != JsonValueKind.Array)
-                    return false;
-                var arrayElements = element.EnumerateArray().ToList();
-                if (property.MinItems.HasValue && arrayElements.Count < property.MinItems.Value)
-                    return false;
-                if (property.MaxItems.HasValue && arrayElements.Count > property.MaxItems.Value)
-                    return false;
-                if (property.UniqueItems)
-                {
-                    var elementStrings = arrayElements.Select(e => e.ToString()).ToList();
-                    if (elementStrings.Distinct().Count() != elementStrings.Count)
-                        return false;
-                }
-                if (property.Items == null)
-                    return true;
-                return arrayElements.All(item => ValidateAgainstSchema(item, property.Items));
-            default:
-                return false;
-        }
+        return errors;
     }
 }

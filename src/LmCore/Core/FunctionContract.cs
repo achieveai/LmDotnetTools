@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Agents;
 
@@ -55,4 +56,37 @@ public class FunctionContract
     [JsonPropertyName("return_description")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ReturnDescription { get; set; }
+
+    public JsonSchemaObject? GetJsonSchema()
+    {
+        if (Parameters == null)
+        {
+            return null;
+        }
+
+        var builder = new JsonSchemaObjectBuilder("object");
+        foreach (var parameter in Parameters)
+        {
+            var property = new JsonSchemaProperty
+            {
+                Type = parameter.ParameterType.Type,
+                Description = parameter.Description,
+                Items = parameter.ParameterType.Items,
+                Properties = parameter.ParameterType.Properties?
+                    .ToDictionary(
+                        p => p.Key,
+                        p => new JsonSchemaProperty
+                        {
+                            Type = p.Value.Type,
+                            Description = p.Value.Description,
+                            Items = p.Value.Items,
+                        })
+            };
+
+            builder.WithProperty(parameter.Name, property, parameter.IsRequired);
+        }
+
+        return builder.Build();
+
+    }
 }

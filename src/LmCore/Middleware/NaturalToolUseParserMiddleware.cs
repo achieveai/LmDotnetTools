@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -289,8 +290,15 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
                 if (contract != null && contract.Parameters != null && _schemaValidator != null)
                 {
-                    string schemaString = contract.Parameters.ToString() ?? string.Empty;
-                    if (_schemaValidator.Validate(jsonText, schemaString))
+                    var jsonSchema = contract.GetJsonSchema();
+                    string schemaString = jsonSchema != null
+                        ? JsonSerializer.Serialize(
+                            jsonSchema,
+                            JsonSchemaValidator.SchemaSerializationOptions)
+                        : string.Empty;
+
+                    var validationResult = _schemaValidator.ValidateDetailed(jsonText, schemaString);
+                    if (validationResult.IsValid)
                     {
                         var toolCall = new ToolCall
                         {
@@ -298,9 +306,16 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                             FunctionArgs = jsonText,
                             ToolCallId = Guid.NewGuid().ToString()
                         };
-                        return new IMessage[] { new ToolsCallMessage { ToolCalls = new[] { toolCall }.ToImmutableList(), Role = Role.Assistant } };
+                        return [new ToolsCallMessage { ToolCalls = new[] { toolCall }.ToImmutableList(), Role = Role.Assistant }];
                     }
-                    else if (_fallbackParser != null)
+
+                    Console.WriteLine($"[DEBUG] Validation result: {validationResult.IsValid}");
+                    foreach (var error in validationResult.Errors)
+                    {
+                        Console.WriteLine($"[DEBUG] Validation error: {error}");
+                    }
+
+                    if (_fallbackParser != null)
                     {
                         return await UseFallbackParserAsync(content, toolName, cancellationToken);
                     }
