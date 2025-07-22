@@ -162,8 +162,24 @@ public class NaturalToolUseMiddlewareTests
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
 
         // Assert
-        // Just check that we got a response
         Assert.NotEmpty(result);
+        
+        // Should get both text messages and tool call aggregate messages
+        var textMessages = result.OfType<TextMessage>().ToList();
+        var toolCallAggregates = result.OfType<ToolsCallAggregateMessage>().ToList();
+        
+        Assert.NotEmpty(textMessages); // Should have prefix text message
+        Assert.Single(toolCallAggregates); // Should have exactly one tool call
+        
+        // Verify the tool call was processed correctly
+        var toolCallMessage = toolCallAggregates.First();
+        Assert.Equal("GetWeather", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionName);
+        Assert.Contains("San Francisco, CA", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
+        Assert.Contains("fahrenheit", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
+        
+        // Verify prefix text is present
+        var prefixTextMessage = textMessages.First();
+        Assert.Equal("Here's the weather:", prefixTextMessage.Text);
     }
 
     [Fact]
@@ -258,87 +274,25 @@ public class NaturalToolUseMiddlewareTests
         var streamingResult = await middleware.InvokeStreamingAsync(_defaultContext, mockAgent.Object);
         var result = await CollectAsyncEnumerable(streamingResult);
 
-        // DEBUGGING: Log all received messages
-        Console.WriteLine($"=== DEBUGGING: Total messages received: {result.Count} ===");
-        for (int i = 0; i < result.Count; i++)
-        {
-            var msg = result[i];
-            Console.WriteLine($"Message {i}: Type={msg.GetType().Name}, Role={msg.Role}, FromAgent={msg.FromAgent}");
-            
-            if (msg is ICanGetText textMsg)
-            {
-                Console.WriteLine($"  Text Content: '{textMsg.GetText()}'");
-            }
-            
-            if (msg is TextMessage directTextMsg)
-            {
-                Console.WriteLine($"  Direct Text: '{directTextMsg.Text}'");
-            }
-            
-            if (msg is TextUpdateMessage updateMsg)
-            {
-                Console.WriteLine($"  Update Text: '{updateMsg.Text}'");
-            }
-            
-            if (msg is ToolsCallAggregateMessage aggMsg)
-            {
-                Console.WriteLine($"  Tool Aggregate: ToolsCallMessage={aggMsg.ToolsCallMessage != null}, ToolsCallResult={aggMsg.ToolsCallResult != null}");
-            }
-        }
-        Console.WriteLine("=== END DEBUGGING ===");
-
-        // Assert step by step
-        Console.WriteLine("Step 1: Verify we got some result");
+        // Assert
         Assert.NotEmpty(result);
         
-        Console.WriteLine("Step 2: Get text updates");
+        // Verify we get both text updates and tool call messages
         var textUpdates = result.OfType<TextUpdateMessage>().ToList();
-        Console.WriteLine($"Found {textUpdates.Count} TextUpdateMessage(s)");
-        
-        Console.WriteLine("Step 3: Get tool call messages");
         var toolCallMessages = result.OfType<ToolsCallAggregateMessage>().ToList();
-        Console.WriteLine($"Found {toolCallMessages.Count} tool call TextMessage(s)");
-
-        Assert.NotEmpty(toolCallMessages);
         
-        // Let's see what TextMessages we have
-        var allTextMessages = result.OfType<TextMessage>().ToList();
-        Console.WriteLine($"Found {allTextMessages.Count} total TextMessage(s):");
-        foreach (var txtMsg in allTextMessages)
-        {
-            Console.WriteLine($"  TextMessage: '{txtMsg.Text?.Substring(0, Math.Min(50, txtMsg.Text?.Length ?? 0))}...'");
-        }
-
-        // First, let's verify we have text updates
         Assert.NotEmpty(textUpdates);
+        Assert.Single(toolCallMessages); // Should have exactly one tool call
         
-        // Let's reconstruct the full text to see if tool call detection should work
-        var fullText = string.Concat(textUpdates.Select(t => t.Text));
-        Console.WriteLine($"Full reconstructed text: '{fullText}'");
+        // Verify the tool call was parsed correctly
+        var toolCallMessage = toolCallMessages.First();
+        Assert.Equal("GetWeather", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionName);
+        Assert.Contains("San Francisco, CA", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
+        Assert.Contains("fahrenheit", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
         
-        // The test assumes tool calls get processed in streaming mode
-        // But the debug output shows only TextUpdateMessage objects
-        // This suggests the streaming middleware isn't processing tool calls the same way
-        
-        // CURRENT LIMITATION: Tool calls are not processed during streaming
-        // The complete tool call is available when reconstructed, but the streaming
-        // middleware doesn't detect and process it in real-time
-        // This is a known issue that needs to be fixed
-        
-        // For now, verify the streaming behavior produces the expected content
-        Assert.Contains("Here's the weather:", fullText);
-        Assert.Contains("<tool_call name=\"GetWeather\">", fullText);
-        Assert.Contains("San Francisco, CA", fullText);
-        Assert.Contains("fahrenheit", fullText);
-        Assert.Contains("</tool_call>", fullText);
-        
-        // Verify no tool call processing occurred (documenting current limitation)
-        var finalTextMessages = result.OfType<TextMessage>().ToList();
-        Assert.Empty(finalTextMessages); // No tool call messages are produced during streaming
-        
-        // TODO: Investigate why streaming middleware doesn't process tool calls
-        // The middleware should be detecting and processing the tool call
-        // but it's only streaming the raw text chunks
+        // Verify prefix text is present in updates
+        var allUpdateText = string.Concat(textUpdates.Select(t => t.Text));
+        Assert.Contains("Here's the weather:", allUpdateText);
     }
 
     [Fact]
@@ -373,16 +327,16 @@ public class NaturalToolUseMiddlewareTests
         
         // Verify we get both text updates and tool call messages
         var textUpdates = result.OfType<TextUpdateMessage>().ToList();
-        var toolCallMessages = result.OfType<TextMessage>().Where(m => m.Text.StartsWith("Tool Call:")).ToList();
+        var toolCallMessages = result.OfType<ToolsCallAggregateMessage>().ToList();
         
         Assert.NotEmpty(textUpdates);
         Assert.Single(toolCallMessages); // Should have exactly one tool call
         
         // Verify the tool call was parsed correctly despite being chunked
         var toolCallMessage = toolCallMessages.First();
-        Assert.Contains("GetWeather", toolCallMessage.Text);
-        Assert.Contains("New York", toolCallMessage.Text);
-        Assert.Contains("celsius", toolCallMessage.Text);
+        Assert.Equal("GetWeather", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionName);
+        Assert.Contains("New York", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
+        Assert.Contains("celsius", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
         
         // Verify both prefix and suffix text are present in updates
         var allUpdateText = string.Concat(textUpdates.Select(t => t.Text));

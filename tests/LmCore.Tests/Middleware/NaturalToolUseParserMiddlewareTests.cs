@@ -118,8 +118,10 @@ public class NaturalToolUseParserMiddlewareTests
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Here's the weather:", textMessage.Text);
-        var toolCallMessage = result.OfType<TextMessage>().Last();
-        Assert.Contains("Tool Call: GetWeather with args", toolCallMessage.Text);
+        var toolCallMessage = result.OfType<ToolsCallMessage>().Single();
+        Assert.Equal("GetWeather", toolCallMessage.ToolCalls[0].FunctionName);
+        Assert.Contains("San Francisco, CA", toolCallMessage.ToolCalls[0].FunctionArgs);
+        Assert.Contains("fahrenheit", toolCallMessage.ToolCalls[0].FunctionArgs);
     }
 
     [Fact]
@@ -223,8 +225,10 @@ public class NaturalToolUseParserMiddlewareTests
         Assert.Equal(2, result.Count());
         var textMessage = result.OfType<TextMessage>().First();
         Assert.Equal("Here's the weather:", textMessage.Text);
-        var toolCallMessage = result.OfType<TextMessage>().Last();
-        Assert.Contains("Tool Call: GetWeather with args", toolCallMessage.Text);
+        var toolCallMessage = result.OfType<ToolsCallMessage>().Single();
+        Assert.Equal("GetWeather", toolCallMessage.ToolCalls[0].FunctionName);
+        Assert.Contains("San Francisco, CA", toolCallMessage.ToolCalls[0].FunctionArgs);
+        Assert.Contains("fahrenheit", toolCallMessage.ToolCalls[0].FunctionArgs);
     }
 
     private static IAsyncEnumerable<IMessage> CreateAsyncEnumerable(IEnumerable<IMessage> messages)
