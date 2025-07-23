@@ -214,6 +214,7 @@ public static class ServiceCollectionExtensions
         // Register core services
         services.AddSingleton<IModelResolver, ModelResolver>();
         services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
+        services.AddSingleton<OpenRouterModelService>();
         // Ensure a single IHttpHandlerBuilder and attach the retry wrapper.
         var hbDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IHttpHandlerBuilder));
 
