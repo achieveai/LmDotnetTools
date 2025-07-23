@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -270,8 +271,44 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
     /// </summary>
     private static string? TryExtractJsonFromContent(string content)
     {
+        // First try fenced JSON blocks (existing behavior)
         var match = JsonCodeBlockPattern.Match(content);
-        return match.Success ? match.Groups[1].Value.Trim() : null;
+        if (match.Success)
+        {
+            return match.Groups[1].Value.Trim();
+        }
+        
+        // Then try unfenced JSON (new behavior)
+        return TryExtractUnfencedJson(content);
+    }
+
+    /// <summary>
+    /// Attempts to extract JSON content that is not wrapped in fenced code blocks.
+    /// Validates that the content is valid JSON before returning it.
+    /// </summary>
+    private static string? TryExtractUnfencedJson(string content)
+    {
+        var trimmed = content.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+            return null;
+            
+        // Check if content looks like JSON (starts with { or [)
+        if (trimmed.StartsWith("{") || trimmed.StartsWith("["))
+        {
+            try
+            {
+                // Validate it's parseable JSON
+                JsonDocument.Parse(trimmed);
+                return trimmed;
+            }
+            catch (JsonException)
+            {
+                // Not valid JSON, return null
+                return null;
+            }
+        }
+        
+        return null;
     }
 
     /// <summary>
@@ -297,8 +334,8 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                             JsonSchemaValidator.SchemaSerializationOptions)
                         : string.Empty;
 
-                    var validationResult = _schemaValidator.ValidateDetailed(jsonText, schemaString);
-                    if (validationResult.IsValid)
+                    var isValid = _schemaValidator.Validate(jsonText, schemaString);
+                    if (isValid)
                     {
                         var toolCall = new ToolCall
                         {
@@ -309,49 +346,54 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                         return [new ToolsCallMessage { ToolCalls = new[] { toolCall }.ToImmutableList(), Role = Role.Assistant }];
                     }
 
-                    Console.WriteLine($"[DEBUG] Validation result: {validationResult.IsValid}");
-                    foreach (var error in validationResult.Errors)
-                    {
-                        Console.WriteLine($"[DEBUG] Validation error: {error}");
-                    }
+                    Console.WriteLine($"[DEBUG] Validation result: {isValid}");
 
-                    if (_fallbackParser != null)
-                    {
-                        return await UseFallbackParserAsync(content, toolName, cancellationToken);
-                    }
-                    else
+                    // Requirement 2.5 & 3.1: When no fallback agent is provided AND validation fails, throw exception immediately
+                    if (_fallbackParser == null)
                     {
                         throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
                     }
-                }
-                else if (_fallbackParser != null)
-                {
+
+                    // Requirement 3.2: When fallback agent is provided, use structured output fallback for validation failures
                     return await UseFallbackParserAsync(content, toolName, cancellationToken);
                 }
                 else
                 {
-                    throw new ToolUseParsingException($"Tool {toolName} not found or no schema validator provided");
+                    // Requirement 3.1: Maintain existing error handling behavior when no fallback agent
+                    if (_fallbackParser == null)
+                    {
+                        throw new ToolUseParsingException($"Tool {toolName} not found or no schema validator provided");
+                    }
+                    
+                    return await UseFallbackParserAsync(content, toolName, cancellationToken);
                 }
-            }
-            else if (_fallbackParser != null)
-            {
-                return await UseFallbackParserAsync(content, toolName, cancellationToken);
             }
             else
             {
-                throw new ToolUseParsingException($"No JSON content found for tool call {toolName}");
+                // Requirement 3.1: Maintain existing error handling behavior when no fallback agent
+                if (_fallbackParser == null)
+                {
+                    throw new ToolUseParsingException($"No JSON content found for tool call {toolName}");
+                }
+                
+                return await UseFallbackParserAsync(content, toolName, cancellationToken);
             }
+        }
+        catch (ToolUseParsingException)
+        {
+            // Re-throw ToolUseParsingException without modification to maintain existing patterns
+            throw;
         }
         catch (Exception ex)
         {
-            if (_fallbackParser != null)
-            {
-                return await UseFallbackParserAsync(content, toolName, cancellationToken);
-            }
-            else
+            // Requirement 3.1: When no fallback agent, throw ToolUseParsingException immediately
+            if (_fallbackParser == null)
             {
                 throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
             }
+            
+            // Requirement 3.2: When fallback agent is available, try fallback for any other exceptions
+            return await UseFallbackParserAsync(content, toolName, cancellationToken);
         }
     }
 
@@ -580,17 +622,17 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 var toolCallMessages = await ProcessToolCallAsync(toolName, content, cancellationToken);
                 messages.AddRange(toolCallMessages);
             }
+            catch (ToolUseParsingException)
+            {
+                // Re-throw ToolUseParsingException to maintain existing error handling patterns
+                // ProcessToolCallAsync already handles fallback logic internally
+                throw;
+            }
             catch (Exception ex)
             {
-                if (_fallbackParser != null)
-                {
-                    var fallbackMessages = await UseFallbackParserAsync(content, toolName, cancellationToken);
-                    messages.AddRange(fallbackMessages);
-                }
-                else
-                {
-                    throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
-                }
+                // This should not happen as ProcessToolCallAsync handles all exceptions internally
+                // But maintain backward compatibility by wrapping in ToolUseParsingException
+                throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
             }
 
             currentPosition = endIndex;
@@ -624,37 +666,178 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     private async Task<IEnumerable<IMessage>> UseFallbackParserAsync(string rawText, string toolName, CancellationToken cancellationToken)
     {
+        ValidateFallbackParserConfiguration();
+        
+        var contract = GetFunctionContract(toolName);
+        var jsonSchema = contract?.GetJsonSchema();
+        
+        if (jsonSchema == null)
+        {
+            return await UseLegacyFallbackAsync(rawText, toolName, cancellationToken);
+        }
+        
+        return await UseStructuredOutputFallbackAsync(rawText, toolName, jsonSchema, cancellationToken);
+    }
+
+    private void ValidateFallbackParserConfiguration()
+    {
         if (_fallbackParser == null)
         {
-            throw new InvalidOperationException("Fallback parser is not configured.");
+            throw new ToolUseParsingException("Fallback parser is not configured.");
         }
+    }
 
-        var prompt = $"Rewrite the following reply as a valid function call JSON for {toolName}. Extract the intent and parameters:\n\n{rawText}";
-        var messages = new List<IMessage>
+    private FunctionContract? GetFunctionContract(string toolName)
+    {
+        var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+        if (contract == null)
+        {
+            throw new ToolUseParsingException($"Tool {toolName} not found in function contracts");
+        }
+        return contract;
+    }
+
+    private async Task<IEnumerable<IMessage>> UseLegacyFallbackAsync(string rawText, string toolName, CancellationToken cancellationToken)
+    {
+        var prompt = CreateLegacyFallbackPrompt(rawText, toolName);
+        var messages = CreatePromptMessages(prompt);
+        
+        try
+        {
+            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, null, cancellationToken);
+            var fallbackReply = ExtractTextMessageFromReplies(fallbackReplies);
+            
+            if (fallbackReply != null)
+            {
+                return new[] { fallbackReply };
+            }
+        }
+        catch (Exception ex) when (!(ex is ToolUseParsingException))
+        {
+            throw new ToolUseParsingException($"Fallback parser failed for {toolName}: {ex.Message}", ex);
+        }
+        
+        throw new ToolUseParsingException($"Fallback parser failed to generate valid JSON for {toolName}");
+    }
+
+    private async Task<IEnumerable<IMessage>> UseStructuredOutputFallbackAsync(string rawText, string toolName, object jsonSchema, CancellationToken cancellationToken)
+    {
+        var responseFormat = CreateResponseFormat(toolName, jsonSchema);
+        var options = new GenerateReplyOptions { ResponseFormat = responseFormat };
+        
+        var prompt = CreateStructuredOutputPrompt(rawText, toolName);
+        var messages = CreatePromptMessages(prompt);
+
+        try
+        {
+            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, options, cancellationToken);
+            var fallbackReply = ExtractTextMessageFromReplies(fallbackReplies);
+
+            if (fallbackReply != null)
+            {
+                var jsonText = fallbackReply.Text.Trim();
+                return ValidateAndReturnJsonResponse(jsonText, jsonSchema, toolName);
+            }
+            
+            throw new ToolUseParsingException($"Fallback parser failed to generate response for {toolName}");
+        }
+        catch (ToolUseParsingException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DEBUG] Structured output failed for {toolName}: {ex.Message}");
+            return await FallbackToUnstructuredOutput(rawText, toolName, jsonSchema, messages, cancellationToken);
+        }
+    }
+
+    private async Task<IEnumerable<IMessage>> FallbackToUnstructuredOutput(string rawText, string toolName, object jsonSchema, List<IMessage> messages, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, null, cancellationToken);
+            var fallbackReply = ExtractTextMessageFromReplies(fallbackReplies);
+
+            if (fallbackReply != null)
+            {
+                var jsonText = TryExtractJsonFromContent(fallbackReply.Text) ?? fallbackReply.Text.Trim();
+                return ValidateAndReturnJsonResponse(jsonText, jsonSchema, toolName);
+            }
+            
+            throw new ToolUseParsingException($"Fallback parser failed to generate response for {toolName}");
+        }
+        catch (ToolUseParsingException)
+        {
+            throw;
+        }
+        catch (Exception fallbackEx)
+        {
+            throw new ToolUseParsingException($"Fallback parser failed for {toolName}: {fallbackEx.Message}", fallbackEx);
+        }
+    }
+
+    private IEnumerable<IMessage> ValidateAndReturnJsonResponse(string jsonText, object jsonSchema, string toolName)
+    {
+        if (_schemaValidator != null)
+        {
+            var schemaString = JsonSerializer.Serialize(jsonSchema, JsonSchemaValidator.SchemaSerializationOptions);
+            var isValid = _schemaValidator.Validate(jsonText, schemaString);
+            
+            if (isValid)
+            {
+                return new[] { new TextMessage { Text = jsonText, Role = Role.Assistant } };
+            }
+            
+            throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
+        }
+        
+        return ValidateJsonSyntaxAndReturn(jsonText, toolName);
+    }
+
+    private IEnumerable<IMessage> ValidateJsonSyntaxAndReturn(string jsonText, string toolName)
+    {
+        try
+        {
+            JsonDocument.Parse(jsonText);
+            return new[] { new TextMessage { Text = jsonText, Role = Role.Assistant } };
+        }
+        catch (JsonException)
+        {
+            throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
+        }
+    }
+
+    private string CreateLegacyFallbackPrompt(string rawText, string toolName)
+    {
+        return $"Rewrite the following reply as a valid function call JSON for {toolName}. Extract the intent and parameters:\n\n{rawText}";
+    }
+
+    private string CreateStructuredOutputPrompt(string rawText, string toolName)
+    {
+        return $"Extract and fix the parameters for the {toolName} function call from the following content. Return only valid JSON that matches the expected schema:\n\n{rawText}";
+    }
+
+    private List<IMessage> CreatePromptMessages(string prompt)
+    {
+        return new List<IMessage>
         {
             new TextMessage { Text = prompt, Role = Role.User }
         };
-        var fallbackReplies = await _fallbackParser.GenerateReplyAsync(messages, null, cancellationToken);
-        var fallbackReply = fallbackReplies.FirstOrDefault(r => r is TextMessage) as TextMessage;
+    }
 
-        if (fallbackReply != null)
-        {
-            try
-            {
-                var jsonText = TryExtractJsonFromContent(fallbackReply.Text) ?? fallbackReply.Text;
-                var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
-                if (contract != null && _schemaValidator != null)
-                {
-                    return new IMessage[] { new TextMessage { Text = jsonText, Role = Role.Assistant } };
-                }
-            }
-            catch
-            {
-                // Fallback failed, throw original exception
-            }
-        }
+    private ResponseFormat CreateResponseFormat(string toolName, object jsonSchema)
+    {
+        return ResponseFormat.CreateWithSchema(
+            schemaName: $"{toolName}_parameters",
+            schemaObject: jsonSchema,
+            strictValidation: true
+        );
+    }
 
-        throw new ToolUseParsingException($"Fallback parser failed to generate valid JSON for {toolName}");
+    private TextMessage? ExtractTextMessageFromReplies(IEnumerable<IMessage> replies)
+    {
+        return replies.FirstOrDefault(r => r is TextMessage) as TextMessage;
     }
 
     private static TextUpdateMessage CreateTextUpdateMessage(string text, TextUpdateMessage template)
