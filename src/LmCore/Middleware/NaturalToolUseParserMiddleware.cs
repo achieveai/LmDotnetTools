@@ -676,7 +676,11 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
             return await UseLegacyFallbackAsync(rawText, toolName, cancellationToken);
         }
         
-        return await UseStructuredOutputFallbackAsync(rawText, toolName, jsonSchema, cancellationToken);
+        return await UseStructuredOutputFallbackAsync(
+            rawText,
+            toolName,
+            jsonSchema,
+            cancellationToken);
     }
 
     private void ValidateFallbackParserConfiguration()
@@ -720,7 +724,11 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         throw new ToolUseParsingException($"Fallback parser failed to generate valid JSON for {toolName}");
     }
 
-    private async Task<IEnumerable<IMessage>> UseStructuredOutputFallbackAsync(string rawText, string toolName, object jsonSchema, CancellationToken cancellationToken)
+    private async Task<IEnumerable<IMessage>> UseStructuredOutputFallbackAsync(
+        string rawText,
+        string toolName,
+        JsonSchemaObject jsonSchema,
+        CancellationToken cancellationToken)
     {
         var responseFormat = CreateResponseFormat(toolName, jsonSchema);
         var options = new GenerateReplyOptions { ResponseFormat = responseFormat };
@@ -826,7 +834,7 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         };
     }
 
-    private ResponseFormat CreateResponseFormat(string toolName, object jsonSchema)
+    private ResponseFormat CreateResponseFormat(string toolName, JsonSchemaObject jsonSchema)
     {
         return ResponseFormat.CreateWithSchema(
             schemaName: $"{toolName}_parameters",
