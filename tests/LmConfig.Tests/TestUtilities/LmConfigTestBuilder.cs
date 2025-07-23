@@ -4,6 +4,8 @@ using Microsoft.Extensions.Options;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
+using HttpProviderConfig = AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig;
 
 namespace LmConfig.Tests.TestUtilities;
 
@@ -41,7 +43,7 @@ public class LmConfigTestBuilder
             Capabilities = CreateDefaultCapabilities(),
             Providers = new[]
             {
-                new ProviderConfig
+                new AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConfig
                 {
                     Name = providerName,
                     ModelName = modelName,
@@ -97,7 +99,7 @@ public class LmConfigTestBuilder
             Capabilities = CreateDefaultCapabilities(),
             Providers = new[]
             {
-                new ProviderConfig
+                new AchieveAi.LmDotnetTools.LmConfig.Models.ProviderConfig
                 {
                     Name = "OpenRouter",
                     ModelName = openRouterModelName, // This will be different from modelId
