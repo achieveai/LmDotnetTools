@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
@@ -105,4 +106,102 @@ public static class MessageExtensions
     /// </summary>
     public static bool CanGetUsage(this IMessage message) =>
         message is ICanGetUsage && ((ICanGetUsage)message).GetUsage() != null;
+
+    /// <summary>
+    /// Transforms a ToolsCallAggregateMessage to natural language format with XML-style tool calls.
+    /// Returns the message unchanged if it's not a ToolsCallAggregateMessage or if transformation fails.
+    /// </summary>
+    /// <param name="message">The message to transform</param>
+    /// <returns>A TextMessage with natural tool use format, or the original message if transformation is not applicable</returns>
+    public static IMessage ToNaturalToolUse(this IMessage message)
+    {
+        if (message == null)
+            throw new ArgumentNullException(nameof(message));
+
+        try
+        {
+            if (message is ToolsCallAggregateMessage aggregateMessage)
+            {
+                return ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
+            }
+        }
+        catch
+        {
+            // Graceful fallback - return original message if transformation fails
+        }
+
+        return message;
+    }
+
+    /// <summary>
+    /// Transforms all ToolsCallAggregateMessage instances in a collection to natural language format.
+    /// Messages that are not ToolsCallAggregateMessage or fail transformation are left unchanged.
+    /// </summary>
+    /// <param name="messages">The collection of messages to transform</param>
+    /// <returns>A collection with ToolsCallAggregateMessage instances transformed to natural format</returns>
+    public static IEnumerable<IMessage> ToNaturalToolUse(this IEnumerable<IMessage> messages)
+    {
+        if (messages == null)
+            yield break;
+
+        foreach (var message in messages)
+        {
+            yield return message.ToNaturalToolUse();
+        }
+    }
+
+    /// <summary>
+    /// Combines a sequence of messages into a single TextMessage with natural tool use format.
+    /// ToolsCallAggregateMessage instances are transformed to XML format and combined with surrounding text.
+    /// </summary>
+    /// <param name="messages">The sequence of messages to combine</param>
+    /// <returns>A single TextMessage containing all content in natural format</returns>
+    public static TextMessage CombineAsNaturalToolUse(this IEnumerable<IMessage> messages)
+    {
+        if (messages == null)
+            return new TextMessage { Text = string.Empty, Role = Role.Assistant };
+
+        try
+        {
+            return ToolsCallAggregateTransformer.CombineMessageSequence(messages);
+        }
+        catch
+        {
+            // Graceful fallback - combine text content from messages that support it
+            var textContent = string.Join(Environment.NewLine, 
+                messages.Where(m => m is ICanGetText)
+                        .Cast<ICanGetText>()
+                        .Select(m => m.GetText())
+                        .Where(text => !string.IsNullOrEmpty(text)));
+
+            return new TextMessage 
+            { 
+                Text = textContent, 
+                Role = messages.FirstOrDefault()?.Role ?? Role.Assistant 
+            };
+        }
+    }
+
+    /// <summary>
+    /// Checks if a message sequence contains any ToolsCallAggregateMessage instances that can be transformed.
+    /// </summary>
+    /// <param name="messages">The sequence of messages to check</param>
+    /// <returns>True if the sequence contains transformable ToolsCallAggregateMessage instances</returns>
+    public static bool ContainsTransformableToolCalls(this IEnumerable<IMessage> messages)
+    {
+        if (messages == null)
+            return false;
+
+        return messages.Any(m => m is ToolsCallAggregateMessage);
+    }
+
+    /// <summary>
+    /// Checks if a single message is a ToolsCallAggregateMessage that can be transformed.
+    /// </summary>
+    /// <param name="message">The message to check</param>
+    /// <returns>True if the message is a transformable ToolsCallAggregateMessage</returns>
+    public static bool IsTransformableToolCall(this IMessage message)
+    {
+        return message is ToolsCallAggregateMessage;
+    }
 }
