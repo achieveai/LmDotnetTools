@@ -33,6 +33,12 @@ public record ProviderConfig
     public required PricingConfig Pricing { get; init; }
 
     /// <summary>
+    /// Performance metrics for this provider.
+    /// </summary>
+    [JsonPropertyName("performance")]
+    public PerformanceConfig? Performance { get; init; }
+
+    /// <summary>
     /// Sub-providers for tiered failover (optional).
     /// </summary>
     [JsonPropertyName("sub_providers")]
