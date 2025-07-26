@@ -30,4 +30,28 @@ public record SubProviderConfig
     /// </summary>
     [JsonPropertyName("pricing")]
     public required PricingConfig Pricing { get; init; }
+
+    /// <summary>
+    /// Performance metrics for this sub-provider.
+    /// </summary>
+    [JsonPropertyName("performance")]
+    public PerformanceConfig? Performance { get; init; }
+
+    /// <summary>
+    /// Endpoint ID for this sub-provider.
+    /// </summary>
+    [JsonPropertyName("endpoint_id")]
+    public string? EndpointId { get; init; }
+
+    /// <summary>
+    /// Tags for sub-provider categorization.
+    /// </summary>
+    [JsonPropertyName("tags")]
+    public IReadOnlyList<string>? Tags { get; init; }
+
+    /// <summary>
+    /// Additional metadata for this sub-provider.
+    /// </summary>
+    [JsonPropertyName("metadata")]
+    public IReadOnlyDictionary<string, object>? Metadata { get; init; }
 } 
