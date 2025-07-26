@@ -11,6 +11,7 @@ ModelConfigGenerator automatically fetches model information from OpenRouter's A
 - **Family-based Filtering**: Filter models by families like Llama, Claude, GPT, Qwen, DeepSeek, Kimi, etc.
 - **Capability Filtering**: Include only reasoning models, multimodal models, or models with specific features
 - **Performance Filtering**: Filter by context length, cost per token, and other performance metrics
+- **Date-based Filtering**: Include only models updated since a specific date for the latest releases
 - **Comprehensive Output**: Generates complete Models.config with capabilities, pricing, and provider information
 - **Flexible Options**: Support for compact JSON, capability exclusion, and output customization
 - **Built-in Caching**: Leverages OpenRouter service caching for efficient operation
@@ -73,6 +74,24 @@ dotnet run --project ModelConfigGenerator -- --max-models 10
 dotnet run --project ModelConfigGenerator -- --reasoning-only --min-context 50000 --max-cost 10.0 --max-models 5
 ```
 
+### Date-based Filtering
+
+Filter by model release/update date:
+
+```bash
+# Models released since January 1, 2024
+dotnet run --project ModelConfigGenerator -- --model-updated-since 2024-01-01
+
+# Recent reasoning models only
+dotnet run --project ModelConfigGenerator -- --model-updated-since 2024-06-01 --reasoning-only
+
+# Latest Claude and GPT models
+dotnet run --project ModelConfigGenerator -- --families claude,gpt --model-updated-since 2024-01-01 --output latest-models.json
+
+# Combine with performance filtering for cutting-edge models
+dotnet run --project ModelConfigGenerator -- --model-updated-since 2024-01-01 --min-context 100000 --max-models 5 --verbose
+```
+
 ### Output Customization
 
 Customize the output format:
@@ -100,6 +119,7 @@ dotnet run --project ModelConfigGenerator -- --verbose --families llama
 | `--multimodal-only` | | Include only multimodal models | `--multimodal-only` |
 | `--min-context` | | Minimum context length | `--min-context 100000` |
 | `--max-cost` | | Maximum cost per million tokens | `--max-cost 5.0` |
+| `--model-updated-since` | | Include only models updated since date | `--model-updated-since 2024-01-01` |
 | `--no-capabilities` | | Exclude capabilities information | `--no-capabilities` |
 | `--compact` | | Generate compact JSON | `--compact` |
 | `--list-families` | | List supported families | `--list-families` |
@@ -155,6 +175,16 @@ dotnet run -- --families qwen,yi,kimi --output chinese-models.json
 **Enterprise-grade models:**
 ```bash
 dotnet run -- --families gpt,claude --min-context 100000 --reasoning-only --output enterprise-models.json
+```
+
+**Latest cutting-edge models:**
+```bash
+dotnet run -- --model-updated-since 2024-01-01 --reasoning-only --max-models 10 --output latest-reasoning.json
+```
+
+**Recent multimodal models:**
+```bash
+dotnet run -- --model-updated-since 2024-06-01 --multimodal-only --families gpt,claude,gemini --output recent-vision.json
 ```
 
 ## Output Format
