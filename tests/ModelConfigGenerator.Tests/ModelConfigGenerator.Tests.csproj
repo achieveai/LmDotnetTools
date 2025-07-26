@@ -25,7 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Misc\ModelConfigGenerator\ModelConfigGenerator.csproj" />
+    <ProjectReference Include="..\..\src\Tools\ModelConfigGenerator\ModelConfigGenerator.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
   </ItemGroup>
 

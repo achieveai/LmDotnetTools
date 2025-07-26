@@ -219,7 +219,7 @@ The utility includes comprehensive error handling:
 ### Building
 
 ```bash
-dotnet build src/Misc/ModelConfigGenerator/ModelConfigGenerator.csproj
+dotnet build src/Tools/ModelConfigGenerator/ModelConfigGenerator.csproj
 ```
 
 ### Testing

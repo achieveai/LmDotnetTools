@@ -74,7 +74,7 @@ public record OpenAIProviderUsage
             CompletionTokens = CompletionTokens,
             TotalTokens = TotalTokens,
             TotalCost = TotalCost,
-            ExtraProperties = ExtraProperties.ToImmutableDictionary()
+            ExtraProperties = ExtraProperties.ToImmutableDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value)
         };
 
         // Convert nested token details if present
