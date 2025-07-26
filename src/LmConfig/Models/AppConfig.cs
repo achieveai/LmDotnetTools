@@ -28,10 +28,14 @@ public record AppConfig
     {
         System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModel called with modelId: {modelId ?? "NULL"}");
         System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
-        if (Models != null)
+        if (Models != null && !string.IsNullOrEmpty(modelId))
         {
             System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
-            modelId = modelId.Contains('[') ? modelId.Substring(0, modelId.IndexOf("[")) : modelId;
+            var bracketIndex = modelId.IndexOf('[');
+            if (bracketIndex >= 0)
+            {
+                modelId = modelId.Substring(0, bracketIndex);
+            }
             return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
         }
         
