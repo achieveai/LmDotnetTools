@@ -107,6 +107,14 @@ public class OpenRouterModelService
     }
 
     /// <summary>
+    /// Safely extracts a long value from a JsonNode.
+    /// </summary>
+    private static long? GetLongValue(JsonNode? node, string propertyName)
+    {
+        return node?[propertyName]?.GetValue<long>();
+    }
+
+    /// <summary>
     /// Safely extracts a string array from a JsonNode.
     /// </summary>
     private static string[] GetStringArray(JsonNode? node, string propertyName)
@@ -953,6 +961,12 @@ public class OpenRouterModelService
         var warningMessage = GetStringValue(primaryModelNode, "warning_message");
         var isHidden = GetBoolValue(primaryModelNode, "hidden");
 
+        // Parse created date from Unix timestamp
+        var createdTimestamp = GetLongValue(primaryModelNode, "created");
+        var createdDate = createdTimestamp.HasValue 
+            ? DateTimeOffset.FromUnixTimeSeconds(createdTimestamp.Value).DateTime
+            : (DateTime?)null;
+
         // Check if model is reasoning-capable
         var isReasoning = CheckIfReasoningModel(primaryModelNode);
 
@@ -986,6 +1000,7 @@ public class OpenRouterModelService
         {
             Id = modelSlug,
             IsReasoning = isReasoning,
+            CreatedDate = createdDate,
             Capabilities = capabilities,
             Providers = providers
         };

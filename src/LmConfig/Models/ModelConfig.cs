@@ -21,6 +21,13 @@ public record ModelConfig
     public bool IsReasoning { get; init; } = false;
 
     /// <summary>
+    /// The date when this model was created/added to OpenRouter.
+    /// Null if date information is not available.
+    /// </summary>
+    [JsonPropertyName("created_date")]
+    public DateTime? CreatedDate { get; init; }
+
+    /// <summary>
     /// Model capabilities defining what the model can do.
     /// Optional for backward compatibility with existing configurations.
     /// </summary>

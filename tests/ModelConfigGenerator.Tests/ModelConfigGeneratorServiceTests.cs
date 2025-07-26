@@ -163,6 +163,110 @@ public class ModelConfigGeneratorServiceTests
     Assert.All(result, model => Assert.Contains("llama", model.Id.ToLowerInvariant()));
   }
 
+  [Fact]
+  public void FilteringLogic_WithModelUpdatedSince_ShouldWorkCorrectly()
+  {
+    // Arrange
+    var models = CreateTestModelsWithDates();
+    var options = new GeneratorOptions { ModelUpdatedSince = new DateTime(2024, 6, 1) };
+
+    // Act
+    var reflection = typeof(ModelConfigGeneratorService);
+    var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
+      System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+    
+    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
+    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
+    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    
+    var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+
+    // Assert
+    Assert.All(result, model => 
+    {
+      Assert.True(model.CreatedDate.HasValue);
+      Assert.True(model.CreatedDate.Value.Date >= new DateTime(2024, 6, 1).Date);
+    });
+    Assert.Equal(2, result.Count); // Should exclude models created before June 1, 2024
+  }
+
+  [Fact]
+  public void FilteringLogic_WithModelUpdatedSinceAndOtherFilters_ShouldApplyAllFilters()
+  {
+    // Arrange
+    var models = CreateTestModelsWithDates();
+    var options = new GeneratorOptions 
+    { 
+      ModelUpdatedSince = new DateTime(2024, 1, 1),
+      ReasoningOnly = true
+    };
+
+    // Act
+    var reflection = typeof(ModelConfigGeneratorService);
+    var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
+      System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+    
+    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
+    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
+    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    
+    var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+
+    // Assert
+    Assert.All(result, model => 
+    {
+      Assert.True(model.CreatedDate.HasValue);
+      Assert.True(model.CreatedDate.Value.Date >= new DateTime(2024, 1, 1).Date);
+      Assert.True(model.IsReasoning || model.HasCapability("thinking"));
+    });
+    Assert.Single(result); // Should only include reasoning models from 2024 onwards
+  }
+
+  [Fact]
+  public void FilteringLogic_WithModelUpdatedSinceExcludesModelsWithoutDates_ShouldWorkCorrectly()
+  {
+    // Arrange
+    var models = CreateTestModelsWithMixedDates();
+    var options = new GeneratorOptions { ModelUpdatedSince = new DateTime(2024, 1, 1) };
+
+    // Act
+    var reflection = typeof(ModelConfigGeneratorService);
+    var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
+      System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+    
+    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
+    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
+    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    
+    var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+
+    // Assert
+    Assert.All(result, model => Assert.True(model.CreatedDate.HasValue));
+    Assert.Equal(1, result.Count); // Should exclude models without dates and models before 2024
+  }
+
+  [Fact]
+  public void FilteringLogic_WithModelUpdatedSinceNoMatches_ShouldReturnEmpty()
+  {
+    // Arrange
+    var models = CreateTestModelsWithDates();
+    var options = new GeneratorOptions { ModelUpdatedSince = new DateTime(2025, 1, 1) }; // Future date
+
+    // Act
+    var reflection = typeof(ModelConfigGeneratorService);
+    var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
+      System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+    
+    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
+    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
+    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    
+    var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+
+    // Assert
+    Assert.Empty(result);
+  }
+
   private static IReadOnlyList<ModelConfig> CreateTestModels()
   {
     return new List<ModelConfig>
@@ -291,6 +395,208 @@ public class ModelConfigGeneratorServiceTests
           {
             PromptPerMillion = 0.4,
             CompletionPerMillion = 1.2
+          }
+        }]
+      }
+    };
+  }
+
+  private static IReadOnlyList<ModelConfig> CreateTestModelsWithDates()
+  {
+    return new List<ModelConfig>
+    {
+      new()
+      {
+        Id = "meta-llama/llama-3.1-70b",
+        IsReasoning = false,
+        CreatedDate = new DateTime(2024, 7, 15), // After June 1
+        Capabilities = new ModelCapabilities
+        {
+          TokenLimits = new TokenLimits
+          {
+            MaxContextTokens = 131072,
+            MaxOutputTokens = 4096
+          },
+          SupportsStreaming = true,
+          SupportedFeatures = ["long-context"]
+        },
+        Providers = [new ProviderConfig
+        {
+          Name = "OpenRouter",
+          ModelName = "meta-llama/llama-3.1-70b",
+          Priority = 1,
+          Pricing = new PricingConfig
+          {
+            PromptPerMillion = 0.5,
+            CompletionPerMillion = 0.75
+          }
+        }]
+      },
+      new()
+      {
+        Id = "anthropic/claude-3-sonnet",
+        IsReasoning = true,
+        CreatedDate = new DateTime(2024, 8, 20), // After June 1
+        Capabilities = new ModelCapabilities
+        {
+          Thinking = new ThinkingCapability
+          {
+            Type = ThinkingType.Anthropic,
+            SupportsBudgetTokens = true,
+            IsBuiltIn = false,
+            IsExposed = true
+          },
+          TokenLimits = new TokenLimits
+          {
+            MaxContextTokens = 200000,
+            MaxOutputTokens = 8192
+          },
+          SupportsStreaming = true,
+          SupportedFeatures = ["thinking"]
+        },
+        Providers = [new ProviderConfig
+        {
+          Name = "Anthropic",
+          ModelName = "claude-3-sonnet-20240229",
+          Priority = 1,
+          Pricing = new PricingConfig
+          {
+            PromptPerMillion = 3.0,
+            CompletionPerMillion = 15.0
+          }
+        }]
+      },
+      new()
+      {
+        Id = "openai/gpt-4-turbo",
+        IsReasoning = false,
+        CreatedDate = new DateTime(2024, 3, 10), // Before June 1
+        Capabilities = new ModelCapabilities
+        {
+          TokenLimits = new TokenLimits
+          {
+            MaxContextTokens = 128000,
+            MaxOutputTokens = 4096
+          },
+          SupportsStreaming = true
+        },
+        Providers = [new ProviderConfig
+        {
+          Name = "OpenAI",
+          ModelName = "gpt-4-turbo",
+          Priority = 1,
+          Pricing = new PricingConfig
+          {
+            PromptPerMillion = 10.0,
+            CompletionPerMillion = 30.0
+          }
+        }]
+      },
+      new()
+      {
+        Id = "qwen/qwen-2.5-72b",
+        IsReasoning = false,
+        CreatedDate = new DateTime(2023, 12, 5), // Before June 1
+        Capabilities = new ModelCapabilities
+        {
+          TokenLimits = new TokenLimits
+          {
+            MaxContextTokens = 32768,
+            MaxOutputTokens = 8192
+          },
+          SupportsStreaming = true
+        },
+        Providers = [new ProviderConfig
+        {
+          Name = "OpenRouter",
+          ModelName = "qwen/qwen-2.5-72b",
+          Priority = 1,
+          Pricing = new PricingConfig
+          {
+            PromptPerMillion = 0.4,
+            CompletionPerMillion = 1.2
+          }
+        }]
+      }
+    };
+  }
+
+  private static IReadOnlyList<ModelConfig> CreateTestModelsWithMixedDates()
+  {
+    return new List<ModelConfig>
+    {
+      new()
+      {
+        Id = "model-with-date",
+        IsReasoning = false,
+        CreatedDate = new DateTime(2024, 6, 15), // Has date after 2024
+        Capabilities = new ModelCapabilities
+        {
+          TokenLimits = new TokenLimits
+          {
+            MaxContextTokens = 4096,
+            MaxOutputTokens = 1024
+          }
+        },
+        Providers = [new ProviderConfig
+        {
+          Name = "TestProvider",
+          ModelName = "model-with-date",
+          Priority = 1,
+          Pricing = new PricingConfig
+          {
+            PromptPerMillion = 1.0,
+            CompletionPerMillion = 2.0
+          }
+        }]
+      },
+      new()
+      {
+        Id = "model-without-date",
+        IsReasoning = false,
+        CreatedDate = null, // No date information
+        Capabilities = new ModelCapabilities
+        {
+          TokenLimits = new TokenLimits
+          {
+            MaxContextTokens = 4096,
+            MaxOutputTokens = 1024
+          }
+        },
+        Providers = [new ProviderConfig
+        {
+          Name = "TestProvider",
+          ModelName = "model-without-date",
+          Priority = 1,
+          Pricing = new PricingConfig
+          {
+            PromptPerMillion = 1.0,
+            CompletionPerMillion = 2.0
+          }
+        }]
+      },
+      new()
+      {
+        Id = "old-model-with-date",
+        IsReasoning = false,
+        CreatedDate = new DateTime(2023, 5, 10), // Has date before 2024
+        Capabilities = new ModelCapabilities
+        {
+          TokenLimits = new TokenLimits
+          {
+            MaxContextTokens = 4096,
+            MaxOutputTokens = 1024
+          }
+        },
+        Providers = [new ProviderConfig
+        {
+          Name = "TestProvider",
+          ModelName = "old-model-with-date",
+          Priority = 1,
+          Pricing = new PricingConfig
+          {
+            PromptPerMillion = 1.0,
+            CompletionPerMillion = 2.0
           }
         }]
       }
