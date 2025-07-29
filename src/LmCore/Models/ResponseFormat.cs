@@ -1,7 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using System.Text.Json.Serialization;
-using System.Reflection;
-using System.Text;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
@@ -92,7 +90,7 @@ public sealed record JsonSchemaObject
     /// </summary>
     [JsonPropertyName("properties")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyDictionary<string, JsonSchemaProperty>? Properties { get; init; }
+    public IReadOnlyDictionary<string, JsonSchemaObject>? Properties { get; init; }
 
     /// <summary>
     /// List of required property names
@@ -104,9 +102,9 @@ public sealed record JsonSchemaObject
     /// <summary>
     /// Whether additional properties are allowed in the object
     /// </summary>
-    [JsonPropertyName("additional_properties")]
+    [JsonPropertyName("additionalProperties")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public bool AdditionalProperties { get; init; } = false;
+    public bool AdditionalProperties { get; init; }
 
     /// <summary>
     /// Description of the schema object
@@ -171,6 +169,46 @@ public sealed record JsonSchemaObject
         new JsonSchemaObjectBuilder(type);
 
     /// <summary>
+    /// Creates a new string schema with the given description
+    /// </summary>
+    public static JsonSchemaObject String(string? description = null) =>
+        new JsonSchemaObject
+        {
+            Type = JsonSchemaTypeHelper.ToType("string"),
+            Description = description,
+        };
+
+    /// <summary>
+    /// Creates a new number schema with the given description
+    /// </summary>
+    public static JsonSchemaObject Number(string? description = null) =>
+        new JsonSchemaObject
+        {
+            Type = JsonSchemaTypeHelper.ToType("number"),
+            Description = description,
+        };
+
+    /// <summary>
+    /// Creates a new integer schema with the given description
+    /// </summary>
+    public static JsonSchemaObject Integer(string? description = null) =>
+        new JsonSchemaObject
+        {
+            Type = JsonSchemaTypeHelper.ToType("integer"),
+            Description = description,
+        };
+
+    /// <summary>
+    /// Creates a new boolean schema with the given description
+    /// </summary>
+    public static JsonSchemaObject Boolean(string? description = null) =>
+        new JsonSchemaObject
+        {
+            Type = JsonSchemaTypeHelper.ToType("boolean"),
+            Description = description,
+        };
+
+    /// <summary>
     /// Creates a JSON Schema object for an array type
     /// </summary>
     /// <param name="items">Schema for the array items</param>
@@ -186,174 +224,13 @@ public sealed record JsonSchemaObject
         };
     }
 
-    public static string GetJsonPrimaryType(JsonSchemaObject schemaObject)
-    {
-        if (schemaObject == null) return "string";
-
-        // Handle both single string and list of strings
-        if (schemaObject.Type.Is<string>())
-        {
-            var singleType = schemaObject.Type.Get<string>();
-            return singleType == "null" ? "string" : singleType;
-        }
-        
-        if (schemaObject.Type.Is<IReadOnlyList<string>>())
-        {
-            var typeList = schemaObject.Type.Get<IReadOnlyList<string>>();
-            return typeList.FirstOrDefault(x => x != "null") ?? "string";
-        }
-
-        return "string";
-    }
-}
-
-/// <summary>
-/// Represents a property definition within a JSON Schema object
-/// </summary>
-public sealed record JsonSchemaProperty
-{
     /// <summary>
-    /// The type of the property (e.g., "string", "number", etc.)
-    /// </summary>
-    [JsonPropertyName("type")]
-    public Union<string, IReadOnlyList<string>> Type { get; init; } = new Union<string, IReadOnlyList<string>>(["string", "null"]);
-
-    /// <summary>
-    /// Description of the property
-    /// </summary>
-    [JsonPropertyName("description")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Description { get; init; }
-
-    /// <summary>
-    /// Schema for the array items if the property is an array
-    /// </summary>
-    [JsonPropertyName("items")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonSchemaObject? Items { get; init; }
-
-    /// <summary>
-    /// Property definitions if the property is an object
-    /// </summary>
-    [JsonPropertyName("properties")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyDictionary<string, JsonSchemaProperty>? Properties { get; init; }
-
-    /// <summary>
-    /// List of required property names if the property is an object
-    /// </summary>
-    [JsonPropertyName("required")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyList<string>? Required { get; init; }
-
-    /// <summary>
-    /// Whether additional properties are allowed in the object (for object-type properties)
-    /// </summary>
-    [JsonPropertyName("additionalProperties")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public bool AdditionalProperties { get; init; } = false;
-
-    /// <summary>
-    /// Enum values for string type properties
-    /// </summary>
-    [JsonPropertyName("enum")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyList<string>? Enum { get; init; }
-
-    /// <summary>
-    /// Minimum value for number/integer type properties
-    /// </summary>
-    [JsonPropertyName("minimum")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public double? Minimum { get; init; }
-
-    /// <summary>
-    /// Maximum value for number/integer type properties
-    /// </summary>
-    [JsonPropertyName("maximum")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public double? Maximum { get; init; }
-
-    /// <summary>
-    /// Minimum number of items for array type properties
-    /// </summary>
-    [JsonPropertyName("minItems")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? MinItems { get; init; }
-
-    /// <summary>
-    /// Maximum number of items for array type properties
-    /// </summary>
-    [JsonPropertyName("maxItems")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? MaxItems { get; init; }
-
-    /// <summary>
-    /// Whether items in array must be unique
-    /// </summary>
-    [JsonPropertyName("uniqueItems")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public bool UniqueItems { get; init; }
-
-    /// <summary>
-    /// Creates a new string property with the given description
-    /// </summary>
-    public static JsonSchemaProperty String(string? description = null) =>
-        new JsonSchemaProperty {
-            Type = JsonSchemaTypeHelper.ToType("string"),
-            Description = description,
-        };
-
-    /// <summary>
-    /// Creates a new number property with the given description
-    /// </summary>
-    public static JsonSchemaProperty Number(string? description = null) =>
-        new JsonSchemaProperty {
-            Type = JsonSchemaTypeHelper.ToType("number"),
-            Description = description,
-        };
-
-    /// <summary>
-    /// Creates a new integer property with the given description
-    /// </summary>
-    public static JsonSchemaProperty Integer(string? description = null) =>
-        new JsonSchemaProperty {
-            Type = JsonSchemaTypeHelper.ToType("integer"),
-            Description = description,
-        };
-
-    /// <summary>
-    /// Creates a new boolean property with the given description
-    /// </summary>
-    public static JsonSchemaProperty Boolean(string? description = null) =>
-        new JsonSchemaProperty {
-            Type = JsonSchemaTypeHelper.ToType("boolean"),
-            Description = description,
-        };
-
-    /// <summary>
-    /// Creates a new array property with the given item schema and description
-    /// </summary>
-    /// <param name="items">Schema for the array items</param>
-    /// <param name="description">Description of the array property</param>
-    /// <returns>A new array property</returns>
-    public static JsonSchemaProperty Array(JsonSchemaObject items, string? description = null)
-    {
-        return new JsonSchemaProperty
-        {
-            Type = JsonSchemaTypeHelper.ToType("array"),
-            Description = description,
-            Items = items
-        };
-    }
-
-    /// <summary>
-    /// Creates a new array property with string items
+    /// Creates a new array schema with string items
     /// </summary>
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
-    /// <returns>A schema property of type array with string items</returns>
-    public static JsonSchemaProperty StringArray(string? description = null, string? itemDescription = null)
+    /// <returns>A schema object of type array with string items</returns>
+    public static JsonSchemaObject StringArray(string? description = null, string? itemDescription = null)
     {
         var items = new JsonSchemaObject
         {
@@ -365,12 +242,12 @@ public sealed record JsonSchemaProperty
     }
 
     /// <summary>
-    /// Creates a new array property with number items
+    /// Creates a new array schema with number items
     /// </summary>
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
-    /// <returns>A schema property of type array with number items</returns>
-    public static JsonSchemaProperty NumberArray(string? description = null, string? itemDescription = null)
+    /// <returns>A schema object of type array with number items</returns>
+    public static JsonSchemaObject NumberArray(string? description = null, string? itemDescription = null)
     {
         var items = new JsonSchemaObject
         {
@@ -380,7 +257,29 @@ public sealed record JsonSchemaProperty
 
         return Array(items, description);
     }
+
+    public static string GetJsonPrimaryType(JsonSchemaObject schemaObject)
+    {
+        if (schemaObject == null) return "string";
+
+        // Handle both single string and list of strings
+        if (schemaObject.Type.Is<string>())
+        {
+            var singleType = schemaObject.Type.Get<string>();
+            return singleType == "null" ? "string" : singleType;
+        }
+
+        if (schemaObject.Type.Is<IReadOnlyList<string>>())
+        {
+            var typeList = schemaObject.Type.Get<IReadOnlyList<string>>();
+            return typeList.FirstOrDefault(x => x != "null") ?? "string";
+        }
+
+        return "string";
+    }
 }
+
+
 
 /// <summary>
 /// Builder class for constructing JSON Schema objects in a fluent manner
@@ -388,9 +287,9 @@ public sealed record JsonSchemaProperty
 public class JsonSchemaObjectBuilder
 {
     private readonly string _type;
-    private readonly Dictionary<string, JsonSchemaProperty> _properties = new();
+    private readonly Dictionary<string, JsonSchemaObject> _properties = new();
     private readonly List<string> _required = new();
-    private bool _additionalProperties = false;
+    private bool _additionalProperties;
     private string? _description;
 
     /// <summary>
@@ -404,7 +303,7 @@ public class JsonSchemaObjectBuilder
     /// <summary>
     /// Adds a property to the schema
     /// </summary>
-    public JsonSchemaObjectBuilder WithProperty(string name, JsonSchemaProperty property, bool required = false)
+    public JsonSchemaObjectBuilder WithProperty(string name, JsonSchemaObject property, bool required = false)
     {
         _properties.Add(name, property);
         if (required)
@@ -455,19 +354,9 @@ public static class JsonSchemaTypeHelper
         return schemaObject.Type.Contains("null");
     }
 
-    public static bool IsNullable(JsonSchemaProperty schemaProperty)
-    {
-        return schemaProperty.Type.Contains("null");
-    }
-
     public static bool IsStringType(JsonSchemaObject schemaObject)
     {
         return schemaObject.Type.Contains("string");
-    }
-
-    public static bool IsStringType(JsonSchemaProperty schemaProperty)
-    {
-        return schemaProperty.Type.Contains("string");
     }
 
     public static bool IsTypeString(this JsonSchemaObject schemaObject, string type)

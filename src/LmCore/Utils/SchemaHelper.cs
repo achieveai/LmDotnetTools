@@ -3,8 +3,6 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
-using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
 /// <summary>
@@ -23,17 +21,7 @@ public static class SchemaHelper
         }
     };
 
-    /// <summary>
-    /// JsonSerializerOptions configured with Union converters for schema serialization (debug output)
-    /// </summary>
-    private static readonly JsonSerializerOptions SchemaSerializationOptions = new()
-    {
-        WriteIndented = true,
-        Converters = 
-        {
-            new UnionJsonConverter<string, IReadOnlyList<string>>()
-        }
-    };
+
 
     /// <summary>
     /// Cache to store already generated schema objects keyed by .NET type.
@@ -123,13 +111,13 @@ public static class SchemaHelper
     /// </summary>
     /// <param name="properties">The properties dictionary to transform</param>
     /// <returns>The transformed properties dictionary</returns>
-    private static IReadOnlyDictionary<string, JsonSchemaProperty>? TransformPropertiesDictionary(
-        IReadOnlyDictionary<string, JsonSchemaProperty>? properties)
+    private static Dictionary<string, JsonSchemaObject>? TransformPropertiesDictionary(
+        IReadOnlyDictionary<string, JsonSchemaObject>? properties)
     {
         if (properties == null) return null;
 
-        var transformedProperties = new Dictionary<string, JsonSchemaProperty>();
-        
+        var transformedProperties = new Dictionary<string, JsonSchemaObject>();
+
         foreach (var kvp in properties)
         {
             var originalProperty = kvp.Value;
@@ -141,7 +129,7 @@ public static class SchemaHelper
                 // Always set AdditionalProperties = false for OpenAI structured outputs
                 AdditionalProperties = false
             };
-            
+
             transformedProperties[kvp.Key] = transformedProperty;
         }
 
