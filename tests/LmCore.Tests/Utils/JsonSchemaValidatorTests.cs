@@ -343,9 +343,9 @@ public class JsonSchemaValidatorTests
                     ParameterType = new JsonSchemaObject
                     {
                         Type = "object",
-                        Properties = new Dictionary<string, JsonSchemaProperty>
+                        Properties = new Dictionary<string, JsonSchemaObject>
                         {
-                            { "nested", new JsonSchemaProperty { Type = "string" } }
+                            { "nested", new JsonSchemaObject { Type = "string" } }
                         }
                     }
                 }

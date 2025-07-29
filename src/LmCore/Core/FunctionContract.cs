@@ -67,23 +67,7 @@ public class FunctionContract
         var builder = new JsonSchemaObjectBuilder("object");
         foreach (var parameter in Parameters)
         {
-            var property = new JsonSchemaProperty
-            {
-                Type = parameter.ParameterType.Type,
-                Description = parameter.Description,
-                Items = parameter.ParameterType.Items,
-                Properties = parameter.ParameterType.Properties?
-                    .ToDictionary(
-                        p => p.Key,
-                        p => new JsonSchemaProperty
-                        {
-                            Type = p.Value.Type,
-                            Description = p.Value.Description,
-                            Items = p.Value.Items,
-                        })
-            };
-
-            builder.WithProperty(parameter.Name, property, parameter.IsRequired);
+            builder.WithProperty(parameter.Name, parameter.ParameterType, parameter.IsRequired);
         }
 
         return builder.Build();

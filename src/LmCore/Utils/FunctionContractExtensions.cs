@@ -267,45 +267,45 @@ public static class FunctionContractMarkdownExtensions
     }
 
     /// <summary>
-    /// Creates a sample value based on the JSON property schema.
+    /// Creates a sample value based on the JSON schema object.
     /// </summary>
-    /// <param name="property">The JSON schema property.</param>
-    /// <returns>A sample value for the property.</returns>
-    private static object CreateExampleValueFromProperty(JsonSchemaProperty property)
+    /// <param name="schemaObject">The JSON schema object.</param>
+    /// <returns>A sample value for the schema object.</returns>
+    private static object CreateExampleValueFromProperty(JsonSchemaObject schemaObject)
     {
-        if (property == null)
+        if (schemaObject == null)
             return "value";
 
-        switch (property.Type.GetTypeString())
+        switch (schemaObject.Type.GetTypeString())
         {
             case "string":
-                if (property.Enum != null && property.Enum.Count > 0)
+                if (schemaObject.Enum?.Count > 0)
                 {
-                    return property.Enum[0]; // Return first enum value as example
+                    return schemaObject.Enum[0]; // Return first enum value as example
                 }
                 return "value";
             case "integer":
             case "number":
-                if (property.Minimum.HasValue)
+                if (schemaObject.Minimum.HasValue)
                 {
-                    return (int)property.Minimum.Value;
+                    return (int)schemaObject.Minimum.Value;
                 }
                 return 42;
             case "boolean":
                 return true;
             case "array":
                 // Create an array with items respecting MinItems if possible
-                if (property.Items != null)
+                if (schemaObject.Items != null)
                 {
-                    int itemCount = property.MinItems.HasValue ? Math.Max(1, property.MinItems.Value) : 1;
-                    if (property.MaxItems.HasValue && itemCount > property.MaxItems.Value)
+                    int itemCount = schemaObject.MinItems.HasValue ? Math.Max(1, schemaObject.MinItems.Value) : 1;
+                    if (schemaObject.MaxItems.HasValue && itemCount > schemaObject.MaxItems.Value)
                     {
-                        itemCount = property.MaxItems.Value;
+                        itemCount = schemaObject.MaxItems.Value;
                     }
                     var items = new List<object>();
                     for (int i = 0; i < itemCount; i++)
                     {
-                        items.Add(CreateExampleValueFromSchema(property.Items));
+                        items.Add(CreateExampleValueFromSchema(schemaObject.Items));
                     }
                     return items.ToArray();
                 }

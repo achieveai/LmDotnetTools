@@ -34,7 +34,7 @@ public static class FunctionContractExtension
                     throw new ArgumentNullException(nameof(param.ParameterType));
                 }
 
-                // Convert the parameter type to an appropriate JsonSchemaProperty
+                // Convert the parameter type to an appropriate JsonSchemaObject
                 var property = CreatePropertyForType(param.ParameterType, param.Description);
 
                 schemaBuilder = schemaBuilder.WithProperty(param.Name, property, param.IsRequired);
@@ -47,20 +47,20 @@ public static class FunctionContractExtension
     }
 
     /// <summary>
-    /// Creates a JsonSchemaProperty based on the .NET type
+    /// Creates a JsonSchemaObject based on the .NET type
     /// </summary>
-    private static JsonSchemaProperty CreatePropertyForType(JsonSchemaObject schemaObject, string? description)
+    private static JsonSchemaObject CreatePropertyForType(JsonSchemaObject schemaObject, string? description)
     {
         // Handle based on JsonSchemaObject type
         return JsonSchemaObject.GetJsonPrimaryType(schemaObject) switch
         {
-            "string" => JsonSchemaProperty.String(description),
-            "integer" => JsonSchemaProperty.Integer(description),
-            "number" => JsonSchemaProperty.Number(description),
-            "boolean" => JsonSchemaProperty.Boolean(description),
-            "array" when schemaObject.Items != null => JsonSchemaProperty.Array(schemaObject.Items, description),
-            "object" => new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["object", "null"]), Description = description },
-            _ => new JsonSchemaProperty { Type = JsonSchemaTypeHelper.ToType(["string", "null"]), Description = description }
+            "string" => JsonSchemaObject.String(description),
+            "integer" => JsonSchemaObject.Integer(description),
+            "number" => JsonSchemaObject.Number(description),
+            "boolean" => JsonSchemaObject.Boolean(description),
+            "array" when schemaObject.Items != null => JsonSchemaObject.Array(schemaObject.Items, description),
+            "object" => new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType(["object", "null"]), Description = description },
+            _ => new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType(["string", "null"]), Description = description }
         };
     }
 }
