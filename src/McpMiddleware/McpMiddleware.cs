@@ -3,6 +3,8 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
@@ -15,6 +17,7 @@ public class McpMiddleware : IStreamingMiddleware
     private readonly Dictionary<string, IMcpClient> _mcpClients;
     private readonly IEnumerable<FunctionContract>? _functions;
     private readonly FunctionCallMiddleware _functionCallMiddleware;
+    private readonly ILogger<McpMiddleware> _logger;
 
     /// <summary>
     /// Private constructor for the async factory pattern
@@ -23,15 +26,18 @@ public class McpMiddleware : IStreamingMiddleware
     /// <param name="functions">Collection of function contracts</param>
     /// <param name="functionMap">Function map</param>
     /// <param name="name">Name of the middleware</param>
+    /// <param name="logger">Logger instance</param>
     private McpMiddleware(
         Dictionary<string, IMcpClient> mcpClients,
         IEnumerable<FunctionContract> functions,
         IDictionary<string, Func<string, Task<string>>> functionMap,
-        string name)
+        string name,
+        ILogger<McpMiddleware> logger)
     {
         _mcpClients = mcpClients;
         _functions = functions;
         Name = name;
+        _logger = logger;
 
         // Initialize the FunctionCallMiddleware with our function map
         _functionCallMiddleware = new FunctionCallMiddleware(
@@ -47,63 +53,109 @@ public class McpMiddleware : IStreamingMiddleware
     /// <param name="mcpClients">Dictionary of MCP clients</param>
     /// <param name="functions">Optional collection of function contracts</param>
     /// <param name="name">Name of the middleware</param>
+    /// <param name="logger">Optional logger instance</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A new instance of McpMiddleware</returns>
     public static async Task<McpMiddleware> CreateAsync(
         Dictionary<string, IMcpClient> mcpClients,
         IEnumerable<FunctionContract>? functions = null,
         string? name = null,
+        ILogger<McpMiddleware>? logger = null,
         CancellationToken cancellationToken = default)
     {
         // Use default name if not provided
         name ??= nameof(McpMiddleware);
 
+        // Use NullLogger if no logger provided
+        logger ??= NullLogger<McpMiddleware>.Instance;
+
+        logger.LogInformation("MCP client initialization started: ClientCount={ClientCount}, ClientIds={ClientIds}", 
+            mcpClients.Count, string.Join(", ", mcpClients.Keys));
+
         // Create function delegates map
-        var functionMap = await CreateFunctionMapAsync(mcpClients, cancellationToken);
+        var functionMap = await CreateFunctionMapAsync(mcpClients, logger, cancellationToken);
 
         // If functions weren't provided, extract them from the MCP clients
         if (functions == null)
         {
-            functions = await ExtractFunctionContractsAsync(mcpClients, cancellationToken);
+            functions = await ExtractFunctionContractsAsync(mcpClients, logger, cancellationToken);
         }
 
+        logger.LogInformation("MCP middleware initialized: FunctionCount={FunctionCount}, FunctionNames={FunctionNames}", 
+            functions.Count(), string.Join(", ", functions.Select(f => f.Name)));
+
         // Create and return the middleware instance
-        return new McpMiddleware(mcpClients, functions, functionMap, name);
+        return new McpMiddleware(mcpClients, functions, functionMap, name, logger);
     }
 
     /// <summary>
     /// Creates function delegates for the MCP clients asynchronously
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
+    /// <param name="logger">Logger instance</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Dictionary of function delegates</returns>
     private static async Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
+        ILogger<McpMiddleware> logger,
         CancellationToken cancellationToken = default)
     {
         var functionMap = new Dictionary<string, Func<string, Task<string>>>();
+
+        logger.LogDebug("Creating function map: ClientCount={ClientCount}, ClientIds={ClientIds}", 
+            mcpClients.Count, string.Join(", ", mcpClients.Keys));
 
         foreach (var kvp in mcpClients)
         {
             var clientId = kvp.Key;
             var client = kvp.Value;
 
-            // Get available tools from this client asynchronously
-            var tools = await client.ListToolsAsync();
+            try
+            {
+                // Get available tools from this client asynchronously
+                var tools = await client.ListToolsAsync();
+                
+                logger.LogInformation("MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}", 
+                    clientId, tools.Count, string.Join(", ", tools.Select(t => t.Name)));
 
             foreach (var tool in tools)
             {
+                var functionName = $"{kvp.Key}-{tool.Name}";
+                
+                logger.LogDebug("Mapping function to client: FunctionName={FunctionName}, ClientId={ClientId}, ToolName={ToolName}", 
+                    functionName, clientId, tool.Name);
+                
                 // Create a delegate that calls the appropriate MCP client
-                functionMap[$"{kvp.Key}-{tool.Name}"] = async (argsJson) =>
+                functionMap[functionName] = async (argsJson) =>
                 {
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                     try
                     {
+                        logger.LogDebug("Tool argument parsing: ToolName={ToolName}, ClientId={ClientId}, ArgsJson={ArgsJson}", 
+                            tool.Name, clientId, argsJson);
+                        
                         // Parse arguments from JSON
-                        var args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson)
-                            ?? new Dictionary<string, object?>();
+                        Dictionary<string, object?> args;
+                        try
+                        {
+                            args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson)
+                                ?? new Dictionary<string, object?>();
+                        }
+                        catch (JsonException jsonEx)
+                        {
+                            logger.LogError(jsonEx, "JSON parsing failed for tool arguments: ToolName={ToolName}, ClientId={ClientId}, InputData={InputData}", 
+                                tool.Name, clientId, argsJson);
+                            throw;
+                        }
+
+                        logger.LogDebug("Tool arguments parsed: ToolName={ToolName}, ArgumentCount={ArgumentCount}, ArgumentKeys={ArgumentKeys}", 
+                            tool.Name, args.Count, string.Join(", ", args.Keys));
 
                         // Call the MCP tool
                         var response = await client.CallToolAsync(tool.Name, args);
+
+                        logger.LogDebug("Tool response received: ToolName={ToolName}, ContentCount={ContentCount}", 
+                            tool.Name, response.Content?.Count ?? 0);
 
                         // Extract and format text response
                         string result = string.Join(Environment.NewLine,
@@ -113,13 +165,33 @@ public class McpMiddleware : IStreamingMiddleware
                                     .Select(c => c?.Text ?? string.Empty)
                                 : Array.Empty<string>());
 
+                        logger.LogDebug("Tool response formatted: ToolName={ToolName}, ResultLength={ResultLength}", 
+                            tool.Name, result.Length);
+
+                        stopwatch.Stop();
+                        logger.LogInformation("MCP tool execution completed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Success={Success}, ResultLength={ResultLength}", 
+                            tool.Name, clientId, stopwatch.ElapsedMilliseconds, true, result.Length);
+
                         return result;
                     }
                     catch (Exception ex)
                     {
+                        stopwatch.Stop();
+                        logger.LogDebug("Tool execution exception details: ToolName={ToolName}, ClientId={ClientId}, ExceptionType={ExceptionType}", 
+                            tool.Name, clientId, ex.GetType().Name);
+                        logger.LogError(ex, "MCP tool execution failed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Arguments={Arguments}", 
+                            tool.Name, clientId, stopwatch.ElapsedMilliseconds, argsJson);
+                        
                         return $"Error executing MCP tool {tool.Name}: {ex.Message}";
                     }
                 };
+            }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "MCP client tool discovery failed: ClientId={ClientId}", clientId);
+                // Continue with other clients even if one fails
+                continue;
             }
         }
 
@@ -130,21 +202,46 @@ public class McpMiddleware : IStreamingMiddleware
     /// Extracts function contracts from MCP client tools
     /// </summary>
     /// <param name="mcpClients">Dictionary of MCP clients</param>
+    /// <param name="logger">Logger instance</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Collection of function contracts</returns>
     private static async Task<IEnumerable<FunctionContract>> ExtractFunctionContractsAsync(
         Dictionary<string, IMcpClient> mcpClients,
+        ILogger<McpMiddleware> logger,
         CancellationToken cancellationToken = default)
     {
         var functionContracts = new List<FunctionContract>();
 
         foreach (var kvp in mcpClients)
         {
-            var tools = await kvp.Value.ListToolsAsync();
-
-            foreach (var tool in tools)
+            try
             {
-                functionContracts.Add(ConvertToFunctionContract(kvp.Key, tool));
+                var tools = await kvp.Value.ListToolsAsync();
+
+                foreach (var tool in tools)
+                {
+                    try
+                    {
+                        var contract = ConvertToFunctionContract(kvp.Key, tool, logger);
+                        functionContracts.Add(contract);
+                        
+                        logger.LogInformation("Function contract extracted: FunctionName={FunctionName}, ClientId={ClientId}, ParameterCount={ParameterCount}", 
+                            contract.Name, kvp.Key, contract.Parameters?.Count() ?? 0);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "Function contract extraction failed for tool: ClientId={ClientId}, ToolName={ToolName}", 
+                            kvp.Key, tool.Name);
+                        // Continue with other tools even if one fails
+                        continue;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
+                // Continue with other clients even if one fails
+                continue;
             }
         }
 
@@ -154,17 +251,20 @@ public class McpMiddleware : IStreamingMiddleware
     /// <summary>
     /// Converts an MCP client tool to a function contract
     /// </summary>
+    /// <param name="clientName">The client name</param>
     /// <param name="tool">The MCP client tool</param>
+    /// <param name="logger">Logger instance</param>
     /// <returns>A function contract</returns>
     private static FunctionContract ConvertToFunctionContract(
         string clientName,
-        McpClientTool tool)
+        McpClientTool tool,
+        ILogger<McpMiddleware>? logger = null)
     {
         return new FunctionContract
         {
             Name = $"{clientName}-{tool.Name}",
             Description = tool.Description,
-            Parameters = ExtractParametersFromSchema(tool.JsonSchema)
+            Parameters = ExtractParametersFromSchema(tool.JsonSchema, logger)
         };
     }
 
@@ -172,11 +272,13 @@ public class McpMiddleware : IStreamingMiddleware
     /// Extracts function parameters from a JSON schema
     /// </summary>
     /// <param name="inputSchema">The input schema</param>
+    /// <param name="logger">Logger instance</param>
     /// <returns>Collection of parameter contracts</returns>
-    private static IList<FunctionParameterContract>? ExtractParametersFromSchema(object? inputSchema)
+    private static IList<FunctionParameterContract>? ExtractParametersFromSchema(object? inputSchema, ILogger<McpMiddleware>? logger = null)
     {
         if (inputSchema == null)
         {
+            logger?.LogDebug("JSON schema processing: InputSchema is null, returning null parameters");
             return null;
         }
 
@@ -186,12 +288,16 @@ public class McpMiddleware : IStreamingMiddleware
         {
             // Convert the schema to JSON element
             var schemaElement = JsonSerializer.SerializeToElement(inputSchema);
+            logger?.LogDebug("JSON schema processing: Schema serialized, ValueKind={ValueKind}", schemaElement.ValueKind);
 
             // Check if it's a proper JSON schema with properties
             if (schemaElement.ValueKind == JsonValueKind.Object &&
                 schemaElement.TryGetProperty("properties", out var propertiesElement) &&
                 propertiesElement.ValueKind == JsonValueKind.Object)
             {
+                logger?.LogDebug("JSON schema processing: Found properties object with {PropertyCount} properties", 
+                    propertiesElement.EnumerateObject().Count());
+                
                 // Process each property as a parameter
                 foreach (var property in propertiesElement.EnumerateObject())
                 {
@@ -224,6 +330,9 @@ public class McpMiddleware : IStreamingMiddleware
                                        item.GetString() == paramName);
                     }
 
+                    logger?.LogDebug("Parameter extracted from schema: Name={ParameterName}, Type={ParameterType}, Required={IsRequired}", 
+                        paramName, paramType.Name, isRequired);
+                    
                     parameters.Add(new FunctionParameterContract
                     {
                         Name = paramName,
@@ -236,10 +345,14 @@ public class McpMiddleware : IStreamingMiddleware
         }
         catch (Exception ex)
         {
+            logger?.LogDebug("JSON schema processing failed: Error={Error}", ex.Message);
+            logger?.LogError(ex, "Function contract extraction failed: SchemaType={SchemaType}, SchemaContent={SchemaContent}", 
+                inputSchema?.GetType().Name ?? "null", JsonSerializer.Serialize(inputSchema));
             // Log the error or handle it as needed
             Console.Error.WriteLine($"Failed to extract parameters from input schema: {ex.Message}");
         }
 
+        logger?.LogDebug("JSON schema processing completed: ExtractedParameterCount={ParameterCount}", parameters.Count);
         return parameters;
     }
 

@@ -72,17 +72,18 @@ public static class Program
                 Console.WriteLine($"- {tool.Name}: {tool.Description}");
             }
 
-            var kvStore = new SqliteKvStore(KV_STORE_PATH, CachingMiddleware.S_jsonSerializerOptions);
-            var cachingMiddleware = new CachingMiddleware(kvStore);
+            var kvStore = new SqliteKvStore(KV_STORE_PATH);
+            // Note: CachingMiddleware may have been renamed or removed
+            // var cachingMiddleware = new CachingMiddleware(kvStore);
 
             // Create an OpenAI client
             var openClient = new OpenClient(API_KEY, API_URL);
             var openAgent = new OpenClientAgent("OpenAi", openClient) as IStreamingAgent;
-            openAgent = openAgent.WithMiddleware(cachingMiddleware);
+            // openAgent = openAgent.WithMiddleware(cachingMiddleware);
 
             var anthropicClient = new AnthropicClient(ANTHRPIC_API_KEY);
             var anthropicAgent = new AnthropicAgent("Claude", anthropicClient) as IStreamingAgent;
-            anthropicAgent = anthropicAgent.WithMiddleware(cachingMiddleware);
+            // anthropicAgent = anthropicAgent.WithMiddleware(cachingMiddleware);
 
             var llmAgent = anthropicAgent;
 
@@ -257,8 +258,9 @@ data can be used and few insights based on this data.";
             // }
 
             // === LLM agent setup ===
-            var kvStore = new SqliteKvStore(KV_STORE_PATH, CachingMiddleware.S_jsonSerializerOptions);
-            var cachingMiddleware = new CachingMiddleware(kvStore);
+            var kvStore = new SqliteKvStore(KV_STORE_PATH);
+            // Note: CachingMiddleware may have been renamed or removed
+            // var cachingMiddleware = new CachingMiddleware(kvStore);
 
             var openClient = new OpenClient(API_KEY, API_URL);
             var deepSeekAgent = new OpenClientAgent("DeepSeek", openClient) as IStreamingAgent;

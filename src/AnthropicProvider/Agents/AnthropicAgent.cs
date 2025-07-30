@@ -1,7 +1,10 @@
 using System.Runtime.CompilerServices;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Logging;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 
@@ -11,6 +14,7 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 public class AnthropicAgent : IStreamingAgent, IDisposable
 {
     private readonly IAnthropicClient _client;
+    private readonly ILogger<AnthropicAgent> _logger;
     private bool _disposed = false;
 
     /// <summary>
@@ -23,10 +27,12 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
     /// </summary>
     /// <param name="name">The name of the agent.</param>
     /// <param name="client">The client to use for API calls.</param>
-    public AnthropicAgent(string name, IAnthropicClient client)
+    /// <param name="logger">Optional logger for the agent.</param>
+    public AnthropicAgent(string name, IAnthropicClient client, ILogger<AnthropicAgent>? logger = null)
     {
         Name = name;
         _client = client;
+        _logger = logger ?? NullLogger<AnthropicAgent>.Instance;
     }
 
     /// <inheritdoc/>
@@ -35,14 +41,50 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
       GenerateReplyOptions? options = null,
       CancellationToken cancellationToken = default)
     {
-        var request = AnthropicRequest.FromMessages(messages, options);
+        var messageList = messages.ToList();
+        var modelId = options?.ModelId ?? "claude-3-5-sonnet-20241022";
+        
+        _logger.LogInformation(LogEventIds.AgentRequestInitiated,
+            "API request initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Type={RequestType}",
+            modelId, Name, messageList.Count, "Non-streaming");
 
-        var response = await _client.CreateChatCompletionsAsync(
-          request,
-          cancellationToken);
+        try
+        {
+            var startTime = DateTime.UtcNow;
+            var request = AnthropicRequest.FromMessages(messages, options);
+            
+            _logger.LogDebug(LogEventIds.RequestConversion,
+                "Request converted: Model={Model}, MaxTokens={MaxTokens}, Temperature={Temperature}, SystemPrompt={HasSystemPrompt}",
+                request.Model, request.MaxTokens, request.Temperature, !string.IsNullOrEmpty(request.System));
 
-        // Convert to messages using the Models namespace extension
-        return Models.AnthropicExtensions.ToMessages(response, Name);
+            var response = await _client.CreateChatCompletionsAsync(
+              request,
+              cancellationToken);
+
+            var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            var promptTokens = response.Usage?.InputTokens ?? 0;
+            var completionTokens = response.Usage?.OutputTokens ?? 0;
+
+            _logger.LogInformation(LogEventIds.AgentRequestCompleted,
+                "API request completed: Model={Model}, Agent={AgentName}, PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, Duration={Duration}ms",
+                modelId, Name, promptTokens, completionTokens, duration);
+
+            // Convert to messages using the Models namespace extension
+            var resultMessages = Models.AnthropicExtensions.ToMessages(response, Name);
+            
+            _logger.LogDebug(LogEventIds.MessageTransformation,
+                "Messages transformed: Agent={AgentName}, ResponseMessageCount={MessageCount}, ResponseId={ResponseId}",
+                Name, resultMessages.Count(), response.Id);
+                
+            return resultMessages;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(LogEventIds.ApiCallFailed, ex,
+                "API call failed: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Error={Error}",
+                modelId, Name, messageList.Count, ex.Message);
+            throw;
+        }
     }
 
     /// <inheritdoc/>
@@ -51,28 +93,87 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
       GenerateReplyOptions? options = null,
       CancellationToken cancellationToken = default)
     {
-        var request = AnthropicRequest.FromMessages(messages, options)
-          with
-        { Stream = true };
+        var messageList = messages.ToList();
+        var modelId = options?.ModelId ?? "claude-3-5-sonnet-20241022";
+        
+        _logger.LogInformation(LogEventIds.AgentRequestInitiated,
+            "API request initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Type={RequestType}",
+            modelId, Name, messageList.Count, "Streaming");
 
-        // Return the streaming response as an IAsyncEnumerable
-        return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
+        try
+        {
+            var request = AnthropicRequest.FromMessages(messages, options)
+              with
+            { Stream = true };
+            
+            _logger.LogDebug(LogEventIds.RequestConversion,
+                "Streaming request converted: Model={Model}, MaxTokens={MaxTokens}, Temperature={Temperature}, SystemPrompt={HasSystemPrompt}",
+                request.Model, request.MaxTokens, request.Temperature, !string.IsNullOrEmpty(request.System));
+
+            // Return the streaming response as an IAsyncEnumerable
+            return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(LogEventIds.ApiCallFailed, ex,
+                "Streaming API call failed: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Error={Error}",
+                modelId, Name, messageList.Count, ex.Message);
+            throw;
+        }
     }
 
     private async IAsyncEnumerable<IMessage> GenerateStreamingMessages(
       AnthropicRequest request,
       [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        var startTime = DateTime.UtcNow;
+        var chunkCount = 0;
+        var modelId = request.Model ?? "claude-3-5-sonnet-20241022";
+        
         // Create a parser to track state across events
         var parser = new AnthropicStreamParser();
 
-        var streamEvents = await _client.StreamingChatCompletionsAsync(request, cancellationToken);
+        IAsyncEnumerable<AnthropicStreamEvent> streamEvents;
+        try
+        {
+            streamEvents = await _client.StreamingChatCompletionsAsync(request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(LogEventIds.StreamingError, ex,
+                "Streaming initialization error: Model={Model}, Agent={AgentName}, Error={Error}",
+                modelId, Name, ex.Message);
+            throw;
+        }
+
         await foreach (var streamEvent in streamEvents)
         {
-            // Process the event directly without serialization/deserialization
-            var messages = parser.ProcessStreamEvent(streamEvent);
+            IEnumerable<IMessage> messages;
+            try
+            {
+                chunkCount++;
+                
+                _logger.LogDebug(LogEventIds.StreamingEventProcessed,
+                    "Streaming event processed: Agent={AgentName}, ChunkNumber={ChunkNumber}, EventType={EventType}",
+                    Name, chunkCount, streamEvent.GetType().Name);
+                
+                // Process the event directly without serialization/deserialization
+                messages = parser.ProcessStreamEvent(streamEvent);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(LogEventIds.ParserFailure, ex,
+                    "Parser failure during streaming: Agent={AgentName}, ChunkNumber={ChunkNumber}, Error={Error}",
+                    Name, chunkCount, ex.Message);
+                throw;
+            }
+
             foreach (var message in messages)
             {
+                _logger.LogDebug(LogEventIds.MessageTransformation,
+                    "Message transformed: Agent={AgentName}, MessageType={MessageType}",
+                    Name, message.GetType().Name);
+                
                 // Set the agent name for all messages
                 if (message is TextMessage textMessage)
                 {
@@ -95,6 +196,12 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
                 }
             }
         }
+        
+        var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
+        
+        _logger.LogInformation(LogEventIds.AgentStreamingCompleted,
+            "Streaming completed: Model={Model}, Agent={AgentName}, ChunkCount={ChunkCount}, Duration={Duration}ms",
+            modelId, Name, chunkCount, duration);
     }
 
     /// <summary>
@@ -118,7 +225,16 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             {
                 if (_client is IDisposable disposableClient)
                 {
-                    disposableClient.Dispose();
+                    try
+                    {
+                        disposableClient.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(LogEventIds.ClientDisposalError, ex,
+                            "Error disposing client: Agent={AgentName}, Error={Error}",
+                            Name, ex.Message);
+                    }
                 }
             }
 

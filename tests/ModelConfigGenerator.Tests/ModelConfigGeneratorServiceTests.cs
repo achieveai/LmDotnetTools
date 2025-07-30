@@ -15,6 +15,14 @@ namespace AchieveAi.LmDotnetTools.ModelConfigGenerator.Tests;
 /// </summary>
 public class ModelConfigGeneratorServiceTests
 {
+  private static ModelConfigGeneratorService CreateTestService()
+  {
+    var httpClient = new HttpClient();
+    var logger = new Mock<ILogger<OpenRouterModelService>>().Object;
+    var openRouterService = new OpenRouterModelService(httpClient, logger);
+    var serviceLogger = new Mock<ILogger<ModelConfigGeneratorService>>().Object;
+    return new ModelConfigGeneratorService(openRouterService, serviceLogger);
+  }
   [Fact]
   public void GetSupportedFamilies_ShouldReturnExpectedFamilies()
   {
@@ -87,9 +95,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
@@ -109,9 +115,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
@@ -131,9 +135,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
@@ -153,9 +155,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
@@ -175,9 +175,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
@@ -206,9 +204,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
@@ -234,9 +230,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
@@ -257,9 +251,7 @@ public class ModelConfigGeneratorServiceTests
     var applyFiltersMethod = reflection.GetMethod("ApplyFilters", 
       System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     
-    var mockOpenRouterService = Mock.Of<OpenRouterModelService>();
-    var logger = Mock.Of<ILogger<ModelConfigGeneratorService>>();
-    var service = new ModelConfigGeneratorService(mockOpenRouterService, logger);
+    var service = CreateTestService();
     
     var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
