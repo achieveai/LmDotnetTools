@@ -66,6 +66,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
             foreach (var message in messages)
             {
                 yield return message;
+                await Task.Yield(); // This makes the method properly async
             }
         }
     }

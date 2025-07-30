@@ -1,8 +1,10 @@
-using System.Runtime.CompilerServices;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Agents;
 
@@ -21,11 +23,11 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     public UnifiedAgent(
         IModelResolver modelResolver,
         IProviderAgentFactory agentFactory,
-        ILogger<UnifiedAgent> logger)
+        ILogger<UnifiedAgent>? logger = null)
     {
         _modelResolver = modelResolver ?? throw new ArgumentNullException(nameof(modelResolver));
         _agentFactory = agentFactory ?? throw new ArgumentNullException(nameof(agentFactory));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _logger = logger ?? NullLogger<UnifiedAgent>.Instance;
     }
 
     public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
@@ -33,18 +35,36 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var (messageList, resolution, agent, updatedOptions) = await PrepareForGenerationAsync(messages, options, cancellationToken);
+        var stopwatch = Stopwatch.StartNew();
+        var messageList = ValidateMessages(messages);
+        
+        _logger.LogInformation(LogEventIds.AgentRequestInitiated,
+            "LLM request initiated: Model={ModelId}, MessageCount={MessageCount}, Type={RequestType}",
+            options?.ModelId ?? "default", messageList.Count, "non-streaming");
+
+        var (_, resolution, agent, updatedOptions) = await PrepareForGenerationAsync(messages, options, cancellationToken);
         
         try
         {
-            _logger.LogDebug("Delegating GenerateReplyAsync to {AgentType} for model {ModelId} (effective: {EffectiveModelName})", 
-                agent.GetType().Name, options?.ModelId ?? "default", resolution.EffectiveModelName);
+            _logger.LogInformation(LogEventIds.AgentDelegation,
+                "Delegating to agent: AgentType={AgentType}, Model={ModelId}, EffectiveModel={EffectiveModelName}, Provider={ProviderName}",
+                agent.GetType().Name, options?.ModelId ?? "default", resolution.EffectiveModelName, resolution.EffectiveProviderName);
 
-            return await agent.GenerateReplyAsync(messageList, updatedOptions, cancellationToken);
+            var result = await agent.GenerateReplyAsync(messageList, updatedOptions, cancellationToken);
+            
+            stopwatch.Stop();
+            _logger.LogInformation(LogEventIds.AgentRequestCompleted,
+                "LLM request completed: Model={ModelId}, Duration={Duration}ms, Provider={ProviderName}",
+                options?.ModelId ?? "default", stopwatch.ElapsedMilliseconds, resolution.EffectiveProviderName);
+            
+            return result;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error generating reply for model {ModelId}", options?.ModelId ?? "default");
+            stopwatch.Stop();
+            _logger.LogError(LogEventIds.AgentRequestFailed, ex,
+                "LLM request failed: Model={ModelId}, Duration={Duration}ms, Provider={ProviderName}",
+                options?.ModelId ?? "default", stopwatch.ElapsedMilliseconds, resolution.EffectiveProviderName);
             throw;
         }
     }
@@ -54,19 +74,37 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var (messageList, resolution, _, updatedOptions) = await PrepareForGenerationAsync(messages, options, cancellationToken);
+        var stopwatch = Stopwatch.StartNew();
+        var messageList = ValidateMessages(messages);
+        
+        _logger.LogInformation(LogEventIds.AgentRequestInitiated,
+            "LLM request initiated: Model={ModelId}, MessageCount={MessageCount}, Type={RequestType}",
+            options?.ModelId ?? "default", messageList.Count, "streaming");
+
+        var (_, resolution, _, updatedOptions) = await PrepareForGenerationAsync(messages, options, cancellationToken);
         var streamingAgent = await ResolveStreamingAgentAsync(options, cancellationToken);
 
         try
         {
-            _logger.LogDebug("Delegating GenerateReplyStreamingAsync to {AgentType} for model {ModelId} (effective: {EffectiveModelName})", 
-                streamingAgent.GetType().Name, options?.ModelId ?? "default", resolution.EffectiveModelName);
+            _logger.LogInformation(LogEventIds.AgentDelegation,
+                "Delegating to streaming agent: AgentType={AgentType}, Model={ModelId}, EffectiveModel={EffectiveModelName}, Provider={ProviderName}",
+                streamingAgent.GetType().Name, options?.ModelId ?? "default", resolution.EffectiveModelName, resolution.EffectiveProviderName);
 
-            return await streamingAgent.GenerateReplyStreamingAsync(messageList, updatedOptions, cancellationToken);
+            var result = await streamingAgent.GenerateReplyStreamingAsync(messageList, updatedOptions, cancellationToken);
+            
+            stopwatch.Stop();
+            _logger.LogInformation(LogEventIds.AgentRequestCompleted,
+                "LLM streaming request initiated: Model={ModelId}, Duration={Duration}ms, Provider={ProviderName}",
+                options?.ModelId ?? "default", stopwatch.ElapsedMilliseconds, resolution.EffectiveProviderName);
+            
+            return result;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error generating streaming reply for model {ModelId}", options?.ModelId ?? "default");
+            stopwatch.Stop();
+            _logger.LogError(LogEventIds.AgentRequestFailed, ex,
+                "LLM streaming request failed: Model={ModelId}, Duration={Duration}ms, Provider={ProviderName}",
+                options?.ModelId ?? "default", stopwatch.ElapsedMilliseconds, resolution.EffectiveProviderName);
             throw;
         }
     }
@@ -90,15 +128,22 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     /// <summary>
     /// Validates messages and returns them as a list.
     /// </summary>
-    private static List<IMessage> ValidateMessages(IEnumerable<IMessage> messages)
+    private List<IMessage> ValidateMessages(IEnumerable<IMessage> messages)
     {
         if (messages == null)
+        {
+            _logger.LogError("Message validation failed: Messages parameter is null");
             throw new ArgumentNullException(nameof(messages));
+        }
 
         var messageList = messages.ToList();
         if (!messageList.Any())
+        {
+            _logger.LogError("Message validation failed: Messages collection is empty");
             throw new ArgumentException("Messages cannot be empty", nameof(messages));
+        }
 
+        _logger.LogDebug("Message validation successful: MessageCount={MessageCount}", messageList.Count);
         return messageList;
     }
 
@@ -145,13 +190,34 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
 
         if (!_agentCache.TryGetValue(cacheKey, out var agent))
         {
-            agent = isStreaming 
-                ? _agentFactory.CreateStreamingAgent(resolution)
-                : _agentFactory.CreateAgent(resolution);
-            _agentCache[cacheKey] = agent;
+            _logger.LogDebug(LogEventIds.AgentCacheMiss,
+                "Agent cache miss: CacheKey={CacheKey}, Provider={ProviderName}, Model={EffectiveModelName}, IsStreaming={IsStreaming}",
+                cacheKey, resolution.EffectiveProviderName, resolution.EffectiveModelName, isStreaming);
             
-            var agentType = isStreaming ? "streaming agent" : "agent";
-            _logger.LogDebug("Created and cached {AgentType} for {Resolution}", agentType, resolution.ToString());
+            try
+            {
+                agent = isStreaming 
+                    ? _agentFactory.CreateStreamingAgent(resolution)
+                    : _agentFactory.CreateAgent(resolution);
+                _agentCache[cacheKey] = agent;
+                
+                var agentType = isStreaming ? "streaming agent" : "agent";
+                _logger.LogDebug("Created and cached {AgentType} for Provider={ProviderName}, Model={EffectiveModelName}",
+                    agentType, resolution.EffectiveProviderName, resolution.EffectiveModelName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(LogEventIds.AgentRequestFailed, ex,
+                    "Agent creation failed: Provider={ProviderName}, Model={EffectiveModelName}, IsStreaming={IsStreaming}, CacheKey={CacheKey}",
+                    resolution.EffectiveProviderName, resolution.EffectiveModelName, isStreaming, cacheKey);
+                throw;
+            }
+        }
+        else
+        {
+            _logger.LogDebug(LogEventIds.AgentCacheHit,
+                "Agent cache hit: CacheKey={CacheKey}, Provider={ProviderName}, Model={EffectiveModelName}, IsStreaming={IsStreaming}",
+                cacheKey, resolution.EffectiveProviderName, resolution.EffectiveModelName, isStreaming);
         }
 
         return agent;
@@ -182,13 +248,22 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         ProviderSelectionCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
-        return await _modelResolver.GetAvailableProvidersAsync(modelId, criteria, cancellationToken);
+        var availableProviders = await _modelResolver.GetAvailableProvidersAsync(modelId, criteria, cancellationToken);
+        
+        _logger.LogDebug(LogEventIds.AvailableProvidersEvaluated,
+            "Available providers evaluated: ModelId={ModelId}, ProviderCount={ProviderCount}, Providers={Providers}",
+            modelId, availableProviders.Count, 
+            string.Join(",", availableProviders.Select(p => p.EffectiveProviderName)));
+        
+        return availableProviders;
     }
 
     private async Task<ProviderResolution> ResolveProviderAsync(
         GenerateReplyOptions? options,
         CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
+        
         // Extract model ID from options
         var modelId = options?.ModelId;
         if (string.IsNullOrWhiteSpace(modelId))
@@ -199,23 +274,65 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
 
         // Create selection criteria from options if needed
         var criteria = CreateSelectionCriteriaFromOptions(options);
-
-        // Resolve the provider
-        var resolution = await _modelResolver.ResolveProviderAsync(modelId, criteria, cancellationToken);
-        if (resolution == null)
+        
+        if (criteria != null)
         {
-            throw new InvalidOperationException(
-                $"No suitable provider found for model '{modelId}'. " +
-                "Check that the model is configured and at least one provider is available.");
+            _logger.LogDebug(LogEventIds.ProviderSelectionCriteria,
+                "Provider selection criteria: ModelId={ModelId}, PreferLowerCost={PreferLowerCost}, PreferHigherPerformance={PreferHigherPerformance}, IncludeOnlyProviders={IncludeOnlyProviders}, ExcludeProviders={ExcludeProviders}",
+                modelId, criteria.PreferLowerCost, criteria.PreferHigherPerformance, 
+                criteria.IncludeOnlyProviders != null ? string.Join(",", criteria.IncludeOnlyProviders) : "none",
+                criteria.ExcludeProviders != null ? string.Join(",", criteria.ExcludeProviders) : "none");
+        }
+        else
+        {
+            _logger.LogDebug(LogEventIds.ProviderSelectionCriteria,
+                "Provider selection criteria: ModelId={ModelId}, Criteria={Criteria}",
+                modelId, "default");
         }
 
-        return resolution;
+        try
+        {
+            // Resolve the provider
+            var resolution = await _modelResolver.ResolveProviderAsync(modelId, criteria, cancellationToken);
+            if (resolution == null)
+            {
+                stopwatch.Stop();
+                _logger.LogError(LogEventIds.ProviderResolutionFailed,
+                    "Provider resolution failed: ModelId={ModelId}, Duration={Duration}ms, Reason={Reason}",
+                    modelId, stopwatch.ElapsedMilliseconds, "No suitable provider found");
+                
+                throw new InvalidOperationException(
+                    $"No suitable provider found for model '{modelId}'. " +
+                    "Check that the model is configured and at least one provider is available.");
+            }
+
+            stopwatch.Stop();
+            _logger.LogInformation(LogEventIds.ProviderResolved,
+                "Provider resolved: ModelId={ModelId}, Provider={ProviderName}, EffectiveModel={EffectiveModelName}, Duration={Duration}ms",
+                modelId, resolution.EffectiveProviderName, resolution.EffectiveModelName, stopwatch.ElapsedMilliseconds);
+
+            return resolution;
+        }
+        catch (Exception ex) when (!(ex is InvalidOperationException))
+        {
+            stopwatch.Stop();
+            _logger.LogError(LogEventIds.ProviderResolutionFailed, ex,
+                "Provider resolution failed: ModelId={ModelId}, Duration={Duration}ms",
+                modelId, stopwatch.ElapsedMilliseconds);
+            throw;
+        }
     }
 
     private ProviderSelectionCriteria? CreateSelectionCriteriaFromOptions(GenerateReplyOptions? options)
     {
         if (options?.ExtraProperties == null || !options.ExtraProperties.Any())
+        {
+            _logger.LogDebug("Configuration resolution: No extra properties found, using default criteria");
             return null;
+        }
+
+        _logger.LogDebug("Configuration resolution: Processing {PropertyCount} extra properties: {Properties}",
+            options.ExtraProperties.Count, string.Join(",", options.ExtraProperties.Keys));
 
         var criteria = new ProviderSelectionCriteria();
 
@@ -321,7 +438,8 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Error disposing agent {AgentType}", agent.GetType().Name);
+                        _logger.LogWarning(ex, "Error disposing agent: AgentType={AgentType}, CacheKey={CacheKey}",
+                            agent.GetType().Name, _agentCache.FirstOrDefault(kvp => kvp.Value == agent).Key ?? "unknown");
                     }
                 }
             }
