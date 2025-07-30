@@ -139,7 +139,7 @@ public record ChatMessage
         // Then, emit top-level reasoning only if it wasn't already processed with proper visibility
         if (!string.IsNullOrEmpty(Reasoning) && !processedReasoningTexts.Contains(Reasoning))
         {
-            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningMessage
+            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningUpdateMessage
             {
                 Role = ToRole(role!.Value),
                 Reasoning = Reasoning!,

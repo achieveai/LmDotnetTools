@@ -146,6 +146,7 @@ public class UsageAccumulator
                 // Keep input and output token details if available
                 InputTokenDetails = coreUsage.InputTokenDetails ?? _accumulatedUsage.InputTokenDetails,
                 OutputTokenDetails = coreUsage.OutputTokenDetails ?? _accumulatedUsage.OutputTokenDetails,
+                TotalCost = coreUsage.TotalCost ?? _accumulatedUsage.TotalCost,
                 // Merge extra properties
                 ExtraProperties = MergeExtraProperties(_accumulatedUsage.ExtraProperties, coreUsage.ExtraProperties)
             };

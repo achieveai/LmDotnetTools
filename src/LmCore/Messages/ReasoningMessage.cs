@@ -71,6 +71,9 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonPropertyName("isUpdate")]
     public bool IsUpdate { get; init; } = true;
 
+    [JsonPropertyName("visibility")]
+    public ReasoningVisibility? Visibility { get; init; }
+
     public BinaryData? GetBinary() => null;
     public ToolCall? GetToolCalls() => null;
     public IEnumerable<IMessage>? GetMessages() => null;
