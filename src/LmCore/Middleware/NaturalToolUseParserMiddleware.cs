@@ -794,7 +794,18 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
             
             if (isValid)
             {
-                return new[] { new TextMessage { Text = jsonText, Role = Role.Assistant } };
+                return new[] { new ToolsCallMessage {
+                    GenerationId = Guid.NewGuid().ToString(),
+                    Role = Role.Tool,
+                    ToolCalls = [
+                        new ToolCall {
+                            FunctionArgs = jsonText,
+                            FunctionName = toolName,
+                            Index = 0,
+                            ToolCallId = Guid.NewGuid().ToString(),
+                        }
+                    ] }
+                };
             }
             
             throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
