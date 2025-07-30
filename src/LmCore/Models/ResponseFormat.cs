@@ -103,7 +103,6 @@ public sealed record JsonSchemaObject
     /// Whether additional properties are allowed in the object
     /// </summary>
     [JsonPropertyName("additionalProperties")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool AdditionalProperties { get; init; }
 
     /// <summary>
