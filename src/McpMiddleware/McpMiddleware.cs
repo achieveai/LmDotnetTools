@@ -27,23 +27,26 @@ public class McpMiddleware : IStreamingMiddleware
     /// <param name="functionMap">Function map</param>
     /// <param name="name">Name of the middleware</param>
     /// <param name="logger">Logger instance</param>
+    /// <param name="functionCallLogger">Logger for FunctionCallMiddleware</param>
     private McpMiddleware(
         Dictionary<string, IMcpClient> mcpClients,
         IEnumerable<FunctionContract> functions,
         IDictionary<string, Func<string, Task<string>>> functionMap,
         string name,
-        ILogger<McpMiddleware> logger)
+        ILogger<McpMiddleware> logger,
+        ILogger<FunctionCallMiddleware>? functionCallLogger = null)
     {
         _mcpClients = mcpClients;
         _functions = functions;
         Name = name;
         _logger = logger;
 
-        // Initialize the FunctionCallMiddleware with our function map
+        // Initialize the FunctionCallMiddleware with our function map and logger
         _functionCallMiddleware = new FunctionCallMiddleware(
             functions: functions,
             functionMap: functionMap,
-            name: Name
+            name: Name,
+            logger: functionCallLogger
         );
     }
 
@@ -54,6 +57,7 @@ public class McpMiddleware : IStreamingMiddleware
     /// <param name="functions">Optional collection of function contracts</param>
     /// <param name="name">Name of the middleware</param>
     /// <param name="logger">Optional logger instance</param>
+    /// <param name="functionCallLogger">Optional logger for FunctionCallMiddleware</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>A new instance of McpMiddleware</returns>
     public static async Task<McpMiddleware> CreateAsync(
@@ -61,6 +65,7 @@ public class McpMiddleware : IStreamingMiddleware
         IEnumerable<FunctionContract>? functions = null,
         string? name = null,
         ILogger<McpMiddleware>? logger = null,
+        ILogger<FunctionCallMiddleware>? functionCallLogger = null,
         CancellationToken cancellationToken = default)
     {
         // Use default name if not provided
@@ -85,7 +90,7 @@ public class McpMiddleware : IStreamingMiddleware
             functions.Count(), string.Join(", ", functions.Select(f => f.Name)));
 
         // Create and return the middleware instance
-        return new McpMiddleware(mcpClients, functions, functionMap, name, logger);
+        return new McpMiddleware(mcpClients, functions, functionMap, name, logger, functionCallLogger);
     }
 
     /// <summary>

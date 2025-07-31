@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using System.Text.Json;
 
@@ -10,15 +11,17 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware;
 /// </summary>
 public class McpMiddlewareFactory
 {
-    private readonly ILogger<McpMiddlewareFactory>? _logger;
+    private readonly ILoggerFactory? _loggerFactory;
+    private readonly ILogger<McpMiddlewareFactory> _logger;
 
     /// <summary>
     /// Creates a new instance of the McpMiddlewareFactory
     /// </summary>
-    /// <param name="logger">Optional logger</param>
-    public McpMiddlewareFactory(ILogger<McpMiddlewareFactory>? logger = null)
+    /// <param name="loggerFactory">Optional logger factory for creating typed loggers</param>
+    public McpMiddlewareFactory(ILoggerFactory? loggerFactory = null)
     {
-        _logger = logger;
+        _loggerFactory = loggerFactory;
+        _logger = loggerFactory?.CreateLogger<McpMiddlewareFactory>() ?? NullLogger<McpMiddlewareFactory>.Instance;
     }
 
     /// <summary>
@@ -29,12 +32,19 @@ public class McpMiddlewareFactory
     /// <returns>The created middleware</returns>
     public async Task<IStreamingMiddleware> CreateFromConfigFileAsync(string configFilePath, CancellationToken cancellationToken = default)
     {
-        _logger?.LogInformation("Creating MCP middleware from config file asynchronously: {ConfigFilePath}", configFilePath);
+        _logger.LogInformation("Creating MCP middleware from config file asynchronously: {ConfigFilePath}", configFilePath);
+
+        _logger.LogDebug("Factory initialization: Reading configuration file: {ConfigFilePath}", configFilePath);
 
         // Read and parse the configuration file
         var configJson = await File.ReadAllTextAsync(configFilePath, cancellationToken);
+        
+        _logger.LogDebug("Configuration file read: Size={ConfigSize} bytes", configJson.Length);
+        
         var config = JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson)
             ?? throw new InvalidOperationException($"Failed to deserialize config file: {configFilePath}");
+
+        _logger.LogDebug("Configuration deserialized: ClientCount={ClientCount}", config.Clients.Count);
 
         return await CreateFromConfigAsync(config, cancellationToken);
     }
@@ -49,7 +59,10 @@ public class McpMiddlewareFactory
         McpMiddlewareConfiguration config,
         CancellationToken cancellationToken = default)
     {
-        _logger?.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
+        _logger.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
+
+        _logger.LogDebug("MCP client configuration validation: ClientIds={ClientIds}", 
+            string.Join(", ", config.Clients.Keys));
 
         // Create MCP clients from the configuration
         var mcpClients = new Dictionary<string, IMcpClient>();
@@ -61,24 +74,47 @@ public class McpMiddlewareFactory
                 var clientId = clientConfig.Key;
                 var clientSettings = clientConfig.Value;
 
-                _logger?.LogInformation("Creating MCP client: {ClientId}", clientId);
+                _logger.LogInformation("Creating MCP client: {ClientId}", clientId);
+                _logger.LogDebug("Client validation: ClientId={ClientId}, ConfigType={ConfigType}", 
+                    clientId, clientSettings?.GetType().Name ?? "null");
 
                 // Create transport from configuration
                 var transport = CreateTransportFromConfig(clientId, clientSettings);
+                _logger.LogDebug("Transport created for client: ClientId={ClientId}, TransportType={TransportType}", 
+                    clientId, transport.GetType().Name);
+
                 var client = await McpClientFactory.CreateAsync(transport);
                 mcpClients[clientId] = client;
 
-                _logger?.LogInformation("Successfully created MCP client: {ClientId}", clientId);
+                _logger.LogInformation("Successfully created MCP client: {ClientId}", clientId);
+                _logger.LogDebug("Client creation completed: ClientId={ClientId}, ClientType={ClientType}", 
+                    clientId, client.GetType().Name);
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "Failed to create MCP client: {ClientId}", clientConfig.Key);
+                _logger.LogError(ex, "Failed to create MCP client: {ClientId}", clientConfig.Key);
                 throw;
             }
         }
 
-        // Create the middleware using the async factory pattern
-        return await McpMiddleware.CreateAsync(mcpClients, cancellationToken: cancellationToken);
+        _logger.LogDebug("Middleware setup: Preparing to create middleware with {ClientCount} validated clients", 
+            mcpClients.Count);
+
+        // Create loggers for middleware components
+        var mcpMiddlewareLogger = _loggerFactory?.CreateLogger<McpMiddleware>();
+        var functionCallMiddlewareLogger = _loggerFactory?.CreateLogger<FunctionCallMiddleware>();
+
+        _logger.LogDebug("Creating MCP middleware with logger propagation: HasMcpLogger={HasMcpLogger}, HasFunctionLogger={HasFunctionLogger}",
+            mcpMiddlewareLogger != null, functionCallMiddlewareLogger != null);
+
+        _logger.LogDebug("Function contract processing: Starting middleware creation with automatic contract extraction");
+
+        // Create the middleware using the async factory pattern with loggers
+        return await McpMiddleware.CreateAsync(
+            mcpClients, 
+            logger: mcpMiddlewareLogger,
+            functionCallLogger: functionCallMiddlewareLogger,
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -250,10 +286,40 @@ public class McpMiddlewareFactory
         Dictionary<string, IMcpClient> mcpClients,
         CancellationToken cancellationToken = default)
     {
-        _logger?.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
+        _logger.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
 
-        // Use the async factory pattern from McpMiddleware
+        _logger.LogDebug("Client validation: Validating {ClientCount} provided clients: {ClientIds}", 
+            mcpClients.Count, string.Join(", ", mcpClients.Keys));
+
+        // Validate clients
+        foreach (var kvp in mcpClients)
+        {
+            if (kvp.Value == null)
+            {
+                _logger.LogDebug("Client validation failed: ClientId={ClientId} has null client instance", kvp.Key);
+                throw new ArgumentException($"Client '{kvp.Key}' is null", nameof(mcpClients));
+            }
+            _logger.LogDebug("Client validation passed: ClientId={ClientId}, ClientType={ClientType}", 
+                kvp.Key, kvp.Value.GetType().Name);
+        }
+
+        _logger.LogDebug("Middleware setup: All clients validated, preparing middleware creation");
+
+        // Create loggers for middleware components
+        var mcpMiddlewareLogger = _loggerFactory?.CreateLogger<McpMiddleware>();
+        var functionCallMiddlewareLogger = _loggerFactory?.CreateLogger<FunctionCallMiddleware>();
+
+        _logger.LogDebug("Creating MCP middleware from clients with logger propagation: HasMcpLogger={HasMcpLogger}, HasFunctionLogger={HasFunctionLogger}",
+            mcpMiddlewareLogger != null, functionCallMiddlewareLogger != null);
+
+        _logger.LogDebug("Function contract processing: Starting automatic contract extraction from clients");
+
+        // Use the async factory pattern from McpMiddleware with loggers
         // This will automatically extract function contracts from the clients
-        return await McpMiddleware.CreateAsync(mcpClients, cancellationToken: cancellationToken);
+        return await McpMiddleware.CreateAsync(
+            mcpClients, 
+            logger: mcpMiddlewareLogger,
+            functionCallLogger: functionCallMiddlewareLogger,
+            cancellationToken: cancellationToken);
     }
 }
