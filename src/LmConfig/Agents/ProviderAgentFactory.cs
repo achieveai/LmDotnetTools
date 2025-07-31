@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -21,6 +22,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ProviderAgentFactory> _logger;
     private readonly IHttpHandlerBuilder _handlerBuilder;
+    private readonly ILoggerFactory? _loggerFactory;
 
     // Mapping of provider names to their compatibility types
     private static readonly Dictionary<string, string> ProviderCompatibility = new()
@@ -43,10 +45,17 @@ public class ProviderAgentFactory : IProviderAgentFactory
     };
 
     public ProviderAgentFactory(IServiceProvider serviceProvider, ILogger<ProviderAgentFactory> logger, IHttpHandlerBuilder handlerBuilder)
+        : this(serviceProvider, handlerBuilder, null)
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public ProviderAgentFactory(IServiceProvider serviceProvider, IHttpHandlerBuilder handlerBuilder, ILoggerFactory? loggerFactory = null)
     {
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _handlerBuilder = handlerBuilder ?? throw new ArgumentNullException(nameof(handlerBuilder));
+        _loggerFactory = loggerFactory;
+        _logger = loggerFactory?.CreateLogger<ProviderAgentFactory>() ?? NullLogger<ProviderAgentFactory>.Instance;
     }
 
     public IAgent CreateAgent(ProviderResolution resolution)
@@ -56,8 +65,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
         var compatibilityType = GetCompatibilityType(resolution);
         
-        _logger.LogDebug("Creating agent for provider {Provider} with compatibility {Compatibility}", 
-            resolution.EffectiveProviderName, compatibilityType);
+        _logger.LogDebug("Provider resolution and agent type selection: Provider={Provider}, Model={Model}, Compatibility={Compatibility}, EndpointUrl={EndpointUrl}, HasApiKey={HasApiKey}", 
+            resolution.EffectiveProviderName, resolution.EffectiveModelName, compatibilityType, 
+            resolution.Connection.EndpointUrl, !string.IsNullOrEmpty(resolution.Connection.GetApiKey()));
 
         return compatibilityType switch
         {
@@ -120,11 +130,19 @@ public class ProviderAgentFactory : IProviderAgentFactory
     {
         // First check if the connection info specifies compatibility
         if (!string.IsNullOrWhiteSpace(resolution.Connection.Compatibility))
+        {
+            _logger.LogDebug("Using explicit compatibility from connection: Provider={Provider}, Compatibility={Compatibility}",
+                resolution.EffectiveProviderName, resolution.Connection.Compatibility);
             return resolution.Connection.Compatibility;
+        }
 
         // Fall back to provider name mapping
         if (ProviderCompatibility.TryGetValue(resolution.EffectiveProviderName, out var compatibility))
+        {
+            _logger.LogDebug("Using mapped compatibility: Provider={Provider}, Compatibility={Compatibility}",
+                resolution.EffectiveProviderName, compatibility);
             return compatibility;
+        }
 
         // Default to OpenAI compatibility for unknown providers
         _logger.LogWarning("Unknown provider {Provider}, defaulting to OpenAI compatibility", 
@@ -139,9 +157,14 @@ public class ProviderAgentFactory : IProviderAgentFactory
             // Create Anthropic client
             var client = CreateAnthropicClient(resolution);
             
-            // Create agent with the resolved model name
+            // Create agent with the resolved model name and logger
             var agentName = $"{resolution.EffectiveProviderName}-{resolution.EffectiveModelName}";
-            return new AnthropicAgent(agentName, client);
+            var agentLogger = _loggerFactory?.CreateLogger<AnthropicAgent>();
+            
+            _logger.LogDebug("Creating Anthropic agent: Provider={Provider}, Model={Model}, AgentType={AgentType}",
+                resolution.EffectiveProviderName, resolution.EffectiveModelName, "AnthropicAgent");
+            
+            return new AnthropicAgent(agentName, client, agentLogger);
         }
         catch (Exception ex)
         {
@@ -158,9 +181,14 @@ public class ProviderAgentFactory : IProviderAgentFactory
             // Create OpenAI client
             var client = CreateOpenAIClient(resolution);
             
-            // Create agent with the resolved model name
+            // Create agent with the resolved model name and logger
             var agentName = $"{resolution.EffectiveProviderName}-{resolution.EffectiveModelName}";
-            var agent = new OpenClientAgent(agentName, client) as IAgent;
+            var agentLogger = _loggerFactory?.CreateLogger<OpenClientAgent>();
+            
+            _logger.LogDebug("Creating OpenAI agent: Provider={Provider}, Model={Model}, AgentType={AgentType}",
+                resolution.EffectiveProviderName, resolution.EffectiveModelName, "OpenClientAgent");
+            
+            var agent = new OpenClientAgent(agentName, client, agentLogger) as IAgent;
 
             // Automatically inject OpenRouter usage middleware if this is an OpenRouter provider
             // and the middleware is enabled (Requirement 12.1-12.2)
@@ -204,6 +232,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
     {
         try
         {
+            _logger.LogDebug("Factory configuration interaction: Checking service provider for IConfiguration");
+            
             // Get configuration from DI
             var configuration = _serviceProvider.GetService<IConfiguration>();
             if (configuration == null)
@@ -211,6 +241,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
                 _logger.LogWarning("IConfiguration not available in DI container. Skipping OpenRouter usage middleware injection.");
                 return agent;
             }
+
+            _logger.LogDebug("Factory configuration interaction: IConfiguration found, checking middleware settings");
 
             // Check if usage middleware is enabled
             var enableUsageMiddleware = EnvironmentVariables.GetEnableUsageMiddleware(configuration);
@@ -228,6 +260,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
                                  "Skipping middleware injection. Set ENABLE_USAGE_MIDDLEWARE=false to disable this warning.");
                 return agent;
             }
+
+            _logger.LogDebug("Factory configuration interaction: Retrieving middleware logger from service provider");
 
             // Create and inject the usage middleware
             var middlewareLogger = _serviceProvider.GetService<ILogger<OpenRouterUsageMiddleware>>() ??

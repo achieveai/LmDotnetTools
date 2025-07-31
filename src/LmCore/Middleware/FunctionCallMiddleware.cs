@@ -61,8 +61,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         var startTime = DateTime.UtcNow;
         var messageCount = context.Messages.Count();
         
-        _logger.LogInformation("Middleware processing started: MessageCount={MessageCount}, MiddlewareName={MiddlewareName}",
-            messageCount, Name);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Middleware processing started: MessageCount={MessageCount}, MiddlewareName={MiddlewareName}",
+                messageCount, Name);
+        }
 
         // Process any existing tool calls in the last message
         var (hasPendingToolCalls, toolCalls, options) = PrepareInvocation(context);
@@ -71,8 +74,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             var result = await ExecuteToolCallsAsync(toolCalls!, agent);
             var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
             
-            _logger.LogInformation("Middleware processing completed: MessageCount={MessageCount}, ProcessedMessages={ProcessedMessages}, Duration={Duration}ms",
-                messageCount, 1, duration);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Middleware processing completed: MessageCount={MessageCount}, ProcessedMessages={ProcessedMessages}, Duration={Duration}ms",
+                    messageCount, 1, duration);
+            }
             
             return new[] { result };
         }
@@ -89,13 +95,19 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Process each message in the reply
         foreach (var reply in replies)
         {
-            _logger.LogDebug("Processing message: Type={MessageType}, HasMetadata={HasMetadata}",
-                reply.GetType().Name, reply.Metadata != null);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Processing message: Type={MessageType}, HasMetadata={HasMetadata}",
+                    reply.GetType().Name, reply.Metadata != null);
+            }
 
             // Check if this is a usage message
             if (reply is UsageMessage usageMessage)
             {
-                _logger.LogDebug("Message transformation: UsageMessage accumulated");
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Message transformation: UsageMessage accumulated");
+                }
                 usageAccumulator.AddUsageFromMessage(usageMessage);
                 continue; // We'll add a consolidated usage message at the end
             }
@@ -104,14 +116,20 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             bool hasUsage = reply.Metadata != null && reply.Metadata.ContainsKey("usage");
             if (hasUsage)
             {
-                _logger.LogDebug("Message transformation: Usage data extracted from metadata");
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Message transformation: Usage data extracted from metadata");
+                }
                 usageAccumulator.AddUsageFromMessageMetadata(reply);
 
                 // If this is an empty text message just for usage, don't add it to results
                 var textMessage = reply as TextMessage;
                 if (textMessage != null && string.IsNullOrEmpty(textMessage.Text))
                 {
-                    _logger.LogDebug("Message transformation: Empty text message with usage skipped");
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Message transformation: Empty text message with usage skipped");
+                    }
                     continue;
                 }
             }
@@ -179,8 +197,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
         var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
         
-        _logger.LogInformation("Middleware processing completed: MessageCount={MessageCount}, ProcessedMessages={ProcessedMessages}, Duration={Duration}ms",
-            messageCount, processedReplies.Count, totalDuration);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Middleware processing completed: MessageCount={MessageCount}, ProcessedMessages={ProcessedMessages}, Duration={Duration}ms",
+                messageCount, processedReplies.Count, totalDuration);
+        }
 
         return processedReplies;
     }
@@ -192,8 +213,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     {
         var messageCount = context.Messages.Count();
         
-        _logger.LogInformation("Middleware streaming processing started: MessageCount={MessageCount}, MiddlewareName={MiddlewareName}",
-            messageCount, Name);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Middleware streaming processing started: MessageCount={MessageCount}, MiddlewareName={MiddlewareName}",
+                messageCount, Name);
+        }
 
         // Process any existing tool calls in the last message
         var (hasPendingToolCalls, toolCalls, options) = PrepareInvocation(context);
@@ -201,8 +225,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         {
             var result = await ExecuteToolCallsAsync(toolCalls!, agent);
             
-            _logger.LogInformation("Middleware streaming processing completed: MessageCount={MessageCount}, ProcessedMessages={ProcessedMessages}",
-                messageCount, 1);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Middleware streaming processing completed: MessageCount={MessageCount}, ProcessedMessages={ProcessedMessages}",
+                    messageCount, 1);
+            }
             
             return new[] { result }.ToAsyncEnumerable();
         }
