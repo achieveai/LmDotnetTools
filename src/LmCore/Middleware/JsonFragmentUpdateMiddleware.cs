@@ -128,7 +128,10 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(MiddlewareContext context, IStreamingAgent agent, CancellationToken cancellationToken = default)
     {
-        var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+        var stream = await agent.GenerateReplyStreamingAsync(
+            context.Messages,
+            context.Options,
+            cancellationToken);
         return ProcessAsync(stream);
     }
 

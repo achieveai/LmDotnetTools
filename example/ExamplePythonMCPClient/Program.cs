@@ -16,14 +16,13 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
 public static class Program
 {
-    public static async Task MainAnthropic()
+    public static async Task Main()
     {
         // Load environment variables from .env file
         LoadEnvironmentVariables();
 
         string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
         string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
-        string ANTHRPIC_API_KEY = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")!;
         string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
         string PROMPTS_PATH = Path.Combine(
             GetWorkspaceRootPath(),
@@ -33,48 +32,53 @@ public static class Program
 
         Console.WriteLine("Example Python MCP Client Demo");
 
-        // Create the MCP client to connect to the Python server using new 0.2.x API
-        var pythonTransport = new StdioClientTransport(new StdioClientTransportOptions
+        var braveSearchMcpServer = new StdioClientTransport(new StdioClientTransportOptions
         {
-            Name = "python-mcp",
-            Command = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
-            Arguments = [
-                "--image",
-                "pyexec:latest",
-                "--code-dir",
-                GetWorkspaceRootPath() + "/.code_workspace"
-            ]
+            Name = "brave-search",
+            Command = "npx",
+            Arguments = ["-y", "@modelcontextprotocol/server-brave-search"],
+            EnvironmentVariables = new Dictionary<string, string?>
+            {
+                ["BRAVE_API_KEY"] = "BSAHfwogL8-akskJd0XVWxrO8hWCfD3"
+            }
         });
 
-        var thinkingTransport = new StdioClientTransport(new StdioClientTransportOptions
+        var turnDownMcpServer = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "url-fetcher",
+            Command = "node",
+            Arguments = ["b:/sources/turndown-mcp/server.js"]
+        });
+
+        var thinkingMcpServer = new StdioClientTransport(new StdioClientTransportOptions
         {
             Name = "thinking",
             Command = "npx",
             Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
         });
 
-        var memoryTransport = new StdioClientTransport(new StdioClientTransportOptions
+        var memoryMcpServer = new StdioClientTransport(new StdioClientTransportOptions
         {
             Name = "memory",
             Command = "npx",
             Arguments = ["-y", "@modelcontextprotocol/server-memory"]
         });
 
-        var transports = new[] { pythonTransport, thinkingTransport, memoryTransport };
-        var clientIds = new[] { "python-mcp", "thinking", "memory" };
+        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer };
+        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory" };
 
-        var pythonMcpClients = await Task.WhenAll(transports.Select(transport => McpClientFactory.CreateAsync(transport)));
+        var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
 
         try
         {
-            var tools = await Task.WhenAll(pythonMcpClients.Select(client => client.ListToolsAsync().AsTask()));
+            var tools = await Task.WhenAll(mcpClients.Select(client => client.ListToolsAsync().AsTask()));
 
             foreach (var tool in tools.SelectMany(tools => tools))
             {
                 Console.WriteLine($"- {tool.Name}: {tool.Description}");
             }
 
-            var kvStore = new SqliteKvStore(KV_STORE_PATH);
+            // var kvStore = new SqliteKvStore(KV_STORE_PATH);
             // Note: CachingMiddleware may have been renamed or removed
             // var cachingMiddleware = new CachingMiddleware(kvStore);
 
@@ -92,7 +96,9 @@ public static class Program
             var openAgent = new OpenClientAgent("OpenAi", openClient) as IStreamingAgent;
 
             // Create the agent pipeline with MCP middleware
-            var mcpClientDictionary = clientIds.Zip(pythonMcpClients.Zip(tools)).ToDictionary(pair => pair.First, pair => pair.Second.First);
+            var mcpClientDictionary = clientIds
+                .Zip(mcpClients.Zip(tools))
+                .ToDictionary(pair => pair.First, pair => pair.Second.First);
 
             // Create the middleware using the factory
             var mcpMiddlewareFactory = new McpMiddlewareFactory();
@@ -107,18 +113,24 @@ public static class Program
 
             var options = new GenerateReplyOptions
             {
-                ModelId = "claude-3-7-sonnet-20250219",
+                ModelId = "qwen/qwen3-235b-a22b-thinking-2507", // "x-ai/grok-3-mini-beta", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
                 // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
                 MaxToken = 4096 * 2,
-                ExtraProperties = ImmutableDictionary<string, object?>.Empty
+                ExtraProperties = new Dictionary<string, object?>()
+                {
+                    ["parallel_tool_call"] = true,
+                    ["reasoning"] = new Dictionary<string, object?>()
+                    {
+                        ["effort"] = "low",
+                        ["max_tokens"] = 768,
+                    }
+                }.ToImmutableDictionary()
             };
 
             Console.WriteLine("Enter a task to complete:");
             // string task = Console.ReadLine()!;
-            var task = @"There is a file `data.xlsx` in the /code directory. Read the
-file, analyze schema, data it contains, and then write a summary of what
-data can be used and few insights based on this data.";
+            var task = @"I have a fever, rash, and joint pain. I'm a 10 year old child. What's wrong with me?";
             string? previousPlan = null;
             string? progress = null;
 
@@ -140,7 +152,7 @@ data can be used and few insights based on this data.";
             }
 
             var plannerPrompt = promptReader
-              .GetPromptChain("UniAgentLoop")
+              .GetPromptChain("MedicalNurse")
               .PromptMessages(dict);
 
             do
@@ -201,13 +213,13 @@ data can be used and few insights based on this data.";
         }
 
         await Task.WhenAll(
-          pythonMcpClients.Select(client => client.DisposeAsync().AsTask()));
+          mcpClients.Select(client => client.DisposeAsync().AsTask()));
 
         Console.WriteLine("\nPress any key to exit...");
         Console.ReadLine();
     }
 
-    public static async Task Main()
+    public static async Task MainBak()
     {
         // Load environment variables from .env file
         LoadEnvironmentVariables();
