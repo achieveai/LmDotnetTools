@@ -1,8 +1,10 @@
 using System.Collections.Immutable;
+using Microsoft.Extensions.DependencyInjection;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.Misc.Extensions;
 using AchieveAi.LmDotnetTools.Misc.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.McpMiddleware;
@@ -80,10 +82,18 @@ public static class Program
             // Note: CachingMiddleware may have been renamed or removed
             // var cachingMiddleware = new CachingMiddleware(kvStore);
 
-            // Create an OpenAI client
-            var openClient = new OpenClient(API_KEY, API_URL);
+            // Set up caching services
+            var services = new ServiceCollection();
+            services.AddLlmFileCacheFromEnvironment(); // Uses environment variables for cache configuration
+
+            // Create a caching HttpClient for OpenAI
+            var httpClient = services.CreateCachingOpenAIClient(
+                apiKey: API_KEY,
+                baseUrl: API_URL);
+
+            // Create an OpenAI client with caching
+            var openClient = new OpenClient(httpClient, API_URL);
             var openAgent = new OpenClientAgent("OpenAi", openClient) as IStreamingAgent;
-            // openAgent = openAgent.WithMiddleware(cachingMiddleware);
 
             // Create the agent pipeline with MCP middleware
             var mcpClientDictionary = clientIds
@@ -93,8 +103,10 @@ public static class Program
             // Create the middleware using the factory
             var mcpMiddlewareFactory = new McpMiddlewareFactory();
             var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
+            var jsonFragmentUpdateMiddleware = new JsonFragmentUpdateMiddleware();
 
             var theogent = openAgent
+                .WithMiddleware(jsonFragmentUpdateMiddleware)
                 .WithMiddleware(consolePrinterMiddleware)
                 .WithMiddleware(await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary))
                 .WithMiddleware(new MessageUpdateJoinerMiddleware());
@@ -278,8 +290,10 @@ public static class Program
             // var mcpClientDictionary = clientIds.Zip(pythonMcpClients.Zip(tools)).ToDictionary(pair => pair.First, pair => pair.Second.First);
             var mcpMiddlewareFactory = new McpMiddlewareFactory();
             var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
+            var jsonFragmentUpdateMiddleware = new JsonFragmentUpdateMiddleware();
 
             var theogent = llmAgent
+                .WithMiddleware(jsonFragmentUpdateMiddleware)
                 .WithMiddleware(consolePrinterMiddleware)
                 // .WithMiddleware(await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary))
                 .WithMiddleware(new MessageUpdateJoinerMiddleware());
