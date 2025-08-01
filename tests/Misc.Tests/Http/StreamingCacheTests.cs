@@ -92,8 +92,7 @@ public class StreamingCacheTests
     Console.WriteLine($"Cache count: {cacheCount}");
     Console.WriteLine($"Mock handler request count: {mockHandler.RequestCount}");
     
-    // Note: For now we expect 2 requests since the second request may be served before caching completes
-    // This is acceptable since the main goal is streaming + caching, not necessarily immediate cache hits
+    // The streaming cache should work - content should be cached
     Assert.IsTrue(mockHandler.RequestCount <= 2); // Should be 1 or 2
     
     // Verify content was cached
