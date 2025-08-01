@@ -4,6 +4,11 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.McpMiddleware</PackageId>
+    <Description>Model Context Protocol (MCP) middleware for integrating with MCP servers and handling context management.</Description>
+    <PackageTags>$(PackageTags);mcp;middleware;context</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

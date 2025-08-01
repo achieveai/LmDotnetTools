@@ -4,6 +4,11 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.LmEmbeddings</PackageId>
+    <Description>Embeddings support for language models, providing vector operations and similarity calculations.</Description>
+    <PackageTags>$(PackageTags);embeddings;vectors;similarity</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

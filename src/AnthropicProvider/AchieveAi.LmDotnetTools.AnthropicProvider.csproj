@@ -11,10 +11,16 @@
     <PackageReference Include="System.Text.Json" Version="9.0.5" />
   </ItemGroup>
 
-  <PropertyGroup>
+    <PropertyGroup>
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.AnthropicProvider</PackageId>
+    <Description>Anthropic AI provider for the LmDotnetTools library, enabling integration with Claude and other Anthropic models.</Description>
+    <PackageTags>$(PackageTags);anthropic;claude;provider</PackageTags>
   </PropertyGroup>
 
 </Project>
+

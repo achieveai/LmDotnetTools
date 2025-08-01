@@ -4,6 +4,11 @@
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.LmCore</PackageId>
+    <Description>Core functionality and base classes for the LmDotnetTools library, providing fundamental language model operations and utilities.</Description>
+    <PackageTags>$(PackageTags);core;base;utilities</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

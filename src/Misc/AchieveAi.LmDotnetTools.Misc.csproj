@@ -5,6 +5,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>AchieveAi.LmDotnetTools.Misc</RootNamespace>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.Misc</PackageId>
+    <Description>Miscellaneous utilities and helper functions for the LmDotnetTools library ecosystem.</Description>
+    <PackageTags>$(PackageTags);utilities;helpers;misc</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
