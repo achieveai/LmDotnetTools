@@ -290,6 +290,12 @@ public class CachingHttpContent : HttpContent
         return new CachingStream(originalStream, _cacheKey, _cache, _options, _logger, _semaphore);
     }
 
+    protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+    {
+        using var contentStream = await CreateContentReadStreamAsync();
+        await contentStream.CopyToAsync(stream);
+    }
+
     protected override bool TryComputeLength(out long length)
     {
         if (_originalContent.Headers.ContentLength.HasValue)
@@ -300,13 +306,6 @@ public class CachingHttpContent : HttpContent
         
         length = 0;
         return false;
-    }
-
-    protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
-    {
-        // For serialize operations, we'll just delegate to the original content
-        // The caching will happen through the ReadAsStreamAsync path
-        await _originalContent.CopyToAsync(stream);
     }
 
     protected override void Dispose(bool disposing)
@@ -459,9 +458,6 @@ public class CachingStream : Stream
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to cache streaming response: {CacheKey}", _cacheKey);
-            // Log more details for debugging
-            _logger.LogError(ex, "Caching failed with details: Key={CacheKey}, Message={Message}, StackTrace={StackTrace}", 
-                _cacheKey, ex.Message, ex.StackTrace);
             // Re-throw in debug builds to help with testing
             #if DEBUG
             throw;
