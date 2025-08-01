@@ -416,6 +416,9 @@ data can be used and few insights based on this data.";
             case UsageMessage usageMessage:
                 WriteToConsoleInColor($"Usage: {usageMessage.Usage}", ConsoleColor.DarkGray, ConsoleColor.White);
                 break;
+            case ReasoningMessage reasoningMessage:
+                // WriteToConsoleInColor($"Reasoning: {reasoningMessage.Reasoning}", ConsoleColor.DarkGreen, null);
+                break;
             case ImageMessage _:
                 WriteToConsoleInColor("Image generated", ConsoleColor.DarkGray, null);
                 break;
