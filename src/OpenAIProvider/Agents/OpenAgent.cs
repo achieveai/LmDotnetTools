@@ -23,6 +23,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         Name = name;
         _logger = logger ?? NullLogger<OpenClientAgent>.Instance;
     }
+
     public string Name { get; }
 
     public virtual void Dispose()
@@ -237,8 +238,13 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             };
 
             var streamingMessages = openMessage.ToStreamingMessage();
-            _logger.LogDebug("Streaming message processing: CompletionId={CompletionId}, ChunkNumber={ChunkNumber}, HasContent={HasContent}, MessageCount={MessageCount}",
-                completionId, totalChunks, !string.IsNullOrEmpty(item.Choices?.First()?.Delta?.Content ?? ""), streamingMessages.Count());
+            _logger.LogDebug(
+                "Streaming message processing: CompletionId={CompletionId}, ChunkNumber={ChunkNumber}, HasContent={HasContent}, MessageCount={MessageCount}",
+                completionId,
+                totalChunks,
+                !string.IsNullOrEmpty(
+                    item.Choices?.First()?.Delta?.Content ?? "NULL"),
+                streamingMessages.Count());
 
             foreach (var message in streamingMessages)
             {

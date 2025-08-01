@@ -45,9 +45,12 @@ public class OpenRouterModelServiceMappingTests
         Assert.NotNull(modelConfig.Capabilities);
         Assert.NotEmpty(modelConfig.Providers);
         
-        var provider = modelConfig.Providers.First();
-        Assert.Equal("TestProvider", provider.Name);
-        Assert.Contains("openrouter", provider.Tags!);
+        // First provider should always be OpenRouter with our new architecture
+        var openRouterProvider = modelConfig.Providers.First();
+        Assert.Equal("OpenRouter", openRouterProvider.Name);
+        Assert.Contains("openrouter", openRouterProvider.Tags!);
+        Assert.Contains("aggregator", openRouterProvider.Tags!);
+        Assert.Equal(1000, openRouterProvider.Priority); // Highest priority
     }
 
     [Fact]
@@ -72,6 +75,11 @@ public class OpenRouterModelServiceMappingTests
         Assert.True(modelConfig.IsReasoning);
         Assert.NotNull(modelConfig.Capabilities?.Thinking);
         Assert.Equal(ThinkingType.OpenAI, modelConfig.Capabilities.Thinking.Type);
+        
+        // Should have both OpenRouter (primary) and OpenAI (special) providers
+        Assert.True(modelConfig.Providers.Count >= 2);
+        Assert.Equal("OpenRouter", modelConfig.Providers.First().Name);
+        Assert.Contains(modelConfig.Providers, p => p.Name == "OpenAI");
     }
 
     [Fact]
@@ -105,6 +113,7 @@ public class OpenRouterModelServiceMappingTests
             "data": [
                 {
                     "slug": "test/model",
+                    "permaslug": "test/model",
                     "name": "Test Model",
                     "context_length": 4096,
                     "input_modalities": ["text"],
@@ -113,7 +122,18 @@ public class OpenRouterModelServiceMappingTests
                     "group": "Test",
                     "author": "test",
                     "description": "A test model",
-                    "endpoint": {
+                    "created_at": "2024-01-01T00:00:00+00:00"
+                }
+            ]
+        }
+        """);
+
+        var modelDetails = new Dictionary<string, JsonNode>
+        {
+            ["test/model"] = JsonNode.Parse("""
+            {
+                "data": [
+                    {
                         "id": "test-endpoint-1",
                         "provider_name": "TestProvider",
                         "provider_display_name": "TestProvider",
@@ -131,16 +151,16 @@ public class OpenRouterModelServiceMappingTests
                         "supports_reasoning": false,
                         "supports_multipart": false
                     }
-                }
-            ]
-        }
-        """);
+                ]
+            }
+            """)!
+        };
 
         return new OpenRouterCache
         {
             CachedAt = DateTime.UtcNow,
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>()
+            ModelDetails = modelDetails
         };
     }
 
@@ -151,6 +171,7 @@ public class OpenRouterModelServiceMappingTests
             "data": [
                 {
                     "slug": "openai/o1-preview",
+                    "permaslug": "openai/o1-preview",
                     "name": "OpenAI O1 Preview",
                     "context_length": 128000,
                     "input_modalities": ["text"],
@@ -159,9 +180,20 @@ public class OpenRouterModelServiceMappingTests
                     "group": "GPT",
                     "author": "openai",
                     "description": "A reasoning model",
-                    "endpoint": {
+                    "created_at": "2024-01-01T00:00:00+00:00"
+                }
+            ]
+        }
+        """);
+
+        var modelDetails = new Dictionary<string, JsonNode>
+        {
+            ["openai/o1-preview"] = JsonNode.Parse("""
+            {
+                "data": [
+                    {
                         "id": "reasoning-endpoint-1",
-                        "provider_name": "OpenAI",
+                        "provider_name": "openai",
                         "provider_display_name": "OpenAI",
                         "provider_model_id": "o1-preview",
                         "model_variant_slug": "openai/o1-preview",
@@ -177,16 +209,16 @@ public class OpenRouterModelServiceMappingTests
                         "supports_reasoning": true,
                         "supports_multipart": false
                     }
-                }
-            ]
-        }
-        """);
+                ]
+            }
+            """)!
+        };
 
         return new OpenRouterCache
         {
             CachedAt = DateTime.UtcNow,
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>()
+            ModelDetails = modelDetails
         };
     }
 

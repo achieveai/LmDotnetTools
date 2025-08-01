@@ -22,10 +22,13 @@
     <PackageReference Include="dotenv.net" Version="3.2.1" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="System.Text.Json" Version="9.0.6" />
+
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.5" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
     <ProjectReference Include="..\..\src\Misc\AchieveAi.LmDotnetTools.Misc.csproj" />
     <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />

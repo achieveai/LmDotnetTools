@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -120,6 +121,27 @@ public class OpenRouterModelService
     private static string[] GetStringArray(JsonNode? node, string propertyName)
     {
         return node?[propertyName]?.AsArray()?.Select(x => x?.GetValue<string>()).Where(x => !string.IsNullOrEmpty(x)).Cast<string>().ToArray() ?? Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// Safely parses an ISO 8601 datetime string.
+    /// </summary>
+    private static DateTime? TryParseDateTime(string? dateTimeString)
+    {
+        if (string.IsNullOrWhiteSpace(dateTimeString))
+            return null;
+
+        if (DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime))
+        {
+            return dateTime.ToUniversalTime();
+        }
+
+        if (DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset))
+        {
+            return dateTimeOffset.UtcDateTime;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -651,10 +673,16 @@ public class OpenRouterModelService
         {
             if (modelNode == null) continue;
 
-            var slug = GetStringValue(modelNode, "slug");
-            if (string.IsNullOrEmpty(slug)) continue;
+            var permaslug = GetStringValue(modelNode, "permaslug");
+            if (string.IsNullOrEmpty(permaslug))
+            {
+                // Fallback to slug if permaslug is not available
+                var slug = GetStringValue(modelNode, "slug");
+                if (string.IsNullOrEmpty(slug)) continue;
+                permaslug = slug;
+            }
 
-            tasks.Add(FetchSingleModelDetailsAsync(slug, modelDetails, semaphore, cancellationToken));
+            tasks.Add(FetchSingleModelDetailsAsync(permaslug, modelDetails, semaphore, cancellationToken));
         }
 
         await Task.WhenAll(tasks);
@@ -666,33 +694,33 @@ public class OpenRouterModelService
     /// <summary>
     /// Fetches details for a single model with retry logic.
     /// </summary>
-    private async Task FetchSingleModelDetailsAsync(string modelSlug, Dictionary<string, JsonNode> modelDetails, 
+    private async Task FetchSingleModelDetailsAsync(string modelPermaslug, Dictionary<string, JsonNode> modelDetails, 
         SemaphoreSlim semaphore, CancellationToken cancellationToken)
     {
         await semaphore.WaitAsync(cancellationToken);
         try
         {
-            var url = string.Format(OpenRouterStatsUrlTemplate, modelSlug);
+            var url = string.Format(OpenRouterStatsUrlTemplate, modelPermaslug);
             
             try
             {
                 var detailsData = await ExecuteWithRetryAsync(
-                    async () => await FetchJsonAsync(url, ValidateModelDetailsResponse, $"Model details for {modelSlug}", cancellationToken),
+                    async () => await FetchJsonAsync(url, ValidateModelDetailsResponse, $"Model details for {modelPermaslug}", cancellationToken),
                     MaxModelDetailRetries,
                     TimeSpan.FromMilliseconds(500),
-                    $"Fetching details for model {modelSlug}",
+                    $"Fetching details for model {modelPermaslug}",
                     cancellationToken);
 
                 lock (modelDetails)
                 {
-                    modelDetails[modelSlug] = detailsData;
+                    modelDetails[modelPermaslug] = detailsData;
                 }
                 
-                _logger.LogTrace("Successfully fetched details for model {ModelSlug}", modelSlug);
+                _logger.LogTrace("Successfully fetched details for model {ModelPermaslug}", modelPermaslug);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to fetch details for model {ModelSlug} after all attempts", modelSlug);
+                _logger.LogWarning(ex, "Failed to fetch details for model {ModelPermaslug} after all attempts", modelPermaslug);
                 // Skip this model, don't fail the entire operation
             }
         }
@@ -961,11 +989,9 @@ public class OpenRouterModelService
         var warningMessage = GetStringValue(primaryModelNode, "warning_message");
         var isHidden = GetBoolValue(primaryModelNode, "hidden");
 
-        // Parse created date from Unix timestamp
-        var createdTimestamp = GetLongValue(primaryModelNode, "created");
-        var createdDate = createdTimestamp.HasValue 
-            ? DateTimeOffset.FromUnixTimeSeconds(createdTimestamp.Value).DateTime
-            : (DateTime?)null;
+        // Parse created date from ISO 8601 string
+        var createdAtString = GetStringValue(primaryModelNode, "created_at");
+        var createdDate = TryParseDateTime(createdAtString);
 
         // Check if model is reasoning-capable
         var isReasoning = CheckIfReasoningModel(primaryModelNode);
@@ -973,22 +999,91 @@ public class OpenRouterModelService
         // Create capabilities
         var capabilities = CreateModelCapabilities(primaryModelNode, inputModalities, outputModalities, contextLength);
 
-        // Create providers from all endpoints
+        // Create providers from model details endpoints
         var providers = new List<ProviderConfig>();
-        var providerPriority = 100; // Start with high priority, decrease for each provider
+        var openRouterSubProviders = new List<SubProviderConfig>();
+        var specialProviders = new HashSet<string> { "gemini", "openai", "groq", "deepinfra", "anthropic" };
 
-        foreach (var modelNode in modelNodes)
+        // Get the permaslug for this model to look up details
+        var modelPermaslug = GetStringValue(primaryModelNode, "permaslug");
+        if (string.IsNullOrEmpty(modelPermaslug))
         {
-            var endpoint = modelNode["endpoint"];
-            if (endpoint == null) continue;
+            // Fallback to slug if permaslug is not available
+            modelPermaslug = modelSlug;
+        }
 
-            var providerConfig = await CreateProviderConfigFromEndpointAsync(endpoint, modelSlug, cache, providerPriority, cancellationToken);
-            if (providerConfig != null)
+        // Look up model details using permaslug
+        if (cache.ModelDetails != null && cache.ModelDetails.TryGetValue(modelPermaslug, out var modelDetailsNode))
+        {
+            var endpointsArray = modelDetailsNode?["data"]?.AsArray();
+            if (endpointsArray != null)
             {
-                providers.Add(providerConfig);
-                providerPriority = Math.Max(1, providerPriority - 10); // Decrease priority for subsequent providers
+                var providerPriority = 100; // Start with high priority, decrease for each provider
+
+                foreach (var endpointNode in endpointsArray)
+                {
+                    if (endpointNode == null) continue;
+
+                    var providerName = GetStringValue(endpointNode, "provider_name")?.ToLowerInvariant();
+                    var endpointId = GetStringValue(endpointNode, "id");
+                    var providerDisplayName = GetStringValue(endpointNode, "provider_display_name");
+                    var providerModelId = GetStringValue(endpointNode, "provider_model_id");
+                    var isDisabled = GetBoolValue(endpointNode, "is_disabled");
+                    var isEndpointHidden = GetBoolValue(endpointNode, "is_hidden");
+
+                    if (string.IsNullOrEmpty(providerName) || string.IsNullOrEmpty(endpointId) || isDisabled || isEndpointHidden)
+                        continue;
+
+                    // Create sub-provider entry for OpenRouter
+                    var subProvider = CreateSubProviderFromEndpoint(endpointNode, modelSlug);
+                    if (subProvider != null)
+                    {
+                        openRouterSubProviders.Add(subProvider);
+                    }
+
+                    // Create separate provider entry for special providers
+                    if (specialProviders.Contains(providerName))
+                    {
+                        var specialProviderConfig = await CreateProviderConfigFromEndpointAsync(endpointNode, modelSlug, cache, providerPriority, cancellationToken);
+                        if (specialProviderConfig != null)
+                        {
+                            providers.Add(specialProviderConfig);
+                            providerPriority = Math.Max(1, providerPriority - 10);
+                        }
+                    }
+                }
             }
         }
+
+        // Fallback: If no model details found, try to use endpoint data from main model nodes (legacy support)
+        if (openRouterSubProviders.Count == 0)
+        {
+            foreach (var modelNode in modelNodes)
+            {
+                var endpoint = modelNode["endpoint"];
+                if (endpoint == null) continue;
+
+                var subProvider = CreateSubProviderFromEndpoint(endpoint, modelSlug);
+                if (subProvider != null)
+                {
+                    openRouterSubProviders.Add(subProvider);
+                }
+            }
+        }
+
+        // Always create OpenRouter as the primary provider with all endpoints as sub-providers
+        var openRouterProvider = new ProviderConfig
+        {
+            Name = "OpenRouter",
+            ModelName = modelSlug,
+            Priority = 1000, // Highest priority for OpenRouter
+            Pricing = GetBestPricingFromSubProviders(openRouterSubProviders),
+            SubProviders = openRouterSubProviders,
+            Tags = new[] { "openrouter", "aggregator" }
+        };
+
+        // Insert OpenRouter as the first provider
+        providers.Insert(0, openRouterProvider);
 
         // If no providers were created, create a basic OpenRouter provider
         if (providers.Count == 0)
@@ -1120,6 +1215,7 @@ public class OpenRouterModelService
         var supportsTools = GetBoolValue(endpoint, "supports_tool_parameters");
         var supportsReasoning = GetBoolValue(endpoint, "supports_reasoning");
         var supportsMultipart = GetBoolValue(endpoint, "supports_multipart");
+        var supportedParams = GetStringArray(endpoint, "supported_parameters");
 
         if (supportsTools)
             tags.Add("tools");
@@ -1129,6 +1225,13 @@ public class OpenRouterModelService
 
         if (supportsMultipart)
             tags.Add("multimodal");
+            
+        // Add structured output tags
+        if (supportedParams.Contains("response_format"))
+            tags.Add("json-mode");
+            
+        if (supportedParams.Contains("structured_outputs"))
+            tags.Add("structured-outputs");
 
         // Add performance-based tags based on limits
         var limitRpm = GetIntValue(endpoint, "limit_rpm");
@@ -1151,6 +1254,77 @@ public class OpenRouterModelService
         // For OpenRouter, we don't typically have sub-providers since OpenRouter itself is the aggregator
         // This could be extended in the future if needed
         return null;
+    }
+
+    /// <summary>
+    /// Creates a SubProviderConfig from an OpenRouter endpoint.
+    /// </summary>
+    private SubProviderConfig? CreateSubProviderFromEndpoint(JsonNode endpoint, string modelSlug)
+    {
+        try
+        {
+            var endpointId = GetStringValue(endpoint, "id");
+            var providerName = GetStringValue(endpoint, "provider_name");
+            var providerDisplayName = GetStringValue(endpoint, "provider_display_name");
+            var providerModelId = GetStringValue(endpoint, "provider_model_id");
+            var modelVariantSlug = GetStringValue(endpoint, "model_variant_slug");
+            var isFree = GetBoolValue(endpoint, "is_free");
+            var isDisabled = GetBoolValue(endpoint, "is_disabled");
+            var isHidden = GetBoolValue(endpoint, "is_hidden");
+            var quantization = GetStringValue(endpoint, "quantization");
+            var variant = GetStringValue(endpoint, "variant");
+
+            if (string.IsNullOrEmpty(providerName) || string.IsNullOrEmpty(endpointId))
+                return null;
+
+            // Skip disabled or hidden endpoints
+            if (isDisabled || isHidden)
+                return null;
+
+            // Get pricing information
+            var pricing = CreatePricingConfig(endpoint);
+
+            return new SubProviderConfig
+            {
+                Name = providerDisplayName ?? providerName,
+                ModelName = providerModelId ?? modelVariantSlug ?? modelSlug,
+                Priority = 1, // Default priority for sub-providers
+                Pricing = pricing
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogTrace(ex, "Failed to create SubProviderConfig from endpoint");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Gets the best pricing from a list of sub-providers (typically the cheapest).
+    /// </summary>
+    private PricingConfig GetBestPricingFromSubProviders(IReadOnlyList<SubProviderConfig> subProviders)
+    {
+        if (subProviders == null || subProviders.Count == 0)
+        {
+            return new PricingConfig
+            {
+                PromptPerMillion = 0.0,
+                CompletionPerMillion = 0.0
+            };
+        }
+
+        // Find the cheapest pricing (lowest total cost for a typical request)
+        var bestPricing = subProviders
+            .Select(sp => sp.Pricing)
+            .Where(p => p != null)
+            .OrderBy(p => p.PromptPerMillion + p.CompletionPerMillion)
+            .FirstOrDefault();
+
+        return bestPricing ?? new PricingConfig
+        {
+            PromptPerMillion = 0.0,
+            CompletionPerMillion = 0.0
+        };
     }
 
     /// <summary>
@@ -1203,10 +1377,32 @@ public class OpenRouterModelService
             var supportsTools = GetBoolValue(endpoint, "supports_tool_parameters");
             if (supportsTools)
             {
+                // Enhanced tool choice detection from features
+                var toolChoiceSupport = new Dictionary<string, bool>
+                {
+                    ["literal_none"] = true,
+                    ["literal_auto"] = true,
+                    ["literal_required"] = true,
+                    ["type_function"] = true
+                };
+                
+                var features = endpoint["features"];
+                if (features != null)
+                {
+                    var supportsToolChoice = features["supports_tool_choice"];
+                    if (supportsToolChoice != null)
+                    {
+                        toolChoiceSupport["literal_none"] = GetBoolValue(supportsToolChoice, "literal_none", true);
+                        toolChoiceSupport["literal_auto"] = GetBoolValue(supportsToolChoice, "literal_auto", true);
+                        toolChoiceSupport["literal_required"] = GetBoolValue(supportsToolChoice, "literal_required", true);
+                        toolChoiceSupport["type_function"] = GetBoolValue(supportsToolChoice, "type_function", true);
+                    }
+                }
+                
                 functionCalling = new FunctionCallingCapability
                 {
                     SupportsTools = true,
-                    SupportsToolChoice = true,
+                    SupportsToolChoice = toolChoiceSupport["literal_auto"] || toolChoiceSupport["literal_required"],
                     SupportsStructuredParameters = true,
                     SupportedToolTypes = new[] { "function" }
                 };
@@ -1218,14 +1414,30 @@ public class OpenRouterModelService
         if (endpoint != null)
         {
             var supportedParams = GetStringArray(endpoint, "supported_parameters");
+            var features = endpoint["features"];
             
-            if (supportedParams.Contains("response_format"))
+            // Check basic support
+            var hasResponseFormat = supportedParams.Contains("response_format");
+            var hasStructuredOutputs = supportedParams.Contains("structured_outputs");
+            
+            // Enhanced detection from features object
+            if (features != null)
+            {
+                var supportedParameters = features["supported_parameters"];
+                if (supportedParameters != null)
+                {
+                    hasResponseFormat = hasResponseFormat || GetBoolValue(supportedParameters, "response_format");
+                    hasStructuredOutputs = hasStructuredOutputs || GetBoolValue(supportedParameters, "structured_outputs");
+                }
+            }
+            
+            if (hasResponseFormat)
             {
                 responseFormats = new ResponseFormatCapability
                 {
                     SupportsJsonMode = true,
-                    SupportsStructuredOutput = supportedParams.Contains("structured_outputs"),
-                    SupportsJsonSchema = true
+                    SupportsStructuredOutput = hasStructuredOutputs,
+                    SupportsJsonSchema = hasStructuredOutputs // Structured outputs typically implies JSON schema support
                 };
             }
         }
