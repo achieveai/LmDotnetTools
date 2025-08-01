@@ -131,6 +131,28 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
                 WriteColoredText(textUpdateMessage.Text, _colors.TextMessageColor, isLine: false);
                 break;
 
+            case ReasoningMessage reasoningMessage:
+                if (reasoningMessage.Visibility == ReasoningVisibility.Encrypted)
+                {
+                    WriteColoredText("Reasoning is encrypted", _colors.ReasoningMessageColor);
+                }
+                else
+                {
+                    WriteColoredText(reasoningMessage.Reasoning, _colors.ReasoningMessageColor);
+                }
+                break;
+
+            case ReasoningUpdateMessage reasoningMessage:
+                if (reasoningMessage.Visibility == ReasoningVisibility.Encrypted)
+                {
+                    WriteColoredText("Reasoning is encrypted", _colors.ReasoningMessageColor, isLine: false);
+                }
+                else
+                {
+                    WriteColoredText(reasoningMessage.Reasoning, _colors.ReasoningMessageColor, isLine: false);
+                }
+                break;
+
             case UsageMessage usageMessage1:
                 WriteColoredText($"Prompt tokens: {usageMessage1.Usage.PromptTokens}", _colors.UsageMessageColor);
                 WriteColoredText($"Completion tokens: {usageMessage1.Usage.CompletionTokens}", _colors.UsageMessageColor);
