@@ -101,18 +101,18 @@ public static class Program
 
             var options = new GenerateReplyOptions
             {
-                ModelId = "x-ai/grok-3-mini-beta", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
+                ModelId = "qwen/qwen3-235b-a22b-thinking-2507", // "x-ai/grok-3-mini-beta", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
                 // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
                 MaxToken = 4096 * 2,
                 ExtraProperties = new Dictionary<string, object?>()
                 {
                     ["parallel_tool_call"] = true,
-                    // ["reasoning"] = new Dictionary<string, object?>()
-                    // {
-                    //     ["effort"] = "low",
-                    //     ["max_tokens"] = 768,
-                    // }
+                    ["reasoning"] = new Dictionary<string, object?>()
+                    {
+                        ["effort"] = "low",
+                        ["max_tokens"] = 768,
+                    }
                 }.ToImmutableDictionary()
             };
 
