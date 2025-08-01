@@ -5,6 +5,11 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.McpSampleServer</PackageId>
+    <Description>Sample MCP server implementation demonstrating Model Context Protocol integration patterns.</Description>
+    <PackageTags>$(PackageTags);mcp;server;sample;demo</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
