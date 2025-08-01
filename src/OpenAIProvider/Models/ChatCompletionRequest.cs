@@ -5,8 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using System.Linq;
-using System.Collections.Generic;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -157,9 +155,10 @@ public record ChatCompletionRequest
                 }
                 else
                 {
-                    return [new ChatMessage {
+                    List<ChatMessage> chatMessages = [new ChatMessage {
                         Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
                         Content = new Union<string, Union<TextContent, ImageContent>[]>(compositeMsg.Messages
+                            .Where(m => m is not ReasoningMessage)
                             .Select(m => m switch {
                                 TextMessage textMessage => new Union<TextContent, ImageContent>(new TextContent(textMessage.Text)),
                                 ImageMessage imageMessage => new Union<TextContent, ImageContent>(new ImageContent(imageMessage.ImageData.ToDataUrl()!)),
@@ -168,6 +167,35 @@ public record ChatCompletionRequest
                             .ToArray()
                         )
                     }];
+
+                    var hasEncryptedReasoning = compositeMsg.Messages
+                        .OfType<ReasoningMessage>()
+                        .Any(r => r.Visibility == ReasoningVisibility.Encrypted);
+
+                    var reasoningMessage = compositeMsg.Messages
+                        .OfType<ReasoningMessage>()
+                        .Where(r => hasEncryptedReasoning
+                            ? r.Visibility == ReasoningVisibility.Encrypted
+                            : r.Visibility == ReasoningVisibility.Plain)
+                        .FirstOrDefault();
+
+                    if (reasoningMessage != null)
+                    {
+                        if (hasEncryptedReasoning)
+                        {
+                            chatMessages[0].ReasoningDetails = [new ChatMessage.ReasoningDetail
+                            {
+                                Type = "reasoning.encrypted",
+                                Data = reasoningMessage.Reasoning
+                            }];
+                        }
+                        else
+                        {
+                            chatMessages[0].Reasoning = reasoningMessage.Reasoning;
+                        }
+                    }
+
+                    return chatMessages;
                 }
             case ImageMessage imageMessage:
                 return [new ChatMessage {

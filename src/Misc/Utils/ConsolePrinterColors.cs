@@ -26,6 +26,12 @@ public record ConsolePrinterColors
     /// </summary>
     public ConsoleColorPair TextMessageColor { get; init; } = new() { Foreground = ConsoleColor.White };
 
+
+    /// <summary>
+    /// Color for system messages
+    /// </summary>
+    public ConsoleColorPair ReasoningMessageColor { get; init; } = new() { Foreground = ConsoleColor.DarkGreen };
+
     /// <summary>
     /// Color for usage messages
     /// </summary>

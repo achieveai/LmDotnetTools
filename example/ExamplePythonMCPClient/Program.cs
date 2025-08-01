@@ -45,7 +45,7 @@ public static class Program
         {
             Name = "url-fetcher",
             Command = "node",
-            Arguments = ["d:/turndown-mcp/server.js"]
+            Arguments = ["b:/sources/turndown-mcp/server.js"]
         });
 
         var thinkingMcpServer = new StdioClientTransport(new StdioClientTransportOptions
@@ -62,15 +62,8 @@ public static class Program
             Arguments = ["-y", "@modelcontextprotocol/server-memory"]
         });
 
-        var fetchMcpServer = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "fetch-transport",
-            Command = "node",
-            Arguments = ["d:/fetch-mcp/dist/index.js"]
-        });
-
-        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer, fetchMcpServer };
-        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "fetch-transport" };
+        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer };
+        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory" };
 
         var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
 
@@ -428,6 +421,9 @@ public static class Program
                 break;
             case UsageMessage usageMessage:
                 WriteToConsoleInColor($"Usage: {usageMessage.Usage}", ConsoleColor.DarkGray, ConsoleColor.White);
+                break;
+            case ReasoningMessage reasoningMessage:
+                // WriteToConsoleInColor($"Reasoning: {reasoningMessage.Reasoning}", ConsoleColor.DarkGreen, null);
                 break;
             case ImageMessage _:
                 WriteToConsoleInColor("Image generated", ConsoleColor.DarkGray, null);
