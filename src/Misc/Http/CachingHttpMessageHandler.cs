@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Utils;
+using System.Net;
 
 namespace AchieveAi.LmDotnetTools.Misc.Http;
 
@@ -82,7 +83,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
             // Cache the response if it's successful
             if (response.IsSuccessStatusCode)
             {
-                await CacheResponseAsync(cacheKey, response, cancellationToken);
+                CacheResponseAsync(cacheKey, response);
             }
 
             return response;
@@ -171,59 +172,27 @@ public class CachingHttpMessageHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// Caches an HTTP response.
+    /// Wraps the HTTP response content with streaming caching capability.
     /// </summary>
-    private async Task CacheResponseAsync(string cacheKey, HttpResponseMessage response, CancellationToken cancellationToken)
+    private void CacheResponseAsync(string cacheKey, HttpResponseMessage response)
     {
         try
         {
-            // Read response content
-            var content = await response.Content.ReadAsStringAsync(cancellationToken);
-            
-            // Create cached item
-            var cachedItem = new CachedHttpResponse
+            // Wrap the original content with streaming caching capability
+            if (response.Content != null)
             {
-                StatusCode = (int)response.StatusCode,
-                ReasonPhrase = response.ReasonPhrase,
-                Content = content,
-                ContentType = response.Content.Headers.ContentType?.MediaType ?? "application/json",
-                Headers = response.Headers.ToDictionary(h => h.Key, h => h.Value.ToArray()),
-                CachedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.Add(_options.CacheExpiration ?? TimeSpan.FromHours(24))
-            };
-
-            // Store in cache (fire and forget to not slow down the response)
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await _semaphore.WaitAsync(CancellationToken.None);
-                    try
-                    {
-                        await _cache.SetAsync(cacheKey, cachedItem, CancellationToken.None);
-                        _logger.LogDebug("Cached response for key: {CacheKey}", cacheKey);
-                    }
-                    finally
-                    {
-                        _semaphore.Release();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to cache response: {CacheKey}", cacheKey);
-                }
-            }, CancellationToken.None);
-
-            // Reset content stream position so it can be read again
-            if (response.Content is StringContent)
-            {
-                response.Content = new StringContent(content, Encoding.UTF8, 
-                    response.Content.Headers.ContentType?.MediaType ?? "application/json");
+                response.Content = new CachingHttpContent(
+                    response.Content,
+                    cacheKey,
+                    _cache,
+                    _options,
+                    _logger,
+                    _semaphore);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error caching response: {CacheKey}", cacheKey);
+            _logger.LogWarning(ex, "Error setting up streaming cache for: {CacheKey}", cacheKey);
         }
     }
 
@@ -279,4 +248,267 @@ public class CachedHttpResponse
     /// When the cached response expires.
     /// </summary>
     public DateTime ExpiresAt { get; set; }
+}
+
+/// <summary>
+/// HttpContent wrapper that enables streaming with concurrent caching.
+/// </summary>
+public class CachingHttpContent : HttpContent
+{
+    private readonly HttpContent _originalContent;
+    private readonly string _cacheKey;
+    private readonly IKvStore _cache;
+    private readonly LlmCacheOptions _options;
+    private readonly ILogger _logger;
+    private readonly SemaphoreSlim _semaphore;
+
+    public CachingHttpContent(
+        HttpContent originalContent,
+        string cacheKey,
+        IKvStore cache,
+        LlmCacheOptions options,
+        ILogger logger,
+        SemaphoreSlim semaphore)
+    {
+        _originalContent = originalContent ?? throw new ArgumentNullException(nameof(originalContent));
+        _cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
+        _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _semaphore = semaphore ?? throw new ArgumentNullException(nameof(semaphore));
+
+        // Copy headers from original content
+        foreach (var header in _originalContent.Headers)
+        {
+            Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+    }
+
+    protected override async Task<Stream> CreateContentReadStreamAsync()
+    {
+        var originalStream = await _originalContent.ReadAsStreamAsync();
+        return new CachingStream(originalStream, _cacheKey, _cache, _options, _logger, _semaphore);
+    }
+
+    protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+    {
+        using var contentStream = await CreateContentReadStreamAsync();
+        await contentStream.CopyToAsync(stream);
+    }
+
+    protected override bool TryComputeLength(out long length)
+    {
+        if (_originalContent.Headers.ContentLength.HasValue)
+        {
+            length = _originalContent.Headers.ContentLength.Value;
+            return length >= 0;
+        }
+        
+        length = 0;
+        return false;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _originalContent?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+}
+
+/// <summary>
+/// Stream wrapper that captures data as it's read for caching purposes.
+/// </summary>
+public class CachingStream : Stream
+{
+    private readonly Stream _originalStream;
+    private readonly string _cacheKey;
+    private readonly IKvStore _cache;
+    private readonly LlmCacheOptions _options;
+    private readonly ILogger _logger;
+    private readonly SemaphoreSlim _semaphore;
+    private readonly MemoryStream _buffer;
+    private readonly object _lock = new();
+    private bool _disposed;
+    private bool _cacheAttempted;
+    private Task? _cachingTask;
+
+    public CachingStream(
+        Stream originalStream,
+        string cacheKey,
+        IKvStore cache,
+        LlmCacheOptions options,
+        ILogger logger,
+        SemaphoreSlim semaphore)
+    {
+        _originalStream = originalStream ?? throw new ArgumentNullException(nameof(originalStream));
+        _cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
+        _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _semaphore = semaphore ?? throw new ArgumentNullException(nameof(semaphore));
+        _buffer = new MemoryStream();
+    }
+
+    public override bool CanRead => _originalStream.CanRead;
+    public override bool CanSeek => false; // Don't allow seeking to keep it simple
+    public override bool CanWrite => false;
+    public override long Length => _originalStream.Length;
+    public override long Position 
+    { 
+        get => _originalStream.Position; 
+        set => throw new NotSupportedException("Seeking is not supported"); 
+    }
+
+    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        var bytesRead = await _originalStream.ReadAsync(buffer, offset, count, cancellationToken);
+        
+        if (bytesRead > 0)
+        {
+            lock (_lock)
+            {
+                if (!_disposed)
+                {
+                    // Append read data to our cache buffer
+                    _buffer.Write(buffer, offset, bytesRead);
+                }
+            }
+        }
+        else if (bytesRead == 0 && !_cacheAttempted)
+        {
+            // End of stream reached, trigger caching
+            _cachingTask = Task.Run(TryCacheDataAsync, CancellationToken.None);
+        }
+
+        return bytesRead;
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        var bytesRead = _originalStream.Read(buffer, offset, count);
+        
+        if (bytesRead > 0)
+        {
+            lock (_lock)
+            {
+                if (!_disposed)
+                {
+                    _buffer.Write(buffer, offset, bytesRead);
+                }
+            }
+        }
+        else if (bytesRead == 0 && !_cacheAttempted)
+        {
+            _cachingTask = Task.Run(TryCacheDataAsync, CancellationToken.None);
+        }
+
+        return bytesRead;
+    }
+
+    private async Task TryCacheDataAsync()
+    {
+        if (_cacheAttempted)
+            return;
+
+        _cacheAttempted = true;
+
+        try
+        {
+            byte[] data;
+            lock (_lock)
+            {
+                // Don't return early if disposed - we can still cache the data
+                data = _buffer.ToArray();
+            }
+
+            if (data.Length == 0)
+            {
+                _logger.LogDebug("No data to cache for key: {CacheKey}", _cacheKey);
+                return;
+            }
+
+            // Convert byte array to string for storage
+            var content = Encoding.UTF8.GetString(data);
+            
+            var cachedItem = new CachedHttpResponse
+            {
+                StatusCode = 200, // We only cache successful responses
+                Content = content,
+                ContentType = "application/json", // Default assumption for LLM APIs
+                Headers = new Dictionary<string, string[]>(),
+                CachedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.Add(_options.CacheExpiration ?? TimeSpan.FromHours(24))
+            };
+
+            await _semaphore.WaitAsync(CancellationToken.None);
+            try
+            {
+                await _cache.SetAsync(_cacheKey, cachedItem, CancellationToken.None);
+                _logger.LogDebug("Successfully cached streaming response for key: {CacheKey}, size: {Size} bytes", 
+                    _cacheKey, data.Length);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to cache streaming response: {CacheKey}", _cacheKey);
+            // Re-throw in debug builds to help with testing
+            #if DEBUG
+            throw;
+            #endif
+        }
+    }
+
+    public override void Flush() => _originalStream.Flush();
+    public override Task FlushAsync(CancellationToken cancellationToken) => _originalStream.FlushAsync(cancellationToken);
+
+    public override long Seek(long offset, SeekOrigin origin) => 
+        throw new NotSupportedException("Seeking is not supported");
+
+    public override void SetLength(long value) => 
+        throw new NotSupportedException("SetLength is not supported");
+
+    public override void Write(byte[] buffer, int offset, int count) => 
+        throw new NotSupportedException("Writing is not supported");
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_disposed)
+        {
+            Task? taskToWait = null;
+            
+            lock (_lock)
+            {
+                _disposed = true;
+                
+                // Trigger caching if we haven't already
+                if (!_cacheAttempted)
+                {
+                    _cachingTask = Task.Run(TryCacheDataAsync, CancellationToken.None);
+                }
+                
+                taskToWait = _cachingTask;
+            }
+            
+            // Wait for the caching task to complete (but don't block indefinitely)
+            try
+            {
+                taskToWait?.Wait(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to wait for caching task completion during dispose");
+            }
+            
+            _buffer?.Dispose();
+            _originalStream?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 } 
