@@ -213,6 +213,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
                             FunctionArgs = tc.FunctionArgs,
                             ToolCallId = _toolsCallMessageBuilder.CurrentToolCallId,
                             Index = _toolsCallMessageBuilder.CurrentIndex,
+                            JsonFragmentUpdates = tc.JsonFragmentUpdates
                         })
                         .ToImmutableList(),
                 };
