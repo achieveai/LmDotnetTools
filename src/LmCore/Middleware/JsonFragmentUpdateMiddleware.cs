@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
@@ -8,9 +9,11 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// Middleware that processes ToolsCallUpdateMessage to add structured JSON fragment updates
 /// based on the FunctionArgs using JsonFragmentToStructuredUpdateGenerator.
 /// </summary>
-public class JsonFragmentUpdateMiddleware
+public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 {
     private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators = new();
+
+    public string? Name => throw new NotImplementedException();
 
     /// <summary>
     /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage instances.
@@ -121,5 +124,16 @@ public class JsonFragmentUpdateMiddleware
     public void ClearGenerators()
     {
         _generators.Clear();
+    }
+
+    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(MiddlewareContext context, IStreamingAgent agent, CancellationToken cancellationToken = default)
+    {
+        var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+        return ProcessAsync(stream);
+    }
+
+    public Task<IEnumerable<IMessage>> InvokeAsync(MiddlewareContext context, IAgent agent, CancellationToken cancellationToken = default)
+    {
+        return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 } 
