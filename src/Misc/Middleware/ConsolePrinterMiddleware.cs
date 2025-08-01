@@ -263,7 +263,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         var headerParts = _formatter(toolCall.FunctionName ?? "unknown", Enumerable.Empty<JsonFragmentUpdate>());
         foreach (var (color, text) in headerParts)
         {
-            WriteColoredText(text, color);
+            WriteColoredText(text, color, isLine: false);
         }
 
         if (string.IsNullOrEmpty(toolCall.FunctionArgs))
@@ -277,7 +277,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
 
         foreach (var (color, text) in formattedParts)
         {
-            WriteColoredText(text, color);
+            WriteColoredText(text, color, isLine: false);
         }
     }
 
