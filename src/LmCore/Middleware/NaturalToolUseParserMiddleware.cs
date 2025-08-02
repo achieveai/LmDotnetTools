@@ -431,9 +431,11 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
         {
             _isFirstInvocation = false;
             var markdown = RenderContractsToMarkdown(_functions);
-            var systemMessage = markdown + "\n\n" + (context.Messages.FirstOrDefault(m => m.Role == Role.System)?.ToString() ?? "");
+            var systemMessage = (context.Messages.FirstOrDefault(m => m.Role == Role.System)?.ToString() ?? "");
+            systemMessage = systemMessage + "\n\n---\n\n# Tool Calls\n\n" + markdown;
             var newMessages = context.Messages.ToList();
             var systemMsgIndex = newMessages.FindIndex(m => m.Role == Role.System);
+
             if (systemMsgIndex >= 0)
             {
                 newMessages[systemMsgIndex] = new TextMessage { Text = systemMessage, Role = Role.System };
@@ -442,8 +444,21 @@ public class NaturalToolUseParserMiddleware : IStreamingMiddleware
             {
                 newMessages.Insert(0, new TextMessage { Text = systemMessage, Role = Role.System });
             }
+
+            if (context.Options?.Functions != null && context.Options.Functions.Any())
+            {
+                context = context with
+                {
+                    Options = context.Options with
+                    {
+                        Functions = null
+                    }
+                };
+            }
+
             return new MiddlewareContext(newMessages, context.Options);
         }
+
         return context;
     }
 
