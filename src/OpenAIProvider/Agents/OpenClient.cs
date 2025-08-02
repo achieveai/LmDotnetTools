@@ -337,10 +337,7 @@ public class OpenClient : BaseHttpService, IOpenClient
     {
         // Skip responses with zero-token usage ONLY if they don't have finish_reason
         // The final usage message (with non-zero tokens) carries cost information and should be preserved
-        if (response.Usage != null &&
-            response.Usage.PromptTokens == 0 &&
-            response.Usage.CompletionTokens == 0 &&
-            response.Usage.TotalTokens == 0)
+        if (IsNoneUsage(response.Usage))
         {
             // Zero-token usage entries are uninformative and unnecessarily bloat the stream.
             // Providers often emit dozens or hundreds of these fragments before the real
@@ -382,7 +379,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                 // Skip if both content and reasoning are empty
                 if (!hasContent && !hasReasoning && !hasToolCalls)
                 {
-                    return true;
+                    return IsNoneUsage(response.Usage);
                 }
             }
         }
@@ -390,5 +387,12 @@ public class OpenClient : BaseHttpService, IOpenClient
         return false; // Don't skip this response
     }
 
+    static private bool IsNoneUsage(OpenAIProviderUsage? usage)
+    {
+        return usage != null &&
+            usage.PromptTokens == 0 &&
+            usage.CompletionTokens == 0 &&
+            usage.TotalTokens == 0;
+    }
 
 }
