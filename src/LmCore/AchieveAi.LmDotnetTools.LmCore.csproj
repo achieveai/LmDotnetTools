@@ -9,6 +9,7 @@
     <PackageId>AchieveAi.LmDotnetTools.LmCore</PackageId>
     <Description>Core functionality and base classes for the LmDotnetTools library, providing fundamental language model operations and utilities.</Description>
     <PackageTags>$(PackageTags);core;base;utilities</PackageTags>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

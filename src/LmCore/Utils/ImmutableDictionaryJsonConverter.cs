@@ -18,7 +18,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
     /// <summary>
     /// Initializes a new instance of the <see cref="ImmutableDictionaryJsonConverter{TKey, TValue}"/> class.
     /// </summary>
-    /// <param name="options">The serializer options to use.</param>
+
     public ImmutableDictionaryJsonConverter()
     {
         _keyType = typeof(TKey);

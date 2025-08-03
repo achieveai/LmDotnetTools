@@ -14,7 +14,9 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public class FunctionCallMiddleware : IStreamingMiddleware
 {
     private readonly IEnumerable<FunctionContract> _functions;
+
     private readonly IDictionary<string, Func<string, Task<string>>> _functionMap;
+
     private readonly ILogger<FunctionCallMiddleware> _logger;
 
     public FunctionCallMiddleware(

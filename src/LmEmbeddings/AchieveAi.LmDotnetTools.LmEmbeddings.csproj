@@ -9,6 +9,7 @@
     <PackageId>AchieveAi.LmDotnetTools.LmEmbeddings</PackageId>
     <Description>Embeddings support for language models, providing vector operations and similarity calculations.</Description>
     <PackageTags>$(PackageTags);embeddings;vectors;similarity</PackageTags>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

@@ -10,6 +10,7 @@
     <PackageId>AchieveAi.LmDotnetTools.Misc</PackageId>
     <Description>Miscellaneous utilities and helper functions for the LmDotnetTools library ecosystem.</Description>
     <PackageTags>$(PackageTags);utilities;helpers;misc</PackageTags>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

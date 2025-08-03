@@ -23,6 +23,7 @@
     <PackageId>AchieveAi.LmDotnetTools.OpenAIProvider</PackageId>
     <Description>OpenAI provider for the LmDotnetTools library, enabling integration with GPT models and OpenAI services.</Description>
     <PackageTags>$(PackageTags);openai;gpt;provider</PackageTags>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
 </Project>
