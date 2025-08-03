@@ -44,12 +44,6 @@ public class ProviderAgentFactory : IProviderAgentFactory
         { "Replicate", "Replicate" }
     };
 
-    public ProviderAgentFactory(IServiceProvider serviceProvider, ILogger<ProviderAgentFactory> logger, IHttpHandlerBuilder handlerBuilder)
-        : this(serviceProvider, handlerBuilder, null)
-    {
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
-
     public ProviderAgentFactory(IServiceProvider serviceProvider, IHttpHandlerBuilder handlerBuilder, ILoggerFactory? loggerFactory = null)
     {
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
