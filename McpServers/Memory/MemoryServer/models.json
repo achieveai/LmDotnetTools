@@ -1774,8 +1774,151 @@
         ]
       }
      ]
-   },
-   {
+    },
+    {
+      "id": "qwen3-235b-a22b-thinking",
+      "is_reasoning": true,
+      "created_date": "2025-07-25T13:19:17.179049Z",
+      "capabilities": {
+        "thinking": {
+          "type": "Custom",
+          "supports_budget_tokens": false,
+          "supports_thinking_type": false,
+          "is_built_in": true,
+          "is_exposed": true
+        },
+        "function_calling": {
+          "supports_tools": true,
+          "supports_parallel_calls": false,
+          "supports_tool_choice": true,
+          "supported_tool_types": [
+            "function"
+          ],
+          "supports_structured_parameters": true,
+          "supports_function_descriptions": false,
+          "supports_parameter_descriptions": false,
+          "supports_required_parameters": false,
+          "supports_parameter_validation": false,
+          "supports_nested_parameters": false,
+          "supports_array_parameters": false,
+          "supports_enum_parameters": false,
+          "supported_schema_versions": []
+        },
+        "token_limits": {
+          "max_context_tokens": 262144,
+          "max_output_tokens": 65536,
+          "supports_dynamic_context": false,
+          "supports_context_extension": false,
+          "supports_token_counting": true,
+          "variable_token_limits": false
+        },
+        "supports_streaming": true,
+        "supported_features": [
+          "thinking",
+          "function_calling"
+        ],
+        "is_preview": false,
+        "is_deprecated": false
+      },
+      "providers": [
+        {
+          "name": "OpenRouter",
+          "model_name": "qwen/qwen3-235b-a22b-thinking-2507",
+          "priority": 1000,
+          "pricing": {
+            "prompt_per_million": 0.1179,
+            "completion_per_million": 0.1179
+          },
+          "sub_providers": [
+            {
+              "name": "Chutes",
+              "model_name": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+              "priority": 1,
+              "pricing": {
+                "prompt_per_million": 0.1179,
+                "completion_per_million": 0.1179
+              }
+            },
+            {
+              "name": "DeepInfra",
+              "model_name": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+              "priority": 1,
+              "pricing": {
+                "prompt_per_million": 0.13,
+                "completion_per_million": 0.6
+              }
+            },
+            {
+              "name": "NovitaAI",
+              "model_name": "qwen/qwen3-235b-a22b-thinking-2507",
+              "priority": 1,
+              "pricing": {
+                "prompt_per_million": 0.3,
+                "completion_per_million": 3
+              }
+            },
+            {
+              "name": "Together",
+              "model_name": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+              "priority": 1,
+              "pricing": {
+                "prompt_per_million": 0.65,
+                "completion_per_million": 3
+              }
+            },
+            {
+              "name": "Crusoe",
+              "model_name": "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8",
+              "priority": 1,
+              "pricing": {
+                "prompt_per_million": 0.65,
+                "completion_per_million": 3
+              }
+            },
+            {
+              "name": "Parasail",
+              "model_name": "parasail-qwen3-235b-a22b-thinking-2507",
+              "priority": 1,
+              "pricing": {
+                "prompt_per_million": 0.65,
+                "completion_per_million": 3
+              }
+            },
+            {
+              "name": "Alibaba Cloud Int.",
+              "model_name": "qwen3-235b-a22b-thinking-2507",
+              "priority": 1,
+              "pricing": {
+                "prompt_per_million": 0.7,
+                "completion_per_million": 8.399999999999999
+              }
+            }
+          ],
+          "tags": [
+            "openrouter",
+            "aggregator"
+          ]
+        },
+        {
+          "name": "DeepInfra",
+          "model_name": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+          "priority": 100,
+          "pricing": {
+            "prompt_per_million": 0.13,
+            "completion_per_million": 0.6
+          },
+          "tags": [
+            "openrouter",
+            "paid",
+            "quantization-fp8",
+            "reasoning",
+            "multimodal",
+            "json-mode"
+          ]
+        }
+      ]
+    },
+    {
      "id": "qwen3-235b-a22b",
      "is_reasoning": true,
      "capabilities": {
