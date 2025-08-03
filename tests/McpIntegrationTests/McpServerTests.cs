@@ -3,6 +3,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -118,10 +119,10 @@ public class McpServerTests
             Assert.NotNull(response.Content);
             Assert.NotEmpty(response.Content);
             Assert.Equal("text", response.Content[0].Type);
-            Assert.NotNull(response.Content[0].Text);
+            Assert.NotNull(((TextContentBlock)response.Content[0]).Text);
 
             // The result of 5 + 3 should be 8
-            var responseText = response.Content[0].Text;
+            var responseText = ((TextContentBlock)response.Content[0]).Text;
             Assert.Contains("8", responseText);
         }
         finally

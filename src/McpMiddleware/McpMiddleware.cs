@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -167,7 +168,7 @@ public class McpMiddleware : IStreamingMiddleware
                             response.Content != null
                                 ? response.Content
                                     .Where(c => c?.Type == "text")
-                                    .Select(c => c?.Text ?? string.Empty)
+                                    .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
                                 : Array.Empty<string>());
 
                         logger.LogDebug("Tool response formatted: ToolName={ToolName}, ResultLength={ResultLength}", 

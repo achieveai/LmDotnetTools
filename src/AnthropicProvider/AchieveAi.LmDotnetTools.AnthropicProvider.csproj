@@ -20,6 +20,7 @@
     <PackageId>AchieveAi.LmDotnetTools.AnthropicProvider</PackageId>
     <Description>Anthropic AI provider for the LmDotnetTools library, enabling integration with Claude and other Anthropic models.</Description>
     <PackageTags>$(PackageTags);anthropic;claude;provider</PackageTags>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
 </Project>
