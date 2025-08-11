@@ -188,19 +188,21 @@ public class LmConfigService : ILmConfigService
     public Task<IRerankService> CreateRerankServiceAsync(CancellationToken cancellationToken = default)
     {
         var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_API_KEY");
-        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_BASE_URL", null, "https://api.cohere.ai");
-        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_MODEL", null, "rerank-english-v3.0");
-        
-        if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
+        var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_BASE_URL", null, "https://api.jina.ai/v1/rerank");
+        var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_MODEL", null, "jina-reranker-m0");
+
+        var httpClientFactory = _serviceProvider.GetRequiredService<IHttpClientFactory>();
+        var httpClient = httpClientFactory.CreateClient("LmDotNet.Reranking");
+        var logger = _serviceProvider.GetRequiredService<ILogger<RerankingService>>();
+
+        var options = new RerankingOptions
         {
-            throw new InvalidOperationException("Reranking API key not configured. Set RERANKING_API_KEY environment variable.");
-        }
+            ApiKey = apiKey,
+            BaseUrl = baseUrl,
+            DefaultModel = model
+        };
 
-        var rerankingService = CreateCohereRerankingService(apiKey, baseUrl, model);
-
-        _logger.LogInformation("Created reranking service using model {Model} at {BaseUrl}", model, baseUrl);
-
-        return Task.FromResult(rerankingService);
+        return new RerankingService(options, logger, httpClient);
     }
 
     /// <summary>
@@ -382,91 +384,5 @@ public class LmConfigService : ILmConfigService
 
         return config;
     }
-
-    private IEmbeddingService CreateOpenAIEmbeddingService(string apiKey, string baseUrl, string model)
-    {
-        // Create OpenAI embedding service using LmEmbeddings
-        var httpClient = new HttpClient();
-        
-        var options = new OpenAIEmbeddingOptions
-        {
-            ApiKey = apiKey,
-            BaseUrl = baseUrl.TrimEnd('/'),
-            DefaultModel = model,
-            MaxRetries = 3,
-            TimeoutSeconds = 30
-        };
-        
-        var logger = _serviceProvider.GetRequiredService<ILogger<OpenAIEmbeddingService>>();
-        var embeddingService = new OpenAIEmbeddingService(logger, httpClient, options);
-
-        return embeddingService;
-    }
-
-    private IRerankService CreateCohereRerankingService(string apiKey, string baseUrl, string model)
-    {
-        var logger = _serviceProvider.GetRequiredService<ILogger<CohereRerankService>>();
-        var httpClient = new HttpClient();
-        return new CohereRerankService(logger, httpClient, baseUrl.TrimEnd('/'), model, apiKey);
-    }
-
-    /// <summary>
-    /// Implementation of IRerankService that wraps the Cohere rerank API
-    /// </summary>
-    private class CohereRerankService : BaseRerankService
-    {
-        private readonly string _endpoint;
-        private readonly string _defaultModel;
-        private readonly string _apiKey;
-
-        public CohereRerankService(ILogger logger, HttpClient httpClient, string endpoint, string defaultModel, string apiKey)
-            : base(logger, httpClient)
-        {
-            _endpoint = endpoint ?? throw new ArgumentNullException(nameof(endpoint));
-            _defaultModel = defaultModel ?? throw new ArgumentNullException(nameof(defaultModel));
-            _apiKey = !string.IsNullOrWhiteSpace(apiKey) ? apiKey : throw new ArgumentException("API key cannot be null or empty", nameof(apiKey));
-
-            // Configure HttpClient
-            HttpClient.BaseAddress = new Uri(_endpoint);
-            HttpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
-        }
-
-        public override async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
-        {
-            ValidateRequest(request);
-
-            var json = JsonSerializer.Serialize(request);
-            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-            Logger.LogDebug("Sending rerank request with {DocumentCount} documents", request.Documents.Count);
-
-            var response = await HttpClient.PostAsync("/v2/rerank", content, cancellationToken);
-            response.EnsureSuccessStatusCode();
-
-            var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-            var rerankResponse = JsonSerializer.Deserialize<RerankResponse>(responseJson);
-
-            if (rerankResponse?.Results == null)
-            {
-                throw new InvalidOperationException("Invalid response from rerank API: missing results");
-            }
-
-            Logger.LogDebug("Received rerank response with {ResultCount} results", rerankResponse.Results.Count);
-            return rerankResponse;
-        }
-
-        public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
-        {
-            // For Cohere, return common reranking models
-            // In a real implementation, this might make an API call to get available models
-            return Task.FromResult<IReadOnlyList<string>>(new[] 
-            { 
-                "rerank-english-v3.0", 
-                "rerank-multilingual-v3.0", 
-                "rerank-v3.5" 
-            });
-        }
-    }
-
     #endregion
 } 

@@ -29,7 +29,8 @@ public class RerankingServiceTests
         Debug.WriteLine($"Testing constructor with: {description}");
         
         // Act & Assert
-        var service = new RerankingService(endpoint, model, apiKey, _logger);
+        var options = new RerankingOptions { BaseUrl = endpoint, DefaultModel = model, ApiKey = apiKey };
+        var service = new RerankingService(options, _logger);
         
         Assert.NotNull(service);
         
@@ -46,7 +47,7 @@ public class RerankingServiceTests
         
         // Act & Assert
         var exception = Assert.Throws(expectedExceptionType, () =>
-            new RerankingService(endpoint, model, apiKey, _logger));
+            new RerankingService(new RerankingOptions { BaseUrl = endpoint, DefaultModel = model, ApiKey = apiKey }, _logger));
         
         Assert.NotNull(exception);
         Debug.WriteLine($"Expected exception thrown: {exception.GetType().Name} - {description}");
@@ -267,7 +268,7 @@ public class RerankingServiceTests
         string apiKey = "test-key")
     {
         var httpClient = new HttpClient(httpHandler);
-        var service = new RerankingService(endpoint, model, apiKey, _logger, httpClient);
+        var service = new RerankingService(new RerankingOptions { BaseUrl = endpoint, DefaultModel = model, ApiKey = apiKey }, _logger, httpClient);
         return service;
     }
 

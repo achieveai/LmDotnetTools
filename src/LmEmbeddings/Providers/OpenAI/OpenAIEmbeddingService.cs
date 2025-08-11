@@ -56,7 +56,7 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
 /// </example>
 public class OpenAIEmbeddingService : BaseEmbeddingService
 {
-    private readonly OpenAIEmbeddingOptions _options;
+    private readonly EmbeddingOptions _options;
     private readonly JsonSerializerOptions _jsonOptions;
 
     /// <summary>
@@ -98,7 +98,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     public OpenAIEmbeddingService(
         ILogger<OpenAIEmbeddingService> logger,
         HttpClient httpClient,
-        OpenAIEmbeddingOptions options) : base(logger, httpClient)
+        EmbeddingOptions options) : base(logger, httpClient)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _jsonOptions = JsonSerializerOptionsFactory.CreateBase(namingPolicy: JsonNamingPolicy.SnakeCaseLower);
@@ -131,7 +131,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     /// If an unknown model is specified, the service defaults to 1536 dimensions (text-embedding-3-small size).
     /// </para>
     /// </remarks>
-    public override int EmbeddingSize => GetEmbeddingSizeForModel(_options.DefaultModel ?? "text-embedding-3-small");
+    public override int EmbeddingSize => _options.AvailableModelsWithDimensions[_options.DefaultModel].Dimensions;
 
     /// <summary>
     /// Gets the embedding size for a specific OpenAI model.
@@ -159,15 +159,9 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     /// var unknownSize = GetEmbeddingSizeForModel("unknown-model"); // Returns 1536 (default)
     /// </code>
     /// </example>
-    private static int GetEmbeddingSizeForModel(string model)
+    private int GetEmbeddingSizeForModel(string model)
     {
-        return model switch
-        {
-            "text-embedding-3-small" => 1536,
-            "text-embedding-3-large" => 3072,
-            "text-embedding-ada-002" => 1536,
-            _ => 1536 // Default to text-embedding-3-small size
-        };
+        return _options.AvailableModelsWithDimensions[model].Dimensions;
     }
 
     /// <inheritdoc />
@@ -268,9 +262,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         // Return known OpenAI embedding models
         return await Task.FromResult(new[]
         {
-            "text-embedding-3-small",
-            "text-embedding-3-large", 
-            "text-embedding-ada-002"
+            _options.DefaultModel
         }.AsReadOnly());
     }
 

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using LmEmbeddings.Models;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Models;
@@ -10,6 +11,7 @@ public class EmbeddingRequest
     /// <summary>
     /// The text inputs to generate embeddings for
     /// </summary>
+    [JsonPropertyName("input")]
     public required IReadOnlyList<string> Inputs { get; init; }
 
     /// <summary>
@@ -20,11 +22,14 @@ public class EmbeddingRequest
     /// <summary>
     /// The API type to use for the request
     /// </summary>
+    [JsonIgnore]
     public EmbeddingApiType ApiType { get; init; } = EmbeddingApiType.Default;
 
     /// <summary>
     /// Optional dimensions to reduce the embedding size
     /// </summary>
+    [JsonPropertyName("dimensions")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? Dimensions { get; init; }
 
     /// <summary>
@@ -32,21 +37,28 @@ public class EmbeddingRequest
     /// For Jina API: "float", "binary", "base64"
     /// For OpenAI API: "float", "base64"
     /// </summary>
+    [JsonPropertyName("encoding_format")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? EncodingFormat { get; init; }
 
     /// <summary>
     /// Optional user identifier for tracking
     /// </summary>
+    [JsonPropertyName("user")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? User { get; init; }
 
     /// <summary>
     /// Whether to normalize embeddings (Jina API specific)
     /// When true, scales the embedding so its Euclidean (L2) norm becomes 1
     /// </summary>
+    [JsonPropertyName("normalized")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Normalized { get; init; }
 
     /// <summary>
     /// Additional provider-specific options
     /// </summary>
+    [JsonExtensionData]
     public Dictionary<string, object>? AdditionalOptions { get; init; }
 } 
