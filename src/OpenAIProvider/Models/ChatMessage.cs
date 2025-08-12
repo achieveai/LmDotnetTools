@@ -118,12 +118,12 @@ public record ChatMessage
                 if (string.IsNullOrEmpty(detailText)) continue;
 
                 var visibility = detail.Type!.EndsWith("encrypted", StringComparison.OrdinalIgnoreCase)
-                    ? AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Encrypted
+                    ? ReasoningVisibility.Encrypted
                     : detail.Type.EndsWith("summary", StringComparison.OrdinalIgnoreCase)
-                        ? AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Summary
-                        : AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Plain;
+                        ? ReasoningVisibility.Summary
+                        : ReasoningVisibility.Plain;
 
-                yield return new AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningMessage
+                yield return new ReasoningMessage
                 {
                     Role = ToRole(role!.Value),
                     Reasoning = detailText!,
@@ -139,7 +139,7 @@ public record ChatMessage
         // Then, emit top-level reasoning only if it wasn't already processed with proper visibility
         if (!string.IsNullOrEmpty(Reasoning) && !processedReasoningTexts.Contains(Reasoning))
         {
-            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningUpdateMessage
+            yield return new ReasoningUpdateMessage
             {
                 Role = ToRole(role!.Value),
                 Reasoning = Reasoning!,
