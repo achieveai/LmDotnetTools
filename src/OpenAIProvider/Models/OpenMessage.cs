@@ -15,9 +15,13 @@ public record OpenMessage
     public IEnumerable<IMessage> ToMessages()
     {
         var messages = new List<IMessage>();
+        var chatMessage = ChatMessage with
+        {
+            Id = CompletionId,
+        };
 
         // First, add all content messages
-        foreach (var baseMessage in ChatMessage.ToMessages(ChatMessage.Name))
+        foreach (var baseMessage in chatMessage.ToMessages(ChatMessage.Name))
         {
             // Create metadata without usage data
             var metadata = baseMessage.Metadata ?? ImmutableDictionary<string, object>.Empty;
@@ -73,9 +77,13 @@ public record OpenMessage
     public IEnumerable<IMessage> ToStreamingMessage()
     {
         var messages = new List<IMessage>();
+        var chatMessage = ChatMessage with
+        {
+            Id = CompletionId,
+        };
 
         // First, add all content update messages
-        foreach (var baseMessage in ChatMessage.ToStreamingMessages(ChatMessage.Name))
+        foreach (var baseMessage in chatMessage.ToStreamingMessages(ChatMessage.Name))
         {
             var metadata = ImmutableDictionary<string, object>.Empty
                 .Add("completion_id", CompletionId)
