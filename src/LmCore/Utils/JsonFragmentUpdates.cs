@@ -1,10 +1,12 @@
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
 /// <summary>
 /// Represents the kind of fragment update emitted during JSON parsing
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum JsonFragmentKind
 {
     /// <summary>
@@ -76,21 +78,25 @@ public sealed record JsonFragmentUpdate
     /// <summary>
     /// The JSON path to this fragment (e.g. "root.users[1].address.street")
     /// </summary>
+    [JsonPropertyName("path")]
     public string Path { get; init; }
 
     /// <summary>
     /// The kind of fragment update
     /// </summary>
+    [JsonPropertyName("kind")]
     public JsonFragmentKind Kind { get; init; }
 
     /// <summary>
     /// The text value of the fragment (if applicable)
     /// </summary>
+    [JsonPropertyName("textValue")]
     public string? TextValue { get; init; }
 
     /// <summary>
     /// The JsonNode value (if applicable for complete values)
     /// </summary>
+    [JsonPropertyName("value")]
     public JsonNode? JsonValue { get; init; }
 
     /// <summary>

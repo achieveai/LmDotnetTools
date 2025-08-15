@@ -1,9 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.LmEmbeddings</PackageId>
+    <Description>Embeddings support for language models, providing vector operations and similarity calculations.</Description>
+    <PackageTags>$(PackageTags);embeddings;vectors;similarity</PackageTags>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

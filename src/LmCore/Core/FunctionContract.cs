@@ -3,6 +3,10 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Agents;
 
+
+/// <summary>
+/// Represents a function contract for Tool calls.
+/// </summary>
 public class FunctionContract
 {
     /// <summary>
@@ -57,6 +61,10 @@ public class FunctionContract
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ReturnDescription { get; set; }
 
+    /// <summary>
+    /// Gets the JSON schema for the function contract.
+    /// </summary>
+    /// <returns>The JSON schema for the function contract, or null if no parameters are defined.</returns>
     public JsonSchemaObject? GetJsonSchema()
     {
         if (Parameters == null)

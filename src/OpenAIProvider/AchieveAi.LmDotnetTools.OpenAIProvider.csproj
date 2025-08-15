@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
@@ -14,10 +14,17 @@
     <PackageReference Include="System.Net.ServerSentEvents" Version="9.0.5" />
   </ItemGroup>
 
-  <PropertyGroup>
+    <PropertyGroup>
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.OpenAIProvider</PackageId>
+    <Description>OpenAI provider for the LmDotnetTools library, enabling integration with GPT models and OpenAI services.</Description>
+    <PackageTags>$(PackageTags);openai;gpt;provider</PackageTags>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
 </Project>
+

@@ -50,6 +50,6 @@ public record ToolCallUpdate
     /// <summary>
     /// Structured JSON fragment updates generated from the function arguments
     /// </summary>
-    [JsonIgnore]
-    public ImmutableList<JsonFragmentUpdate>? JsonFragmentUpdates { get; init; }
+    [JsonPropertyName("json_update_fragments")]
+    public IList<JsonFragmentUpdate>? JsonFragmentUpdates { get; init; }
 }
