@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ModelConfigGenerator": {
+      "commandName": "Project",
+      "commandLineArgs": "--output ./model.json --model-updated-since \"2025-01-01T00:00:00.000Z\" --families llama,qwen,gpt,grok,kimi,deepseek"
+    }
+  }
+}

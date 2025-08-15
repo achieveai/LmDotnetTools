@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>AchieveAi.LmDotnetTools.AnthropicProvider.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
+      <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

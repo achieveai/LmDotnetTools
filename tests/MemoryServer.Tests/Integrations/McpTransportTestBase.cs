@@ -1,5 +1,6 @@
 using System.Text.Json;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 using Xunit.Abstractions;
 
 namespace MemoryServer.Tests.Integrations;
@@ -138,7 +139,7 @@ public abstract class McpTransportTestBase : IDisposable
         Assert.NotNull(response.Content);
         Assert.NotEmpty(response.Content);
         
-        var responseText = response.Content[0].Text!;
+        var responseText = ((TextContentBlock)response.Content[0]).Text!;
         _output.WriteLine($"📝 {GetTransportName()} memory_add response: {responseText}");
         
         var result = JsonSerializer.Deserialize<JsonElement>(responseText);
@@ -173,7 +174,7 @@ public abstract class McpTransportTestBase : IDisposable
             ["runId"] = runId
         });
         
-        var addResponseText = addResponse.Content[0].Text!;
+        var addResponseText = ((TextContentBlock)addResponse.Content[0]).Text!;
         _output.WriteLine($"📝 {GetTransportName()} memory add: {addResponseText}");
         var addResult = JsonSerializer.Deserialize<JsonElement>(addResponseText);
         Assert.True(addResult.GetProperty("success").GetBoolean());
@@ -188,7 +189,7 @@ public abstract class McpTransportTestBase : IDisposable
             ["runId"] = runId
         });
         
-        var searchResponseText = searchResponse.Content[0].Text!;
+        var searchResponseText = ((TextContentBlock)searchResponse.Content[0]).Text!;
         _output.WriteLine($"📝 {GetTransportName()} memory search: {searchResponseText}");
         var searchResult = JsonSerializer.Deserialize<JsonElement>(searchResponseText);
         Assert.True(searchResult.GetProperty("success").GetBoolean());
@@ -202,7 +203,7 @@ public abstract class McpTransportTestBase : IDisposable
             ["runId"] = runId
         });
         
-        var updateResponseText = updateResponse.Content[0].Text!;
+        var updateResponseText = ((TextContentBlock)updateResponse.Content[0]).Text!;
         _output.WriteLine($"📝 {GetTransportName()} memory update: {updateResponseText}");
         var updateResult = JsonSerializer.Deserialize<JsonElement>(updateResponseText);
         Assert.True(updateResult.GetProperty("success").GetBoolean());
@@ -214,7 +215,7 @@ public abstract class McpTransportTestBase : IDisposable
             ["runId"] = runId
         });
         
-        var deleteResponseText = deleteResponse.Content[0].Text!;
+        var deleteResponseText = ((TextContentBlock)deleteResponse.Content[0]).Text!;
         _output.WriteLine($"📝 {GetTransportName()} memory delete: {deleteResponseText}");
         var deleteResult = JsonSerializer.Deserialize<JsonElement>(deleteResponseText);
         Assert.True(deleteResult.GetProperty("success").GetBoolean());
@@ -240,30 +241,30 @@ public abstract class McpTransportTestBase : IDisposable
         {
             ["content"] = $"Memory for user 1 via {GetTransportName()}"
         });
-        _output.WriteLine($"📝 {GetTransportName()} add1: {add1Response.Content[0].Text}");
+        _output.WriteLine($"📝 {GetTransportName()} add1: {((TextContentBlock)add1Response.Content[0]).Text}");
         
         var add2Response = await client.CallToolAsync("memory_add", new Dictionary<string, object?>
         {
             ["content"] = $"Memory for user 2 via {GetTransportName()}"
         });
-        _output.WriteLine($"📝 {GetTransportName()} add2: {add2Response.Content[0].Text}");
+        _output.WriteLine($"📝 {GetTransportName()} add2: {((TextContentBlock)add2Response.Content[0]).Text}");
 
         // Search memories - userId comes from JWT token
         var search1Response = await client.CallToolAsync("memory_search", new Dictionary<string, object?>
         {
             ["query"] = "memory"
         });
-        _output.WriteLine($"📝 {GetTransportName()} search1: {search1Response.Content[0].Text}");
+        _output.WriteLine($"📝 {GetTransportName()} search1: {((TextContentBlock)search1Response.Content[0]).Text}");
         
         var search2Response = await client.CallToolAsync("memory_search", new Dictionary<string, object?>
         {
             ["query"] = "memory"
         });
-        _output.WriteLine($"📝 {GetTransportName()} search2: {search2Response.Content[0].Text}");
+        _output.WriteLine($"📝 {GetTransportName()} search2: {((TextContentBlock)search2Response.Content[0]).Text}");
 
         // Assert - Since both operations use the same JWT token, they should see the same memories
-        var search1Result = JsonSerializer.Deserialize<JsonElement>(search1Response.Content[0].Text!);
-        var search2Result = JsonSerializer.Deserialize<JsonElement>(search2Response.Content[0].Text!);
+        var search1Result = JsonSerializer.Deserialize<JsonElement>(((TextContentBlock)search1Response.Content[0]).Text!);
+        var search2Result = JsonSerializer.Deserialize<JsonElement>(((TextContentBlock)search2Response.Content[0]).Text!);
         
         Assert.True(search1Result.GetProperty("success").GetBoolean());
         Assert.True(search2Result.GetProperty("success").GetBoolean());
@@ -312,7 +313,7 @@ public abstract class McpTransportTestBase : IDisposable
         Assert.NotNull(statsResponse.Content);
         Assert.NotEmpty(statsResponse.Content);
         
-        var statsResponseText = statsResponse.Content[0].Text!;
+        var statsResponseText = ((TextContentBlock)statsResponse.Content[0]).Text!;
         _output.WriteLine($"📊 {GetTransportName()} stats response: {statsResponseText}");
         
         var statsResult = JsonSerializer.Deserialize<JsonElement>(statsResponseText);
@@ -359,7 +360,7 @@ public abstract class McpTransportTestBase : IDisposable
 
         // Assert - The MCP framework returns a plain text error message for missing parameters
         Assert.NotNull(response);
-        var responseText = response.Content[0].Text!;
+        var responseText = ((TextContentBlock)response.Content[0]).Text!;
         _output.WriteLine($"📝 {GetTransportName()} missing params response: {responseText}");
         
         // The response should be a plain text error message from the MCP framework

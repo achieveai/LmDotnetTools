@@ -32,12 +32,6 @@ public record RerankRequest
     /// If not specified, all rerank results will be returned.
     /// </summary>
     [JsonPropertyName("top_n")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? TopN { get; init; }
-
-    /// <summary>
-    /// Maximum tokens per document. Defaults to 4096 in the API.
-    /// Long documents will be automatically truncated to this number of tokens.
-    /// </summary>
-    [JsonPropertyName("max_tokens_per_doc")]
-    public int? MaxTokensPerDoc { get; init; }
 } 

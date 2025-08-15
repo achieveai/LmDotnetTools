@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
 using System.Collections.Immutable;
@@ -10,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 /// <summary>
 /// Concrete reranking service that integrates with Cohere's rerank API
 /// </summary>
-public class RerankingService : IDisposable
+public class RerankingService : IRerankService, IDisposable
 {
     private readonly string _endpoint;
     private readonly string _model;
@@ -19,8 +20,7 @@ public class RerankingService : IDisposable
     private readonly ILogger<RerankingService> _logger;
     private readonly bool _disposeHttpClient;
 
-    private const int MaxRetries = 2;
-    private const int DocumentTruncationTokens = 1024;
+    private readonly int _maxRetries = 2;
 
     /// <summary>
     /// Initializes a new instance of the RerankingService class
@@ -59,6 +59,27 @@ public class RerankingService : IDisposable
     }
 
     /// <summary>
+    /// Initializes a new instance of the RerankingService class using RerankingOptions
+    /// </summary>
+    /// <param name="options">Reranking configuration options</param>
+    /// <param name="logger">Logger instance</param>
+    /// <param name="httpClient">HTTP client instance (optional, will create one if not provided)</param>
+    public RerankingService(
+        RerankingOptions options,
+        ILogger<RerankingService>? logger = null,
+        HttpClient? httpClient = null)
+        : this(
+            endpoint: options?.BaseUrl ?? throw new ArgumentNullException(nameof(options)),
+            model: options.DefaultModel,
+            apiKey: string.IsNullOrWhiteSpace(options.ApiKey) ? throw new ArgumentException("API key cannot be null or empty", nameof(options.ApiKey)) : options.ApiKey,
+            logger: logger,
+            httpClient: httpClient)
+    {
+        // Allow options to control retry count while keeping default behavior
+        _maxRetries = options.MaxRetries;
+    }
+
+    /// <summary>
     /// Reranks documents based on their relevance to the provided query
     /// </summary>
     /// <param name="query">The query to rank documents against</param>
@@ -81,25 +102,18 @@ public class RerankingService : IDisposable
 
         return await ExecuteWithLinearRetryAsync(async (attemptNumber) =>
         {
-            // Apply document truncation on retry attempts
-            var processedDocs = attemptNumber > 1 ? TruncateDocuments(docList) : docList;
-
             var requestPayload = new RerankRequest
             {
                 Model = _model,
                 Query = query,
-                Documents = processedDocs.ToImmutableList(),
+                Documents = documents.ToImmutableList(),
                 TopN = null, // Return all documents ranked
-                MaxTokensPerDoc = attemptNumber > 1 ? DocumentTruncationTokens : null
             };
 
             var json = JsonSerializer.Serialize(requestPayload);
             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-            _logger.LogDebug("Sending rerank request (attempt {Attempt}) with {DocumentCount} documents",
-                attemptNumber, processedDocs.Count);
-
-            var response = await _httpClient.PostAsync("/v2/rerank", content, cancellationToken);
+            var response = await _httpClient.PostAsync("/v1/rerank", content, cancellationToken);
 
             if (response.IsSuccessStatusCode)
             {
@@ -130,13 +144,13 @@ public class RerankingService : IDisposable
         var attempt = 1;
         Exception? lastException = null;
 
-        while (attempt <= MaxRetries + 1) // MaxRetries = 2, so total attempts = 3
+        while (attempt <= _maxRetries + 1) // default 2, total attempts = 3
         {
             try
             {
                 return await operation(attempt);
             }
-            catch (HttpRequestException ex) when (IsRetryableError(ex) && attempt <= MaxRetries)
+            catch (HttpRequestException ex) when (IsRetryableError(ex) && attempt <= _maxRetries)
             {
                 lastException = ex;
                 attempt++;
@@ -144,60 +158,24 @@ public class RerankingService : IDisposable
                 // Linear backoff: 500ms × retryCount
                 var delay = TimeSpan.FromMilliseconds(500 * (attempt - 1));
                 _logger.LogWarning("Rerank request failed (attempt {Attempt}/{MaxAttempts}), retrying in {Delay}ms. Error: {Error}",
-                    attempt - 1, MaxRetries + 1, delay.TotalMilliseconds, ex.Message);
+                    attempt - 1, _maxRetries + 1, delay.TotalMilliseconds, ex.Message);
 
                 await Task.Delay(delay, cancellationToken);
             }
-            catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException && attempt <= MaxRetries)
+            catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException && attempt <= _maxRetries)
             {
                 lastException = ex;
                 attempt++;
 
                 var delay = TimeSpan.FromMilliseconds(500 * (attempt - 1));
                 _logger.LogWarning("Rerank request timed out (attempt {Attempt}/{MaxAttempts}), retrying in {Delay}ms",
-                    attempt - 1, MaxRetries + 1, delay.TotalMilliseconds);
+                    attempt - 1, _maxRetries + 1, delay.TotalMilliseconds);
 
                 await Task.Delay(delay, cancellationToken);
             }
         }
 
         throw lastException ?? new InvalidOperationException("Operation failed after all retry attempts");
-    }
-
-    /// <summary>
-    /// Truncates documents to approximately 1024 tokens for retry attempts
-    /// </summary>
-    /// <param name="documents">The original documents</param>
-    /// <returns>Truncated documents</returns>
-    private List<string> TruncateDocuments(IList<string> documents)
-    {
-        var truncated = new List<string>();
-        
-        foreach (var doc in documents)
-        {
-            if (doc.Length <= DocumentTruncationTokens * 4) // Rough approximation: 1 token ≈ 4 characters
-            {
-                truncated.Add(doc);
-            }
-            else
-            {
-                // Truncate at word boundary if possible
-                var maxLength = DocumentTruncationTokens * 4;
-                var truncatedText = doc.Substring(0, maxLength);
-                var lastSpaceIndex = truncatedText.LastIndexOf(' ');
-                
-                if (lastSpaceIndex > maxLength * 0.8) // Only use word boundary if it's not too early
-                {
-                    truncatedText = truncatedText.Substring(0, lastSpaceIndex);
-                }
-                
-                truncated.Add(truncatedText.Trim());
-                _logger.LogDebug("Truncated document from {OriginalLength} to {TruncatedLength} characters",
-                    doc.Length, truncatedText.Length);
-            }
-        }
-        
-        return truncated;
     }
 
     /// <summary>
@@ -288,5 +266,53 @@ public class RerankingService : IDisposable
         {
             _httpClient?.Dispose();
         }
+    }
+
+    public async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
+    {
+        var rankedDocuments = await RerankAsync(request.Query, request.Documents, cancellationToken);
+        
+        return new RerankResponse
+        {
+            Results = rankedDocuments.Select(doc => new RerankResult
+            {
+                Index = doc.Index,
+                RelevanceScore = doc.Score
+            }).ToImmutableList()
+        };
+    }
+
+    public async Task<RerankResponse> RerankAsync(string query, IReadOnlyList<string> documents, string model, int? topK = null, CancellationToken cancellationToken = default)
+    {
+        var documentList = documents.ToList();
+        if (documentList.Count == 0)
+        {
+            return new RerankResponse
+            {
+                Results = ImmutableList<RerankResult>.Empty
+            };
+        }
+
+        var rankedDocuments = await RerankAsync(query, documentList, cancellationToken);
+        
+        // Apply topK filtering if specified
+        if (topK.HasValue && topK.Value > 0)
+        {
+            rankedDocuments = rankedDocuments.Take(topK.Value).ToList();
+        }
+        
+        return new RerankResponse
+        {
+            Results = rankedDocuments.Select(doc => new RerankResult
+            {
+                Index = doc.Index,
+                RelevanceScore = doc.Score
+            }).ToImmutableList()
+        };
+    }
+
+    public Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult<IReadOnlyList<string>>(new List<string> { _model });
     }
 } 

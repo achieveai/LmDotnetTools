@@ -9,6 +9,13 @@
 *.pyd
 __pycache__
 .venv/
+
+# NuGet API Keys and sensitive configuration
+**/nuget-api-key.txt
+**/api-keys.txt
+**/.nuget-api-key
+**/secrets.ps1
+**/secrets.json
 .vs/
 .suo
 .csproj.user

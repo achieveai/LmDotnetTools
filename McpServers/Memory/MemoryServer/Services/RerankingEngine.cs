@@ -13,7 +13,7 @@ namespace MemoryServer.Services;
 public class RerankingEngine : IRerankingEngine
 {
     private readonly ILogger<RerankingEngine> _logger;
-    private readonly RerankingOptions _options;
+    private readonly MemoryServer.Models.RerankingOptions _options;
     private readonly RerankingService? _rerankingService;
 
     public RerankingEngine(
@@ -28,10 +28,14 @@ public class RerankingEngine : IRerankingEngine
         {
             try
             {
-                _rerankingService = new RerankingService(
-                    _options.RerankingEndpoint,
-                    _options.RerankingModel,
-                    _options.ApiKey);
+                var serviceOptions = new AchieveAi.LmDotnetTools.LmEmbeddings.Models.RerankingOptions
+                {
+                    ApiKey = _options.ApiKey,
+                    BaseUrl = _options.RerankingEndpoint,
+                    DefaultModel = _options.RerankingModel
+                };
+
+                _rerankingService = new RerankingService(serviceOptions);
                 
                 _logger.LogInformation("RerankingEngine initialized with {Model} model", _options.RerankingModel);
             }
@@ -57,7 +61,7 @@ public class RerankingEngine : IRerankingEngine
         string query,
         List<UnifiedSearchResult> results,
         SessionContext sessionContext,
-        RerankingOptions? options = null,
+        MemoryServer.Models.RerankingOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -248,7 +252,7 @@ public class RerankingEngine : IRerankingEngine
         return sortedResults;
     }
 
-    private void ApplyMultiDimensionalScoring(UnifiedSearchResult result, RerankingOptions options)
+    private void ApplyMultiDimensionalScoring(UnifiedSearchResult result, MemoryServer.Models.RerankingOptions options)
     {
         var originalScore = result.Score;
         var newScore = originalScore;
