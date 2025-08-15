@@ -313,8 +313,8 @@ public record FunctionContent(
 }
 
 public record FunctionCall(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("arguments")] string Arguments)
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("arguments")] string? Arguments)
 { }
 
 [JsonConverter(typeof(JsonPropertyNameEnumConverter<RoleEnum>))]
