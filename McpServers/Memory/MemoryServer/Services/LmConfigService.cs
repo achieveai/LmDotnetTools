@@ -14,6 +14,8 @@ using MemoryServer.Utils;
 using System.Text.Json;
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
+using RerankingOptions = AchieveAi.LmDotnetTools.LmEmbeddings.Models.RerankingOptions;
+using EmbeddingOptions = AchieveAi.LmDotnetTools.LmEmbeddings.Models.EmbeddingOptions;
 
 namespace MemoryServer.Services;
 
@@ -22,6 +24,10 @@ namespace MemoryServer.Services;
 /// </summary>
 public class LmConfigService : ILmConfigService
 {
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
     private readonly AppConfig _appConfig;
     private readonly MemoryServerOptions _memoryOptions;
     private readonly IServiceProvider _serviceProvider;
@@ -169,17 +175,26 @@ public class LmConfigService : ILmConfigService
         var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_API_KEY");
         var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_BASE_URL", null, "https://api.openai.com/v1");
         var model = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_MODEL", null, "text-embedding-3-small");
+
+        var httpClientFactory = _serviceProvider.GetRequiredService<IHttpClientFactory>();
+        var httpClient = httpClientFactory.CreateClient("LmDotNet.Reranking");
+        var logger = _serviceProvider.GetRequiredService<ILogger<OpenAIEmbeddingService>>();
         
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
         {
             throw new InvalidOperationException("Embedding API key not configured. Set EMBEDDING_API_KEY environment variable.");
         }
 
-        var embeddingService = CreateOpenAIEmbeddingService(apiKey, baseUrl, model);
+        var embeddingService = new OpenAIEmbeddingService(logger, httpClient, new EmbeddingOptions
+        {
+            ApiKey = apiKey,
+            BaseUrl = baseUrl,
+            DefaultModel = model
+        });
 
         _logger.LogInformation("Created embedding service using model {Model} at {BaseUrl}", model, baseUrl);
 
-        return Task.FromResult(embeddingService);
+        return Task.FromResult(embeddingService as IEmbeddingService);
     }
 
     /// <summary>
@@ -202,7 +217,7 @@ public class LmConfigService : ILmConfigService
             DefaultModel = model
         };
 
-        return new RerankingService(options, logger, httpClient);
+        return Task.FromResult(new RerankingService(options, logger, httpClient) as IRerankService);
     }
 
     /// <summary>
@@ -339,10 +354,7 @@ public class LmConfigService : ILmConfigService
         try
         {
             var configJson = File.ReadAllText(configPath);
-            var config = JsonSerializer.Deserialize<AppConfig>(configJson, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            var config = JsonSerializer.Deserialize<AppConfig>(configJson, _jsonOptions);
 
             if (config?.Models?.Any() != true)
             {
@@ -372,10 +384,7 @@ public class LmConfigService : ILmConfigService
             return null;
         }
 
-        var config = JsonSerializer.Deserialize<AppConfig>(configJson, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        });
+        var config = JsonSerializer.Deserialize<AppConfig>(configJson, _jsonOptions);
 
         if (config?.Models?.Any() != true)
         {
