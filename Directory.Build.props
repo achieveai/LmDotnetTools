@@ -14,7 +14,7 @@
     <!-- Centralized Versioning - UPDATE ONLY THIS SECTION FOR NEW RELEASES -->
     <MajorVersion>1</MajorVersion>
     <MinorVersion>0</MinorVersion>
-    <PatchVersion>5</PatchVersion>
+    <PatchVersion>6</PatchVersion>
     <PreReleaseLabel></PreReleaseLabel> <!-- Use values like 'alpha', 'beta', 'rc.1' or leave empty for stable -->
     
     <!-- Computed Version Properties (DO NOT MODIFY) -->
