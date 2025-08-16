@@ -21,7 +21,7 @@ public class FunctionCallMiddlewareFactory : IFunctionCallMiddlewareFactory
     {
         var registry = CreateRegistry();
         configure?.Invoke(registry);
-        var middleware = registry.BuildMiddleware(name, resultCallback);
+        var middleware = registry.BuildMiddleware(name, null, resultCallback);
         return middleware;
     }
 
