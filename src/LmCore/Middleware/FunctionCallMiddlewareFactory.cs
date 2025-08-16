@@ -14,9 +14,15 @@ public class FunctionCallMiddlewareFactory : IFunctionCallMiddlewareFactory
 
     public FunctionCallMiddleware Create(string? name = null, Action<FunctionRegistry>? configure = null)
     {
+        return Create(null, name, configure);
+    }
+    
+    public FunctionCallMiddleware Create(IToolResultCallback? resultCallback, string? name = null, Action<FunctionRegistry>? configure = null)
+    {
         var registry = CreateRegistry();
         configure?.Invoke(registry);
-        return registry.BuildMiddleware(name);
+        var middleware = registry.BuildMiddleware(name, resultCallback);
+        return middleware;
     }
 
     public FunctionRegistry CreateRegistry()

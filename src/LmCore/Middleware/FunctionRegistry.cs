@@ -102,10 +102,10 @@ public class FunctionRegistry
     /// <summary>
     /// Build and create FunctionCallMiddleware directly
     /// </summary>
-    public FunctionCallMiddleware BuildMiddleware(string? name = null)
+    public FunctionCallMiddleware BuildMiddleware(string? name = null, IToolResultCallback? resultCallback = null)
     {
         var (contracts, handlers) = Build();
-        return new FunctionCallMiddleware(contracts, handlers, name);
+        return new FunctionCallMiddleware(contracts, handlers, name, resultCallback: resultCallback);
     }
 
     private FunctionDescriptor ResolveConflict(string key, List<FunctionDescriptor> candidates)
