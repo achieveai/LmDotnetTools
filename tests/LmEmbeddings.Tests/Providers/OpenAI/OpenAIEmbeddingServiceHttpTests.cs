@@ -43,12 +43,7 @@ public class OpenAIEmbeddingServiceHttpTests
             BaseAddress = new Uri("https://api.openai.com")
         };
 
-        var options = new OpenAIEmbeddingOptions
-        {
-            ApiKey = "test-api-key",
-            BaseUrl = "https://api.openai.com",
-            DefaultModel = "text-embedding-3-small"
-        };
+        var options = OpenAITestHelper.CreateOpenAIOptions();
 
         var service = new OpenAIEmbeddingService(_logger, httpClient, options);
 
@@ -97,12 +92,7 @@ public class OpenAIEmbeddingServiceHttpTests
             BaseAddress = new Uri("https://api.openai.com")
         };
 
-        var options = new OpenAIEmbeddingOptions
-        {
-            ApiKey = "test-api-key",
-            BaseUrl = "https://api.openai.com",
-            DefaultModel = "text-embedding-3-small"
-        };
+        var options = OpenAITestHelper.CreateOpenAIOptions();
 
         var service = new OpenAIEmbeddingService(_logger, httpClient, options);
 
@@ -137,12 +127,7 @@ public class OpenAIEmbeddingServiceHttpTests
             BaseAddress = new Uri("https://api.openai.com")
         };
 
-        var options = new OpenAIEmbeddingOptions
-        {
-            ApiKey = "test-api-key",
-            BaseUrl = "https://api.openai.com",
-            DefaultModel = "text-embedding-3-small"
-        };
+        var options = OpenAITestHelper.CreateOpenAIOptions();
 
         var service = new OpenAIEmbeddingService(_logger, httpClient, options);
 
@@ -191,12 +176,7 @@ public class OpenAIEmbeddingServiceHttpTests
             BaseAddress = new Uri("https://api.openai.com")
         };
 
-        var options = new OpenAIEmbeddingOptions
-        {
-            ApiKey = "test-api-key",
-            BaseUrl = "https://api.openai.com",
-            DefaultModel = "text-embedding-3-small"
-        };
+        var options = OpenAITestHelper.CreateOpenAIOptions();
 
         var service = new OpenAIEmbeddingService(_logger, httpClient, options);
 
@@ -261,12 +241,7 @@ public class OpenAIEmbeddingServiceHttpTests
         });
 
         var httpClient = new HttpClient(fakeHandler);
-        var options = new OpenAIEmbeddingOptions
-        {
-            ApiKey = "test-api-key",
-            BaseUrl = "https://api.openai.com",
-            DefaultModel = "text-embedding-3-small"
-        };
+        var options = OpenAITestHelper.CreateOpenAIOptions();
         var service = new OpenAIEmbeddingService(_logger, httpClient, options);
 
         // Act - This should fail because we're returning empty data, but we only care about the request

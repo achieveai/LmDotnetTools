@@ -18,12 +18,15 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     private readonly IDictionary<string, Func<string, Task<string>>> _functionMap;
 
     private readonly ILogger<FunctionCallMiddleware> _logger;
+    
+    private IToolResultCallback? _resultCallback;
 
     public FunctionCallMiddleware(
         IEnumerable<FunctionContract> functions,
         IDictionary<string, Func<string, Task<string>>> functionMap,
         string? name = null,
-        ILogger<FunctionCallMiddleware>? logger = null)
+        ILogger<FunctionCallMiddleware>? logger = null,
+        IToolResultCallback? resultCallback = null)
     {
         _functions = functions ?? throw new ArgumentNullException(nameof(functions));
         _logger = logger ?? NullLogger<FunctionCallMiddleware>.Instance;
@@ -54,9 +57,21 @@ public class FunctionCallMiddleware : IStreamingMiddleware
 
         Name = name ?? nameof(FunctionCallMiddleware);
         _functionMap = functionMap;
+        _resultCallback = resultCallback;
     }
 
     public string? Name { get; }
+    
+    /// <summary>
+    /// Sets or updates the tool result callback for this middleware instance.
+    /// </summary>
+    /// <param name="callback">The callback to notify when tool results are available</param>
+    /// <returns>This middleware instance for chaining</returns>
+    public FunctionCallMiddleware WithResultCallback(IToolResultCallback? callback)
+    {
+        _resultCallback = callback;
+        return this;
+    }
 
     public async Task<IEnumerable<IMessage>> InvokeAsync(MiddlewareContext context, IAgent agent, CancellationToken cancellationToken = default)
     {
@@ -73,7 +88,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         var (hasPendingToolCalls, toolCalls, options) = PrepareInvocation(context);
         if (hasPendingToolCalls)
         {
-            var result = await ExecuteToolCallsAsync(toolCalls!, agent);
+            var result = await ExecuteToolCallsAsync(toolCalls!, agent, cancellationToken);
             var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
             
             if (_logger.IsEnabled(LogLevel.Information))
@@ -146,7 +161,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     responseToolCalls.Count());
 
                 // Process the tool calls for this message
-                var result = await ExecuteToolCallsAsync(responseToolCalls, agent);
+                var result = await ExecuteToolCallsAsync(responseToolCalls, agent, cancellationToken);
                 var aggregateMessage = new ToolsCallAggregateMessage(responseToolCall!, result);
                 
                 _logger.LogDebug("Tool call aggregation: Created aggregate message with {ResultCount} results",
@@ -225,7 +240,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         var (hasPendingToolCalls, toolCalls, options) = PrepareInvocation(context);
         if (hasPendingToolCalls)
         {
-            var result = await ExecuteToolCallsAsync(toolCalls!, agent);
+            var result = await ExecuteToolCallsAsync(toolCalls!, agent, cancellationToken);
             
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -287,11 +302,17 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     /// <summary>
     /// Execute a single tool call and return the result
     /// </summary>
-    private async Task<ToolCallResult> ExecuteToolCallAsync(ToolCall toolCall)
+    private async Task<ToolCallResult> ExecuteToolCallAsync(ToolCall toolCall, CancellationToken cancellationToken = default)
     {
         var functionName = toolCall.FunctionName!;
         var functionArgs = toolCall.FunctionArgs!;
         var startTime = DateTime.UtcNow;
+        
+        // Notify callback that tool call is starting
+        if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
+        {
+            await _resultCallback.OnToolCallStartedAsync(toolCall.ToolCallId, functionName, functionArgs, cancellationToken);
+        }
 
         if (_functionMap.TryGetValue(functionName, out var func))
         {
@@ -303,7 +324,15 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 _logger.LogInformation("Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
                     functionName, duration, true);
                 
-                return new ToolCallResult(toolCall.ToolCallId, result);
+                var toolCallResult = new ToolCallResult(toolCall.ToolCallId, result);
+                
+                // Notify callback that result is available
+                if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
+                {
+                    await _resultCallback.OnToolResultAvailableAsync(toolCall.ToolCallId, toolCallResult, cancellationToken);
+                }
+                
+                return toolCallResult;
             }
             catch (Exception ex)
             {
@@ -315,8 +344,24 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 _logger.LogInformation("Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
                     functionName, duration, false);
                 
+                var errorMessage = $"Error executing function: {ex.Message}";
+                
+                // Notify callback about the error
+                if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
+                {
+                    await _resultCallback.OnToolCallErrorAsync(toolCall.ToolCallId, functionName, errorMessage, cancellationToken);
+                }
+                
                 // Handle exceptions during function execution
-                return new ToolCallResult(toolCall.ToolCallId, $"Error executing function: {ex.Message}");
+                var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage);
+                
+                // Still notify with result (containing error)
+                if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
+                {
+                    await _resultCallback.OnToolResultAvailableAsync(toolCall.ToolCallId, errorResult, cancellationToken);
+                }
+                
+                return errorResult;
             }
         }
         else
@@ -331,14 +376,28 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             _logger.LogInformation("Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
                 functionName, 0, false);
             
-            return new ToolCallResult(toolCall.ToolCallId, errorMessage);
+            // Notify callback about the error
+            if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
+            {
+                await _resultCallback.OnToolCallErrorAsync(toolCall.ToolCallId, functionName, errorMessage, cancellationToken);
+            }
+            
+            var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage);
+            
+            // Still notify with result (containing error)
+            if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
+            {
+                await _resultCallback.OnToolResultAvailableAsync(toolCall.ToolCallId, errorResult, cancellationToken);
+            }
+            
+            return errorResult;
         }
     }
 
     /// <summary>
     /// Execute multiple tool calls and return a message with results
     /// </summary>
-    private async Task<ToolsCallResultMessage> ExecuteToolCallsAsync(IEnumerable<ToolCall> toolCalls, IAgent agent)
+    private async Task<ToolsCallResultMessage> ExecuteToolCallsAsync(IEnumerable<ToolCall> toolCalls, IAgent agent, CancellationToken cancellationToken = default)
     {
         var toolCallResults = new List<ToolCallResult>();
         var toolCallCount = toolCalls.Count();
@@ -351,7 +410,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         {
             try
             {
-                var result = await ExecuteToolCallAsync(toolCall);
+                var result = await ExecuteToolCallAsync(toolCall, cancellationToken);
                 toolCallResults.Add(result);
             }
             catch (Exception ex)
@@ -549,7 +608,9 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
 
         // Start executing the tool call immediately and store the task
-        var task = ExecuteToolCallAsync(call);
+        // Note: We use CancellationToken.None here as we don't have access to the streaming cancellation token
+        // in this callback. This is acceptable as tool calls should complete regardless.
+        var task = ExecuteToolCallAsync(call, CancellationToken.None);
         _pendingToolCallResults[call.ToolCallId] = task;
     }
 
@@ -577,7 +638,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 else
                 {
                     // Execute the tool call now if it wasn't done already
-                    pendingToolCallTasks.Add(ExecuteToolCallAsync(toolCall));
+                    pendingToolCallTasks.Add(ExecuteToolCallAsync(toolCall, CancellationToken.None));
                 }
             }
 
@@ -668,7 +729,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                         toolCall.ToolCallId);
                     
                     // Execute the tool call now if it wasn't done already
-                    pendingToolCallTasks.Add(ExecuteToolCallAsync(toolCall));
+                    pendingToolCallTasks.Add(ExecuteToolCallAsync(toolCall, CancellationToken.None));
                 }
             }
         }

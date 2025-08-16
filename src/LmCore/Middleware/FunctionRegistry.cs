@@ -1,4 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
@@ -102,10 +103,18 @@ public class FunctionRegistry
     /// <summary>
     /// Build and create FunctionCallMiddleware directly
     /// </summary>
-    public FunctionCallMiddleware BuildMiddleware(string? name = null)
+    public FunctionCallMiddleware BuildMiddleware(
+        string? name = null,
+        ILogger<FunctionCallMiddleware>? logger = null,
+        IToolResultCallback? resultCallback = null)
     {
         var (contracts, handlers) = Build();
-        return new FunctionCallMiddleware(contracts, handlers, name);
+        return new FunctionCallMiddleware(
+            contracts,
+            handlers,
+            name,
+            logger: logger,
+            resultCallback: resultCallback);
     }
 
     private FunctionDescriptor ResolveConflict(string key, List<FunctionDescriptor> candidates)
