@@ -75,7 +75,7 @@ public class McpMiddleware : IStreamingMiddleware
         // Use NullLogger if no logger provided
         logger ??= NullLogger<McpMiddleware>.Instance;
 
-        logger.LogInformation("MCP client initialization started: ClientCount={ClientCount}, ClientIds={ClientIds}", 
+        logger.LogInformation("MCP client initialization started: ClientCount={ClientCount}, ClientIds={ClientIds}",
             mcpClients.Count, string.Join(", ", mcpClients.Keys));
 
         // Create function delegates map
@@ -87,7 +87,7 @@ public class McpMiddleware : IStreamingMiddleware
             functions = await ExtractFunctionContractsAsync(mcpClients, logger, cancellationToken);
         }
 
-        logger.LogInformation("MCP middleware initialized: FunctionCount={FunctionCount}, FunctionNames={FunctionNames}", 
+        logger.LogInformation("MCP middleware initialized: FunctionCount={FunctionCount}, FunctionNames={FunctionNames}",
             functions.Count(), string.Join(", ", functions.Select(f => f.Name)));
 
         // Create and return the middleware instance
@@ -108,7 +108,7 @@ public class McpMiddleware : IStreamingMiddleware
     {
         var functionMap = new Dictionary<string, Func<string, Task<string>>>();
 
-        logger.LogDebug("Creating function map: ClientCount={ClientCount}, ClientIds={ClientIds}", 
+        logger.LogDebug("Creating function map: ClientCount={ClientCount}, ClientIds={ClientIds}",
             mcpClients.Count, string.Join(", ", mcpClients.Keys));
 
         foreach (var kvp in mcpClients)
@@ -120,78 +120,80 @@ public class McpMiddleware : IStreamingMiddleware
             {
                 // Get available tools from this client asynchronously
                 var tools = await client.ListToolsAsync();
-                
-                logger.LogInformation("MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}", 
+
+                logger.LogInformation("MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}",
                     clientId, tools.Count, string.Join(", ", tools.Select(t => t.Name)));
 
-            foreach (var tool in tools)
-            {
-                var functionName = $"{kvp.Key}-{tool.Name}";
-                
-                logger.LogDebug("Mapping function to client: FunctionName={FunctionName}, ClientId={ClientId}, ToolName={ToolName}", 
-                    functionName, clientId, tool.Name);
-                
-                // Create a delegate that calls the appropriate MCP client
-                functionMap[functionName] = async (argsJson) =>
+                foreach (var tool in tools)
                 {
-                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                    try
+                    var sanitizedClientId = SanitizeToolName(kvp.Key);
+                    var sanitizedToolName = SanitizeToolName(tool.Name);
+                    var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
+
+                    logger.LogDebug("Mapping function to client: FunctionName={FunctionName}, ClientId={ClientId}, ToolName={ToolName}, SanitizedName={SanitizedName}",
+                        functionName, clientId, tool.Name, functionName);
+
+                    // Create a delegate that calls the appropriate MCP client
+                    functionMap[functionName] = async (argsJson) =>
                     {
-                        logger.LogDebug("Tool argument parsing: ToolName={ToolName}, ClientId={ClientId}, ArgsJson={ArgsJson}", 
-                            tool.Name, clientId, argsJson);
-                        
-                        // Parse arguments from JSON
-                        Dictionary<string, object?> args;
+                        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                         try
                         {
-                            args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson)
-                                ?? new Dictionary<string, object?>();
-                        }
-                        catch (JsonException jsonEx)
-                        {
-                            logger.LogError(jsonEx, "JSON parsing failed for tool arguments: ToolName={ToolName}, ClientId={ClientId}, InputData={InputData}", 
+                            logger.LogDebug("Tool argument parsing: ToolName={ToolName}, ClientId={ClientId}, ArgsJson={ArgsJson}",
                                 tool.Name, clientId, argsJson);
-                            throw;
+
+                            // Parse arguments from JSON
+                            Dictionary<string, object?> args;
+                            try
+                            {
+                                args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson)
+                                    ?? new Dictionary<string, object?>();
+                            }
+                            catch (JsonException jsonEx)
+                            {
+                                logger.LogError(jsonEx, "JSON parsing failed for tool arguments: ToolName={ToolName}, ClientId={ClientId}, InputData={InputData}",
+                                    tool.Name, clientId, argsJson);
+                                throw;
+                            }
+
+                            logger.LogDebug("Tool arguments parsed: ToolName={ToolName}, ArgumentCount={ArgumentCount}, ArgumentKeys={ArgumentKeys}",
+                                tool.Name, args.Count, string.Join(", ", args.Keys));
+
+                            // Call the MCP tool
+                            var response = await client.CallToolAsync(tool.Name, args);
+
+                            logger.LogDebug("Tool response received: ToolName={ToolName}, ContentCount={ContentCount}",
+                                tool.Name, response.Content?.Count ?? 0);
+
+                            // Extract and format text response
+                            string result = string.Join(Environment.NewLine,
+                                response.Content != null
+                                    ? response.Content
+                                        .Where(c => c?.Type == "text")
+                                        .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
+                                    : Array.Empty<string>());
+
+                            logger.LogDebug("Tool response formatted: ToolName={ToolName}, ResultLength={ResultLength}",
+                                tool.Name, result.Length);
+
+                            stopwatch.Stop();
+                            logger.LogInformation("MCP tool execution completed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Success={Success}, ResultLength={ResultLength}",
+                                tool.Name, clientId, stopwatch.ElapsedMilliseconds, true, result.Length);
+
+                            return result;
                         }
+                        catch (Exception ex)
+                        {
+                            stopwatch.Stop();
+                            logger.LogDebug("Tool execution exception details: ToolName={ToolName}, ClientId={ClientId}, ExceptionType={ExceptionType}",
+                                tool.Name, clientId, ex.GetType().Name);
+                            logger.LogError(ex, "MCP tool execution failed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Arguments={Arguments}",
+                                tool.Name, clientId, stopwatch.ElapsedMilliseconds, argsJson);
 
-                        logger.LogDebug("Tool arguments parsed: ToolName={ToolName}, ArgumentCount={ArgumentCount}, ArgumentKeys={ArgumentKeys}", 
-                            tool.Name, args.Count, string.Join(", ", args.Keys));
-
-                        // Call the MCP tool
-                        var response = await client.CallToolAsync(tool.Name, args);
-
-                        logger.LogDebug("Tool response received: ToolName={ToolName}, ContentCount={ContentCount}", 
-                            tool.Name, response.Content?.Count ?? 0);
-
-                        // Extract and format text response
-                        string result = string.Join(Environment.NewLine,
-                            response.Content != null
-                                ? response.Content
-                                    .Where(c => c?.Type == "text")
-                                    .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
-                                : Array.Empty<string>());
-
-                        logger.LogDebug("Tool response formatted: ToolName={ToolName}, ResultLength={ResultLength}", 
-                            tool.Name, result.Length);
-
-                        stopwatch.Stop();
-                        logger.LogInformation("MCP tool execution completed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Success={Success}, ResultLength={ResultLength}", 
-                            tool.Name, clientId, stopwatch.ElapsedMilliseconds, true, result.Length);
-
-                        return result;
-                    }
-                    catch (Exception ex)
-                    {
-                        stopwatch.Stop();
-                        logger.LogDebug("Tool execution exception details: ToolName={ToolName}, ClientId={ClientId}, ExceptionType={ExceptionType}", 
-                            tool.Name, clientId, ex.GetType().Name);
-                        logger.LogError(ex, "MCP tool execution failed: ToolName={ToolName}, ClientId={ClientId}, Duration={Duration}ms, Arguments={Arguments}", 
-                            tool.Name, clientId, stopwatch.ElapsedMilliseconds, argsJson);
-                        
-                        return $"Error executing MCP tool {tool.Name}: {ex.Message}";
-                    }
-                };
-            }
+                            return $"Error executing MCP tool {tool.Name}: {ex.Message}";
+                        }
+                    };
+                }
             }
             catch (Exception ex)
             {
@@ -230,13 +232,13 @@ public class McpMiddleware : IStreamingMiddleware
                     {
                         var contract = ConvertToFunctionContract(kvp.Key, tool, logger);
                         functionContracts.Add(contract);
-                        
-                        logger.LogInformation("Function contract extracted: FunctionName={FunctionName}, ClientId={ClientId}, ParameterCount={ParameterCount}", 
+
+                        logger.LogInformation("Function contract extracted: FunctionName={FunctionName}, ClientId={ClientId}, ParameterCount={ParameterCount}",
                             contract.Name, kvp.Key, contract.Parameters?.Count() ?? 0);
                     }
                     catch (Exception ex)
                     {
-                        logger.LogError(ex, "Function contract extraction failed for tool: ClientId={ClientId}, ToolName={ToolName}", 
+                        logger.LogError(ex, "Function contract extraction failed for tool: ClientId={ClientId}, ToolName={ToolName}",
                             kvp.Key, tool.Name);
                         // Continue with other tools even if one fails
                         continue;
@@ -255,6 +257,29 @@ public class McpMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
+    /// Sanitizes a tool name to comply with OpenAI's function name requirements
+    /// OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
+    /// </summary>
+    private static string SanitizeToolName(string toolName)
+    {
+        if (string.IsNullOrEmpty(toolName))
+            return "unknown_tool";
+
+        // Replace invalid characters with underscores
+        var sanitized = System.Text.RegularExpressions.Regex.Replace(toolName, @"[^a-zA-Z0-9_-]", "_");
+
+        // Ensure it doesn't start with a number (optional, but good practice)
+        if (char.IsDigit(sanitized[0]))
+            sanitized = "_" + sanitized;
+
+        // Ensure it's not empty after sanitization
+        if (string.IsNullOrEmpty(sanitized))
+            sanitized = "sanitized_tool";
+
+        return sanitized;
+    }
+
+    /// <summary>
     /// Converts an MCP client tool to a function contract
     /// </summary>
     /// <param name="clientName">The client name</param>
@@ -266,9 +291,12 @@ public class McpMiddleware : IStreamingMiddleware
         McpClientTool tool,
         ILogger<McpMiddleware>? logger = null)
     {
+        var sanitizedToolName = SanitizeToolName(tool.Name);
+        var functionName = $"{SanitizeToolName(clientName)}-{sanitizedToolName}";
+
         return new FunctionContract
         {
-            Name = $"{clientName}-{tool.Name}",
+            Name = functionName,
             Description = tool.Description,
             Parameters = ExtractParametersFromSchema(tool.JsonSchema, logger)
         };
@@ -301,9 +329,9 @@ public class McpMiddleware : IStreamingMiddleware
                 schemaElement.TryGetProperty("properties", out var propertiesElement) &&
                 propertiesElement.ValueKind == JsonValueKind.Object)
             {
-                logger?.LogDebug("JSON schema processing: Found properties object with {PropertyCount} properties", 
+                logger?.LogDebug("JSON schema processing: Found properties object with {PropertyCount} properties",
                     propertiesElement.EnumerateObject().Count());
-                
+
                 // Process each property as a parameter
                 foreach (var property in propertiesElement.EnumerateObject())
                 {
@@ -336,9 +364,9 @@ public class McpMiddleware : IStreamingMiddleware
                                        item.GetString() == paramName);
                     }
 
-                    logger?.LogDebug("Parameter extracted from schema: Name={ParameterName}, Type={ParameterType}, Required={IsRequired}", 
+                    logger?.LogDebug("Parameter extracted from schema: Name={ParameterName}, Type={ParameterType}, Required={IsRequired}",
                         paramName, paramType.Name, isRequired);
-                    
+
                     parameters.Add(new FunctionParameterContract
                     {
                         Name = paramName,
@@ -352,7 +380,7 @@ public class McpMiddleware : IStreamingMiddleware
         catch (Exception ex)
         {
             logger?.LogDebug("JSON schema processing failed: Error={Error}", ex.Message);
-            logger?.LogError(ex, "Function contract extraction failed: SchemaType={SchemaType}, SchemaContent={SchemaContent}", 
+            logger?.LogError(ex, "Function contract extraction failed: SchemaType={SchemaType}, SchemaContent={SchemaContent}",
                 inputSchema?.GetType().Name ?? "null", JsonSerializer.Serialize(inputSchema));
             // Log the error or handle it as needed
             Console.Error.WriteLine($"Failed to extract parameters from input schema: {ex.Message}");

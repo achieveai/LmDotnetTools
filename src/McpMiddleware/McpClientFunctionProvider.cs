@@ -183,10 +183,12 @@ public class McpClientFunctionProvider : IFunctionProvider
 
         foreach (var tool in tools)
         {
-          var functionName = $"{kvp.Key}-{tool.Name}";
+          var sanitizedClientId = SanitizeToolName(kvp.Key);
+          var sanitizedToolName = SanitizeToolName(tool.Name);
+          var functionName = $"{sanitizedClientId}-{sanitizedToolName}";
 
-          logger.LogDebug("Mapping function to client: FunctionName={FunctionName}, ClientId={ClientId}, ToolName={ToolName}",
-            functionName, clientId, tool.Name);
+          logger.LogDebug("Mapping function to client: FunctionName={FunctionName}, ClientId={ClientId}, ToolName={ToolName}, SanitizedName={SanitizedName}",
+            functionName, clientId, tool.Name, functionName);
 
           // Create a delegate that calls the appropriate MCP client
           functionMap[functionName] = async (argsJson) =>
@@ -262,6 +264,29 @@ public class McpClientFunctionProvider : IFunctionProvider
   }
 
   /// <summary>
+  /// Sanitizes a tool name to comply with OpenAI's function name requirements
+  /// OpenAI requires function names to match pattern: ^[a-zA-Z0-9_-]+$
+  /// </summary>
+  private static string SanitizeToolName(string toolName)
+  {
+    if (string.IsNullOrEmpty(toolName))
+      return "unknown_tool";
+
+    // Replace invalid characters with underscores
+    var sanitized = System.Text.RegularExpressions.Regex.Replace(toolName, @"[^a-zA-Z0-9_-]", "_");
+
+    // Ensure it doesn't start with a number (optional, but good practice)
+    if (char.IsDigit(sanitized[0]))
+      sanitized = "_" + sanitized;
+
+    // Ensure it's not empty after sanitization
+    if (string.IsNullOrEmpty(sanitized))
+      sanitized = "sanitized_tool";
+
+    return sanitized;
+  }
+
+  /// <summary>
   /// Converts an MCP client tool to a function contract
   /// (Reused from McpMiddleware)
   /// </summary>
@@ -270,9 +295,12 @@ public class McpClientFunctionProvider : IFunctionProvider
     McpClientTool tool,
     ILogger<McpClientFunctionProvider>? logger = null)
   {
+    var sanitizedToolName = SanitizeToolName(tool.Name);
+    var functionName = $"{SanitizeToolName(clientName)}-{sanitizedToolName}";
+
     return new FunctionContract
     {
-      Name = $"{clientName}-{tool.Name}",
+      Name = functionName,
       Description = tool.Description,
       Parameters = ExtractParametersFromSchema(tool.JsonSchema, logger)
     };
