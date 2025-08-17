@@ -143,7 +143,7 @@ public static class Program
         });
 
         var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer, toDoMCPServer, rustMCPSystem };
-        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "to-do", "rust-mcp" };
+        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "to-do", "fs" };
 
         var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
 
@@ -187,6 +187,7 @@ public static class Program
             var middlewareFactory = serviceProvider.GetRequiredService<IFunctionCallMiddlewareFactory>();
             var functionCallMiddleware = middlewareFactory.Create("Combined-Functions");
 
+
             // Create other middleware components
             var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
             var jsonFragmentUpdateMiddleware = new JsonFragmentUpdateMiddleware();
@@ -200,8 +201,8 @@ public static class Program
 
             var options = new GenerateReplyOptions
             {
-                ModelId = "openai/gpt-oss-120b", // "x-ai/grok-3-mini-beta", "qwen/qwen3-235b-a22b-thinking-2507", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
-                                                                // ModelId = "meta-llama/llama-4-maverick",
+                ModelId = "openai/gpt-5-mini", // "x-ai/grok-3-mini-beta", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
+                                               // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
                 MaxToken = 4096 * 2,
                 ExtraProperties = new Dictionary<string, object?>()
