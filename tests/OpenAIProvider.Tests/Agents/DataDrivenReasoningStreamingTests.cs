@@ -78,9 +78,9 @@ public class DataDrivenReasoningStreamingTests
 
         // Raw streaming should have reasoning messages (pattern varies by model)
         var reasoningMessages = response.OfType<ReasoningMessage>().ToList();
-        Assert.True(reasoningMessages.Count >= 1, 
+        Assert.True(reasoningMessages.Count >= 1,
             $"Expected at least one reasoning message in raw streaming, got {reasoningMessages.Count}");
-        
+
         // Should not contain consolidated text messages yet
         Assert.False(response.OfType<TextMessage>().Any(),
             "Raw streaming should not contain consolidated TextMessage");
@@ -88,7 +88,7 @@ public class DataDrivenReasoningStreamingTests
         Debug.WriteLine($"Raw streaming test for {testName}: {response.Count} messages, " +
             $"{reasoningMessages.Count} reasoning messages, " +
             $"{response.OfType<TextUpdateMessage>().Count()} text updates");
-        
+
         // Log reasoning message details for debugging
         foreach (var reasoning in reasoningMessages.Take(3))
         {
@@ -145,7 +145,7 @@ public class DataDrivenReasoningStreamingTests
         // Should have some reasoning and text messages
         var reasoningMessages = response.OfType<ReasoningMessage>().ToList();
         var textMessages = response.OfType<TextMessage>().ToList();
-        
+
         Assert.True(reasoningMessages.Any(),
             "Expected at least one ReasoningMessage in joined streaming response");
         Assert.True(textMessages.Any(),
@@ -198,7 +198,7 @@ public class DataDrivenReasoningStreamingTests
         // Get the raw streaming response
         var streamingResponseAsync = await agent.GenerateReplyStreamingAsync(messages, options);
         var streamingResponse = new List<IMessage>();
-        
+
         await foreach (var message in streamingResponseAsync)
         {
             streamingResponse.Add(message);
@@ -206,33 +206,33 @@ public class DataDrivenReasoningStreamingTests
 
         // Validate that filtering is working
         Assert.True(streamingResponse.Count > 0, "Should have some messages");
-        
+
         // Check that we don't have excessive empty text updates
         var emptyTextUpdates = streamingResponse.OfType<TextUpdateMessage>()
             .Where(t => string.IsNullOrEmpty(t.Text))
             .Count();
-        
+
         Debug.WriteLine($"Empty text updates found: {emptyTextUpdates}");
         Assert.True(emptyTextUpdates < 10, $"Should not have many empty text updates, found {emptyTextUpdates}");
-        
+
         // Check that we don't have excessive zero-token usage messages
         var zeroTokenUsageMessages = streamingResponse.OfType<UsageMessage>()
             .Where(u => u.Usage.PromptTokens == 0 && u.Usage.CompletionTokens == 0 && u.Usage.TotalTokens == 0)
             .Count();
-        
+
         Debug.WriteLine($"Zero-token usage messages found: {zeroTokenUsageMessages}");
         Assert.True(zeroTokenUsageMessages <= 1, $"Should have at most 1 zero-token usage message, found {zeroTokenUsageMessages}");
-        
+
         // Check that reasoning messages are meaningful (not tiny fragments)
         var reasoningMessages = streamingResponse.OfType<ReasoningMessage>().ToList();
         var tinyReasoningMessages = reasoningMessages.Where(r => r.Reasoning.Length < 10).Count();
-        
+
         Debug.WriteLine($"Reasoning messages: {reasoningMessages.Count}, tiny fragments: {tinyReasoningMessages}");
-        
+
         // Total message count should be reasonable (not thousands)
         Debug.WriteLine($"Total messages: {streamingResponse.Count}");
         Assert.True(streamingResponse.Count < 1000, $"Message count should be reasonable, found {streamingResponse.Count}");
-        
+
         // Debug: Show the last few messages
         var lastMessages = streamingResponse.TakeLast(5).ToList();
         Debug.WriteLine("Last 5 messages:");
@@ -241,7 +241,7 @@ public class DataDrivenReasoningStreamingTests
             var msg = lastMessages[i];
             Debug.WriteLine($"  [{i}] {msg.GetType().Name}: {msg}");
         }
-        
+
         // Check if we have any usage messages at all
         var allUsageMessages = streamingResponse.OfType<UsageMessage>().ToList();
         Debug.WriteLine($"Total usage messages: {allUsageMessages.Count}");
@@ -261,10 +261,10 @@ public class DataDrivenReasoningStreamingTests
         var mgr = new ProviderTestDataManager();
         var allCases = mgr.GetTestCaseNames(ProviderType.OpenAI).ToList();
         var streamingCases = allCases.Where(n => n.EndsWith("Streaming")).ToList();
-        
+
         Debug.WriteLine($"All test cases: {string.Join(", ", allCases)}");
         Debug.WriteLine($"Streaming test cases: {string.Join(", ", streamingCases)}");
-        
+
         Assert.True(streamingCases.Count > 0, $"Expected streaming test cases, but found: {string.Join(", ", allCases)}");
         Assert.Contains("BasicReasoningStreaming", streamingCases);
         Assert.Contains("O4MiniReasoningStreaming", streamingCases);
@@ -365,4 +365,4 @@ public class DataDrivenReasoningStreamingTests
     private static string GetApiBaseUrlFromEnv() => EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", new[] { "LLM_API_BASE_URL" }, "https://api.openai.com/v1");
 
     #endregion
-} 
+}

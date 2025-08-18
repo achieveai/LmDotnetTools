@@ -8,11 +8,76 @@ using AchieveAi.LmDotnetTools.Misc.Extensions;
 using AchieveAi.LmDotnetTools.Misc.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.McpMiddleware;
+using AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
+using AchieveAi.LmDotnetTools.LmCore.Extensions;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using ModelContextProtocol.Client;
+using System.ComponentModel;
+using AchieveAi.LmDotnetTools.LmCore.Models;
+using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
+
+/// <summary>
+/// Custom function provider for the AskUser function
+/// </summary>
+public class CustomFunctionProvider : IFunctionProvider
+{
+    public string ProviderName => "Custom";
+    public int Priority => 50; // Higher priority than MCP functions
+
+    public IEnumerable<FunctionDescriptor> GetFunctions()
+    {
+        var askUserContract = new FunctionContract
+        {
+            Name = "AskUser",
+            Description = "Ask the user a question and return the answer. Use this tool "
+                + "to ask the user for clarifications or to provide more information, this is "
+                + "important because you will need to continue work after the user's "
+                + "response.",
+            Parameters = new[]
+            {
+                new FunctionParameterContract
+                {
+                    Name = "question",
+                    ParameterType = new JsonSchemaObject
+                    {
+                        Type = "string",
+                    },
+                    Description = "The question to ask the user.",
+                    IsRequired = true
+                },
+                new FunctionParameterContract
+                {
+                    Name = "options",
+                    ParameterType = JsonSchemaObject.StringArray(
+                        description: "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
+                        itemDescription: "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'."
+                    ),
+                    Description = "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
+                    IsRequired = true
+                }
+            }.ToList()
+        };
+
+        var askUserHandler = async (string json) =>
+        {
+            var jsonObject = JsonObject.Parse(json)!;
+            var question = jsonObject["question"]?.ToString() ?? "";
+            var options = jsonObject["options"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
+            return await Program.AskUser(question, options);
+        };
+
+        yield return new FunctionDescriptor
+        {
+            Contract = askUserContract,
+            Handler = askUserHandler,
+            ProviderName = ProviderName
+        };
+    }
+}
 
 public static class Program
 {
@@ -39,15 +104,22 @@ public static class Program
             Arguments = ["-y", "@modelcontextprotocol/server-brave-search"],
             EnvironmentVariables = new Dictionary<string, string?>
             {
-                ["BRAVE_API_KEY"] = "BSAHfwogL8-akskJd0XVWxrO8hWCfD3"
+                ["BRAVE_API_KEY"] = Environment.GetEnvironmentVariable("BRAVE_API_KEY")!
             }
+        });
+
+        var rustMCPSystem = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "fs",
+            Command = @"D:\LmDotnetTools\example\rust-mcp-filesystem-x86_64-pc-windows-msvc\rust-mcp-filesystem.exe",
+            Arguments = ["--allow-write", @"D:\scratchPad"]
         });
 
         var turnDownMcpServer = new StdioClientTransport(new StdioClientTransportOptions
         {
-            Name = "url-fetcher",
+            Name = "url - fetcher",
             Command = "node",
-            Arguments = ["b:/sources/turndown-mcp/server.js"]
+            Arguments = ["d:/turndown-mcp/server.js"]
         });
 
         var thinkingMcpServer = new StdioClientTransport(new StdioClientTransportOptions
@@ -64,27 +136,41 @@ public static class Program
             Arguments = ["-y", "@modelcontextprotocol/server-memory"]
         });
 
-        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer };
-        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory" };
+        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer, rustMCPSystem };
+        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "fs" };
 
         var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
 
         try
         {
-            var tools = await Task.WhenAll(mcpClients.Select(client => client.ListToolsAsync().AsTask()));
+            var functionRegistry = await new FunctionRegistry()
+                .AddProvider(new CustomFunctionProvider())
+                .AddMcpClientsAsync(mcpClients.ToDictionary(client => client.ServerInfo.Name, client => client));
 
-            foreach (var tool in tools.SelectMany(tools => tools))
-            {
-                Console.WriteLine($"- {tool.Name}: {tool.Description}");
-            }
+            // Register Todo TaskManager instance functions (stateful)
+            var taskManager = new TaskManager();
+            functionRegistry.AddFunctionsFromObject(taskManager, providerName: "TodoManager", priority: 50);
 
-            // var kvStore = new SqliteKvStore(KV_STORE_PATH);
-            // Note: CachingMiddleware may have been renamed or removed
-            // var cachingMiddleware = new CachingMiddleware(kvStore);
+            // Print comprehensive function documentation
+            Console.WriteLine("=== Available Functions ===");
+            Console.WriteLine();
+            var markdownDocs = functionRegistry.GetMarkdownDocumentation();
+            Console.WriteLine(markdownDocs);
+            Console.WriteLine("=== End Function Documentation ===");
+            Console.WriteLine();
 
-            // Set up caching services
+            // Set up services with function call support
             var services = new ServiceCollection();
             services.AddLlmFileCacheFromEnvironment(); // Uses environment variables for cache configuration
+
+            // Add function call services
+            services.AddFunctionCallServices();
+
+            // Add MCP function providers (this will register available MCP tools from assemblies)
+            services.AddMcpFunctionsFromLoadedAssemblies();
+
+            // Build service provider
+            var serviceProvider = services.BuildServiceProvider();
 
             // Create a caching HttpClient for OpenAI
             var httpClient = services.CreateCachingOpenAIClient(
@@ -95,26 +181,26 @@ public static class Program
             var openClient = new OpenClient(httpClient, API_URL);
             var openAgent = new OpenClientAgent("OpenAi", openClient) as IStreamingAgent;
 
-            // Create the agent pipeline with MCP middleware
-            var mcpClientDictionary = clientIds
-                .Zip(mcpClients.Zip(tools))
-                .ToDictionary(pair => pair.First, pair => pair.Second.First);
+            // Get the function call middleware factory and create middleware
+            var middlewareFactory = serviceProvider.GetRequiredService<IFunctionCallMiddlewareFactory>();
+            var functionCallMiddleware = middlewareFactory.Create("Combined-Functions");
 
-            // Create the middleware using the factory
-            var mcpMiddlewareFactory = new McpMiddlewareFactory();
+
+            // Create other middleware components
             var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
             var jsonFragmentUpdateMiddleware = new JsonFragmentUpdateMiddleware();
 
             var theogent = openAgent
                 .WithMiddleware(jsonFragmentUpdateMiddleware)
+                .WithMiddleware(functionRegistry.BuildMiddleware())
                 .WithMiddleware(consolePrinterMiddleware)
-                .WithMiddleware(await mcpMiddlewareFactory.CreateFromClientsAsync(mcpClientDictionary))
+                .WithMiddleware(functionCallMiddleware)
                 .WithMiddleware(new MessageUpdateJoinerMiddleware());
 
             var options = new GenerateReplyOptions
             {
-                ModelId = "qwen/qwen3-235b-a22b-thinking-2507", // "x-ai/grok-3-mini-beta", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
-                // ModelId = "meta-llama/llama-4-maverick",
+                ModelId = "openai/gpt-5-mini", // "x-ai/grok-3-mini-beta", // "openai/gpt-4.1", // "qwen/qwen3-235b-a22b-thinking-2507",// "qwen/qwen3-coder", // "moonshotai/kimi-k2", //"qwen/qwen3-235b-a22b-2507",
+                                               // ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0f,
                 MaxToken = 4096 * 2,
                 ExtraProperties = new Dictionary<string, object?>()
@@ -130,7 +216,7 @@ public static class Program
 
             Console.WriteLine("Enter a task to complete:");
             // string task = Console.ReadLine()!;
-            var task = @"I have a fever, rash, and joint pain. I'm a 10 year old child. What's wrong with me?";
+            var task = @"Write me a news blog.";
             string? previousPlan = null;
             string? progress = null;
 
@@ -152,7 +238,7 @@ public static class Program
             }
 
             var plannerPrompt = promptReader
-              .GetPromptChain("MedicalNurse")
+              .GetPromptChain("NewsBlogger")
               .PromptMessages(dict);
 
             do
@@ -481,5 +567,24 @@ public static class Program
             Console.ForegroundColor = fgColorBak;
             Console.BackgroundColor = bgColorBak;
         }
+    }
+
+    [Description("Ask the user a question and return the answer. Use this tool"
+     + "to ask the user for clarifications or to provide more information, this is"
+     + "important because you will need to continue work after the user's"
+     + "response.")]
+    public static async Task<string> AskUser(
+        [Description("The question to ask the user.")]
+        string question,
+        [Description("The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.")]
+        string[] options)
+    {
+        Console.WriteLine(question.Trim());
+        foreach (var option in options)
+        {
+            Console.WriteLine($"- {option.Trim()}");
+        }
+
+        return (await Console.In.ReadLineAsync())?.Trim() ?? "";
     }
 }

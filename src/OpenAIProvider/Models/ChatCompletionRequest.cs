@@ -223,7 +223,8 @@ public record ChatCompletionRequest
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
                 {
-                    var cm = new ChatMessage {
+                    var cm = new ChatMessage
+                    {
                         Role = ChatMessage.ToRoleEnum(textMessage.Role),
                         Content = textMessage.GetText() != null
                             ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
@@ -242,7 +243,8 @@ public record ChatCompletionRequest
                     return [cm];
                 }
             case ICanGetToolCalls toolCallMessage:
-                var toolChat = new ChatMessage {
+                var toolChat = new ChatMessage
+                {
                     Role = RoleEnum.Assistant,
                     ToolCalls = toolCallMessage.GetToolCalls()!.Select(tc =>
                         new FunctionContent(
@@ -250,9 +252,10 @@ public record ChatCompletionRequest
                             new FunctionCall(
                                 tc.FunctionName!,
                                 tc.FunctionArgs!
-                            )) {
-                                Index = tc.Index
-                            }
+                            ))
+                        {
+                            Index = tc.Index
+                        }
                         ).ToList()
                 };
 
@@ -302,43 +305,7 @@ public record ChatCompletionRequest
                         var produced = FromMessage(m).ToList();
                         foreach (var ch in produced)
                         {
-                            if (reasoningBuffer.Count > 0)
-                            {
-                                // Prefer encrypted reasoning blocks. If any encrypted messages exist, drop plain ones.
-                                List<ReasoningMessage> selected;
-                                if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted))
-                                {
-                                    selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted).ToList();
-                                }
-                                else if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary))
-                                {
-                                    selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary).ToList();
-                                }
-                                else
-                                {
-                                    selected = reasoningBuffer.ToList();
-                                }
-
-                                if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)
-                                {
-                                    // Single plain-text reasoning ⇒ emit "reasoning" field
-                                    ch.Reasoning = selected[0].Reasoning;
-                                }
-                                else
-                                {
-                                    // Multiple or encrypted ⇒ use reasoning_details array
-                                    ch.ReasoningDetails = selected.Select(p => new ChatMessage.ReasoningDetail
-                                    {
-                                        Type = p.Visibility == ReasoningVisibility.Encrypted
-                                                ? "reasoning.encrypted"
-                                                : p.Visibility == ReasoningVisibility.Summary
-                                                    ? "reasoning.summary"
-                                                    : "reasoning",
-                                        Data = p.Reasoning
-                                    }).ToList();
-                                }
-                                reasoningBuffer.Clear();
-                            }
+                            MergeReasoning(reasoningBuffer, ch);
                             yield return ch;
                         }
                         break;
@@ -356,6 +323,59 @@ public record ChatCompletionRequest
                         yield return ch;
                     break;
             }
+        }
+
+        if (reasoningBuffer.Count > 0)
+        {
+            var chatMessage = new ChatMessage
+            {
+                Role = RoleEnum.Assistant,
+                Content = new Union<string, Union<TextContent, ImageContent>[]>("\n\n")
+            };
+
+            MergeReasoning(reasoningBuffer, chatMessage);
+            yield return chatMessage;
+        }
+    }
+
+    static private void MergeReasoning(List<ReasoningMessage> reasoningBuffer, ChatMessage? ch)
+    {
+        if (reasoningBuffer.Count > 0)
+        {
+            // Prefer encrypted reasoning blocks. If any encrypted messages exist, drop plain ones.
+            List<ReasoningMessage> selected;
+            if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted))
+            {
+                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted).ToList();
+            }
+            else if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary))
+            {
+                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary).ToList();
+            }
+            else
+            {
+                selected = reasoningBuffer.ToList();
+            }
+
+            if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)
+            {
+                // Single plain-text reasoning ⇒ emit "reasoning" field
+                ch.Reasoning = selected[0].Reasoning;
+            }
+            else
+            {
+                // Multiple or encrypted ⇒ use reasoning_details array
+                ch.ReasoningDetails = selected.Select(p => new ChatMessage.ReasoningDetail
+                {
+                    Type = p.Visibility == ReasoningVisibility.Encrypted
+                            ? "reasoning.encrypted"
+                            : p.Visibility == ReasoningVisibility.Summary
+                                ? "reasoning.summary"
+                                : "reasoning",
+                    Data = p.Reasoning
+                }).ToList();
+            }
+            reasoningBuffer.Clear();
         }
     }
 

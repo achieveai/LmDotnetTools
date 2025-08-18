@@ -31,3 +31,4 @@ kv_store
 *.db-journal
 *.db-journal
 .fake
+LLM_CACHE/
