@@ -189,9 +189,11 @@ public static class Program
             // Create other middleware components
             var consolePrinterMiddleware = new ConsolePrinterHelperMiddleware();
             var jsonFragmentUpdateMiddleware = new JsonFragmentUpdateMiddleware();
+            var todoContextMiddleware = new TodoContextMiddleware(() => taskManager.GetCurrentTaskContext());
 
             var theogent = openAgent
                 .WithMiddleware(jsonFragmentUpdateMiddleware)
+                .WithMiddleware(todoContextMiddleware)
                 .WithMiddleware(functionRegistry.BuildMiddleware())
                 .WithMiddleware(consolePrinterMiddleware)
                 .WithMiddleware(functionCallMiddleware)

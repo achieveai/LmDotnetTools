@@ -279,6 +279,7 @@ public record ChatCompletionRequest
     private static IEnumerable<ChatMessage> MergeReasoningIntoAssistant(IEnumerable<IMessage> source)
     {
         var reasoningBuffer = new List<ReasoningMessage>();
+        TodoContextMessage? latestTodoContext = null;
 
         foreach (var m in source)
         {
@@ -297,6 +298,9 @@ public record ChatCompletionRequest
                         Visibility = ReasoningVisibility.Plain
                     });
                     continue;
+                case TodoContextMessage todo:
+                    latestTodoContext = todo; // Keep only the most recent todo context
+                    continue;
 
                 case TextMessage txt:
                 case ToolsCallMessage tc:
@@ -306,6 +310,7 @@ public record ChatCompletionRequest
                         foreach (var ch in produced)
                         {
                             MergeReasoning(reasoningBuffer, ch);
+                            MergeTodoContext(latestTodoContext, ch);
                             yield return ch;
                         }
                         break;
@@ -334,7 +339,18 @@ public record ChatCompletionRequest
             };
 
             MergeReasoning(reasoningBuffer, chatMessage);
+            MergeTodoContext(latestTodoContext, chatMessage);
             yield return chatMessage;
+        }
+        else if (latestTodoContext != null && !string.IsNullOrWhiteSpace(latestTodoContext.TodoContext))
+        {
+            // If there's todo context but no reasoning, create a system message for the todo context
+            var todoMessage = new ChatMessage
+            {
+                Role = RoleEnum.System,
+                Content = new Union<string, Union<TextContent, ImageContent>[]>(latestTodoContext.TodoContext)
+            };
+            yield return todoMessage;
         }
     }
 
@@ -376,6 +392,21 @@ public record ChatCompletionRequest
                 }).ToList();
             }
             reasoningBuffer.Clear();
+        }
+    }
+
+    static private void MergeTodoContext(TodoContextMessage? todoContext, ChatMessage? ch)
+    {
+        if (todoContext != null && !string.IsNullOrWhiteSpace(todoContext.TodoContext) && ch != null)
+        {
+            // Add todo context to the message metadata or as part of system context
+            // For simplicity, we'll add it as a system message content prefix for assistant messages
+            if (ch.Role == RoleEnum.Assistant && ch.Content != null)
+            {
+                string currentContent = ch.Content.Is<string>() ? ch.Content.Get<string>() : "";
+                string todoPrefix = $"[Current Tasks: {todoContext.TodoContext.Replace("\n", " | ")}]\n\n";
+                ch.Content = new Union<string, Union<TextContent, ImageContent>[]>(todoPrefix + currentContent);
+            }
         }
     }
 

@@ -392,6 +392,39 @@ Examples:
     return ListTasks();
   }
 
+  /// <summary>
+  /// Gets a compact summary of current task state for forwarding to next tool calls.
+  /// Only includes active (not completed/removed) tasks.
+  /// </summary>
+  public string GetCurrentTaskContext()
+  {
+    if (_rootTasks.Count == 0)
+      return "";
+
+    var activeTasks = _rootTasks.Where(t => t.Status != TaskStatus.Completed && t.Status != TaskStatus.Removed).ToList();
+    if (!activeTasks.Any())
+      return "";
+
+    var sb = new StringBuilder();
+    sb.AppendLine("Current Tasks:");
+
+    foreach (var task in activeTasks)
+    {
+      var statusSymbol = GetStatusSymbol(task.Status);
+      sb.AppendLine($"{statusSymbol} Task {task.Id}: {task.Title}");
+
+      // Include active subtasks
+      var activeSubtasks = task.SubTasks.Where(st => st.Status != TaskStatus.Completed && st.Status != TaskStatus.Removed).ToList();
+      foreach (var subtask in activeSubtasks)
+      {
+        var subtaskStatusSymbol = GetStatusSymbol(subtask.Status);
+        sb.AppendLine($"  {subtaskStatusSymbol} {subtask.Id}: {subtask.Title}");
+      }
+    }
+
+    return sb.ToString().TrimEnd();
+  }
+
   // Helper methods
   private void RemoveTaskAndSubtasks(TaskItem task)
   {
