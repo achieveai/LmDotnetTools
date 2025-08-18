@@ -78,7 +78,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public ImmutableDictionary<string, object>? Metadata { get; private set; } = null;
 
-    public string? GenerationId { get; init; } = null;
+    public string? GenerationId { get; set; } = null;
 
     public Action<ToolCall> OnToolCall { get; init; } = _ => { };
 
@@ -107,6 +107,12 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
+        // Capture GenerationId from the message update if not already set
+        if (GenerationId == null && streamingMessageUpdate.GenerationId != null)
+        {
+            GenerationId = streamingMessageUpdate.GenerationId;
+        }
+
         // Process each update
         foreach (var update in streamingMessageUpdate.ToolCallUpdates)
         {
