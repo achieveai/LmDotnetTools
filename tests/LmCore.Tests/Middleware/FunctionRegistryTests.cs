@@ -1,5 +1,6 @@
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Xunit;
 
@@ -56,7 +57,7 @@ public class FunctionRegistryTests
         // Assert
         Assert.Single(contracts);
         Assert.Single(handlers);
-        
+
         var result = await handlers["func1"]("{}");
         Assert.Equal("explicit-result", result);
     }
@@ -72,7 +73,7 @@ public class FunctionRegistryTests
         // Act & Assert
         registry.AddProvider(provider1);
         registry.AddProvider(provider2);
-        
+
         var exception = Assert.Throws<InvalidOperationException>(() => registry.Build());
         Assert.Contains("func1", exception.Message);
         Assert.Contains("provider1", exception.Message);
@@ -96,7 +97,7 @@ public class FunctionRegistryTests
         // Assert
         Assert.Single(contracts);
         Assert.Single(handlers);
-        
+
         var result = await handlers["func1"]("{}");
         Assert.Equal("provider2-result", result); // provider2 has lower priority (100 < 200)
     }
@@ -118,7 +119,7 @@ public class FunctionRegistryTests
         // Assert
         Assert.Single(contracts);
         Assert.Single(handlers);
-        
+
         var result = await handlers["func1"]("{}");
         Assert.Equal("provider2-result", result);
     }
@@ -141,11 +142,11 @@ public class FunctionRegistryTests
         // Assert - Since keys are different, both functions should be present
         Assert.Equal(2, contracts.Count());
         Assert.Equal(2, handlers.Count);
-        
+
         // Check that both functions are available with their respective keys
         Assert.Contains("func1", handlers.Keys); // Natural function
         Assert.Contains("TestClass-func1", handlers.Keys); // MCP function
-        
+
         var naturalResult = await handlers["func1"]("{}");
         var mcpResult = await handlers["TestClass-func1"]("{}");
         Assert.Equal("natural-result", naturalResult);
@@ -170,11 +171,11 @@ public class FunctionRegistryTests
         // Assert - No conflict, so both functions present
         Assert.Equal(2, contracts.Count());
         Assert.Equal(2, handlers.Count);
-        
+
         // Natural function with key "func1"
         var naturalResult = await handlers["func1"]("{}");
         Assert.Equal("natural-result", naturalResult);
-        
+
         // MCP function with key "TestClass-func1"  
         var mcpResult = await handlers["TestClass-func1"]("{}");
         Assert.Equal("mcp-result", mcpResult);
@@ -191,15 +192,15 @@ public class FunctionRegistryTests
         // Act
         registry.AddProvider(provider1);
         registry.AddProvider(provider2);
-        registry.WithConflictHandler((key, candidates) => 
+        registry.WithConflictHandler((key, candidates) =>
             candidates.First(c => c.ProviderName == "provider1"));
-        
+
         var (contracts, handlers) = registry.Build();
 
         // Assert
         Assert.Single(contracts);
         Assert.Single(handlers);
-        
+
         var result = await handlers["func1"]("{}");
         Assert.Equal("provider1-result", result);
     }
@@ -220,6 +221,163 @@ public class FunctionRegistryTests
         Assert.Equal("TestMiddleware", middleware.Name);
     }
 
+    [Fact]
+    public void GetMarkdownDocumentation_WithEmptyRegistry_ReturnsBasicMarkdown()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+
+        // Act
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("# Function Registry Documentation", markdown);
+        Assert.Contains("## Summary", markdown);
+        Assert.Contains("- **Total Functions:** 0", markdown);
+        Assert.Contains("- **Total Providers:** 0", markdown);
+        Assert.Contains("- **Conflict Resolution:** Throw", markdown);
+    }
+
+    [Fact]
+    public void GetMarkdownDocumentation_WithSingleProvider_ReturnsFormattedMarkdown()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+        var provider = CreateTestProvider("TestProvider", new[] { "func1", "func2" }, priority: 100);
+
+        // Act
+        registry.AddProvider(provider);
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("# Function Registry Documentation", markdown);
+        Assert.Contains("- **Total Functions:** 2", markdown);
+        Assert.Contains("- **Total Providers:** 1", markdown);
+        Assert.Contains("- **TestProvider** (Priority: 100): 2 functions", markdown);
+        Assert.Contains("### func1", markdown);
+        Assert.Contains("### func2", markdown);
+        Assert.Contains("Function details:", markdown);
+        Assert.Contains("- **Provider:** TestProvider", markdown);
+        Assert.Contains("- **Key:** `func1`", markdown);
+        Assert.Contains("- **Key:** `func2`", markdown);
+        Assert.Contains("Test function func1", markdown);
+        Assert.Contains("Test function func2", markdown);
+    }
+
+    [Fact]
+    public void GetMarkdownDocumentation_WithExplicitFunction_IncludesExplicitFunction()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+        var explicitContract = CreateTestContract("explicitFunc", description: "Explicit test function");
+        var explicitHandler = CreateTestHandler("explicit-result");
+
+        // Act
+        registry.AddFunction(explicitContract, explicitHandler, "ExplicitProvider");
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("- **Total Functions:** 1", markdown);
+        Assert.Contains("- **ExplicitProvider**: 1 function", markdown);
+        Assert.Contains("### explicitFunc", markdown);
+        Assert.Contains("- **Provider:** ExplicitProvider", markdown);
+        Assert.Contains("Explicit test function", markdown);
+    }
+
+    [Fact]
+    public void GetMarkdownDocumentation_WithMcpFunction_ShowsCorrectKeyFormat()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+        var provider = CreateTestProvider("McpProvider", new[] { "mcpFunc" }, isMcp: true);
+
+        // Act
+        registry.AddProvider(provider);
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("### TestClass.mcpFunc", markdown); // Display name format
+        Assert.Contains("- **Key:** `TestClass-mcpFunc`", markdown); // Key format
+        Assert.Contains("- **Provider:** McpProvider", markdown);
+    }
+
+    [Fact]
+    public void GetMarkdownDocumentation_WithConflictResolution_ShowsResolutionStrategy()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+        var provider1 = CreateTestProvider("provider1", new[] { "func1" });
+        var provider2 = CreateTestProvider("provider2", new[] { "func1" });
+
+        // Act
+        registry.AddProvider(provider1);
+        registry.AddProvider(provider2);
+        registry.WithConflictResolution(ConflictResolution.TakeFirst);
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("- **Conflict Resolution:** TakeFirst", markdown);
+        Assert.Contains("- **Total Functions:** 1", markdown); // Only one function due to conflict resolution
+    }
+
+    [Fact]
+    public void GetMarkdownDocumentation_WithFunctionParameters_ShowsParameterTable()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+        var contract = CreateTestContractWithParameters("paramFunc");
+        var handler = CreateTestHandler("result");
+
+        // Act
+        registry.AddFunction(contract, handler, "TestProvider");
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("Parameters:", markdown);
+        Assert.Contains("- **stringParam** (`string` (required))", markdown);
+        Assert.Contains("  A string parameter", markdown);
+        Assert.Contains("- **optionalParam** (`number` (optional), default: 42)", markdown);
+        Assert.Contains("  An optional parameter", markdown);
+    }
+
+    [Fact]
+    public void GetMarkdownDocumentation_WithFunctionWithNoParameters_ShowsNoParameters()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+        var contract = CreateTestContract("noParamFunc");
+        var handler = CreateTestHandler("result");
+
+        // Act
+        registry.AddFunction(contract, handler, "TestProvider");
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("### noParamFunc", markdown);
+        Assert.Contains("Parameters:", markdown);
+        Assert.Contains("- *No parameters required*", markdown);
+    }
+
+    [Fact]
+    public void GetMarkdownDocumentation_WithReturnType_ShowsReturnSection()
+    {
+        // Arrange
+        var registry = new FunctionRegistry();
+        var contract = CreateTestContractWithReturnType("returnFunc");
+        var handler = CreateTestHandler("result");
+
+        // Act
+        registry.AddFunction(contract, handler, "TestProvider");
+        var markdown = registry.GetMarkdownDocumentation();
+
+        // Assert
+        Assert.Contains("Returns:", markdown);
+        Assert.Contains("- **Type:** `String`", markdown);
+        Assert.Contains("- **Description:** Returns a string result", markdown);
+    }
+
+
+
     private static IFunctionProvider CreateTestProvider(string name, string[] functionNames, int priority = 100, bool isMcp = false)
     {
         return new TestFunctionProvider(name, functionNames, priority, isMcp);
@@ -230,13 +388,13 @@ public class FunctionRegistryTests
         return new TestFunctionProviderWithSameKey(name, functionName, isMcp);
     }
 
-    private static FunctionContract CreateTestContract(string name, string? className = null)
+    private static FunctionContract CreateTestContract(string name, string? className = null, string? description = null)
     {
         return new FunctionContract
         {
             Name = name,
             ClassName = className,
-            Description = $"Test function {name}",
+            Description = description ?? $"Test function {name}",
             Parameters = new List<FunctionParameterContract>()
         };
     }
@@ -347,5 +505,44 @@ public class FunctionRegistryTests
                 }
             };
         }
+    }
+
+    private static FunctionContract CreateTestContractWithParameters(string name)
+    {
+        return new FunctionContract
+        {
+            Name = name,
+            Description = $"Test function {name}",
+            Parameters = new List<FunctionParameterContract>
+            {
+                new FunctionParameterContract
+                {
+                    Name = "stringParam",
+                    Description = "A string parameter",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
+                    IsRequired = true
+                },
+                new FunctionParameterContract
+                {
+                    Name = "optionalParam",
+                    Description = "An optional parameter",
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number") },
+                    IsRequired = false,
+                    DefaultValue = 42
+                }
+            }
+        };
+    }
+
+    private static FunctionContract CreateTestContractWithReturnType(string name)
+    {
+        return new FunctionContract
+        {
+            Name = name,
+            Description = $"Test function {name}",
+            ReturnType = typeof(string),
+            ReturnDescription = "Returns a string result",
+            Parameters = new List<FunctionParameterContract>()
+        };
     }
 }

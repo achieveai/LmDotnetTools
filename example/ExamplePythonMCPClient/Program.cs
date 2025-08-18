@@ -16,6 +16,7 @@ using ModelContextProtocol.Client;
 using System.ComponentModel;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient;
 
@@ -128,13 +129,6 @@ public static class Program
             Arguments = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
         });
 
-        var toDoMCPServer = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "to-do",
-            Command = "npx",
-            Arguments = ["-y", "@danjdewhurst/todo-md-mcp"]
-        });
-
         var memoryMcpServer = new StdioClientTransport(new StdioClientTransportOptions
         {
             Name = "memory",
@@ -142,24 +136,28 @@ public static class Program
             Arguments = ["-y", "@modelcontextprotocol/server-memory"]
         });
 
-        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer, toDoMCPServer, rustMCPSystem };
-        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "to-do", "fs" };
+        var mcpServers = new[] { braveSearchMcpServer, turnDownMcpServer, thinkingMcpServer, memoryMcpServer, rustMCPSystem };
+        var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "fs" };
 
         var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
 
         try
         {
-            var tools = await Task.WhenAll(mcpClients.Select(client => client.ListToolsAsync().AsTask()));
-
-            foreach (var tool in tools.SelectMany(tools => tools))
-            {
-                Console.WriteLine($"- {tool.Name}: {tool.Description}");
-            }
-
             var functionRegistry = await new FunctionRegistry()
                 .AddProvider(new CustomFunctionProvider())
                 .AddMcpClientsAsync(mcpClients.ToDictionary(client => client.ServerInfo.Name, client => client));
 
+            // Register Todo TaskManager instance functions (stateful)
+            var taskManager = new TaskManager();
+            functionRegistry.AddFunctionsFromObject(taskManager, providerName: "TodoManager", priority: 50);
+
+            // Print comprehensive function documentation
+            Console.WriteLine("=== Available Functions ===");
+            Console.WriteLine();
+            var markdownDocs = functionRegistry.GetMarkdownDocumentation();
+            Console.WriteLine(markdownDocs);
+            Console.WriteLine("=== End Function Documentation ===");
+            Console.WriteLine();
 
             // Set up services with function call support
             var services = new ServiceCollection();
