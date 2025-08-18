@@ -123,14 +123,29 @@ public record ChatMessage
                         ? ReasoningVisibility.Summary
                         : ReasoningVisibility.Plain;
 
-                yield return new ReasoningMessage
+
+                if (isStreaming && visibility != ReasoningVisibility.Encrypted)
                 {
-                    Role = ToRole(role!.Value),
-                    Reasoning = detailText!,
-                    FromAgent = name,
-                    GenerationId = Id,
-                    Visibility = visibility
-                };
+                    yield return new ReasoningUpdateMessage
+                    {
+                        Role = ToRole(role!.Value),
+                        Reasoning = detailText!,
+                        FromAgent = name,
+                        GenerationId = Id,
+                        Visibility = visibility
+                    };
+                }
+                else
+                {
+                    yield return new ReasoningMessage
+                    {
+                        Role = ToRole(role!.Value),
+                        Reasoning = detailText!,
+                        FromAgent = name,
+                        GenerationId = Id,
+                        Visibility = visibility
+                    };
+                }
 
                 processedReasoningTexts.Add(detailText);
             }
@@ -162,7 +177,7 @@ public record ChatMessage
             }
 
             var contentText = Content.Get<string>()!;
-            
+
             // For streaming messages, skip empty content to reduce noise
             if (isStreaming && string.IsNullOrEmpty(contentText))
             {

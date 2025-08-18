@@ -97,12 +97,12 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 ref activeBuilderType);
 
             // Only emit the message if it's not being accumulated by a builder
-            bool isBeingAccumulated = activeBuilder != null && 
-                (message is TextUpdateMessage || 
-                 message is ReasoningUpdateMessage || 
+            bool isBeingAccumulated = activeBuilder != null &&
+                (message is TextUpdateMessage ||
+                 message is ReasoningUpdateMessage ||
                  message is ToolsCallUpdateMessage ||
                  (message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage)));
-            
+
             if (!isBeingAccumulated)
             {
                 yield return processedMessage;
@@ -138,7 +138,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         {
             return ProcessTextUpdate(textUpdate, ref activeBuilder, ref activeBuilderType);
         }
-        // For reasoning update messages
+        // For rqwen/qwen3-235b-a22b-thinking-2507easoning update messages
         else if (message is ReasoningUpdateMessage reasoningUpdate)
         {
             return ProcessReasoningUpdate(reasoningUpdate, ref activeBuilder, ref activeBuilderType);
