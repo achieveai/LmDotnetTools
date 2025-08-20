@@ -39,11 +39,16 @@ Notes:
 - Only two levels are supported (task → subtask).")]
   public string AddTask(
       [Description("Task title")] string title,
-      [Description("Parent task ID for subtask")] int? parentId = null)
+      [Description("Parent task ID for subtask, if not provided or 9999, it will be a main task, this is optional")] int? parentId = null)
   {
     if (string.IsNullOrWhiteSpace(title))
     {
       return "Error: Title cannot be empty.";
+    }
+
+    if (parentId == 9999)
+    {
+      parentId = null;
     }
 
     var task = new TaskItem
@@ -85,13 +90,18 @@ Examples:
 - Rename task 2 and mark done: {""taskId"": 2, ""title"": ""Finalize project plan"", ""status"": ""completed""}")]
   public string UpdateTask(
       [Description("Task ID")] int taskId,
-      [Description("Subtask ID if updating subtask")] int? subtaskId = null,
+      [Description("Subtask ID if updating subtask, if not provided or 9999, it will be a main task, this is optional")] int? subtaskId = null,
       [Description("New status: not started|in progress|completed|removed")] string? status = null,
       [Description("New title")] string? title = null)
   {
     // Find target task
     TaskItem? targetTask = null;
     string taskRef;
+
+    if (subtaskId == 9999)
+    {
+      subtaskId = null;
+    }
 
     if (subtaskId.HasValue)
     {
@@ -149,8 +159,13 @@ Examples:
 - Delete task 3 and its subtasks: {""taskId"": 3}")]
   public string DeleteTask(
       [Description("Task ID")] int taskId,
-      [Description("Subtask ID to delete specific subtask")] int? subtaskId = null)
+      [Description("Subtask ID to delete specific subtask, if not provided or 9999, it will be a main task, this is optional")] int? subtaskId = null)
   {
+    if (subtaskId == 9999)
+    {
+      subtaskId = null;
+    }
+
     if (subtaskId.HasValue)
     {
       // Delete subtask
@@ -185,8 +200,13 @@ Examples:
 - Subtask: {""taskId"": 1, ""subtaskId"": 3}")]
   public string GetTask(
       [Description("Task ID")] int taskId,
-      [Description("Subtask ID for specific subtask")] int? subtaskId = null)
+      [Description("Subtask ID for specific subtask, if not provided or 9999, it will be a main task, this is optional")] int? subtaskId = null)
   {
+    if (subtaskId == 9999)
+    {
+      subtaskId = null;
+    }
+
     if (subtaskId.HasValue)
     {
       // Get subtask details
@@ -219,7 +239,7 @@ Examples:
 - Delete note #1 on task 2: {""taskId"": 2, ""action"": ""delete"", ""noteIndex"": 1}")]
   public string ManageNotes(
       [Description("Task ID")] int taskId,
-      [Description("Subtask ID if managing subtask notes")] int? subtaskId = null,
+      [Description("Subtask ID if managing subtask notes, if not provided or 9999, it will be a main task, this is optional")] int? subtaskId = null,
       [Description("Note text to add, or new text to replace")] string? noteText = null,
       [Description("Note index (1-based) to edit/delete")] int? noteIndex = null,
       [Description("Action: add|edit|delete")] string action = "add")
@@ -227,6 +247,11 @@ Examples:
     // Find target task
     TaskItem? targetTask = null;
     string taskRef;
+
+    if (subtaskId == 9999)
+    {
+      subtaskId = null;
+    }
 
     if (subtaskId.HasValue)
     {
@@ -281,11 +306,16 @@ Examples:
 - Subtask notes: {""taskId"": 1, ""subtaskId"": 3}")]
   public string ListNotes(
       [Description("Task ID")] int taskId,
-      [Description("Subtask ID for subtask notes")] int? subtaskId = null)
+      [Description("Subtask ID for subtask notes, if not provided or 9999, it will be a main task, this is optional")] int? subtaskId = null)
   {
     // Find target task
     TaskItem? targetTask = null;
     string taskRef;
+
+    if (subtaskId == 9999)
+    {
+      subtaskId = null;
+    }
 
     if (subtaskId.HasValue)
     {

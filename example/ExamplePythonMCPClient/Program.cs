@@ -253,6 +253,22 @@ public static class Program
                         plannerPrompt,
                         options);
 
+                    if (plannerPrompt.Last() is CompositeMessage compositeMessage)
+                    {
+                        if (compositeMessage.Messages.Any(m => m.FromAgent == "TodoContextMiddleware"))
+                        {
+                            plannerPrompt[plannerPrompt.Count - 1] = new CompositeMessage
+                            {
+                                FromAgent = "UniAgentLoop",
+                                GenerationId = compositeMessage.GenerationId,
+                                Role = Role.Assistant,
+                                Messages = compositeMessage.Messages
+                                    .Where(m => m.FromAgent != "TodoContextMiddleware")
+                                    .ToImmutableList()
+                            };
+                        }
+                    }
+
                     var replyMessages = new List<IMessage>();
                     await foreach (var reply in repliesStream)
                     {
@@ -263,6 +279,19 @@ public static class Program
                         {
                             replyMessages.Add(reply);
                         }
+                    }
+
+                    var pendingTasks = taskManager.GetCurrentTaskContext();
+                    if (pendingTasks.Any())
+                    {
+                        replyMessages.Add(
+                            new TextMessage
+                            {
+                                Text = $"Here are your tasks that you want to keep in mind and work on.\n\n**Pending Tasks**:\n\n{pendingTasks}",
+                                Role = Role.User,
+                                FromAgent = "TodoContextMiddleware",
+                                GenerationId = replyMessages[0].GenerationId
+                            });
                     }
 
                     if (replyMessages.Count > 1)
