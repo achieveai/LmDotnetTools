@@ -121,7 +121,7 @@ public class OpenAIEmbeddingServiceHttpTests
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount, successResponse, failureStatus);
-        
+
         var httpClient = new HttpClient(fakeHandler)
         {
             BaseAddress = new Uri("https://api.openai.com")
@@ -162,7 +162,7 @@ public class OpenAIEmbeddingServiceHttpTests
         var fakeHandler = new FakeHttpMessageHandler((httpRequest, cancellationToken) =>
         {
             capturedRequest = httpRequest;
-            
+
             // Return a valid response
             var response = CreateValidOpenAIResponse(request.Inputs.Count);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -199,7 +199,7 @@ public class OpenAIEmbeddingServiceHttpTests
 
             foreach (var expectedField in expectedPayloadFields)
             {
-                Assert.True(payload.ContainsKey(expectedField.Key), 
+                Assert.True(payload.ContainsKey(expectedField.Key),
                     $"Missing expected field: {expectedField.Key}");
                 Debug.WriteLine($"✓ Found expected field: {expectedField.Key}");
             }
@@ -217,13 +217,13 @@ public class OpenAIEmbeddingServiceHttpTests
         string description)
     {
         Debug.WriteLine($"Testing API type formatting: {description}");
-        
+
         HttpRequestMessage? capturedRequest = null;
-        
+
         var fakeHandler = new FakeHttpMessageHandler((httpRequest, cancellationToken) =>
         {
             capturedRequest = httpRequest;
-            
+
             // Return a simple success response without processing it
             // We're only testing the request formatting, not the response processing
             var simpleResponse = new
@@ -233,7 +233,7 @@ public class OpenAIEmbeddingServiceHttpTests
                 model = request.Model,
                 usage = new { prompt_tokens = 0, total_tokens = 0 }
             };
-            
+
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(JsonSerializer.Serialize(simpleResponse), System.Text.Encoding.UTF8, "application/json")
@@ -257,7 +257,7 @@ public class OpenAIEmbeddingServiceHttpTests
         // Assert - Validate the HTTP request was formatted correctly
         Assert.NotNull(capturedRequest);
         Assert.Equal(HttpMethod.Post, capturedRequest.Method);
-        
+
         var requestContent = await capturedRequest.Content!.ReadAsStringAsync();
         var requestJson = JsonDocument.Parse(requestContent);
         var root = requestJson.RootElement;
@@ -267,9 +267,9 @@ public class OpenAIEmbeddingServiceHttpTests
         // Validate expected fields are present and correct
         foreach (var expectedField in expectedFields)
         {
-            Assert.True(root.TryGetProperty(expectedField.Key, out var property), 
+            Assert.True(root.TryGetProperty(expectedField.Key, out var property),
                 $"Expected field '{expectedField.Key}' not found in request");
-            
+
             var expectedValue = expectedField.Value;
             if (expectedValue is string[] stringArray)
             {
@@ -284,14 +284,14 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 Assert.Equal(stringValue, property.GetString());
             }
-            
+
             Debug.WriteLine($"✓ Field '{expectedField.Key}' = {expectedValue}");
         }
 
         // Validate forbidden fields are not present
         foreach (var forbiddenField in forbiddenFields)
         {
-            Assert.False(root.TryGetProperty(forbiddenField.Key, out _), 
+            Assert.False(root.TryGetProperty(forbiddenField.Key, out _),
                 $"Forbidden field '{forbiddenField.Key}' found in request");
             Debug.WriteLine($"✓ Forbidden field '{forbiddenField.Key}' correctly absent");
         }
@@ -306,7 +306,7 @@ public class OpenAIEmbeddingServiceHttpTests
         {
             var floatArray = GenerateTestEmbeddingArray(1536);
             object embeddingData;
-            
+
             if (format == "float")
             {
                 embeddingData = floatArray; // Return float array directly
@@ -318,7 +318,7 @@ public class OpenAIEmbeddingServiceHttpTests
                 Buffer.BlockCopy(floatArray, 0, bytes, 0, bytes.Length);
                 embeddingData = Convert.ToBase64String(bytes);
             }
-            
+
             embeddings.Add(new
             {
                 @object = "embedding",
@@ -541,4 +541,4 @@ public class OpenAIEmbeddingServiceHttpTests
             Debug.WriteLine($"[{logLevel}] {formatter(state, exception)}");
         }
     }
-} 
+}

@@ -91,34 +91,34 @@ public class NaturalToolUseMiddlewareTests
     private async IAsyncEnumerable<IMessage> CreateSimpleAsyncEnumerable(string text)
     {
         await Task.Yield(); // Add await to make this truly async
-        
+
         if (string.IsNullOrEmpty(text))
         {
-            yield return new TextUpdateMessage 
-            { 
-                Text = text, 
-                Role = Role.Assistant 
+            yield return new TextUpdateMessage
+            {
+                Text = text,
+                Role = Role.Assistant
             };
             yield break;
         }
-        
+
         // Split text into random-sized chunks (3-8 characters each)
         var random = new Random(42); // Use fixed seed for reproducible tests
         var currentPosition = 0;
-        
+
         while (currentPosition < text.Length)
         {
             // Generate random chunk size between 3-8 characters
             var chunkSize = Math.Min(9, text.Length - currentPosition);
             chunkSize = chunkSize > 3 ? random.Next(3, chunkSize) : chunkSize;
             var chunk = text.Substring(currentPosition, chunkSize);
-            
-            yield return new TextUpdateMessage 
-            { 
-                Text = chunk, 
-                Role = Role.Assistant 
+
+            yield return new TextUpdateMessage
+            {
+                Text = chunk,
+                Role = Role.Assistant
             };
-            
+
             currentPosition += chunkSize;
             await Task.Delay(1); // Small delay to simulate streaming
         }
@@ -163,20 +163,20 @@ public class NaturalToolUseMiddlewareTests
 
         // Assert
         Assert.NotEmpty(result);
-        
+
         // Should get both text messages and tool call aggregate messages
         var textMessages = result.OfType<TextMessage>().ToList();
         var toolCallAggregates = result.OfType<ToolsCallAggregateMessage>().ToList();
-        
+
         Assert.NotEmpty(textMessages); // Should have prefix text message
         Assert.Single(toolCallAggregates); // Should have exactly one tool call
-        
+
         // Verify the tool call was processed correctly
         var toolCallMessage = toolCallAggregates.First();
         Assert.Equal("GetWeather", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionName);
         Assert.Contains("San Francisco, CA", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
         Assert.Contains("fahrenheit", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
-        
+
         // Verify prefix text is present
         var prefixTextMessage = textMessages.First();
         Assert.Equal("Here's the weather:", prefixTextMessage.Text);
@@ -236,26 +236,26 @@ public class NaturalToolUseMiddlewareTests
 
         // Assert
         Assert.NotEmpty(result);
-        
+
         // Since we're now streaming TextUpdateMessage objects, check for those instead
         Assert.Contains(result, m => m is TextUpdateMessage);
-        
+
         // Verify that we get the expected text content in the update messages
         var textUpdates = result.OfType<TextUpdateMessage>().ToList();
         Assert.NotEmpty(textUpdates);
-        
+
         // Verify all messages have correct role and properties
-        Assert.All(textUpdates, msg => 
+        Assert.All(textUpdates, msg =>
         {
             Assert.Equal(Role.Assistant, msg.Role);
             Assert.NotNull(msg.Text);
             Assert.False(string.IsNullOrEmpty(msg.Text));
         });
-        
+
         // Check that the concatenation of all text updates equals the complete text
         var concatenated = string.Concat(textUpdates.Select(t => t.Text));
         Assert.Equal("Hi there!", concatenated);
-        
+
         // Verify no tool call messages were generated
         var toolCallMessages = result.OfType<TextMessage>().Where(m => m.Text.StartsWith("Tool Call:")).ToList();
         Assert.Empty(toolCallMessages);
@@ -276,20 +276,20 @@ public class NaturalToolUseMiddlewareTests
 
         // Assert
         Assert.NotEmpty(result);
-        
+
         // Verify we get both text updates and tool call messages
         var textUpdates = result.OfType<TextUpdateMessage>().ToList();
         var toolCallMessages = result.OfType<ToolsCallAggregateMessage>().ToList();
-        
+
         Assert.NotEmpty(textUpdates);
         Assert.Single(toolCallMessages); // Should have exactly one tool call
-        
+
         // Verify the tool call was parsed correctly
         var toolCallMessage = toolCallMessages.First();
         Assert.Equal("GetWeather", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionName);
         Assert.Contains("San Francisco, CA", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
         Assert.Contains("fahrenheit", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
-        
+
         // Verify prefix text is present in updates
         var allUpdateText = string.Concat(textUpdates.Select(t => t.Text));
         Assert.Contains("Here's the weather:", allUpdateText);
@@ -301,7 +301,7 @@ public class NaturalToolUseMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        
+
         // Create a streaming response where tool call spans multiple chunks
         var chunks = new List<string>
         {
@@ -309,13 +309,13 @@ public class NaturalToolUseMiddlewareTests
             "her\">\n```json\n{\n  \"location\": \"New York\",\n  \"unit\": \"cel",
             "sius\"\n}\n```\n</tool_call> There you go!"
         };
-        
+
         mockStreamingAgent.Setup(a => a.GenerateReplyStreamingAsync(
             It.IsAny<IEnumerable<IMessage>>(),
             It.IsAny<GenerateReplyOptions>(),
             It.IsAny<CancellationToken>()))
           .Returns(Task.FromResult(CreateChunkedAsyncEnumerable(chunks)));
-        
+
         _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
@@ -324,20 +324,20 @@ public class NaturalToolUseMiddlewareTests
 
         // Assert
         Assert.NotEmpty(result);
-        
+
         // Verify we get both text updates and tool call messages
         var textUpdates = result.OfType<TextUpdateMessage>().ToList();
         var toolCallMessages = result.OfType<ToolsCallAggregateMessage>().ToList();
-        
+
         Assert.NotEmpty(textUpdates);
         Assert.Single(toolCallMessages); // Should have exactly one tool call
-        
+
         // Verify the tool call was parsed correctly despite being chunked
         var toolCallMessage = toolCallMessages.First();
         Assert.Equal("GetWeather", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionName);
         Assert.Contains("New York", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
         Assert.Contains("celsius", toolCallMessage.ToolsCallMessage.ToolCalls[0].FunctionArgs);
-        
+
         // Verify both prefix and suffix text are present in updates
         var allUpdateText = string.Concat(textUpdates.Select(t => t.Text));
         Assert.Contains("Let me check the weather for you:", allUpdateText);
@@ -350,13 +350,13 @@ public class NaturalToolUseMiddlewareTests
         // Arrange
         var middleware = CreateMiddleware();
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        
+
         // Create a streaming response with incomplete tool call that should be held back
         var chunks = new List<string>
         {
             "Here's some text and then a partial <tool_ca"
         };
-        
+
         mockStreamingAgent.Setup(a => a.GenerateReplyStreamingAsync(
             It.IsAny<IEnumerable<IMessage>>(),
             It.IsAny<GenerateReplyOptions>(),
@@ -369,10 +369,10 @@ public class NaturalToolUseMiddlewareTests
 
         // Assert
         Assert.NotEmpty(result);
-        
+
         var textUpdates = result.OfType<TextUpdateMessage>().ToList();
         Assert.NotEmpty(textUpdates);
-        
+
         // The safe part should be emitted, but the potential tool call start should be in the final flush
         var allUpdateText = string.Concat(textUpdates.Select(t => t.Text));
         Assert.Contains("Here's some text and then a partial <tool_ca", allUpdateText);
@@ -381,13 +381,13 @@ public class NaturalToolUseMiddlewareTests
     private async IAsyncEnumerable<IMessage> CreateChunkedAsyncEnumerable(IEnumerable<string> chunks)
     {
         await Task.Yield();
-        
+
         foreach (var chunk in chunks)
         {
-            yield return new TextUpdateMessage 
-            { 
-                Text = chunk, 
-                Role = Role.Assistant 
+            yield return new TextUpdateMessage
+            {
+                Text = chunk,
+                Role = Role.Assistant
             };
             await Task.Delay(1); // Small delay to simulate streaming
         }

@@ -74,7 +74,7 @@ public static class EnvironmentHelper
     public static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "test-api-key")
     {
         LoadEnvIfNeeded();
-        
+
         var apiKey = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(apiKey))
         {
@@ -109,7 +109,7 @@ public static class EnvironmentHelper
         string defaultValue = "https://api.openai.com/v1")
     {
         LoadEnvIfNeeded();
-        
+
         var baseUrl = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(baseUrl))
         {
@@ -150,7 +150,7 @@ public static class EnvironmentHelper
     public static string FindWorkspaceRoot(string startPath)
     {
         var currentDir = new DirectoryInfo(startPath);
-        
+
         while (currentDir != null)
         {
             // Look for solution files or other workspace indicators
@@ -160,11 +160,11 @@ public static class EnvironmentHelper
             {
                 return currentDir.FullName;
             }
-            
+
             currentDir = currentDir.Parent;
         }
-        
+
         // Fallback to the starting path if no workspace root found
         return startPath;
     }
-} 
+}

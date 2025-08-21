@@ -16,7 +16,7 @@ public interface IModelResolver
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>The resolved provider configuration, or null if no suitable provider is found.</returns>
     Task<ProviderResolution?> ResolveProviderAsync(
-        string modelId, 
+        string modelId,
         ProviderSelectionCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
@@ -28,7 +28,7 @@ public interface IModelResolver
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>List of all available provider resolutions for the model, ordered by preference.</returns>
     Task<IReadOnlyList<ProviderResolution>> GetAvailableProvidersAsync(
-        string modelId, 
+        string modelId,
         ProviderSelectionCriteria? criteria = null,
         CancellationToken cancellationToken = default);
 
@@ -39,7 +39,7 @@ public interface IModelResolver
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>True if the provider is available and configured, false otherwise.</returns>
     Task<bool> IsProviderAvailableAsync(
-        string providerName, 
+        string providerName,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -73,4 +73,4 @@ public interface IModelResolver
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>Validation result with any errors or warnings.</returns>
     Task<ValidationResult> ValidateConfigurationAsync(CancellationToken cancellationToken = default);
-} 
+}

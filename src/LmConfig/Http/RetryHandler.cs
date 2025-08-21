@@ -37,4 +37,4 @@ public sealed class RetryHandler : DelegatingHandler
             await Task.Delay(_delay, cancellationToken).ConfigureAwait(false);
         }
     }
-} 
+}

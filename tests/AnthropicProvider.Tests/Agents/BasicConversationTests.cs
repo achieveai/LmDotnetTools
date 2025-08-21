@@ -19,7 +19,7 @@ public class BasicConversationTests
 
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+            .RespondWithAnthropicMessage("This is a mock response for testing.",
                 "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
@@ -65,12 +65,12 @@ public class BasicConversationTests
         // Log what was captured using new RequestCapture API
         TestLogger.Log($"Captured requests count: {requestCapture.RequestCount}");
         Assert.Equal(1, requestCapture.RequestCount);
-        
+
         var capturedRequest = requestCapture.GetAnthropicRequest();
         Assert.NotNull(capturedRequest);
         TestLogger.Log($"Model: {capturedRequest.Model}");
         TestLogger.Log($"System prompt: {capturedRequest.System ?? "null"}");
-        
+
         var messagesList = capturedRequest.Messages.ToList();
         TestLogger.Log($"Messages count: {messagesList.Count}");
 
@@ -110,7 +110,7 @@ public class BasicConversationTests
     {
         // Arrange - Using MockHttpHandlerBuilder for response testing
         var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicMessage("Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?", 
+            .RespondWithAnthropicMessage("Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?",
                 "claude-3-7-sonnet-20250219", 10, 20)
             .Build();
 

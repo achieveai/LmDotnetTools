@@ -18,8 +18,8 @@ public static class EmbeddingTestDataGenerator
     /// <param name="model">Model name to include in response (default: "test-model")</param>
     /// <returns>JSON string representing a valid embedding response</returns>
     public static string CreateValidEmbeddingResponse(
-        int embeddingCount, 
-        int embeddingSize = 1536, 
+        int embeddingCount,
+        int embeddingSize = 1536,
         string model = "test-model")
     {
         var embeddings = new List<object>();
@@ -54,7 +54,7 @@ public static class EmbeddingTestDataGenerator
     /// <param name="model">Model name to include in response (default: "test-rerank-model")</param>
     /// <returns>JSON string representing a valid rerank response</returns>
     public static string CreateValidRerankResponse(
-        int documentCount, 
+        int documentCount,
         string model = "test-rerank-model")
     {
         var results = new List<object>();
@@ -158,8 +158,8 @@ public static class EmbeddingTestDataGenerator
     /// <param name="errorType">Error type (default: "invalid_request_error")</param>
     /// <returns>JSON string representing an error response</returns>
     public static string CreateErrorResponse(
-        string errorCode, 
-        string errorMessage, 
+        string errorCode,
+        string errorMessage,
         string errorType = "invalid_request_error")
     {
         var response = new
@@ -182,8 +182,8 @@ public static class EmbeddingTestDataGenerator
     public static string CreateRateLimitErrorResponse()
     {
         return CreateErrorResponse(
-            "rate_limit_exceeded", 
-            "Rate limit exceeded. Please try again later.", 
+            "rate_limit_exceeded",
+            "Rate limit exceeded. Please try again later.",
             "rate_limit_error");
     }
 
@@ -194,8 +194,8 @@ public static class EmbeddingTestDataGenerator
     public static string CreateAuthErrorResponse()
     {
         return CreateErrorResponse(
-            "invalid_api_key", 
-            "Invalid API key provided.", 
+            "invalid_api_key",
+            "Invalid API key provided.",
             "authentication_error");
     }
 
@@ -229,4 +229,4 @@ public static class EmbeddingTestDataGenerator
             new object[] { "invalid_input", "Invalid input format", "Input validation error scenario" }
         };
     }
-} 
+}

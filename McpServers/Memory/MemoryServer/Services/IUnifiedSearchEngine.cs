@@ -39,4 +39,4 @@ public interface IUnifiedSearchEngine
         SessionContext sessionContext,
         UnifiedSearchOptions? options = null,
         CancellationToken cancellationToken = default);
-} 
+}

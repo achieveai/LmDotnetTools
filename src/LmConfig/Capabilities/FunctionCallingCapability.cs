@@ -102,4 +102,4 @@ public record FunctionCallingCapability
     /// </summary>
     [JsonPropertyName("supported_schema_versions")]
     public IReadOnlyList<string> SupportedSchemaVersions { get; init; } = Array.Empty<string>();
-} 
+}

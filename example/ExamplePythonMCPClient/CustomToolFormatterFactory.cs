@@ -34,13 +34,13 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         private readonly ConsoleColorPair _pythonOperatorColor = new() { Foreground = ConsoleColor.DarkGray };
         private readonly ConsoleColorPair _pythonCommentColor = new() { Foreground = ConsoleColor.DarkGreen };
         private readonly ConsoleColorPair _pythonIdentifierColor = new() { Foreground = ConsoleColor.White };
-        private readonly ConsoleColorPair _pythonPunctuationColor = new() { Foreground = ConsoleColor.Green };        private readonly ConsoleColorPair _errorColor = new() { Foreground = ConsoleColor.Red };
-        
+        private readonly ConsoleColorPair _pythonPunctuationColor = new() { Foreground = ConsoleColor.Green }; private readonly ConsoleColorPair _errorColor = new() { Foreground = ConsoleColor.Red };
+
         // State management for JSON accumulation
         private readonly JsonFragmentToStructuredUpdateGenerator _accumulator = new("tool");
         private readonly IToolFormatterFactory _defaultFormatterFactory = new DefaultToolFormatterFactory(new ConsoleColorPair { Foreground = ConsoleColor.Blue });
         private ConsoleColorPair _markdownColor = new() { Foreground = ConsoleColor.White };
-        
+
         // Cached lines for partial string processing
         private string _thinkingLine = string.Empty;
         private string _pythonLine = string.Empty;
@@ -77,8 +77,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 return _defaultFormatterFactory.GetFormatter(toolCallName);
             }
         }        /// <summary>
-        /// Specialized formatter for sequential thinking tool
-        /// </summary>
+                 /// Specialized formatter for sequential thinking tool
+                 /// </summary>
         private IEnumerable<(ConsoleColorPair, string)> SequentialThinkingFormatter(string toolName, IEnumerable<JsonFragmentUpdate> fragmentUpdates)
         {
             var results = new List<(ConsoleColorPair, string)>();
@@ -101,7 +101,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     {
                         // Unescape the JSON string
                         string thought = JsonStringUtils.UnescapeJsonString(update.TextValue);
-                        
+
                         // Check if this is a complete or partial update
                         bool isComplete = update.Kind == JsonFragmentKind.CompleteString;
 
@@ -177,8 +177,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 yield return (_thinkingColor, Environment.NewLine);
             }
         }        /// <summary>
-        /// Processes a single markdown line with syntax highlighting
-        /// </summary>
+                 /// Processes a single markdown line with syntax highlighting
+                 /// </summary>
         private IEnumerable<(ConsoleColorPair, string)> ProcessSingleLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line))
@@ -266,8 +266,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 pos++;
             }
         }        /// <summary>
-        /// Specialized formatter for Python code execution
-        /// </summary>
+                 /// Specialized formatter for Python code execution
+                 /// </summary>
         private IEnumerable<(ConsoleColorPair, string)> PythonCodeFormatter(string toolName, IEnumerable<JsonFragmentUpdate> fragmentUpdates)
         {
             var results = new List<(ConsoleColorPair, string)>();
@@ -290,7 +290,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     {
                         // Unescape the JSON string
                         string code = JsonStringUtils.UnescapeJsonString(update.TextValue);
-                        
+
                         // Check if this is a complete or partial update
                         bool isComplete = update.Kind == JsonFragmentKind.CompleteString;
 
@@ -320,7 +320,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                             results.Add((_pythonCodeColor, Environment.NewLine));
                             _pythonLine = string.Empty;
                         }
-                    }                }
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -334,8 +335,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
 
             return results;
         }        /// <summary>
-        /// Formats Python code with syntax highlighting
-        /// </summary>
+                 /// Formats Python code with syntax highlighting
+                 /// </summary>
         private IEnumerable<(ConsoleColorPair, string)> FormatPythonCode(string code, bool isComplete = true)
         {
             if (string.IsNullOrEmpty(code))
@@ -351,18 +352,19 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             {
                 _pythonLine = lines[lines.Length - 1]; // Store the last line for further processing
                 lines = lines.Take(lines.Length - 1).ToArray(); // Exclude the last line for now
-            }            foreach (var line in lines)
+            }
+            foreach (var line in lines)
             {
                 // Process line segment by segment based on regex matches
                 foreach (var token in FormatPythonLine(line))
                 {
                     yield return token;
                 }
-                
+
                 yield return ((_pythonCodeColor, Environment.NewLine));
             }
         }
-          /// <summary>
+        /// <summary>
         /// Formats a single line of Python code with syntax highlighting
         /// </summary>
         private IEnumerable<(ConsoleColorPair, string)> FormatPythonLine(string line)
@@ -371,9 +373,9 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             {
                 yield break;
             }
-            
+
             int pos = 0;
-            
+
             // Indicate line start with a consistent indentation
             yield return ((_pythonPunctuationColor, "  "));
 

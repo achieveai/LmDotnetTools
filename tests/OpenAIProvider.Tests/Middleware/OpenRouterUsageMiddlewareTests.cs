@@ -87,9 +87,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         return new IMessage[]
         {
             new TextMessage { Role = Role.User, Text = "Hello", GenerationId = completionId },
-            new TextMessage 
-            { 
-                Role = Role.Assistant, 
+            new TextMessage
+            {
+                Role = Role.Assistant,
                 Text = "Hi there!",
                 GenerationId = completionId,
                 Metadata = metadata
@@ -158,11 +158,11 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         // Assert - Should have 3 messages (2 original + 1 UsageMessage)
         Assert.Equal(3, result.Count);
-        
+
         // Verify the final message is a UsageMessage with inline usage data
         var usageMessage = result.LastOrDefault() as UsageMessage;
         Assert.NotNull(usageMessage);
-        
+
         var usage = usageMessage.Usage;
         Assert.NotNull(usage);
         Assert.Equal(150, usage.TotalTokens);
@@ -205,19 +205,19 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         }
 
         // All tests should have expected number of messages
-        
+
         // Assert
         Assert.Equal(3, result.Count);
-        
+
         // Verify the final message is a UsageMessage with fallback data
         var usageMessage = result.LastOrDefault() as UsageMessage;
         Assert.NotNull(usageMessage);
-        
+
         var usage = usageMessage.Usage;
         Assert.NotNull(usage);
         Assert.Equal(275, usage.TotalTokens); // 200 + 75
         Assert.Equal(0.008, usage.TotalCost);
-        
+
         // Verify model information was preserved
         Assert.Equal("gpt-4", usage.ExtraProperties?.GetValueOrDefault("model"));
     }
@@ -255,14 +255,14 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         // Assert
         Assert.Equal(2, result.Count);
-        
+
         // Verify the final message does NOT have enriched usage data (fallback failed)
         var finalMessage = result.Last();
-        
+
         // Should have original message without enriched usage
         Assert.Equal("Hi there!", (finalMessage as TextMessage)?.Text);
         Assert.Equal(completionId, finalMessage.GenerationId);
-        
+
         // The middleware should not crash or throw - it should gracefully handle failure
         // This validates Requirement 9.1-9.2 (error handling & resilience)
     }
@@ -276,17 +276,17 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
     {
         // Arrange
         var completionId = "test-completion-order";
-        
+
         // Create multiple messages to test ordering
         var messages = new IMessage[]
         {
             new TextMessage { Role = Role.User, Text = "Message 1", GenerationId = completionId },
             new TextMessage { Role = Role.Assistant, Text = "Message 2", GenerationId = completionId },
             new TextMessage { Role = Role.User, Text = "Message 3", GenerationId = completionId },
-            new TextMessage 
-            { 
-                Role = Role.Assistant, 
-                Text = "Final message", 
+            new TextMessage
+            {
+                Role = Role.Assistant,
+                Text = "Final message",
                 GenerationId = completionId,
                 Metadata = ImmutableDictionary<string, object>.Empty.Add("completion_id", completionId)
             }
@@ -315,19 +315,19 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         // Assert: Verify all original messages unchanged, plus UsageMessage
         Assert.Equal(5, result.Count); // 4 original + 1 UsageMessage
-        
+
         // All 4 original messages should be unchanged (Requirement 13.4)
         for (int i = 0; i < 4; i++)
         {
             var originalMessage = messages[i] as TextMessage;
             var resultMessage = result[i] as TextMessage;
-            
+
             Assert.NotNull(originalMessage);
             Assert.NotNull(resultMessage);
             Assert.Equal(originalMessage.Text, resultMessage.Text);
             Assert.Equal(originalMessage.Role, resultMessage.Role);
         }
-        
+
         // Final message should be a UsageMessage
         var usageMessage = result[4] as UsageMessage;
         Assert.NotNull(usageMessage);
@@ -377,17 +377,17 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         // Assert - Should have 3 messages (2 original + 1 UsageMessage)
         Assert.Equal(3, result.Count);
-        
+
         // Verify the final message is a UsageMessage with cached usage data
         var usageMessage = result.LastOrDefault() as UsageMessage;
         Assert.NotNull(usageMessage);
-        
+
         var usage = usageMessage.Usage;
         Assert.NotNull(usage);
         Assert.Equal(250, usage.TotalTokens);
         Assert.Equal(0.012, usage.TotalCost);
         Assert.Equal("gpt-4-cached", usage.ExtraProperties?.GetValueOrDefault("model"));
-        
+
         // Verify it's marked as cached (should be boolean true)
         Assert.Equal(true, usage.ExtraProperties?.GetValueOrDefault("is_cached"));
     }
@@ -419,14 +419,14 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Act & Measure
         var stopwatch = Stopwatch.StartNew();
         var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
-        
+
         var result = new List<IMessage>();
         TimeSpan finalChunkLatency = TimeSpan.Zero;
-        
+
         await foreach (var message in messageStream)
         {
             result.Add(message);
-            
+
             // Measure latency for final chunk (with usage enrichment)
             if (result.Count == 2) // Final message
             {
@@ -435,7 +435,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         }
 
         // Assert: Final chunk latency should be ≤ 5000ms (relaxed for test environment)
-        Assert.True(finalChunkLatency.TotalMilliseconds <= 5000, 
+        Assert.True(finalChunkLatency.TotalMilliseconds <= 5000,
             $"Final chunk latency was {finalChunkLatency.TotalMilliseconds}ms, exceeding 5000ms budget");
     }
 
@@ -477,18 +477,18 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Act & Measure CPU time per chunk
         var stopwatch = Stopwatch.StartNew();
         var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
-        
+
         var result = new List<IMessage>();
         await foreach (var message in messageStream)
         {
             result.Add(message);
         }
-        
+
         stopwatch.Stop();
 
         // Assert: Average CPU overhead should be ≤ 50ms per chunk (relaxed for test environment)
         var averageTimePerChunk = stopwatch.Elapsed.TotalMilliseconds / messages.Length;
-        Assert.True(averageTimePerChunk <= 50.0, 
+        Assert.True(averageTimePerChunk <= 50.0,
             $"Average CPU time per chunk was {averageTimePerChunk:F2}ms, exceeding 50ms budget");
     }
 
@@ -522,7 +522,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Assert
         var resultList = result.ToList();
         Assert.Equal(3, resultList.Count); // 2 original + 1 UsageMessage
-        
+
         // Verify the final message is a UsageMessage
         var usageMessage = resultList.LastOrDefault() as UsageMessage;
         Assert.NotNull(usageMessage);
@@ -567,7 +567,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Assert: The middleware should have injected usage tracking and emitted UsageMessage
         // This is validated by the presence of a UsageMessage at the end
         Assert.Equal(3, result.Count); // 2 original + 1 UsageMessage
-        
+
         // Verify the final message is a UsageMessage
         var usageMessage = result.LastOrDefault() as UsageMessage;
         Assert.NotNull(usageMessage);
@@ -578,7 +578,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
     {
         // Arrange: Setup OpenRouter fallback response
         const string completionId = "chatcmpl-test123";
-        
+
         // Use the same helper method as working tests
         var generationResponse = CreateOpenRouterGenerationResponse("openai/gpt-4", 25, 12, 0.001425);
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
@@ -624,25 +624,25 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Assert
         // Debug what we actually received
         var usageMessages = result.OfType<UsageMessage>().ToList();
-        
+
         // We should have at least one UsageMessage
         Assert.NotEmpty(usageMessages);
-        
+
         var finalUsageMessage = usageMessages.Last();
         Assert.NotNull(finalUsageMessage);
-        
+
         // Debug output
         Console.WriteLine($"Total messages: {result.Count}");
         Console.WriteLine($"UsageMessage count: {usageMessages.Count}");
         Console.WriteLine($"Final UsageMessage TotalCost: {finalUsageMessage.Usage.TotalCost}");
         Console.WriteLine($"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}");
         Console.WriteLine($"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}");
-        
+
         Assert.NotNull(finalUsageMessage.Usage.TotalCost);
         Assert.Equal(0.001425, finalUsageMessage.Usage.TotalCost);
         Assert.Equal(25, finalUsageMessage.Usage.PromptTokens);
         Assert.Equal(12, finalUsageMessage.Usage.CompletionTokens);
-        
+
         // Verify that it was enhanced by our middleware
         Assert.True(finalUsageMessage.Usage.ExtraProperties?.ContainsKey("enhanced_by"));
         Assert.Equal("openrouter_middleware", finalUsageMessage.Usage.ExtraProperties?["enhanced_by"]);
@@ -653,7 +653,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
     {
         // Arrange: Setup OpenRouter response with different token counts than existing usage
         const string completionId = "chatcmpl-discrepancy-test";
-        
+
         // Use the same helper method as working tests with different token counts
         var generationResponse = CreateOpenRouterGenerationResponse("openai/gpt-4", 30, 15, 0.002000);
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
@@ -698,25 +698,25 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Assert
         // Debug what we actually received
         var usageMessages = result.OfType<UsageMessage>().ToList();
-        
+
         Console.WriteLine($"Total messages: {result.Count}");
         Console.WriteLine($"UsageMessage count: {usageMessages.Count}");
-        
+
         var finalUsageMessage = usageMessages.Last();
         Assert.NotNull(finalUsageMessage);
-        
+
         Console.WriteLine($"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}");
         Console.WriteLine($"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}");
         Console.WriteLine($"Final UsageMessage TotalTokens: {finalUsageMessage.Usage.TotalTokens}");
         Console.WriteLine($"Final UsageMessage TotalCost: {finalUsageMessage.Usage.TotalCost}");
         Console.WriteLine($"Final UsageMessage has token_discrepancies_resolved: {finalUsageMessage.Usage.ExtraProperties?.ContainsKey("token_discrepancies_resolved")}");
-        
+
         // Verify OpenRouter values were used (revised token counts)
         Assert.Equal(30, finalUsageMessage.Usage.PromptTokens);      // Updated from 25
         Assert.Equal(15, finalUsageMessage.Usage.CompletionTokens);  // Updated from 12
         Assert.Equal(45, finalUsageMessage.Usage.TotalTokens);       // Recalculated (30 + 15)
         Assert.Equal(0.002000, finalUsageMessage.Usage.TotalCost);   // Set from OpenRouter
-        
+
         // Verify discrepancy metadata flags
         Assert.True(finalUsageMessage.Usage.ExtraProperties?.ContainsKey("token_discrepancies_resolved"));
         Assert.Equal(true, finalUsageMessage.Usage.ExtraProperties?["token_discrepancies_resolved"]);
@@ -730,4 +730,4 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
     {
         _usageCache?.Dispose();
     }
-} 
+}

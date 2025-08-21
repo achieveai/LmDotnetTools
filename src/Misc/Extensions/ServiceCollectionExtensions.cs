@@ -61,7 +61,7 @@ public static class ServiceCollectionExtensions
             {
                 var hb = new HandlerBuilder();
                 var store = sp.GetRequiredService<IKvStore>();
-                var opts  = sp.GetRequiredService<LlmCacheOptions>();
+                var opts = sp.GetRequiredService<LlmCacheOptions>();
                 hb.Use(StandardWrappers.WithKvCache(store, opts));
                 return hb;
             });
@@ -78,7 +78,7 @@ public static class ServiceCollectionExtensions
                                    ?? new HandlerBuilder();
 
                 var store = sp.GetRequiredService<IKvStore>();
-                var opts  = sp.GetRequiredService<LlmCacheOptions>();
+                var opts = sp.GetRequiredService<LlmCacheOptions>();
                 innerBuilder.Use(StandardWrappers.WithKvCache(store, opts));
                 return innerBuilder;
             });
@@ -106,7 +106,7 @@ public static class ServiceCollectionExtensions
         {
             CacheDirectory = section.GetValue<string>("CacheDirectory") ?? LlmCacheOptions.GetDefaultCacheDirectory(),
             EnableCaching = section.GetValue<bool>("EnableCaching", true),
-            CacheExpiration = section.GetValue<int?>("CacheExpirationHours") is int hours && hours > 0 
+            CacheExpiration = section.GetValue<int?>("CacheExpirationHours") is int hours && hours > 0
                 ? TimeSpan.FromHours(hours) : TimeSpan.FromHours(24),
             MaxCacheItems = section.GetValue<int?>("MaxCacheItems") is int items && items > 0 ? items : 10_000,
             MaxCacheSizeBytes = section.GetValue<long?>("MaxCacheSizeBytes") is long bytes && bytes > 0 ? bytes : 1_073_741_824,
@@ -332,4 +332,4 @@ public class CacheStatistics
     /// Size utilization as a percentage (0-100).
     /// </summary>
     public double SizeUtilizationPercent => MaxSizeBytes > 0 ? (double)TotalSizeBytes / MaxSizeBytes * 100 : 0;
-} 
+}

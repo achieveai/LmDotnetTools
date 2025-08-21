@@ -18,8 +18,8 @@ public interface IGraphExtractionService
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of extracted entities.</returns>
     Task<IEnumerable<Entity>> ExtractEntitiesAsync(
-        string content, 
-        SessionContext sessionContext, 
+        string content,
+        SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
         CancellationToken cancellationToken = default);
@@ -35,8 +35,8 @@ public interface IGraphExtractionService
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Tuple containing extracted entities and relationships.</returns>
     Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
-        string content, 
-        SessionContext sessionContext, 
+        string content,
+        SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
         CancellationToken cancellationToken = default);
@@ -88,4 +88,4 @@ public interface IGraphExtractionService
         SessionContext sessionContext,
         string? modelId = null,
         CancellationToken cancellationToken = default);
-} 
+}

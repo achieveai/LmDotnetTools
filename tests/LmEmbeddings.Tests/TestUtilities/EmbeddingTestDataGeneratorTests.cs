@@ -26,19 +26,19 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(json);
         Assert.NotEmpty(json);
-        
+
         // Verify it's valid JSON
         var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        
+
         Assert.True(root.TryGetProperty("Embeddings", out var embeddingsElement));
         Assert.True(root.TryGetProperty("Model", out var modelElement));
         Assert.True(root.TryGetProperty("Usage", out var usageElement));
-        
+
         Assert.Equal(JsonValueKind.Array, embeddingsElement.ValueKind);
         Assert.Equal(embeddingCount, embeddingsElement.GetArrayLength());
         Assert.Equal(model, modelElement.GetString());
-        
+
         // Check first embedding structure
         if (embeddingCount > 0)
         {
@@ -46,12 +46,12 @@ public class EmbeddingTestDataGeneratorTests
             Assert.True(firstEmbedding.TryGetProperty("Vector", out var vectorElement));
             Assert.True(firstEmbedding.TryGetProperty("Index", out var indexElement));
             Assert.True(firstEmbedding.TryGetProperty("Text", out var textElement));
-            
+
             Assert.Equal(JsonValueKind.Array, vectorElement.ValueKind);
             Assert.Equal(embeddingSize, vectorElement.GetArrayLength());
             Assert.Equal(0, indexElement.GetInt32());
         }
-        
+
         Debug.WriteLine($"✓ Generated valid JSON with {embeddingCount} embeddings of size {embeddingSize}");
     }
 
@@ -70,15 +70,15 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(json);
         Assert.NotEmpty(json);
-        
+
         var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        
+
         Assert.True(root.TryGetProperty("results", out var resultsElement));
         Assert.True(root.TryGetProperty("model", out var modelElement));
         Assert.Equal(documentCount, resultsElement.GetArrayLength());
         Assert.Equal(model, modelElement.GetString());
-        
+
         Debug.WriteLine($"✓ Generated valid rerank response with {documentCount} documents");
     }
 
@@ -97,14 +97,14 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(embedding);
         Assert.Equal(size, embedding.Length);
-        
+
         // Check values are in expected range [-1, 1]
         Assert.All(embedding, value => Assert.InRange(value, -1.0f, 1.0f));
-        
+
         // Verify deterministic generation
         var embedding2 = EmbeddingTestDataGenerator.GenerateTestEmbeddingArray(size, seed);
         Assert.Equal(embedding, embedding2);
-        
+
         Debug.WriteLine($"✓ Generated deterministic embedding array of size {size}");
     }
 
@@ -124,19 +124,19 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(embeddings);
         Assert.Equal(count, embeddings.Count);
-        
+
         foreach (var embedding in embeddings)
         {
             Assert.Equal(size, embedding.Length);
             Assert.All(embedding, value => Assert.InRange(value, -1.0f, 1.0f));
         }
-        
+
         // Verify arrays are different (due to different seeds)
         if (count > 1)
         {
             Assert.NotEqual(embeddings[0], embeddings[1]);
         }
-        
+
         Debug.WriteLine($"✓ Generated {count} different embedding arrays of size {size}");
     }
 
@@ -155,12 +155,12 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(texts);
         Assert.Equal(count, texts.Length);
-        
+
         for (int i = 0; i < count; i++)
         {
             Assert.Equal($"{prefix}_{i}", texts[i]);
         }
-        
+
         Debug.WriteLine($"✓ Generated {count} input texts with prefix '{prefix}'");
     }
 
@@ -179,13 +179,13 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(documents);
         Assert.Equal(count, documents.Length);
-        
+
         foreach (var document in documents)
         {
             Assert.StartsWith(prefix, document);
             Assert.Contains("This is a test document", document);
         }
-        
+
         Debug.WriteLine($"✓ Generated {count} document texts with prefix '{prefix}'");
     }
 
@@ -205,19 +205,19 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(json);
         Assert.NotEmpty(json);
-        
+
         var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        
+
         Assert.True(root.TryGetProperty("error", out var errorElement));
         Assert.True(errorElement.TryGetProperty("code", out var codeElement));
         Assert.True(errorElement.TryGetProperty("message", out var messageElement));
         Assert.True(errorElement.TryGetProperty("type", out var typeElement));
-        
+
         Assert.Equal(errorCode, codeElement.GetString());
         Assert.Equal(errorMessage, messageElement.GetString());
         Assert.Equal(errorType, typeElement.GetString());
-        
+
         Debug.WriteLine($"✓ Generated error response: {errorCode} - {errorMessage}");
     }
 
@@ -233,7 +233,7 @@ public class EmbeddingTestDataGeneratorTests
         Assert.NotNull(json);
         Assert.Contains("rate_limit_exceeded", json);
         Assert.Contains("Rate limit exceeded", json);
-        
+
         Debug.WriteLine("✓ Generated rate limit error response");
     }
 
@@ -249,7 +249,7 @@ public class EmbeddingTestDataGeneratorTests
         Assert.NotNull(json);
         Assert.Contains("invalid_api_key", json);
         Assert.Contains("Invalid API key", json);
-        
+
         Debug.WriteLine("✓ Generated auth error response");
     }
 
@@ -264,7 +264,7 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(testCases);
         Assert.NotEmpty(testCases);
-        
+
         foreach (var testCase in testCases)
         {
             Assert.Equal(3, testCase.Length); // count, size, description
@@ -272,7 +272,7 @@ public class EmbeddingTestDataGeneratorTests
             Assert.IsType<int>(testCase[1]);   // size
             Assert.IsType<string>(testCase[2]); // description
         }
-        
+
         Debug.WriteLine($"✓ Generated {testCases.Count()} embedding test cases");
     }
 
@@ -287,7 +287,7 @@ public class EmbeddingTestDataGeneratorTests
         // Assert
         Assert.NotNull(testCases);
         Assert.NotEmpty(testCases);
-        
+
         foreach (var testCase in testCases)
         {
             Assert.Equal(3, testCase.Length); // code, message, description
@@ -295,7 +295,7 @@ public class EmbeddingTestDataGeneratorTests
             Assert.IsType<string>(testCase[1]); // message
             Assert.IsType<string>(testCase[2]); // description
         }
-        
+
         Debug.WriteLine($"✓ Generated {testCases.Count()} error test cases");
     }
 
@@ -359,4 +359,4 @@ public class EmbeddingTestDataGeneratorTests
     };
 
     #endregion
-} 
+}

@@ -38,9 +38,9 @@ public class McpMiddlewareFactory
 
         // Read and parse the configuration file
         var configJson = await File.ReadAllTextAsync(configFilePath, cancellationToken);
-        
+
         _logger.LogDebug("Configuration file read: Size={ConfigSize} bytes", configJson.Length);
-        
+
         var config = JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson)
             ?? throw new InvalidOperationException($"Failed to deserialize config file: {configFilePath}");
 
@@ -61,7 +61,7 @@ public class McpMiddlewareFactory
     {
         _logger.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
 
-        _logger.LogDebug("MCP client configuration validation: ClientIds={ClientIds}", 
+        _logger.LogDebug("MCP client configuration validation: ClientIds={ClientIds}",
             string.Join(", ", config.Clients.Keys));
 
         // Create MCP clients from the configuration
@@ -75,19 +75,19 @@ public class McpMiddlewareFactory
                 var clientSettings = clientConfig.Value;
 
                 _logger.LogInformation("Creating MCP client: {ClientId}", clientId);
-                _logger.LogDebug("Client validation: ClientId={ClientId}, ConfigType={ConfigType}", 
+                _logger.LogDebug("Client validation: ClientId={ClientId}, ConfigType={ConfigType}",
                     clientId, clientSettings?.GetType().Name ?? "null");
 
                 // Create transport from configuration
                 var transport = CreateTransportFromConfig(clientId, clientSettings);
-                _logger.LogDebug("Transport created for client: ClientId={ClientId}, TransportType={TransportType}", 
+                _logger.LogDebug("Transport created for client: ClientId={ClientId}, TransportType={TransportType}",
                     clientId, transport.GetType().Name);
 
                 var client = await McpClientFactory.CreateAsync(transport);
                 mcpClients[clientId] = client;
 
                 _logger.LogInformation("Successfully created MCP client: {ClientId}", clientId);
-                _logger.LogDebug("Client creation completed: ClientId={ClientId}, ClientType={ClientType}", 
+                _logger.LogDebug("Client creation completed: ClientId={ClientId}, ClientType={ClientType}",
                     clientId, client.GetType().Name);
             }
             catch (Exception ex)
@@ -97,7 +97,7 @@ public class McpMiddlewareFactory
             }
         }
 
-        _logger.LogDebug("Middleware setup: Preparing to create middleware with {ClientCount} validated clients", 
+        _logger.LogDebug("Middleware setup: Preparing to create middleware with {ClientCount} validated clients",
             mcpClients.Count);
 
         // Create loggers for middleware components
@@ -111,7 +111,7 @@ public class McpMiddlewareFactory
 
         // Create the middleware using the async factory pattern with loggers
         return await McpMiddleware.CreateAsync(
-            mcpClients, 
+            mcpClients,
             logger: mcpMiddlewareLogger,
             functionCallLogger: functionCallMiddlewareLogger,
             cancellationToken: cancellationToken);
@@ -288,7 +288,7 @@ public class McpMiddlewareFactory
     {
         _logger.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
 
-        _logger.LogDebug("Client validation: Validating {ClientCount} provided clients: {ClientIds}", 
+        _logger.LogDebug("Client validation: Validating {ClientCount} provided clients: {ClientIds}",
             mcpClients.Count, string.Join(", ", mcpClients.Keys));
 
         // Validate clients
@@ -299,7 +299,7 @@ public class McpMiddlewareFactory
                 _logger.LogDebug("Client validation failed: ClientId={ClientId} has null client instance", kvp.Key);
                 throw new ArgumentException($"Client '{kvp.Key}' is null", nameof(mcpClients));
             }
-            _logger.LogDebug("Client validation passed: ClientId={ClientId}, ClientType={ClientType}", 
+            _logger.LogDebug("Client validation passed: ClientId={ClientId}, ClientType={ClientType}",
                 kvp.Key, kvp.Value.GetType().Name);
         }
 
@@ -317,7 +317,7 @@ public class McpMiddlewareFactory
         // Use the async factory pattern from McpMiddleware with loggers
         // This will automatically extract function contracts from the clients
         return await McpMiddleware.CreateAsync(
-            mcpClients, 
+            mcpClients,
             logger: mcpMiddlewareLogger,
             functionCallLogger: functionCallMiddlewareLogger,
             cancellationToken: cancellationToken);

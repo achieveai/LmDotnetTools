@@ -38,7 +38,7 @@ public class HttpRetryHelperTests
         {
             attemptCount++;
             Debug.WriteLine($"Operation attempt {attemptCount}");
-            
+
             if (attemptCount <= failureCount)
             {
                 throw new HttpRequestException("Simulated network timeout");
@@ -79,7 +79,7 @@ public class HttpRetryHelperTests
             var statusCode = statusCodes[Math.Min(attemptCount, statusCodes.Length - 1)];
             attemptCount++;
             Debug.WriteLine($"HTTP attempt {attemptCount}, returning status: {statusCode}");
-            
+
             var response = new HttpResponseMessage(statusCode);
             if (statusCode == HttpStatusCode.OK)
             {
@@ -162,7 +162,7 @@ public class HttpRetryHelperTests
         // Act & Assert
         var exception = await Assert.ThrowsAsync<ObjectDisposedException>(
             () => HttpRetryHelper.ExecuteWithRetryAsync(operation, _logger, checkDisposed: checkDisposed));
-        
+
         Assert.Contains("Service has been disposed", exception.Message);
         Debug.WriteLine($"✓ ObjectDisposedException thrown as expected: {exception.Message}");
     }
@@ -173,9 +173,9 @@ public class HttpRetryHelperTests
         Debug.WriteLine("Testing ExecuteHttpWithRetryAsync with disposal check");
 
         // Arrange
-        var httpOperation = new Func<Task<HttpResponseMessage>>(() => 
+        var httpOperation = new Func<Task<HttpResponseMessage>>(() =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
-        var responseProcessor = new Func<HttpResponseMessage, Task<string>>(response => 
+        var responseProcessor = new Func<HttpResponseMessage, Task<string>>(response =>
             Task.FromResult("Success"));
         var checkDisposed = new Func<bool>(() => true); // Always disposed
 
@@ -183,7 +183,7 @@ public class HttpRetryHelperTests
         var exception = await Assert.ThrowsAsync<ObjectDisposedException>(
             () => HttpRetryHelper.ExecuteHttpWithRetryAsync(
                 httpOperation, responseProcessor, _logger, checkDisposed: checkDisposed));
-        
+
         Assert.Contains("Service has been disposed", exception.Message);
         Debug.WriteLine($"✓ ObjectDisposedException thrown as expected: {exception.Message}");
     }
@@ -206,7 +206,7 @@ public class HttpRetryHelperTests
         // Act & Assert
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => HttpRetryHelper.ExecuteWithRetryAsync(operation, _logger, cancellationToken: cts.Token));
-        
+
         Debug.WriteLine("✓ OperationCanceledException thrown as expected");
     }
 
@@ -228,7 +228,7 @@ public class HttpRetryHelperTests
         // Act & Assert
         var exception = await Assert.ThrowsAsync<HttpRequestException>(
             () => HttpRetryHelper.ExecuteWithRetryAsync(operation, _logger, maxRetries: maxRetries));
-        
+
         // Should try: initial attempt + maxRetries = 1 + 2 = 3 total attempts
         Assert.Equal(maxRetries + 1, attemptCount);
         Debug.WriteLine($"✓ Operation attempted {attemptCount} times (initial + {maxRetries} retries)");
@@ -246,42 +246,42 @@ public class HttpRetryHelperTests
 
     public static IEnumerable<object[]> ExecuteHttpWithRetryAsyncTestCases => new List<object[]>
     {
-        new object[] 
-        { 
-            new[] { HttpStatusCode.OK }, 
-            true, 
-            "Immediate success with 200 OK" 
+        new object[]
+        {
+            new[] { HttpStatusCode.OK },
+            true,
+            "Immediate success with 200 OK"
         },
-        new object[] 
-        { 
-            new[] { HttpStatusCode.InternalServerError, HttpStatusCode.OK }, 
-            true, 
-            "Success after retrying 500 error" 
+        new object[]
+        {
+            new[] { HttpStatusCode.InternalServerError, HttpStatusCode.OK },
+            true,
+            "Success after retrying 500 error"
         },
-        new object[] 
-        { 
-            new[] { HttpStatusCode.BadGateway, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK }, 
-            true, 
-            "Success after retrying multiple 5xx errors" 
+        new object[]
+        {
+            new[] { HttpStatusCode.BadGateway, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK },
+            true,
+            "Success after retrying multiple 5xx errors"
         },
-        new object[] 
-        { 
-            new[] { HttpStatusCode.InternalServerError, HttpStatusCode.BadGateway, 
-                    HttpStatusCode.ServiceUnavailable, HttpStatusCode.GatewayTimeout }, 
-            false, 
-            "Failure after multiple 5xx errors exceed retry limit" 
+        new object[]
+        {
+            new[] { HttpStatusCode.InternalServerError, HttpStatusCode.BadGateway,
+                    HttpStatusCode.ServiceUnavailable, HttpStatusCode.GatewayTimeout },
+            false,
+            "Failure after multiple 5xx errors exceed retry limit"
         },
-        new object[] 
-        { 
-            new[] { HttpStatusCode.BadRequest }, 
-            false, 
-            "Immediate failure with 400 Bad Request (non-retryable)" 
+        new object[]
+        {
+            new[] { HttpStatusCode.BadRequest },
+            false,
+            "Immediate failure with 400 Bad Request (non-retryable)"
         },
-        new object[] 
-        { 
-            new[] { HttpStatusCode.NotFound }, 
-            false, 
-            "Immediate failure with 404 Not Found (non-retryable)" 
+        new object[]
+        {
+            new[] { HttpStatusCode.NotFound },
+            false,
+            "Immediate failure with 404 Not Found (non-retryable)"
         }
     };
 
@@ -353,4 +353,4 @@ public class HttpRetryHelperTests
     }
 
     #endregion
-} 
+}

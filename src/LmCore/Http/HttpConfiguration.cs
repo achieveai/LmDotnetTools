@@ -10,12 +10,12 @@ public class HttpConfiguration
     /// Default maximum number of retry attempts for HTTP operations
     /// </summary>
     public const int DefaultMaxRetries = 3;
-    
+
     /// <summary>
     /// Default timeout for HTTP requests in seconds
     /// </summary>
     public const int DefaultTimeoutSeconds = 30;
-    
+
     /// <summary>
     /// Default base delay for exponential backoff in milliseconds
     /// </summary>
@@ -25,32 +25,32 @@ public class HttpConfiguration
     /// Maximum number of retry attempts for HTTP operations
     /// </summary>
     public int MaxRetries { get; set; } = DefaultMaxRetries;
-    
+
     /// <summary>
     /// Timeout for HTTP requests
     /// </summary>
     public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
-    
+
     /// <summary>
     /// Base delay for exponential backoff retry logic
     /// </summary>
     public TimeSpan BaseDelay { get; set; } = TimeSpan.FromMilliseconds(DefaultBaseDelayMilliseconds);
-    
+
     /// <summary>
     /// Whether to enable detailed HTTP logging
     /// </summary>
     public bool EnableDetailedLogging { get; set; } = false;
-    
+
     /// <summary>
     /// Whether to retry on network/timeout errors
     /// </summary>
     public bool RetryOnNetworkErrors { get; set; } = true;
-    
+
     /// <summary>
     /// Whether to retry on HTTP server errors (5xx status codes)
     /// </summary>
     public bool RetryOnServerErrors { get; set; } = true;
-    
+
     /// <summary>
     /// User agent string to include in HTTP requests
     /// </summary>
@@ -84,13 +84,13 @@ public class HttpConfiguration
     {
         if (MaxRetries < 0)
             throw new ArgumentException("MaxRetries cannot be negative", nameof(MaxRetries));
-        
+
         if (Timeout <= TimeSpan.Zero)
             throw new ArgumentException("Timeout must be greater than zero", nameof(Timeout));
-        
+
         if (BaseDelay <= TimeSpan.Zero)
             throw new ArgumentException("BaseDelay must be greater than zero", nameof(BaseDelay));
-        
+
         if (string.IsNullOrWhiteSpace(UserAgent))
             throw new ArgumentException("UserAgent cannot be null or whitespace", nameof(UserAgent));
     }
@@ -109,4 +109,4 @@ public class HttpConfiguration
             UserAgent = UserAgent
         };
     }
-} 
+}

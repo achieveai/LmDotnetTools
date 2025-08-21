@@ -35,4 +35,4 @@ public class JwtOptions
                !string.IsNullOrEmpty(Audience) &&
                ExpirationMinutes > 0;
     }
-} 
+}

@@ -29,12 +29,14 @@ public record RerankingOptions
 
     public Dictionary<string, RerankingModelConfig> AvailableModels { get; init; } = new()
     {
-        ["jina-reranker-m0"] = new() {
+        ["jina-reranker-m0"] = new()
+        {
             Model = "jina-reranker-m0",
             ChunkSize = 10240,
             IsMultiModal = true
         },
-        ["jina-reranker-v2-base-multilingual"] = new() {
+        ["jina-reranker-v2-base-multilingual"] = new()
+        {
             Model = "jina-reranker-v2-base-multilingual",
             ChunkSize = 8192,
             IsMultiModal = false

@@ -30,4 +30,4 @@ public interface IRerankingEngine
     /// </summary>
     /// <returns>True if reranking service is available, false otherwise.</returns>
     bool IsRerankingAvailable();
-} 
+}

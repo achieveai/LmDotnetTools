@@ -211,4 +211,4 @@ public record CostStatistics
     /// </summary>
     [JsonPropertyName("cost_trend")]
     public TrendDirection? CostTrend { get; init; }
-} 
+}

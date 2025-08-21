@@ -88,4 +88,4 @@ public class Entity
             RunId = string.IsNullOrEmpty(RunId) ? null : RunId
         };
     }
-} 
+}

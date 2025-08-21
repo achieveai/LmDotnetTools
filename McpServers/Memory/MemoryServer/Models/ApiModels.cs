@@ -87,4 +87,4 @@ public class HybridSearchRequest
     /// Optional connection ID for session context.
     /// </summary>
     public string? ConnectionId { get; set; }
-} 
+}

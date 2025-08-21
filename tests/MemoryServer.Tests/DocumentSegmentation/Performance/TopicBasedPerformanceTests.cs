@@ -29,7 +29,7 @@ public class TopicBasedPerformanceTests
         _output = output;
         _mockLlmService = new Mock<ILlmProviderIntegrationService>();
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
-        
+
         // Create logger with test output
         var loggerFactory = LoggerFactory.Create(builder =>
         {
@@ -63,7 +63,7 @@ public class TopicBasedPerformanceTests
 
         // Act
         var result = await _service.SegmentByTopicsAsync(largeDocument, DocumentType.Generic, options);
-        
+
         stopwatch.Stop();
         var processingTimeMs = stopwatch.ElapsedMilliseconds;
         var wordsPerSecond = (largeDocument.Split(' ').Length / (processingTimeMs / 1000.0));
@@ -71,13 +71,13 @@ public class TopicBasedPerformanceTests
         // Assert
         result.Should().NotBeNull();
         result.Should().NotBeEmpty();
-        
+
         // Performance requirements: Should process at least 1000 words/second
-        wordsPerSecond.Should().BeGreaterThan(1000, 
+        wordsPerSecond.Should().BeGreaterThan(1000,
             $"Processing speed was {wordsPerSecond:F2} words/second, should be >1000");
-        
+
         // Should complete within reasonable time (< 30 seconds for 10k words)
-        processingTimeMs.Should().BeLessThan(30000, 
+        processingTimeMs.Should().BeLessThan(30000,
             $"Processing took {processingTimeMs}ms, should be <30000ms");
 
         // Memory validation - each segment should have reasonable content
@@ -87,7 +87,7 @@ public class TopicBasedPerformanceTests
         _output.WriteLine($"Large Document Performance:");
         _output.WriteLine($"  Document size: {largeDocument.Length:N0} characters");
         _output.WriteLine($"  Word count: {largeDocument.Split(' ').Length:N0} words");
-        _output.WriteLine($"  Processing time: {processingTimeMs:N0}ms ({processingTimeMs/1000.0:F2}s)");
+        _output.WriteLine($"  Processing time: {processingTimeMs:N0}ms ({processingTimeMs / 1000.0:F2}s)");
         _output.WriteLine($"  Processing speed: {wordsPerSecond:F2} words/second");
         _output.WriteLine($"  Segments created: {result.Count}");
         _output.WriteLine($"  Average segment size: {result.Average(s => s.Content.Length):F0} characters");
@@ -107,14 +107,14 @@ public class TopicBasedPerformanceTests
 
         // Act
         var result = await _service.SegmentByTopicsAsync(document, DocumentType.Generic, options);
-        
+
         stopwatch.Stop();
         var processingTimeMs = stopwatch.ElapsedMilliseconds;
         var wordsPerSecond = (document.Split(' ').Length / (processingTimeMs / 1000.0));
 
         // Assert
         result.Should().NotBeEmpty();
-        
+
         // Processing should scale reasonably with document size
         // Larger documents may be slightly less efficient due to complexity
         if (wordCount <= 10000)
@@ -153,12 +153,12 @@ public class TopicBasedPerformanceTests
         var stopwatch = Stopwatch.StartNew();
 
         // Act - Process documents concurrently
-        var tasks = documents.Select(doc => 
+        var tasks = documents.Select(doc =>
             _service.SegmentByTopicsAsync(doc, DocumentType.Generic, options)
         ).ToList();
 
         var results = await Task.WhenAll(tasks);
-        
+
         stopwatch.Stop();
         var totalProcessingTime = stopwatch.ElapsedMilliseconds;
 
@@ -169,7 +169,7 @@ public class TopicBasedPerformanceTests
         // Concurrent processing should be more efficient than sequential
         // Each document would take ~200-500ms sequentially, so 5 documents = ~1000-2500ms
         // Concurrent processing should be significantly faster
-        totalProcessingTime.Should().BeLessThan(2000, 
+        totalProcessingTime.Should().BeLessThan(2000,
             $"Concurrent processing took {totalProcessingTime}ms, should be <2000ms");
 
         // Verify no resource contention issues
@@ -197,7 +197,7 @@ public class TopicBasedPerformanceTests
 
         // Act - Process with high concurrency
         var stopwatch = Stopwatch.StartNew();
-        
+
         var semaphore = new SemaphoreSlim(5); // Limit to 5 concurrent operations
         var tasks = documents.Select(async doc =>
         {
@@ -223,7 +223,7 @@ public class TopicBasedPerformanceTests
         var averageTimePerDocument = totalProcessingTime / (double)documentCount;
 
         // Should maintain reasonable performance under high concurrency
-        averageTimePerDocument.Should().BeLessThan(1000, 
+        averageTimePerDocument.Should().BeLessThan(1000,
             $"Average processing time was {averageTimePerDocument:F0}ms, should be <1000ms");
 
         _output.WriteLine($"High Concurrency Test:");
@@ -262,7 +262,7 @@ public class TopicBasedPerformanceTests
 
         // Memory usage should be reasonable (< 50MB for a 20k word document)
         var memoryUsedMB = memoryUsed / (1024.0 * 1024.0);
-        memoryUsedMB.Should().BeLessThan(50, 
+        memoryUsedMB.Should().BeLessThan(50,
             $"Memory usage was {memoryUsedMB:F2}MB, should be <50MB");
 
         // Memory per word should be reasonable
@@ -308,7 +308,7 @@ public class TopicBasedPerformanceTests
         var memoryIncreaseMB = memoryIncrease / (1024.0 * 1024.0);
 
         // Assert - Memory should not significantly increase
-        memoryIncreaseMB.Should().BeLessThan(10, 
+        memoryIncreaseMB.Should().BeLessThan(10,
             $"Memory increased by {memoryIncreaseMB:F2}MB after {iterations} iterations, should be <10MB");
 
         _output.WriteLine($"Memory Leak Test:");
@@ -343,7 +343,7 @@ public class TopicBasedPerformanceTests
             $"Processing {wordCount} words took {stopwatch.ElapsedMilliseconds}ms, should be <{maxTimeMs}ms");
 
         var wordsPerSecond = (wordCount / (stopwatch.ElapsedMilliseconds / 1000.0));
-        
+
         _output.WriteLine($"Benchmark ({wordCount} words):");
         _output.WriteLine($"  Time: {stopwatch.ElapsedMilliseconds}ms (target: <{maxTimeMs}ms)");
         _output.WriteLine($"  Speed: {wordsPerSecond:F0} words/second");
@@ -364,7 +364,7 @@ public class TopicBasedPerformanceTests
             var stopwatch = Stopwatch.StartNew();
             var boundaries = await _service.DetectTopicBoundariesAsync(document, DocumentType.Generic);
             stopwatch.Stop();
-            
+
             boundaries.Should().NotBeNull();
             times.Add(stopwatch.ElapsedMilliseconds);
         }
@@ -427,10 +427,10 @@ public class TopicBasedPerformanceTests
         {
             var topic = topics[topicIndex % topics.Length];
             var paragraph = GenerateTopicParagraph(topic, 150); // ~150 words per paragraph
-            
+
             sb.AppendLine(paragraph);
             sb.AppendLine(); // Add spacing
-            
+
             wordsAdded += paragraph.Split(' ').Length;
             topicIndex++;
         }

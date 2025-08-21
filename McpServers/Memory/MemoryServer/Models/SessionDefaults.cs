@@ -11,32 +11,32 @@ public class SessionDefaults
     /// MCP connection identifier
     /// </summary>
     public string ConnectionId { get; set; } = string.Empty;
-    
+
     /// <summary>
     /// Default user identifier
     /// </summary>
     public string? UserId { get; set; }
-    
+
     /// <summary>
     /// Default agent identifier
     /// </summary>
     public string? AgentId { get; set; }
-    
+
     /// <summary>
     /// Default run identifier
     /// </summary>
     public string? RunId { get; set; }
-    
+
     /// <summary>
     /// Default metadata
     /// </summary>
     public Dictionary<string, object> Metadata { get; set; } = new();
-    
+
     /// <summary>
     /// Source of the session defaults
     /// </summary>
     public SessionDefaultsSource Source { get; set; } = SessionDefaultsSource.SystemDefaults;
-    
+
     /// <summary>
     /// When the session defaults were created
     /// </summary>
@@ -75,10 +75,10 @@ public class SessionDefaults
 
         if (queryParameters.TryGetValue("user_id", out var userId))
             defaults.UserId = userId;
-        
+
         if (queryParameters.TryGetValue("agent_id", out var agentId))
             defaults.AgentId = agentId;
-        
+
         if (queryParameters.TryGetValue("run_id", out var runId))
             defaults.RunId = runId;
 
@@ -101,10 +101,10 @@ public class SessionDefaults
 
         if (headers.TryGetValue("X-Memory-User-ID", out var userId))
             defaults.UserId = userId;
-        
+
         if (headers.TryGetValue("X-Memory-Agent-ID", out var agentId))
             defaults.AgentId = agentId;
-        
+
         if (headers.TryGetValue("X-Memory-Run-ID", out var runId))
             defaults.RunId = runId;
 
@@ -129,24 +129,24 @@ public enum SessionDefaultsSource
     /// System default values
     /// </summary>
     SystemDefaults = 0,
-    
+
     /// <summary>
     /// Set during session initialization
     /// </summary>
     SessionInitialization = 1,
-    
+
     /// <summary>
     /// From environment variables (STDIO transport)
     /// </summary>
     EnvironmentVariables = 2,
-    
+
     /// <summary>
     /// From URL parameters (SSE transport)
     /// </summary>
     UrlParameters = 3,
-    
+
     /// <summary>
     /// From HTTP headers (SSE transport)
     /// </summary>
     HttpHeaders = 4
-} 
+}

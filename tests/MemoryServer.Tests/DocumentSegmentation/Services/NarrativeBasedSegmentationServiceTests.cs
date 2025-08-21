@@ -76,7 +76,7 @@ public class NarrativeBasedSegmentationServiceTests
         // Assert
         result.Should().NotBeNull();
         result.Should().NotBeEmpty();
-        
+
         foreach (var segment in result)
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
@@ -109,7 +109,7 @@ Finally, we implemented a solution. The fix involved updating the connection str
         // Assert
         result.Should().NotBeEmpty();
         result.Should().HaveCountGreaterOrEqualTo(2); // Should detect temporal progression
-        
+
         // Check that segments have appropriate narrative metadata
         foreach (var segment in result)
         {
@@ -143,12 +143,12 @@ Consequently, the performance improved significantly after the changes.
 
         // Assert
         result.Should().NotBeEmpty();
-        
+
         // Check for causal relationship metadata
-        var segmentWithCausal = result.FirstOrDefault(s => 
-            s.Metadata.ContainsKey("transition_type") && 
+        var segmentWithCausal = result.FirstOrDefault(s =>
+            s.Metadata.ContainsKey("transition_type") &&
             s.Metadata["transition_type"].ToString() == "Causal");
-        
+
         segmentWithCausal.Should().NotBeNull();
     }
 
@@ -264,7 +264,7 @@ Next, we write code. Finally, we perform testing.
         result.Should().Contain(s => s.TemporalMarkers.Contains("then"));
         result.Should().Contain(s => s.TemporalMarkers.Contains("next"));
         result.Should().Contain(s => s.TemporalMarkers.Contains("finally"));
-        
+
         // Sequences should be in order
         result.Should().BeInAscendingOrder(s => s.SequentialOrder);
     }
@@ -291,7 +291,7 @@ As a result, users experienced timeouts.
         result.Should().Contain(r => r.CausalIndicator.Equals("because", StringComparison.OrdinalIgnoreCase));
         result.Should().Contain(r => r.CausalIndicator.Equals("therefore", StringComparison.OrdinalIgnoreCase));
         result.Should().Contain(r => r.CausalIndicator.Equals("as a result", StringComparison.OrdinalIgnoreCase));
-        
+
         foreach (var relation in result)
         {
             relation.Strength.Should().BeGreaterThan(0);
@@ -323,7 +323,7 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
         result.Should().ContainKey(NarrativeFunction.Background);
         result.Should().ContainKey(NarrativeFunction.Development);
         result.Should().ContainKey(NarrativeFunction.Resolution);
-        
+
         foreach (var element in result)
         {
             element.Value.Should().NotBeEmpty();

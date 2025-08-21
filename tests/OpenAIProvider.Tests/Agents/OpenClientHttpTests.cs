@@ -39,7 +39,7 @@ public class OpenClientHttpTests
             "qwen/qwen3-235b-a22b");
 
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount: 2, 
+            failureCount: 2,
             successResponse: successResponse,
             failureStatus: HttpStatusCode.ServiceUnavailable);
 
@@ -61,7 +61,7 @@ public class OpenClientHttpTests
         Assert.NotNull(response.Choices);
         Assert.True(response.Choices.Count > 0);
         Assert.Equal("Test response", response.Choices![0]!.Message!.Content?.Get<string>());
-        
+
         // Verify performance tracking
         var metrics = _performanceTracker.GetProviderStatistics("OpenAI");
         Assert.NotNull(metrics);
@@ -84,14 +84,14 @@ public class OpenClientHttpTests
         // Arrange & Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
             new OpenClient("valid-api-key-test", "invalid-url"));
-        
+
         Assert.Contains("Base URL must be a valid HTTP or HTTPS URL", exception.Message);
     }
 
     [Theory]
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(
-        HttpStatusCode[] statusCodes, 
+        HttpStatusCode[] statusCodes,
         bool shouldSucceed)
     {
         // Arrange
@@ -128,10 +128,10 @@ public class OpenClientHttpTests
         }
         else
         {
-            await Assert.ThrowsAnyAsync<HttpRequestException>(() => 
+            await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
                 client.CreateChatCompletionsAsync(request));
         }
-        
+
         // Verify performance tracking captured the metrics
         var metrics = _performanceTracker.GetProviderStatistics("OpenAI");
         Assert.NotNull(metrics);
@@ -144,7 +144,7 @@ public class OpenClientHttpTests
         // Arrange
         var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            successResponse, 
+            successResponse,
             HttpStatusCode.OK);
 
         var httpClient = new HttpClient(fakeHandler);
@@ -193,7 +193,7 @@ public class OpenClientHttpTests
         // Act
         var responseStream = client.StreamingChatCompletionsAsync(request);
         var chunks = new List<ChatCompletionResponse>();
-        
+
         await foreach (var chunk in responseStream)
         {
             chunks.Add(chunk);
@@ -201,7 +201,7 @@ public class OpenClientHttpTests
 
         // Assert
         Assert.NotEmpty(chunks);
-        
+
         // Verify performance tracking for streaming
         var metrics = _performanceTracker.GetProviderStatistics("OpenAI");
         Assert.NotNull(metrics);
@@ -228,11 +228,11 @@ public class OpenClientHttpTests
         // Scenario: Max retries exceeded
         yield return new object[]
         {
-            new[] { 
-                HttpStatusCode.ServiceUnavailable, 
-                HttpStatusCode.ServiceUnavailable, 
-                HttpStatusCode.ServiceUnavailable, 
-                HttpStatusCode.ServiceUnavailable 
+            new[] {
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable
             },
             false // should fail after max retries
         };
@@ -250,8 +250,8 @@ public class OpenClientHttpTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY", 
-            new[] { "OPENAI_API_KEY" }, 
+        return EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY",
+            new[] { "OPENAI_API_KEY" },
             "test-api-key");
     }
 
@@ -260,8 +260,8 @@ public class OpenClientHttpTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL", 
-            new[] { "OPENAI_API_URL" }, 
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL",
+            new[] { "OPENAI_API_URL" },
             "https://api.openai.com/v1");
     }
-} 
+}

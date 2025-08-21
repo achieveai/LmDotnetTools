@@ -86,7 +86,7 @@ public record EmbeddingServiceResult<T>
     {
         var errorSource = ClassifyException(exception);
         var isRetryable = IsRetryableException(exception);
-        
+
         var error = new EmbeddingError
         {
             Code = exception.GetType().Name,
@@ -200,4 +200,4 @@ public static class EmbeddingResults
 
         return EmbeddingServiceResult<T>.CreateFailure(error);
     }
-} 
+}

@@ -49,10 +49,10 @@ public class UsageCacheTests : IDisposable
         Assert.Equal(usage.CompletionTokens, cachedUsage.CompletionTokens);
         Assert.Equal(usage.TotalTokens, cachedUsage.TotalTokens);
         Assert.Equal(usage.TotalCost, cachedUsage.TotalCost);
-        
+
         // Verify the cached flag is set
         Assert.True(cachedUsage.GetExtraProperty<bool>("is_cached"));
-        
+
         // Verify original model info is preserved
         Assert.Equal("gpt-4", cachedUsage.GetExtraProperty<string>("model"));
     }
@@ -71,14 +71,14 @@ public class UsageCacheTests : IDisposable
 
         // Act
         _cache.SetUsage(completionId, usage);
-        
+
         // Verify it's cached initially
         var cachedUsage = _cache.TryGetUsage(completionId);
         Assert.NotNull(cachedUsage);
-        
+
         // Wait for TTL to expire (cache is set to 1 second)
         await Task.Delay(1500);
-        
+
         // Try to get again - should be null
         var expiredUsage = _cache.TryGetUsage(completionId);
 
@@ -101,7 +101,7 @@ public class UsageCacheTests : IDisposable
         _cache.SetUsage(null!, usage);
         _cache.SetUsage(string.Empty, usage);
         _cache.SetUsage(" ", usage);
-        
+
         // Verify nothing was cached
         Assert.Null(_cache.TryGetUsage("anything"));
     }
@@ -121,7 +121,7 @@ public class UsageCacheTests : IDisposable
         // Act
         _cache.SetUsage(completionId, usage);
         Assert.NotNull(_cache.TryGetUsage(completionId)); // Verify it's cached
-        
+
         _cache.RemoveUsage(completionId);
         var result = _cache.TryGetUsage(completionId);
 
@@ -149,7 +149,7 @@ public class UsageCacheTests : IDisposable
 
         // Assert
         Assert.True(stats.IsDisposed);
-        
+
         // Verify operations are safe after disposal
         Assert.Null(_cache.TryGetUsage("anything"));
     }
@@ -169,4 +169,4 @@ public class UsageCacheTests : IDisposable
     {
         _cache?.Dispose();
     }
-} 
+}

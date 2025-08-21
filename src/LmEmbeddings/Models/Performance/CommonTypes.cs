@@ -57,4 +57,4 @@ public enum TrendDirection
     /// Trend is unknown or inconsistent
     /// </summary>
     Unknown
-} 
+}

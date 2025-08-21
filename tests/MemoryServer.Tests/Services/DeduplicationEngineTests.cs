@@ -100,7 +100,7 @@ public class DeduplicationEngineTests
         Assert.True(deduplicationResults.WasDeduplicationPerformed);
         Assert.True(deduplicationResults.Results.Count < results.Count);
         Assert.True(deduplicationResults.Metrics.DuplicatesRemoved > 0);
-        
+
         // Should keep the highest scoring result from each duplicate group
         var sortedResults = deduplicationResults.Results.OrderByDescending(r => r.Score).ToList();
         Assert.Equal(0.9f, sortedResults[0].Score); // Highest score from duplicate group
@@ -153,12 +153,12 @@ public class DeduplicationEngineTests
     public async Task DeduplicationResultsAsync_WithHighSimilarityThreshold_PreservesMoreResults()
     {
         // Arrange
-        var strictOptions = new DeduplicationOptions 
-        { 
+        var strictOptions = new DeduplicationOptions
+        {
             EnableDeduplication = true,
             SimilarityThreshold = 0.95f // Very high threshold
         };
-        
+
         var results = new List<UnifiedSearchResult>
         {
             CreateMemoryResult(1, "John works at Microsoft in Seattle", 0.9f),
@@ -179,12 +179,12 @@ public class DeduplicationEngineTests
     public async Task DeduplicationResultsAsync_WithLowSimilarityThreshold_RemovesMoreResults()
     {
         // Arrange
-        var lenientOptions = new DeduplicationOptions 
-        { 
+        var lenientOptions = new DeduplicationOptions
+        {
             EnableDeduplication = true,
             SimilarityThreshold = 0.5f // Low threshold
         };
-        
+
         var results = new List<UnifiedSearchResult>
         {
             CreateMemoryResult(1, "John works at Microsoft", 0.9f),
@@ -315,4 +315,4 @@ public class DeduplicationEngineTests
             }
         };
     }
-} 
+}

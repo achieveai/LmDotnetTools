@@ -16,10 +16,10 @@ public interface IToolResultCallback
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>A task representing the asynchronous notification operation</returns>
     Task OnToolResultAvailableAsync(
-        string toolCallId, 
+        string toolCallId,
         ToolCallResult result,
         CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Called when a tool call starts execution.
     /// </summary>
@@ -33,7 +33,7 @@ public interface IToolResultCallback
         string functionName,
         string functionArgs,
         CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Called when a tool call encounters an error.
     /// </summary>

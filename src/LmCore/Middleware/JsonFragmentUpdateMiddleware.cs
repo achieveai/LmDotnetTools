@@ -75,7 +75,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 
         // Generate a key for the generator based on tool call identification
         var generatorKey = GetGeneratorKey(toolCallUpdate);
-        
+
         // Get or create generator for this tool call
         if (!_generators.TryGetValue(generatorKey, out var generator))
         {
@@ -109,12 +109,12 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         {
             return $"id:{toolCallUpdate.ToolCallId}";
         }
-        
+
         if (toolCallUpdate.Index.HasValue)
         {
             return $"index:{toolCallUpdate.Index.Value}";
         }
-        
+
         return $"name:{toolCallUpdate.FunctionName ?? "unknown"}";
     }
 
@@ -139,4 +139,4 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     {
         return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
-} 
+}

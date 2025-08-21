@@ -178,7 +178,7 @@ public class MemoryMcpTools
             // Search memories
             var results = await _memoryService.SearchMemoriesAsync(query, sessionContext, limit, scoreThreshold);
 
-            _logger.LogInformation("Found {Count} memories for query '{Query}' in session {SessionContext}", 
+            _logger.LogInformation("Found {Count} memories for query '{Query}' in session {SessionContext}",
                 results.Count, query, sessionContext);
 
             return new
@@ -258,7 +258,7 @@ public class MemoryMcpTools
             // Get all memories
             var memories = await _memoryService.GetAllMemoriesAsync(sessionContext, limit, offset);
 
-            _logger.LogInformation("Retrieved {Count} memories for session {SessionContext}", 
+            _logger.LogInformation("Retrieved {Count} memories for session {SessionContext}",
                 memories.Count, sessionContext);
 
             return new
@@ -515,7 +515,7 @@ public class MemoryMcpTools
             // Get memory history
             var history = await _memoryService.GetMemoryHistoryAsync(id, sessionContext);
 
-            _logger.LogInformation("Retrieved {Count} history entries for memory {Id} in session {SessionContext}", 
+            _logger.LogInformation("Retrieved {Count} history entries for memory {Id} in session {SessionContext}",
                 history.Count, id, sessionContext);
 
             return new
@@ -585,7 +585,7 @@ public class MemoryMcpTools
             // Get memory statistics
             var stats = await _memoryService.GetMemoryStatsAsync(sessionContext);
 
-            _logger.LogInformation("Retrieved memory statistics for session {SessionContext}: {TotalMemories} memories", 
+            _logger.LogInformation("Retrieved memory statistics for session {SessionContext}: {TotalMemories} memories",
                 sessionContext, stats.TotalMemories);
 
             return new
@@ -633,7 +633,7 @@ public class MemoryMcpTools
             // Get all agents for the user
             var agents = await _memoryService.GetAgentsAsync(sessionContext.UserId);
 
-            _logger.LogInformation("Retrieved {Count} agents for user {UserId}", 
+            _logger.LogInformation("Retrieved {Count} agents for user {UserId}",
                 agents.Count, sessionContext.UserId);
 
             return new
@@ -677,7 +677,7 @@ public class MemoryMcpTools
             // Get all runs for the user and agent
             var runs = await _memoryService.GetRunsAsync(sessionContext.UserId, agentId);
 
-            _logger.LogInformation("Retrieved {Count} runs for user {UserId} and agent {AgentId}", 
+            _logger.LogInformation("Retrieved {Count} runs for user {UserId} and agent {AgentId}",
                 runs.Count, sessionContext.UserId, agentId);
 
             return new
@@ -695,4 +695,4 @@ public class MemoryMcpTools
             return new { success = false, error = $"Error getting runs: {ex.Message}" };
         }
     }
-} 
+}

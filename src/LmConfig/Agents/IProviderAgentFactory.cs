@@ -83,4 +83,4 @@ public record ProviderCapabilityInfo
     /// Additional notes about the provider's capabilities or limitations.
     /// </summary>
     public string? Notes { get; init; }
-} 
+}

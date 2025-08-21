@@ -16,7 +16,7 @@ public class FunctionCallMiddlewareFactory : IFunctionCallMiddlewareFactory
     {
         return Create(null, name, configure);
     }
-    
+
     public FunctionCallMiddleware Create(IToolResultCallback? resultCallback, string? name = null, Action<FunctionRegistry>? configure = null)
     {
         var registry = CreateRegistry();
@@ -28,13 +28,13 @@ public class FunctionCallMiddlewareFactory : IFunctionCallMiddlewareFactory
     public FunctionRegistry CreateRegistry()
     {
         var registry = new FunctionRegistry();
-        
+
         // Add all registered providers
         foreach (var provider in _registry.GetProviders())
         {
             registry.AddProvider(provider);
         }
-        
+
         return registry;
     }
 }

@@ -23,7 +23,7 @@ public class ResultEnricher : IResultEnricher
         _options = options?.Value?.Enrichment ?? throw new ArgumentNullException(nameof(options));
         _graphRepository = graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
 
-        _logger.LogInformation("ResultEnricher initialized with max {MaxItems} related items per result", 
+        _logger.LogInformation("ResultEnricher initialized with max {MaxItems} related items per result",
             _options.MaxRelatedItems);
     }
 
@@ -52,7 +52,7 @@ public class ResultEnricher : IResultEnricher
             // If enrichment is disabled or no results, return original results as enriched
             if (!options.EnableEnrichment || results.Count == 0)
             {
-                return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, 
+                return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed,
                     "Enrichment disabled or no results");
             }
 
@@ -100,7 +100,7 @@ public class ResultEnricher : IResultEnricher
             metrics.Errors.Add($"Enrichment failed: {ex.Message}");
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
-                        if (!options.EnableGracefulFallback)
+            if (!options.EnableGracefulFallback)
                 throw;
 
             return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, $"Enrichment failed: {ex.Message}");
@@ -138,7 +138,7 @@ public class ResultEnricher : IResultEnricher
 
             // Enrich based on result type
             bool wasEnriched = false;
-            
+
             switch (result.Type)
             {
                 case UnifiedResultType.Memory:
@@ -242,7 +242,7 @@ public class ResultEnricher : IResultEnricher
                         Confidence = relationship.Confidence,
                         RelationshipExplanation = $"Direct relationship involving this entity"
                     });
-                    
+
                     metrics.RelatedItemsAdded++;
                     wasEnriched = true;
                 }
@@ -259,7 +259,7 @@ public class ResultEnricher : IResultEnricher
         {
             _logger.LogWarning(ex, "Failed to enrich entity result {EntityId}", result.Id);
             metrics.Errors.Add($"Entity enrichment failed for ID {result.Id}: {ex.Message}");
-            
+
             // Still generate relevance explanation even if repository calls fail
             if (options.GenerateRelevanceExplanations)
             {
@@ -318,7 +318,7 @@ public class ResultEnricher : IResultEnricher
                     Confidence = entity.Confidence,
                     RelationshipExplanation = $"Entity involved in this relationship"
                 });
-                
+
                 metrics.RelatedItemsAdded++;
                 wasEnriched = true;
             }
@@ -334,7 +334,7 @@ public class ResultEnricher : IResultEnricher
         {
             _logger.LogWarning(ex, "Failed to enrich relationship result {RelationshipId}", result.Id);
             metrics.Errors.Add($"Relationship enrichment failed for ID {result.Id}: {ex.Message}");
-            
+
             // Still generate relevance explanation even if repository calls fail
             if (options.GenerateRelevanceExplanations)
             {
@@ -354,12 +354,12 @@ public class ResultEnricher : IResultEnricher
     private string GenerateMemoryRelevanceExplanation(EnrichedSearchResult result)
     {
         var explanations = new List<string>();
-        
+
         if (result.RelatedEntities.Any())
         {
             explanations.Add($"Contains {result.RelatedEntities.Count} related entities");
         }
-        
+
         if (result.RelatedRelationships.Any())
         {
             explanations.Add($"Contains {result.RelatedRelationships.Count} relationships");
@@ -370,7 +370,7 @@ public class ResultEnricher : IResultEnricher
             explanations.Add("High relevance match");
         }
 
-        return explanations.Any() 
+        return explanations.Any()
             ? $"Memory relevant because: {string.Join(", ", explanations)}"
             : "Memory matches search criteria";
     }
@@ -378,7 +378,7 @@ public class ResultEnricher : IResultEnricher
     private string GenerateEntityRelevanceExplanation(EnrichedSearchResult result)
     {
         var explanations = new List<string>();
-        
+
         if (result.RelatedRelationships.Any())
         {
             explanations.Add($"Connected through {result.RelatedRelationships.Count} relationships");
@@ -389,7 +389,7 @@ public class ResultEnricher : IResultEnricher
             explanations.Add("High confidence entity");
         }
 
-        return explanations.Any() 
+        return explanations.Any()
             ? $"Entity relevant because: {string.Join(", ", explanations)}"
             : "Entity matches search criteria";
     }
@@ -397,7 +397,7 @@ public class ResultEnricher : IResultEnricher
     private string GenerateRelationshipRelevanceExplanation(EnrichedSearchResult result)
     {
         var explanations = new List<string>();
-        
+
         if (result.RelatedEntities.Any())
         {
             explanations.Add($"Involves {result.RelatedEntities.Count} relevant entities");
@@ -408,7 +408,7 @@ public class ResultEnricher : IResultEnricher
             explanations.Add("High confidence relationship");
         }
 
-        return explanations.Any() 
+        return explanations.Any()
             ? $"Relationship relevant because: {string.Join(", ", explanations)}"
             : "Relationship matches search criteria";
     }
@@ -420,7 +420,7 @@ public class ResultEnricher : IResultEnricher
         string reason)
     {
         metrics.TotalDuration = duration;
-        
+
         // Convert UnifiedSearchResult to EnrichedSearchResult without enrichment
         var enrichedResults = results.Select(r => new EnrichedSearchResult
         {
@@ -437,7 +437,7 @@ public class ResultEnricher : IResultEnricher
             OriginalEntity = r.OriginalEntity,
             OriginalRelationship = r.OriginalRelationship
         }).ToList();
-        
+
         return new EnrichmentResults
         {
             Results = enrichedResults,
@@ -446,4 +446,4 @@ public class ResultEnricher : IResultEnricher
             FallbackReason = reason
         };
     }
-} 
+}

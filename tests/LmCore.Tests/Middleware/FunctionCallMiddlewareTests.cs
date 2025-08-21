@@ -695,7 +695,7 @@ public class FunctionCallMiddlewareTests
     {
         EnvironmentHelper.LoadEnvIfNeeded();
         System.Diagnostics.Debug.WriteLine("=== TEST START ===");
-        
+
         // Arrange
         var functionContracts = new[]
         {
@@ -769,7 +769,7 @@ public class FunctionCallMiddlewareTests
         System.Diagnostics.Debug.WriteLine("Handler created");
 
         var httpClient = new HttpClient(handler);
-        
+
         System.Diagnostics.Debug.WriteLine("HttpClient created");
 
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
@@ -1066,34 +1066,34 @@ public class FunctionCallMiddlewareTests
         try
         {
             System.Diagnostics.Debug.WriteLine("=== DIAGNOSTIC TEST START ===");
-            
+
             // Test environment loading
             EnvironmentHelper.LoadEnvIfNeeded();
             var apiKey = GetApiKeyFromEnv();
             var baseUrl = GetApiBaseUrlFromEnv();
             System.Diagnostics.Debug.WriteLine($"API Key: {apiKey}");
             System.Diagnostics.Debug.WriteLine($"Base URL: {baseUrl}");
-            
+
             // Test MockHttpHandlerBuilder
             var handler = MockHttpHandlerBuilder.Create()
                 .RespondWithJson("{\"test\": \"value\"}")
                 .Build();
             System.Diagnostics.Debug.WriteLine("Handler created successfully");
-            
+
             // Test HttpClient
             var httpClient = new HttpClient(handler);
             System.Diagnostics.Debug.WriteLine("HttpClient created successfully");
-            
+
             // Test OpenClient
             var client = new OpenClient(httpClient, baseUrl);
             System.Diagnostics.Debug.WriteLine("OpenClient created successfully");
-            
+
             // Test OpenClientAgent
             var agent = new OpenClientAgent("TestAgent", client);
             System.Diagnostics.Debug.WriteLine("OpenClientAgent created successfully");
-            
+
             System.Diagnostics.Debug.WriteLine("=== DIAGNOSTIC TEST COMPLETE ===");
-            
+
             Assert.True(true); // If we get here, basic setup works
         }
         catch (Exception ex)
@@ -1109,7 +1109,7 @@ public class FunctionCallMiddlewareTests
         try
         {
             System.Diagnostics.Debug.WriteLine("=== AGENT STREAMING TEST START ===");
-            
+
             // Use the exact same pattern as the working OpenAI streaming test
             var streamingResponse = CreateStreamingResponse();
             var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
@@ -1150,12 +1150,12 @@ public class FunctionCallMiddlewareTests
             };
 
             System.Diagnostics.Debug.WriteLine("Calling agent.GenerateReplyStreamingAsync...");
-            
+
             // Test the agent directly
             var streamingResponse2 = await agent.GenerateReplyStreamingAsync(messages, options);
-            
+
             System.Diagnostics.Debug.WriteLine("Got streaming response, iterating...");
-            
+
             var responses = new List<IMessage>();
             await foreach (var response in streamingResponse2)
             {
@@ -1164,9 +1164,9 @@ public class FunctionCallMiddlewareTests
             }
 
             System.Diagnostics.Debug.WriteLine($"Total agent responses: {responses.Count}");
-            
+
             Assert.True(responses.Count > 0, "Agent should return at least one response");
-            
+
             System.Diagnostics.Debug.WriteLine("=== AGENT STREAMING TEST COMPLETE ===");
         }
         catch (Exception ex)
@@ -1181,8 +1181,8 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", 
-            new[] { "LLM_API_KEY" }, 
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY",
+            new[] { "LLM_API_KEY" },
             "test-api-key");
     }
 
@@ -1191,8 +1191,8 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", 
-            new[] { "LLM_API_BASE_URL" }, 
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL",
+            new[] { "LLM_API_BASE_URL" },
             "https://api.openai.com/v1");
     }
 

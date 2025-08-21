@@ -96,4 +96,4 @@ public record ResponseFormatCapability
     /// </summary>
     [JsonPropertyName("supports_partial_schema")]
     public bool SupportsPartialSchema { get; init; } = false;
-} 
+}

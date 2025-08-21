@@ -34,8 +34,8 @@ public class SessionManager : ISessionManager
         var sessionDefaults = SessionDefaults.FromEnvironmentVariables();
 
         // Only return if at least one environment variable is set
-        if (string.IsNullOrEmpty(sessionDefaults.UserId) && 
-            string.IsNullOrEmpty(sessionDefaults.AgentId) && 
+        if (string.IsNullOrEmpty(sessionDefaults.UserId) &&
+            string.IsNullOrEmpty(sessionDefaults.AgentId) &&
             string.IsNullOrEmpty(sessionDefaults.RunId))
         {
             _logger.LogDebug("No environment variables found for session context");
@@ -61,14 +61,14 @@ public class SessionManager : ISessionManager
             return null;
         }
 
-        _logger.LogDebug("Processing URL parameters for SSE transport: {Parameters}", 
+        _logger.LogDebug("Processing URL parameters for SSE transport: {Parameters}",
             string.Join(", ", queryParameters.Select(kvp => $"{kvp.Key}={kvp.Value}")));
 
         var sessionDefaults = SessionDefaults.FromUrlParameters(queryParameters);
 
         // Only return if at least one parameter is set
-        if (string.IsNullOrEmpty(sessionDefaults.UserId) && 
-            string.IsNullOrEmpty(sessionDefaults.AgentId) && 
+        if (string.IsNullOrEmpty(sessionDefaults.UserId) &&
+            string.IsNullOrEmpty(sessionDefaults.AgentId) &&
             string.IsNullOrEmpty(sessionDefaults.RunId))
         {
             _logger.LogDebug("No relevant URL parameters found for session context");
@@ -94,14 +94,14 @@ public class SessionManager : ISessionManager
             return null;
         }
 
-        _logger.LogDebug("Processing HTTP headers for SSE transport: {Headers}", 
+        _logger.LogDebug("Processing HTTP headers for SSE transport: {Headers}",
             string.Join(", ", headers.Where(h => h.Key.StartsWith("X-Memory-")).Select(kvp => $"{kvp.Key}={kvp.Value}")));
 
         var sessionDefaults = SessionDefaults.FromHttpHeaders(headers);
 
         // Only return if at least one header is set
-        if (string.IsNullOrEmpty(sessionDefaults.UserId) && 
-            string.IsNullOrEmpty(sessionDefaults.AgentId) && 
+        if (string.IsNullOrEmpty(sessionDefaults.UserId) &&
+            string.IsNullOrEmpty(sessionDefaults.AgentId) &&
             string.IsNullOrEmpty(sessionDefaults.RunId))
         {
             _logger.LogDebug("No relevant HTTP headers found for session context");
@@ -228,7 +228,7 @@ public class SessionManager : ISessionManager
                 return await command.ExecuteNonQueryAsync(cancellationToken);
             }, cancellationToken);
 
-            _logger.LogDebug("Stored session defaults for connection {ConnectionId}: {RowsAffected} rows affected", 
+            _logger.LogDebug("Stored session defaults for connection {ConnectionId}: {RowsAffected} rows affected",
                 sessionDefaults.ConnectionId, rowsAffected);
 
             return rowsAffected > 0;
@@ -272,8 +272,8 @@ public class SessionManager : ISessionManager
                 {
                     var metadataOrdinal = reader.GetOrdinal("metadata");
                     var metadataJson = reader.IsDBNull(metadataOrdinal) ? string.Empty : reader.GetString(metadataOrdinal);
-                    var metadata = string.IsNullOrEmpty(metadataJson) 
-                        ? new Dictionary<string, object>() 
+                    var metadata = string.IsNullOrEmpty(metadataJson)
+                        ? new Dictionary<string, object>()
                         : JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? new Dictionary<string, object>();
 
                     // Handle source column gracefully - it might not exist in older schemas
@@ -338,7 +338,7 @@ public class SessionManager : ISessionManager
 
             if (sessionDefaults != null)
             {
-                _logger.LogDebug("Retrieved session defaults for connection {ConnectionId}: {SessionDefaults}", 
+                _logger.LogDebug("Retrieved session defaults for connection {ConnectionId}: {SessionDefaults}",
                     connectionId, sessionDefaults);
             }
             else
@@ -381,7 +381,7 @@ public class SessionManager : ISessionManager
                 return await command.ExecuteNonQueryAsync(cancellationToken);
             }, cancellationToken);
 
-            _logger.LogDebug("Removed session defaults for connection {ConnectionId}: {RowsAffected} rows affected", 
+            _logger.LogDebug("Removed session defaults for connection {ConnectionId}: {RowsAffected} rows affected",
                 connectionId, rowsAffected);
 
             return rowsAffected > 0;
@@ -414,7 +414,7 @@ public class SessionManager : ISessionManager
                 return await command.ExecuteNonQueryAsync(cancellationToken);
             }, cancellationToken);
 
-            _logger.LogInformation("Cleaned up {Count} expired session defaults older than {MaxAge}", 
+            _logger.LogInformation("Cleaned up {Count} expired session defaults older than {MaxAge}",
                 rowsAffected, maxAge);
 
             return rowsAffected;
@@ -425,4 +425,4 @@ public class SessionManager : ISessionManager
             return 0;
         }
     }
-} 
+}

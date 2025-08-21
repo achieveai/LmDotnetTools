@@ -39,7 +39,7 @@ public class DocumentationExampleValidationTests
         // Validate the expected output format from documentation
         Assert.IsType<TextMessage>(naturalFormat);
         var textMessage = (TextMessage)naturalFormat;
-        
+
         // The expected format from documentation:
         /*
         <tool_call name="GetWeather">
@@ -52,7 +52,7 @@ public class DocumentationExampleValidationTests
         Sunny, 25°C with clear skies
         </tool_response>
         */
-        
+
         Assert.Contains("<tool_call name=\"GetWeather\">", textMessage.Text);
         Assert.Contains("\"location\": \"Paris\"", textMessage.Text);
         Assert.Contains("\"unit\": \"celsius\"", textMessage.Text);
@@ -77,16 +77,16 @@ public class DocumentationExampleValidationTests
         // Create a conversation sequence (from documentation)
         var messages = new IMessage[]
         {
-            new TextMessage 
-            { 
-                Text = "I'll check the weather for you.", 
-                Role = Role.Assistant 
+            new TextMessage
+            {
+                Text = "I'll check the weather for you.",
+                Role = Role.Assistant
             },
             aggregateMessage, // Tool call/response
-            new TextMessage 
-            { 
-                Text = "Based on this forecast, it's a great day for outdoor activities!", 
-                Role = Role.Assistant 
+            new TextMessage
+            {
+                Text = "Based on this forecast, it's a great day for outdoor activities!",
+                Role = Role.Assistant
             }
         };
 
@@ -95,7 +95,7 @@ public class DocumentationExampleValidationTests
 
         // Validate the expected output format from documentation
         Assert.Equal(Role.Assistant, combined.Role);
-        
+
         // Expected output from documentation should contain all these parts:
         Assert.Contains("I'll check the weather for you.", combined.Text);
         Assert.Contains("<tool_call name=\"GetWeather\">", combined.Text);
@@ -106,13 +106,13 @@ public class DocumentationExampleValidationTests
         Assert.Contains("Sunny, 25°C with clear skies", combined.Text);
         Assert.Contains("</tool_response>", combined.Text);
         Assert.Contains("Based on this forecast, it's a great day for outdoor activities!", combined.Text);
-        
+
         // Verify proper ordering
         var firstTextIndex = combined.Text.IndexOf("I'll check the weather");
         var toolCallIndex = combined.Text.IndexOf("<tool_call");
         var toolResponseIndex = combined.Text.IndexOf("<tool_response");
         var lastTextIndex = combined.Text.IndexOf("Based on this forecast");
-        
+
         Assert.True(firstTextIndex < toolCallIndex);
         Assert.True(toolCallIndex < toolResponseIndex);
         Assert.True(toolResponseIndex < lastTextIndex);
@@ -141,15 +141,15 @@ public class DocumentationExampleValidationTests
 
         // Result: 3 messages where only the middle one is transformed (from documentation)
         Assert.Equal(3, transformed.Count);
-        
+
         // First message should be unchanged (same instance)
         Assert.Same(messageCollection[0], transformed[0]);
-        
+
         // Second message should be transformed
         Assert.IsType<TextMessage>(transformed[1]);
         Assert.NotSame(messageCollection[1], transformed[1]); // Different instance
         Assert.Contains("<tool_call name=\"GetWeather\">", ((TextMessage)transformed[1]).Text);
-        
+
         // Third message should be unchanged (same instance)
         Assert.Same(messageCollection[2], transformed[2]);
     }
@@ -174,9 +174,9 @@ public class DocumentationExampleValidationTests
         Assert.False(regularMessage.IsTransformableToolCall());
 
         Assert.True(messageCollection.ContainsTransformableToolCalls());
-        
-        var textOnlyMessages = new IMessage[] 
-        { 
+
+        var textOnlyMessages = new IMessage[]
+        {
             new TextMessage { Text = "Hello", Role = Role.User },
             new TextMessage { Text = "Hi there", Role = Role.Assistant }
         };
@@ -253,7 +253,7 @@ public class DocumentationExampleValidationTests
 
         var toolCall1 = new ToolCall("GetWeather", "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}");
         var toolCall2 = new ToolCall("GetTime", "{\"timezone\":\"America/Los_Angeles\"}");
-        
+
         var toolResult1 = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies.");
         var toolResult2 = new ToolCallResult(null, "{\"current_time\":\"2024-07-24T15:30:00-07:00\",\"timezone\":\"PDT\",\"formatted\":\"3:30 PM PDT\"}");
 
@@ -298,10 +298,10 @@ public class DocumentationExampleValidationTests
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messageCollection = new IMessage[] { aggregateMessage };
-        var messageSequence = new IMessage[] 
-        { 
+        var messageSequence = new IMessage[]
+        {
             new TextMessage { Text = "Hello", Role = Role.Assistant },
-            aggregateMessage 
+            aggregateMessage
         };
 
         // Transform a single aggregate message (from documentation Quick Start)

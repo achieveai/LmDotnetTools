@@ -42,7 +42,7 @@ public static class HttpRetryHelper
                 var delay = CalculateDelay(attempt);
                 logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
                     attempt, maxRetries + 1, delay.TotalMilliseconds, ex.Message);
-                
+
                 await Task.Delay(delay, cancellationToken);
             }
         }
@@ -77,12 +77,12 @@ public static class HttpRetryHelper
             try
             {
                 var response = await httpOperation();
-                
+
                 if (response.IsSuccessStatusCode)
                 {
                     return await responseProcessor(response);
                 }
-                
+
                 // Check if this is a retryable status code
                 if (attempt < maxRetries && IsRetryableStatusCode(response.StatusCode))
                 {
@@ -90,12 +90,12 @@ public static class HttpRetryHelper
                     var delay = CalculateDelay(attempt);
                     logger.LogWarning("HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
                         response.StatusCode, attempt, maxRetries + 1, delay.TotalMilliseconds);
-                    
+
                     response.Dispose(); // Clean up the failed response
                     await Task.Delay(delay, cancellationToken);
                     continue;
                 }
-                
+
                 // Not retryable or max retries exceeded, throw
                 try
                 {
@@ -129,7 +129,7 @@ public static class HttpRetryHelper
                 var delay = CalculateDelay(attempt);
                 logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
                     attempt, maxRetries + 1, delay.TotalMilliseconds, ex.Message);
-                
+
                 await Task.Delay(delay, cancellationToken);
             }
         }
@@ -143,7 +143,7 @@ public static class HttpRetryHelper
     public static bool IsRetryableStatusCode(HttpStatusCode statusCode)
     {
         // Retry on server errors (5xx) and rate limiting (429)
-        return statusCode == HttpStatusCode.TooManyRequests || 
+        return statusCode == HttpStatusCode.TooManyRequests ||
                ((int)statusCode >= 500 && (int)statusCode < 600);
     }
 
@@ -157,14 +157,14 @@ public static class HttpRetryHelper
     {
         // Retry on network errors, timeouts, and server errors (5xx)
         var message = exception.Message;
-        
+
         // Check for network/timeout errors
         if (message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("network", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
-        
+
         // Check for HTTP 5xx status codes in the exception message
         // EnsureSuccessStatusCode() creates messages like "Response status code does not indicate success: 500 (Internal Server Error)"
         if (message.Contains("500", StringComparison.OrdinalIgnoreCase) ||
@@ -179,7 +179,7 @@ public static class HttpRetryHelper
         {
             return true;
         }
-        
+
         return false;
     }
 
@@ -192,4 +192,4 @@ public static class HttpRetryHelper
     {
         return TimeSpan.FromSeconds(Math.Pow(2, attempt));
     }
-} 
+}

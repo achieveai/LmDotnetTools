@@ -541,4 +541,4 @@ public enum RetryStrategy
     /// Custom strategy defined by the implementation
     /// </summary>
     Custom
-} 
+}

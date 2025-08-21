@@ -47,7 +47,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <param name="statusCode">The HTTP status code to return</param>
     /// <returns>A configured fake handler</returns>
     public static FakeHttpMessageHandler CreateSimpleJsonHandler(
-        string jsonResponse, 
+        string jsonResponse,
         HttpStatusCode statusCode = HttpStatusCode.OK)
     {
         return new FakeHttpMessageHandler((request, cancellationToken) =>
@@ -71,7 +71,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         return new FakeHttpMessageHandler((request, cancellationToken) =>
         {
             var key = $"{request.Method} {request.RequestUri?.PathAndQuery}";
-            
+
             if (responses.TryGetValue(key, out var response))
             {
                 var httpResponse = new HttpResponseMessage(response.status)
@@ -115,11 +115,11 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         HttpStatusCode failureStatus = HttpStatusCode.InternalServerError)
     {
         var attemptCount = 0;
-        
+
         return new FakeHttpMessageHandler((request, cancellationToken) =>
         {
             attemptCount++;
-            
+
             if (attemptCount <= failureCount)
             {
                 return Task.FromResult(new HttpResponseMessage(failureStatus)
@@ -146,14 +146,14 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         string successResponse)
     {
         var attemptCount = 0;
-        
+
         return new FakeHttpMessageHandler((request, cancellationToken) =>
         {
             if (attemptCount < statusCodes.Length)
             {
                 var statusCode = statusCodes[attemptCount];
                 attemptCount++;
-                
+
                 if (statusCode == HttpStatusCode.OK)
                 {
                     return Task.FromResult(new HttpResponseMessage(statusCode)
@@ -161,7 +161,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                         Content = new StringContent(successResponse, Encoding.UTF8, "application/json")
                     });
                 }
-                
+
                 return Task.FromResult(new HttpResponseMessage(statusCode)
                 {
                     Content = new StringContent($"Error {(int)statusCode}", Encoding.UTF8, "text/plain")
@@ -191,14 +191,14 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     {
         var container = new CapturedRequestContainer();
         capturedRequest = container;
-        
+
         return new FakeHttpMessageHandler(async (request, cancellationToken) =>
         {
             container.Request = request;
-            container.RequestBody = request.Content != null 
-                ? await request.Content.ReadAsStringAsync(cancellationToken) 
+            container.RequestBody = request.Content != null
+                ? await request.Content.ReadAsStringAsync(cancellationToken)
                 : string.Empty;
-            
+
             return new HttpResponseMessage(statusCode)
             {
                 Content = new StringContent(responseJson, Encoding.UTF8, "application/json")
@@ -303,7 +303,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         string model = "gpt-4")
     {
         var streamData = new StringBuilder();
-        
+
         // Stream start
         streamData.AppendLine("data: " + JsonSerializer.Serialize(new
         {
@@ -321,7 +321,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 }
             }
         }));
-        
+
         // Content chunks
         foreach (char c in content)
         {
@@ -342,7 +342,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 }
             }));
         }
-        
+
         // Stream end
         streamData.AppendLine("data: " + JsonSerializer.Serialize(new
         {
@@ -360,7 +360,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 }
             }
         }));
-        
+
         streamData.AppendLine("data: [DONE]");
 
         return new FakeHttpMessageHandler((request, cancellationToken) =>
@@ -380,19 +380,19 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     public static FakeHttpMessageHandler CreateSseStreamHandler(IEnumerable<SseEvent> events)
     {
         var streamData = new StringBuilder();
-        
+
         foreach (var sseEvent in events)
         {
             if (!string.IsNullOrEmpty(sseEvent.Id))
             {
                 streamData.AppendLine($"id: {sseEvent.Id}");
             }
-            
+
             if (!string.IsNullOrEmpty(sseEvent.Event))
             {
                 streamData.AppendLine($"event: {sseEvent.Event}");
             }
-            
+
             if (!string.IsNullOrEmpty(sseEvent.Data))
             {
                 // Handle multi-line data by prefixing each line with "data: "
@@ -402,7 +402,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                     streamData.AppendLine($"data: {line}");
                 }
             }
-            
+
             // Empty line to separate events
             streamData.AppendLine();
         }
@@ -413,11 +413,11 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             {
                 Content = new StringContent(streamData.ToString(), Encoding.UTF8, "text/event-stream")
             };
-            
+
             // Set SSE-specific headers
             response.Headers.Add("Cache-Control", "no-cache");
             response.Headers.Add("Connection", "keep-alive");
-            
+
             return Task.FromResult(response);
         });
     }
@@ -429,7 +429,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <param name="eventType">Optional event type for all messages</param>
     /// <returns>A configured fake handler for simple SSE streaming</returns>
     public static FakeHttpMessageHandler CreateSimpleSseStreamHandler(
-        IEnumerable<string> messages, 
+        IEnumerable<string> messages,
         string? eventType = null)
     {
         var events = messages.Select((message, index) => new SseEvent
@@ -438,7 +438,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             Event = eventType,
             Data = message
         });
-        
+
         return CreateSseStreamHandler(events);
     }
 
@@ -458,7 +458,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             Event = eventType,
             Data = JsonSerializer.Serialize(obj)
         });
-        
+
         return CreateSseStreamHandler(events);
     }
 }
@@ -483,4 +483,4 @@ public class CapturedRequestContainer
 {
     public HttpRequestMessage? Request { get; set; }
     public string RequestBody { get; set; } = string.Empty;
-} 
+}

@@ -288,7 +288,7 @@ public class MessageCapture
                     var textContent = content.EnumerateArray()
                         .Where(item => item.TryGetProperty("type", out var type) && type.GetString() == "text")
                         .FirstOrDefault();
-                    
+
                     if (textContent.TryGetProperty("text", out var text))
                     {
                         return text.GetString();
@@ -356,4 +356,4 @@ public class ToolCapture
         }
         return null;
     }
-} 
+}

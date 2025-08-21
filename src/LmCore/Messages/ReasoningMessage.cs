@@ -138,4 +138,4 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
             Visibility = Visibility,
         };
     }
-} 
+}

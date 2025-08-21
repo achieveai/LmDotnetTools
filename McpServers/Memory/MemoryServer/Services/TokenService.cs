@@ -39,7 +39,7 @@ public class TokenService : ITokenService
     {
         if (string.IsNullOrEmpty(userId))
             throw new ArgumentException("UserId cannot be null or empty", nameof(userId));
-        
+
         if (string.IsNullOrEmpty(agentId))
             throw new ArgumentException("AgentId cannot be null or empty", nameof(agentId));
 
@@ -106,4 +106,4 @@ public class TokenService : ITokenService
             return false;
         }
     }
-} 
+}

@@ -109,4 +109,4 @@ public sealed record JsonFragmentUpdate
         TextValue = textValue;
         JsonValue = jsonValue;
     }
-} 
+}

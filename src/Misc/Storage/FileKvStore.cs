@@ -29,8 +29,8 @@ public class FileKvStore : IKvStore, IDisposable
         }
 
         _cacheDirectory = Path.GetFullPath(cacheDirectory);
-        _jsonOptions = jsonOptions ?? new JsonSerializerOptions 
-        { 
+        _jsonOptions = jsonOptions ?? new JsonSerializerOptions
+        {
             WriteIndented = false,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
@@ -55,7 +55,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
 
         var filePath = GetFilePath(key);
-        
+
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
@@ -65,7 +65,7 @@ public class FileKvStore : IKvStore, IDisposable
             }
 
             var json = await File.ReadAllTextAsync(filePath, Encoding.UTF8, cancellationToken);
-            
+
             if (string.IsNullOrEmpty(json))
             {
                 return default;
@@ -109,7 +109,7 @@ public class FileKvStore : IKvStore, IDisposable
         {
             // Ensure directory exists (in case it was deleted)
             Directory.CreateDirectory(_cacheDirectory);
-            
+
             // Write to temporary file first, then move to final location
             // This ensures atomic writes and prevents corruption
             var tempFilePath = filePath + ".tmp";
@@ -126,7 +126,7 @@ public class FileKvStore : IKvStore, IDisposable
     public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        
+
         return Task.FromResult(EnumerateKeysInternal(cancellationToken));
     }
 
@@ -141,11 +141,11 @@ public class FileKvStore : IKvStore, IDisposable
             }
 
             var files = Directory.EnumerateFiles(_cacheDirectory, "*.json", SearchOption.TopDirectoryOnly);
-            
+
             foreach (var file in files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                
+
                 var fileName = Path.GetFileNameWithoutExtension(file);
                 if (!string.IsNullOrEmpty(fileName))
                 {
@@ -165,7 +165,7 @@ public class FileKvStore : IKvStore, IDisposable
     public async Task ClearAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        
+
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
@@ -175,11 +175,11 @@ public class FileKvStore : IKvStore, IDisposable
             }
 
             var files = Directory.GetFiles(_cacheDirectory, "*.json", SearchOption.TopDirectoryOnly);
-            
+
             foreach (var file in files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                
+
                 try
                 {
                     File.Delete(file);
@@ -202,7 +202,7 @@ public class FileKvStore : IKvStore, IDisposable
     public async Task<int> GetCountAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        
+
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
@@ -251,4 +251,4 @@ public class FileKvStore : IKvStore, IDisposable
             GC.SuppressFinalize(this);
         }
     }
-} 
+}

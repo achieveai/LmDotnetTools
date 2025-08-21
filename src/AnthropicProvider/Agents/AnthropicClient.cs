@@ -35,7 +35,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         : base(logger ?? NullLogger.Instance, httpClient ?? CreateHttpClient(apiKey))
     {
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
-        
+
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
         _jsonOptions = AnthropicJsonSerializerOptionsFactory.CreateForProduction();
     }
@@ -70,11 +70,11 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         CancellationToken cancellationToken = default)
     {
         var metrics = RequestMetrics.StartNew(ProviderName, request.Model, "ChatCompletion");
-        
+
         try
         {
             ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
-            
+
             var response = await ExecuteHttpWithRetryAsync(
                 async () =>
                 {
@@ -95,10 +95,10 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     var responseContent = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
                     var anthropicResponse = JsonSerializer.Deserialize<AnthropicResponse>(responseContent, _jsonOptions)
                         ?? throw new InvalidOperationException("Failed to deserialize Anthropic API response");
-                    
-                    Logger.LogDebug("Received Anthropic response with {ContentCount} content blocks", 
+
+                    Logger.LogDebug("Received Anthropic response with {ContentCount} content blocks",
                         anthropicResponse.Content?.Count ?? 0);
-                    
+
                     return anthropicResponse;
                 },
                 cancellationToken: cancellationToken);
@@ -112,21 +112,21 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     CompletionTokens = response.Usage.OutputTokens,
                     TotalTokens = response.Usage.InputTokens + response.Usage.OutputTokens
                 } : null);
-            
+
             _performanceTracker.TrackRequest(completedMetrics);
-            
+
             return response;
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in Anthropic chat completion request for model {Model}", request.Model);
-            
+
             // Track failed request metrics
             var completedMetrics = metrics.Complete(
                 statusCode: 0,
                 errorMessage: ex.Message,
                 exceptionType: ex.GetType().Name);
-            
+
             _performanceTracker.TrackRequest(completedMetrics);
             throw;
         }
@@ -138,11 +138,11 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         CancellationToken cancellationToken = default)
     {
         var metrics = RequestMetrics.StartNew(ProviderName, request.Model, "StreamingChatCompletion");
-        
+
         try
         {
             ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
-            
+
             // Set the streaming flag
             request = request with { Stream = true };
 
@@ -168,27 +168,27 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     return Task.FromResult(httpResponse.Content);
                 },
                 cancellationToken: cancellationToken);
-            
+
             // Track successful setup
             var successMetrics = metrics.Complete(statusCode: 200);
             _performanceTracker.TrackRequest(successMetrics);
-            
+
             Logger.LogDebug("Successfully established streaming connection for model {Model}", request.Model);
-            
+
             return StreamData(streamResponse, cancellationToken);
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error in Anthropic streaming chat completion request for model {Model}", request.Model);
-            
+
             // Track failed streaming request metrics
             var completedMetrics = metrics.Complete(
                 statusCode: 0,
                 errorMessage: ex.Message,
                 exceptionType: ex.GetType().Name);
-            
+
             _performanceTracker.TrackRequest(completedMetrics);
-            
+
             var error = ex.Data.Contains("ResponseContent") ? ex.Data["ResponseContent"]?.ToString() : null;
             if (!string.IsNullOrEmpty(error))
             {
@@ -196,7 +196,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     $"Error processing Anthropic streaming request for model {request.Model}. Response: {error}",
                     ex);
             }
-            
+
             throw;
         }
     }

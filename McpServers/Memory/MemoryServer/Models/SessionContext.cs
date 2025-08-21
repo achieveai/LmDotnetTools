@@ -32,22 +32,22 @@ public class SessionContext
     public bool Matches(SessionContext other)
     {
         if (other == null) return false;
-        
+
         // User ID must always match
         if (UserId != other.UserId) return false;
-        
+
         // If either has AgentId, they must match
         if (!string.IsNullOrEmpty(AgentId) || !string.IsNullOrEmpty(other.AgentId))
         {
             if (AgentId != other.AgentId) return false;
         }
-        
+
         // If either has RunId, they must match
         if (!string.IsNullOrEmpty(RunId) || !string.IsNullOrEmpty(other.RunId))
         {
             if (RunId != other.RunId) return false;
         }
-        
+
         return true;
     }
 
@@ -81,14 +81,14 @@ public class SessionContext
     public override string ToString()
     {
         var parts = new List<string> { UserId };
-        
+
         // Only add agent part if there's actually an agent ID
         if (!string.IsNullOrEmpty(AgentId))
         {
             parts.Add(AgentId);
-            
+
             // Only add run part if it exists
-            if (!string.IsNullOrEmpty(RunId)) 
+            if (!string.IsNullOrEmpty(RunId))
                 parts.Add(RunId);
         }
         else if (!string.IsNullOrEmpty(RunId))
@@ -97,7 +97,7 @@ public class SessionContext
             parts.Add(""); // Empty agent part
             parts.Add(RunId);
         }
-        
+
         return string.Join("/", parts);
     }
 
@@ -121,14 +121,14 @@ public enum SessionScope
     /// User-level scope (broadest).
     /// </summary>
     User,
-    
+
     /// <summary>
     /// Agent-level scope (medium).
     /// </summary>
     Agent,
-    
+
     /// <summary>
     /// Run-level scope (narrowest).
     /// </summary>
     Run
-} 
+}

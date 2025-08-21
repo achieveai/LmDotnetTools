@@ -10,45 +10,45 @@ namespace MemoryServer.DocumentSegmentation.Models;
 /// </summary>
 public class TopicSegmentationOptions
 {
-  /// <summary>
-  /// Minimum segment size in characters.
-  /// </summary>
-  public int MinSegmentSize { get; set; } = 100;
+    /// <summary>
+    /// Minimum segment size in characters.
+    /// </summary>
+    public int MinSegmentSize { get; set; } = 100;
 
-  /// <summary>
-  /// Maximum segment size in characters.
-  /// </summary>
-  public int MaxSegmentSize { get; set; } = 5000;
+    /// <summary>
+    /// Maximum segment size in characters.
+    /// </summary>
+    public int MaxSegmentSize { get; set; } = 5000;
 
-  /// <summary>
-  /// Minimum confidence score for topic boundaries (0.0-1.0).
-  /// </summary>
-  public double MinTopicBoundaryConfidence { get; set; } = 0.6;
+    /// <summary>
+    /// Minimum confidence score for topic boundaries (0.0-1.0).
+    /// </summary>
+    public double MinTopicBoundaryConfidence { get; set; } = 0.6;
 
-  /// <summary>
-  /// Minimum thematic coherence score required (0.0-1.0).
-  /// </summary>
-  public double MinThematicCoherence { get; set; } = 0.7;
+    /// <summary>
+    /// Minimum thematic coherence score required (0.0-1.0).
+    /// </summary>
+    public double MinThematicCoherence { get; set; } = 0.7;
 
-  /// <summary>
-  /// Maximum number of segments to create.
-  /// </summary>
-  public int MaxSegments { get; set; } = 50;
+    /// <summary>
+    /// Maximum number of segments to create.
+    /// </summary>
+    public int MaxSegments { get; set; } = 50;
 
-  /// <summary>
-  /// Whether to use LLM enhancement for low-confidence boundaries.
-  /// </summary>
-  public bool UseLlmEnhancement { get; set; } = true;
+    /// <summary>
+    /// Whether to use LLM enhancement for low-confidence boundaries.
+    /// </summary>
+    public bool UseLlmEnhancement { get; set; } = true;
 
-  /// <summary>
-  /// Whether to merge adjacent segments with similar topics.
-  /// </summary>
-  public bool MergeSimilarTopics { get; set; } = true;
+    /// <summary>
+    /// Whether to merge adjacent segments with similar topics.
+    /// </summary>
+    public bool MergeSimilarTopics { get; set; } = true;
 
-  /// <summary>
-  /// Topic similarity threshold for merging (0.0-1.0).
-  /// </summary>
-  public double TopicSimilarityThreshold { get; set; } = 0.8;
+    /// <summary>
+    /// Topic similarity threshold for merging (0.0-1.0).
+    /// </summary>
+    public double TopicSimilarityThreshold { get; set; } = 0.8;
 }
 
 /// <summary>
@@ -56,40 +56,40 @@ public class TopicSegmentationOptions
 /// </summary>
 public class TopicBoundary
 {
-  /// <summary>
-  /// Position in the document where the topic boundary occurs.
-  /// </summary>
-  public int Position { get; set; }
+    /// <summary>
+    /// Position in the document where the topic boundary occurs.
+    /// </summary>
+    public int Position { get; set; }
 
-  /// <summary>
-  /// Confidence score for this boundary (0.0-1.0).
-  /// </summary>
-  public double Confidence { get; set; }
+    /// <summary>
+    /// Confidence score for this boundary (0.0-1.0).
+    /// </summary>
+    public double Confidence { get; set; }
 
-  /// <summary>
-  /// Type of topic transition.
-  /// </summary>
-  public TopicTransitionType TransitionType { get; set; }
+    /// <summary>
+    /// Type of topic transition.
+    /// </summary>
+    public TopicTransitionType TransitionType { get; set; }
 
-  /// <summary>
-  /// Topic before the boundary.
-  /// </summary>
-  public string? PreviousTopic { get; set; }
+    /// <summary>
+    /// Topic before the boundary.
+    /// </summary>
+    public string? PreviousTopic { get; set; }
 
-  /// <summary>
-  /// Topic after the boundary.
-  /// </summary>
-  public string? NextTopic { get; set; }
+    /// <summary>
+    /// Topic after the boundary.
+    /// </summary>
+    public string? NextTopic { get; set; }
 
-  /// <summary>
-  /// Keywords that indicate the topic change.
-  /// </summary>
-  public List<string> TransitionKeywords { get; set; } = new();
+    /// <summary>
+    /// Keywords that indicate the topic change.
+    /// </summary>
+    public List<string> TransitionKeywords { get; set; } = new();
 
-  /// <summary>
-  /// Strength of the topic transition (0.0-1.0).
-  /// </summary>
-  public double TransitionStrength { get; set; }
+    /// <summary>
+    /// Strength of the topic transition (0.0-1.0).
+    /// </summary>
+    public double TransitionStrength { get; set; }
 }
 
 /// <summary>
@@ -97,30 +97,30 @@ public class TopicBoundary
 /// </summary>
 public enum TopicTransitionType
 {
-  /// <summary>
-  /// Gradual transition between related topics.
-  /// </summary>
-  Gradual,
+    /// <summary>
+    /// Gradual transition between related topics.
+    /// </summary>
+    Gradual,
 
-  /// <summary>
-  /// Sharp transition between unrelated topics.
-  /// </summary>
-  Sharp,
+    /// <summary>
+    /// Sharp transition between unrelated topics.
+    /// </summary>
+    Sharp,
 
-  /// <summary>
-  /// Return to a previously mentioned topic.
-  /// </summary>
-  Return,
+    /// <summary>
+    /// Return to a previously mentioned topic.
+    /// </summary>
+    Return,
 
-  /// <summary>
-  /// Introduction of a completely new topic.
-  /// </summary>
-  NewTopic,
+    /// <summary>
+    /// Introduction of a completely new topic.
+    /// </summary>
+    NewTopic,
 
-  /// <summary>
-  /// Conclusion or summary of the current topic.
-  /// </summary>
-  Conclusion
+    /// <summary>
+    /// Conclusion or summary of the current topic.
+    /// </summary>
+    Conclusion
 }
 
 /// <summary>
@@ -128,45 +128,45 @@ public enum TopicTransitionType
 /// </summary>
 public class ThematicCoherenceAnalysis
 {
-  /// <summary>
-  /// Overall coherence score (0.0-1.0).
-  /// </summary>
-  public double CoherenceScore { get; set; }
+    /// <summary>
+    /// Overall coherence score (0.0-1.0).
+    /// </summary>
+    public double CoherenceScore { get; set; }
 
-  /// <summary>
-  /// Primary topic of the segment.
-  /// </summary>
-  public string PrimaryTopic { get; set; } = string.Empty;
+    /// <summary>
+    /// Primary topic of the segment.
+    /// </summary>
+    public string PrimaryTopic { get; set; } = string.Empty;
 
-  /// <summary>
-  /// Secondary topics mentioned in the segment.
-  /// </summary>
-  public List<string> SecondaryTopics { get; set; } = new();
+    /// <summary>
+    /// Secondary topics mentioned in the segment.
+    /// </summary>
+    public List<string> SecondaryTopics { get; set; } = new();
 
-  /// <summary>
-  /// Key concepts and themes identified.
-  /// </summary>
-  public List<string> KeyConcepts { get; set; } = new();
+    /// <summary>
+    /// Key concepts and themes identified.
+    /// </summary>
+    public List<string> KeyConcepts { get; set; } = new();
 
-  /// <summary>
-  /// Topic keywords extracted from the content.
-  /// </summary>
-  public List<string> TopicKeywords { get; set; } = new();
+    /// <summary>
+    /// Topic keywords extracted from the content.
+    /// </summary>
+    public List<string> TopicKeywords { get; set; } = new();
 
-  /// <summary>
-  /// Semantic unity score (0.0-1.0).
-  /// </summary>
-  public double SemanticUnity { get; set; }
+    /// <summary>
+    /// Semantic unity score (0.0-1.0).
+    /// </summary>
+    public double SemanticUnity { get; set; }
 
-  /// <summary>
-  /// Topic consistency score (0.0-1.0).
-  /// </summary>
-  public double TopicConsistency { get; set; }
+    /// <summary>
+    /// Topic consistency score (0.0-1.0).
+    /// </summary>
+    public double TopicConsistency { get; set; }
 
-  /// <summary>
-  /// Reasons for coherence score.
-  /// </summary>
-  public List<string> CoherenceReasons { get; set; } = new();
+    /// <summary>
+    /// Reasons for coherence score.
+    /// </summary>
+    public List<string> CoherenceReasons { get; set; } = new();
 }
 
 /// <summary>
@@ -174,45 +174,45 @@ public class ThematicCoherenceAnalysis
 /// </summary>
 public class TopicSegmentationValidation
 {
-  /// <summary>
-  /// Overall quality score for the segmentation (0.0-1.0).
-  /// </summary>
-  public double OverallQuality { get; set; }
+    /// <summary>
+    /// Overall quality score for the segmentation (0.0-1.0).
+    /// </summary>
+    public double OverallQuality { get; set; }
 
-  /// <summary>
-  /// Average topic coherence across all segments.
-  /// </summary>
-  public double AverageTopicCoherence { get; set; }
+    /// <summary>
+    /// Average topic coherence across all segments.
+    /// </summary>
+    public double AverageTopicCoherence { get; set; }
 
-  /// <summary>
-  /// Topic boundary accuracy score.
-  /// </summary>
-  public double BoundaryAccuracy { get; set; }
+    /// <summary>
+    /// Topic boundary accuracy score.
+    /// </summary>
+    public double BoundaryAccuracy { get; set; }
 
-  /// <summary>
-  /// Segment independence score.
-  /// </summary>
-  public double SegmentIndependence { get; set; }
+    /// <summary>
+    /// Segment independence score.
+    /// </summary>
+    public double SegmentIndependence { get; set; }
 
-  /// <summary>
-  /// Topic coverage completeness.
-  /// </summary>
-  public double TopicCoverage { get; set; }
+    /// <summary>
+    /// Topic coverage completeness.
+    /// </summary>
+    public double TopicCoverage { get; set; }
 
-  /// <summary>
-  /// Individual segment validation results.
-  /// </summary>
-  public List<SegmentValidationResult> SegmentResults { get; set; } = new();
+    /// <summary>
+    /// Individual segment validation results.
+    /// </summary>
+    public List<SegmentValidationResult> SegmentResults { get; set; } = new();
 
-  /// <summary>
-  /// Issues identified during validation.
-  /// </summary>
-  public List<ValidationIssue> Issues { get; set; } = new();
+    /// <summary>
+    /// Issues identified during validation.
+    /// </summary>
+    public List<ValidationIssue> Issues { get; set; } = new();
 
-  /// <summary>
-  /// Recommendations for improvement.
-  /// </summary>
-  public List<string> Recommendations { get; set; } = new();
+    /// <summary>
+    /// Recommendations for improvement.
+    /// </summary>
+    public List<string> Recommendations { get; set; } = new();
 }
 
 /// <summary>
@@ -220,30 +220,30 @@ public class TopicSegmentationValidation
 /// </summary>
 public class SegmentValidationResult
 {
-  /// <summary>
-  /// Segment identifier.
-  /// </summary>
-  public string SegmentId { get; set; } = string.Empty;
+    /// <summary>
+    /// Segment identifier.
+    /// </summary>
+    public string SegmentId { get; set; } = string.Empty;
 
-  /// <summary>
-  /// Topic coherence score for this segment.
-  /// </summary>
-  public double TopicCoherence { get; set; }
+    /// <summary>
+    /// Topic coherence score for this segment.
+    /// </summary>
+    public double TopicCoherence { get; set; }
 
-  /// <summary>
-  /// Independence score (how well it stands alone).
-  /// </summary>
-  public double Independence { get; set; }
+    /// <summary>
+    /// Independence score (how well it stands alone).
+    /// </summary>
+    public double Independence { get; set; }
 
-  /// <summary>
-  /// Topic clarity score.
-  /// </summary>
-  public double TopicClarity { get; set; }
+    /// <summary>
+    /// Topic clarity score.
+    /// </summary>
+    public double TopicClarity { get; set; }
 
-  /// <summary>
-  /// Quality issues found in this segment.
-  /// </summary>
-  public List<ValidationIssue> Issues { get; set; } = new();
+    /// <summary>
+    /// Quality issues found in this segment.
+    /// </summary>
+    public List<ValidationIssue> Issues { get; set; } = new();
 }
 
 /// <summary>
@@ -251,30 +251,30 @@ public class SegmentValidationResult
 /// </summary>
 public class ValidationIssue
 {
-  /// <summary>
-  /// Type of issue.
-  /// </summary>
-  public ValidationIssueType Type { get; set; }
+    /// <summary>
+    /// Type of issue.
+    /// </summary>
+    public ValidationIssueType Type { get; set; }
 
-  /// <summary>
-  /// Severity level of the issue.
-  /// </summary>
-  public ValidationSeverity Severity { get; set; }
+    /// <summary>
+    /// Severity level of the issue.
+    /// </summary>
+    public ValidationSeverity Severity { get; set; }
 
-  /// <summary>
-  /// Description of the issue.
-  /// </summary>
-  public string Description { get; set; } = string.Empty;
+    /// <summary>
+    /// Description of the issue.
+    /// </summary>
+    public string Description { get; set; } = string.Empty;
 
-  /// <summary>
-  /// Suggested resolution.
-  /// </summary>
-  public string? Resolution { get; set; }
+    /// <summary>
+    /// Suggested resolution.
+    /// </summary>
+    public string? Resolution { get; set; }
 
-  /// <summary>
-  /// Position in the document where the issue occurs.
-  /// </summary>
-  public int? Position { get; set; }
+    /// <summary>
+    /// Position in the document where the issue occurs.
+    /// </summary>
+    public int? Position { get; set; }
 }
 
 /// <summary>
@@ -282,40 +282,40 @@ public class ValidationIssue
 /// </summary>
 public enum ValidationIssueType
 {
-  /// <summary>
-  /// Topic mixing within a segment.
-  /// </summary>
-  TopicMixing,
+    /// <summary>
+    /// Topic mixing within a segment.
+    /// </summary>
+    TopicMixing,
 
-  /// <summary>
-  /// Poor topic coherence.
-  /// </summary>
-  PoorCoherence,
+    /// <summary>
+    /// Poor topic coherence.
+    /// </summary>
+    PoorCoherence,
 
-  /// <summary>
-  /// Segment too small or fragmented.
-  /// </summary>
-  Fragmentation,
+    /// <summary>
+    /// Segment too small or fragmented.
+    /// </summary>
+    Fragmentation,
 
-  /// <summary>
-  /// Segment too large with multiple topics.
-  /// </summary>
-  Oversized,
+    /// <summary>
+    /// Segment too large with multiple topics.
+    /// </summary>
+    Oversized,
 
-  /// <summary>
-  /// Missing context for understanding.
-  /// </summary>
-  MissingContext,
+    /// <summary>
+    /// Missing context for understanding.
+    /// </summary>
+    MissingContext,
 
-  /// <summary>
-  /// Unclear topic boundaries.
-  /// </summary>
-  UnclearBoundaries,
+    /// <summary>
+    /// Unclear topic boundaries.
+    /// </summary>
+    UnclearBoundaries,
 
-  /// <summary>
-  /// Topic duplication across segments.
-  /// </summary>
-  TopicDuplication
+    /// <summary>
+    /// Topic duplication across segments.
+    /// </summary>
+    TopicDuplication
 }
 
 /// <summary>
@@ -323,25 +323,25 @@ public enum ValidationIssueType
 /// </summary>
 public enum ValidationSeverity
 {
-  /// <summary>
-  /// Informational - minor quality issue.
-  /// </summary>
-  Info,
+    /// <summary>
+    /// Informational - minor quality issue.
+    /// </summary>
+    Info,
 
-  /// <summary>
-  /// Warning - quality issue that should be addressed.
-  /// </summary>
-  Warning,
+    /// <summary>
+    /// Warning - quality issue that should be addressed.
+    /// </summary>
+    Warning,
 
-  /// <summary>
-  /// Error - significant quality issue requiring attention.
-  /// </summary>
-  Error,
+    /// <summary>
+    /// Error - significant quality issue requiring attention.
+    /// </summary>
+    Error,
 
-  /// <summary>
-  /// Critical - severe issue affecting usability.
-  /// </summary>
-  Critical
+    /// <summary>
+    /// Critical - severe issue affecting usability.
+    /// </summary>
+    Critical
 }
 
 /// <summary>

@@ -102,4 +102,4 @@ public static class EnvironmentVariableHelper
 
         return defaultValue;
     }
-} 
+}

@@ -133,7 +133,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                             pendingStringUpdate.Clear();
                         }
                     }
-                    
+
                     lastStringPath = update.Path;
                     pendingStringUpdate.Append(update.TextValue);
                 }
@@ -151,7 +151,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                         pendingStringUpdate.Clear();
                         lastStringPath = string.Empty;
                     }
-                    
+
                     // Then emit the current update
                     yield return update;
                 }
@@ -344,7 +344,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     private IEnumerable<JsonFragmentUpdate> HandleStringChar(char c)
     {
         var currentFrame = _contextStack.Peek();
-        
+
         // Initialize pending update buffer if needed
         if (_pendingStringUpdate == null)
         {
@@ -376,17 +376,18 @@ public class JsonFragmentToStructuredUpdateGenerator
             // End of string
             _currentString!.Append(c);
             _pendingStringUpdate?.Append(c);
-            
+
             // Update frame state to not be in string
             _contextStack.Pop();
-            _contextStack.Push(currentFrame with { 
-                IsInString = false, 
+            _contextStack.Push(currentFrame with
+            {
+                IsInString = false,
                 IsEscaped = false,
                 IsStartOrEnd = currentFrame.Type == ContainerType.Array ? false : currentFrame.IsStartOrEnd
             });
 
             var stringValue = _currentString.ToString();
-            
+
             // For property names, use the Key kind - no partial string events for property names
             if (_expectingPropertyName)
             {
@@ -412,14 +413,14 @@ public class JsonFragmentToStructuredUpdateGenerator
             // Reset string state
             _currentString = null;
             _pendingStringUpdate = null;
-            
+
             yield break;
         }
 
         // Regular character in string
         _currentString!.Append(c);
         _pendingStringUpdate!.Append(c);
-        
+
         // Emit partial string updates for value strings only (not property names)
         if (!_expectingPropertyName)
         {
@@ -439,7 +440,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         {
             IsStartOrEnd = true
         };
-        
+
         // For objects within arrays, use the array's index for path
         if (parentFrame?.Type == ContainerType.Array)
         {
@@ -457,10 +458,10 @@ public class JsonFragmentToStructuredUpdateGenerator
                 _lastPropertyName = string.Empty;
             }
         }
-        
+
         _contextStack.Push(objectFrame);
         _expectingPropertyName = true;
-        
+
         yield return new JsonFragmentUpdate(
             GetCurrentPath(),
             JsonFragmentKind.StartObject,
@@ -481,12 +482,12 @@ public class JsonFragmentToStructuredUpdateGenerator
                     yield return update;
                 }
             }
-            
+
             var frame = _contextStack.Peek();
             var updatedFrame = frame with { IsStartOrEnd = true };
             _contextStack.Pop();
             _contextStack.Push(updatedFrame);
-            
+
             // Calculate the path before popping the frame
             // For EndObject, we want the parent's path
             string currentPath;
@@ -502,13 +503,13 @@ public class JsonFragmentToStructuredUpdateGenerator
                 // If we're at the root object, use "root"
                 currentPath = "root";
             }
-            
+
             _contextStack.Pop();
-            
+
             // Reset object-specific state flags when finishing an object
             // This ensures proper completion detection
             _afterColon = false;
-            
+
             // If we're returning to a parent object, restore the appropriate state
             if (_contextStack.Count > 1 && _contextStack.Peek().Type == ContainerType.Object)
             {
@@ -521,7 +522,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 // We're at root level, no longer in any object context
                 _expectingPropertyName = false;
             }
-            
+
             yield return new JsonFragmentUpdate(
                 currentPath,
                 JsonFragmentKind.EndObject,
@@ -538,7 +539,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         {
             IsStartOrEnd = true
         };
-        
+
         // For arrays after a property name
         if (parentFrame?.Type == ContainerType.Object && _afterColon)
         {
@@ -551,10 +552,10 @@ public class JsonFragmentToStructuredUpdateGenerator
             _contextStack.Pop();
             _contextStack.Push(parentFrame with { IsStartOrEnd = false });
         }
-        
+
         _contextStack.Push(arrayFrame);
         _afterColon = false;
-        
+
         yield return new JsonFragmentUpdate(
             GetCurrentPath(),
             JsonFragmentKind.StartArray,
@@ -575,14 +576,14 @@ public class JsonFragmentToStructuredUpdateGenerator
                     yield return update;
                 }
             }
-            
+
             var frame = _contextStack.Peek();
             var updatedFrame = frame with { IsStartOrEnd = true };
             _contextStack.Pop();
             _contextStack.Push(updatedFrame);
             var currentPath = GetCurrentPath();
             _contextStack.Pop();
-            
+
             yield return new JsonFragmentUpdate(
                 currentPath,
                 JsonFragmentKind.EndArray,
@@ -610,7 +611,8 @@ public class JsonFragmentToStructuredUpdateGenerator
             {
                 // Increment array index after emitting value
                 _contextStack.Pop();
-                _contextStack.Push(currentFrame with { 
+                _contextStack.Push(currentFrame with
+                {
                     ElementIndex = currentFrame.ElementIndex + 1,
                     IsStartOrEnd = false
                 });
@@ -622,7 +624,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 _afterColon = false; // Reset colon flag
             }
         }
-        
+
         yield break;
     }
 
@@ -633,7 +635,7 @@ public class JsonFragmentToStructuredUpdateGenerator
             _expectingPropertyName = false;
             _afterColon = true;
         }
-        
+
         yield break;
     }
 
@@ -653,7 +655,8 @@ public class JsonFragmentToStructuredUpdateGenerator
             var currentFrame = _contextStack.Peek();
             // Update frame with new state
             _contextStack.Pop();
-            _contextStack.Push(currentFrame with {
+            _contextStack.Push(currentFrame with
+            {
                 IsInString = true,
                 IsEscaped = false,
                 IsStartOrEnd = currentFrame.Type == ContainerType.Array ? false : currentFrame.IsStartOrEnd
@@ -683,7 +686,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         if (_currentString == null)
         {
             _currentString = new StringBuilder();
-            
+
             // Determine token type from first character
             if (char.IsDigit(c) || c == '-')
             {
@@ -694,7 +697,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 _currentTokenType = TokenType.Literal;
             }
         }
-        
+
         _currentString.Append(c);
 
         // Mark array frame as no longer at boundary when we start a value
@@ -704,16 +707,16 @@ public class JsonFragmentToStructuredUpdateGenerator
             _contextStack.Pop();
             _contextStack.Push(frame with { IsStartOrEnd = false });
         }
-        
+
         yield break;
     }
-    
+
     private IEnumerable<JsonFragmentUpdate> EmitCurrentToken()
     {
         if (_currentString == null) yield break;
-        
+
         var token = _currentString.ToString().Trim();
-        
+
         if (_currentTokenType == TokenType.Literal)
         {
             yield return CreateLiteralTokenUpdate(token);
@@ -727,7 +730,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 token
             );
         }
-        
+
         // Reset token state
         _currentString = null;
         _currentTokenType = TokenType.None;
@@ -753,7 +756,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 null
             );
         }
-        
+
         // Default case - shouldn't usually happen
         return new JsonFragmentUpdate(
             GetCurrentPath(),
@@ -767,7 +770,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     {
         var pathBuilder = new StringBuilder("root");
         var frames = _contextStack.Reverse().Skip(1).ToArray(); // Skip root, and reverse to go from root down
-        
+
         // For key updates, always return parent path
         if (_expectingPropertyName && !_afterColon)
         {
@@ -779,14 +782,14 @@ public class JsonFragmentToStructuredUpdateGenerator
         {
             AppendFrameToPath(pathBuilder, frame);
         }
-        
+
         // If we're processing a value and have a property name, append it
         if (!_expectingPropertyName && !string.IsNullOrEmpty(_lastPropertyName))
         {
             pathBuilder.Append('.');
             pathBuilder.Append(_lastPropertyName);
         }
-        
+
         return pathBuilder.ToString();
     }
 
@@ -855,4 +858,4 @@ public class JsonFragmentToStructuredUpdateGenerator
     }
 
     #endregion
-} 
+}

@@ -70,13 +70,13 @@ public class JsonToolFormatterTests
     {
         // Arrange
         var formatter = new JsonToolFormatter();
-        
+
         // Act - Send JSON in fragments using a single generator for streaming behavior
         var generator = new JsonFragmentToStructuredUpdateGenerator("testTool");
         var fragmentUpdates1 = generator.AddFragment("{\"status\":\"process").ToList();
         var fragmentUpdates2 = generator.AddFragment("ing\",\"progress\":").ToList();
         var fragmentUpdates3 = generator.AddFragment("50}").ToList();
-        
+
         var updates1 = formatter.Format("testTool", fragmentUpdates1).ToList();
         var updates2 = formatter.Format("testTool", fragmentUpdates2).ToList();
         var updates3 = formatter.Format("testTool", fragmentUpdates3).ToList();
@@ -113,4 +113,4 @@ public class JsonToolFormatterTests
             _output.WriteLine($"Color: {color.Foreground}, Text: |{text.Replace("\n", "\\n")}|");
         }
     }
-} 
+}

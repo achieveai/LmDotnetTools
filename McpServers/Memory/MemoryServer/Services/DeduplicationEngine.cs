@@ -19,8 +19,8 @@ public class DeduplicationEngine : IDeduplicationEngine
     {
         _options = options.Value.Deduplication;
         _logger = logger;
-        
-        _logger.LogInformation("DeduplicationEngine initialized with similarity threshold {SimilarityThreshold}", 
+
+        _logger.LogInformation("DeduplicationEngine initialized with similarity threshold {SimilarityThreshold}",
             _options.SimilarityThreshold);
     }
 
@@ -51,7 +51,7 @@ public class DeduplicationEngine : IDeduplicationEngine
             {
                 _logger.LogDebug("Early exit - EnableDeduplication={EnableDeduplication}, ResultCount={ResultCount}",
                     effectiveOptions.EnableDeduplication, results.Count);
-                return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, 
+                return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed,
                     "Deduplication disabled or insufficient results");
             }
 
@@ -60,7 +60,7 @@ public class DeduplicationEngine : IDeduplicationEngine
             using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
             var deduplicatedResults = await PerformDeduplicationAsync(results, effectiveOptions, metrics, combinedCts.Token);
-            
+
             totalStopwatch.Stop();
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
@@ -126,7 +126,7 @@ public class DeduplicationEngine : IDeduplicationEngine
 
         // Phase 3: Context Preservation Logic
         var processedIds = new HashSet<int>();
-        
+
         foreach (var group in duplicateGroups)
         {
             if (group.Count <= 1)
@@ -144,7 +144,7 @@ public class DeduplicationEngine : IDeduplicationEngine
 
             // Apply context preservation logic
             var preservedResults = ApplyContextPreservationLogic(group, options);
-            
+
             foreach (var result in preservedResults.Where(r => !processedIds.Contains(r.Id)))
             {
                 deduplicatedResults.Add(result);
@@ -163,7 +163,7 @@ public class DeduplicationEngine : IDeduplicationEngine
 
         // Add any results that weren't part of any duplicate group
         var unprocessedResults = results.Where(r => !processedIds.Contains(r.Id)).ToList();
-        
+
         foreach (var result in unprocessedResults)
         {
             deduplicatedResults.Add(result);
@@ -198,7 +198,7 @@ public class DeduplicationEngine : IDeduplicationEngine
                     continue;
 
                 var similarity = CalculateContentSimilarity(results[i], results[j]);
-                
+
                 if (similarity >= options.SimilarityThreshold)
                 {
                     currentGroup.Add(results[j]);
@@ -265,7 +265,7 @@ public class DeduplicationEngine : IDeduplicationEngine
 
         // Remove extra whitespace, convert to lowercase, remove punctuation
         return System.Text.RegularExpressions.Regex.Replace(
-            content.ToLowerInvariant().Trim(), 
+            content.ToLowerInvariant().Trim(),
             @"[^\w\s]", " ")
             .Replace("  ", " ");
     }
@@ -321,7 +321,7 @@ public class DeduplicationEngine : IDeduplicationEngine
             return true;
 
         // Check if secondary content provides additional value
-        if (!string.IsNullOrEmpty(candidate.SecondaryContent) && 
+        if (!string.IsNullOrEmpty(candidate.SecondaryContent) &&
             string.IsNullOrEmpty(primary.SecondaryContent))
             return true;
 
@@ -338,7 +338,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         {
             var candidateKeys = candidate.Metadata.Keys.ToHashSet();
             var primaryKeys = primary.Metadata.Keys.ToHashSet();
-            
+
             // If candidate has unique metadata keys, it provides complementary info
             if (candidateKeys.Except(primaryKeys).Any())
                 return true;
@@ -354,7 +354,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         string reason)
     {
         metrics.TotalDuration = duration;
-        
+
         return new DeduplicationResults
         {
             Results = results,
@@ -363,4 +363,4 @@ public class DeduplicationEngine : IDeduplicationEngine
             FallbackReason = reason
         };
     }
-} 
+}

@@ -125,11 +125,11 @@ public class LoggingIntegrationTests : IDisposable
             Description = "A test function",
             Parameters = new[]
             {
-                new FunctionParameterContract 
-                { 
+                new FunctionParameterContract
+                {
                     Name = "input",
-                    ParameterType = JsonSchemaObject.String("Test input parameter"), 
-                    Description = "Test input" 
+                    ParameterType = JsonSchemaObject.String("Test input parameter"),
+                    Description = "Test input"
                 }
             }
         };
@@ -179,7 +179,7 @@ public class LoggingIntegrationTests : IDisposable
         // Verify function execution logging
         var functionExecutionLogs = logs.Where(log => log.Message.Contains("Function executed")).ToList();
         Assert.Single(functionExecutionLogs);
-        
+
         var functionLog = functionExecutionLogs.First();
         Assert.Contains("TestFunction", functionLog.Message);
         Assert.Contains("Success=True", functionLog.Message);
@@ -513,7 +513,7 @@ public class TestLogger : ILogger
 
     public IDisposable BeginScope<TState>(TState state) => new TestScope();
     public bool IsEnabled(LogLevel logLevel) => true;
-    
+
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
     {
         var message = formatter(state, exception);

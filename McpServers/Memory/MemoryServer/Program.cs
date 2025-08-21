@@ -26,7 +26,7 @@ if (commandLineArgs.Length > 1 && commandLineArgs[1] == "generate-token")
     // Handle CLI commands
     var rootCommand = new RootCommand("Memory MCP Server");
     rootCommand.AddCommand(TokenGeneratorCommand.CreateCommand());
-    
+
     return await rootCommand.InvokeAsync(commandLineArgs.Skip(1).ToArray());
 }
 
@@ -81,10 +81,10 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
     // Configure JWT authentication for SSE transport only
     builder.Services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
     builder.Services.AddScoped<ITokenService, TokenService>();
-    
+
     var jwtOptions = new JwtOptions();
     configuration.GetSection("Jwt").Bind(jwtOptions);
-    
+
     if (jwtOptions.IsValid())
     {
         builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -102,7 +102,7 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
                     ClockSkew = TimeSpan.Zero
                 };
             });
-        
+
         builder.Services.AddAuthorization();
     }
 
@@ -128,7 +128,7 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
 static async Task ConfigureSseApplication(WebApplication app)
 {
     var appLogger = app.Services.GetRequiredService<ILogger<Program>>();
-    
+
     // Initialize database
     await DatabaseInitializer.InitializeAsync(app.Services);
 
@@ -161,7 +161,7 @@ static async Task ConfigureSseApplication(WebApplication app)
             {
                 var sessionInitializer = context.RequestServices.GetRequiredService<TransportSessionInitializer>();
                 var sessionDefaults = await sessionInitializer.InitializeSseSessionAsync(queryParameters, headers);
-                
+
                 if (sessionDefaults != null && sessionInitializer.ValidateSessionContext(sessionDefaults))
                 {
                     appLogger.LogInformation("SSE session context initialized: {SessionDefaults}", sessionDefaults);
@@ -178,7 +178,7 @@ static async Task ConfigureSseApplication(WebApplication app)
 
     // Add basic health check endpoint for testing
     app.MapGet("/health", () => "OK");
-    
+
     // Map MCP endpoints (this creates the /sse endpoint)
     app.MapMcp();
 
@@ -202,7 +202,7 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
     // Configure JWT services for STDIO (but no authentication middleware)
     builder.Services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
     builder.Services.AddScoped<ITokenService, TokenService>();
-    
+
     // Add HTTP context accessor for consistency (even though not used in STDIO)
     builder.Services.AddHttpContextAccessor();
 
@@ -301,13 +301,13 @@ public class Startup
 
         // Map MCP endpoints (this creates the /sse endpoint)
         app.UseRouting();
-        
+
         app.UseEndpoints(endpoints =>
         {
             // Add basic health check endpoint for testing
             endpoints.MapGet("/health", () => "OK");
-            
+
             endpoints.MapMcp();
         });
     }
-} 
+}

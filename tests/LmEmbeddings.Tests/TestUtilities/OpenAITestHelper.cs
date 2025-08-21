@@ -33,32 +33,32 @@ public static class OpenAITestHelper
     {
         return new Dictionary<string, EmbeddingModelConfig>
         {
-            { 
-                "text-embedding-3-small", 
-                new EmbeddingModelConfig 
-                { 
-                    Model = "text-embedding-3-small", 
-                    Dimensions = 1536, 
-                    IsMultiModal = false 
-                } 
+            {
+                "text-embedding-3-small",
+                new EmbeddingModelConfig
+                {
+                    Model = "text-embedding-3-small",
+                    Dimensions = 1536,
+                    IsMultiModal = false
+                }
             },
-            { 
-                "text-embedding-3-large", 
-                new EmbeddingModelConfig 
-                { 
-                    Model = "text-embedding-3-large", 
-                    Dimensions = 3072, 
-                    IsMultiModal = false 
-                } 
+            {
+                "text-embedding-3-large",
+                new EmbeddingModelConfig
+                {
+                    Model = "text-embedding-3-large",
+                    Dimensions = 3072,
+                    IsMultiModal = false
+                }
             },
-            { 
-                "text-embedding-ada-002", 
-                new EmbeddingModelConfig 
-                { 
-                    Model = "text-embedding-ada-002", 
-                    Dimensions = 1536, 
-                    IsMultiModal = false 
-                } 
+            {
+                "text-embedding-ada-002",
+                new EmbeddingModelConfig
+                {
+                    Model = "text-embedding-ada-002",
+                    Dimensions = 1536,
+                    IsMultiModal = false
+                }
             }
         };
     }

@@ -187,11 +187,11 @@ public class RerankingService : IRerankService, IDisposable
     private List<RankedDocument> ParseResponse(string responseJson, IList<string> originalDocuments)
     {
         _logger.LogDebug("Parsing JSON response: {ResponseJson}", responseJson);
-        
+
         try
         {
             var response = JsonSerializer.Deserialize<RerankResponse>(responseJson);
-            
+
             if (response?.Results == null)
             {
                 _logger.LogError("Invalid response structure. Response: {Response}", responseJson);
@@ -199,7 +199,7 @@ public class RerankingService : IRerankService, IDisposable
             }
 
             var rankedDocs = new List<RankedDocument>();
-            
+
             foreach (var result in response.Results)
             {
                 if (result.Index >= 0 && result.Index < originalDocuments.Count)
@@ -219,9 +219,9 @@ public class RerankingService : IRerankService, IDisposable
 
             // Sort by score descending (highest relevance first)
             rankedDocs.Sort((a, b) => b.Score.CompareTo(a.Score));
-            
+
             _logger.LogDebug("Parsed {ResultCount} ranked documents from API response", rankedDocs.Count);
-            
+
             return rankedDocs;
         }
         catch (JsonException ex)
@@ -271,7 +271,7 @@ public class RerankingService : IRerankService, IDisposable
     public async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
     {
         var rankedDocuments = await RerankAsync(request.Query, request.Documents, cancellationToken);
-        
+
         return new RerankResponse
         {
             Results = rankedDocuments.Select(doc => new RerankResult
@@ -294,13 +294,13 @@ public class RerankingService : IRerankService, IDisposable
         }
 
         var rankedDocuments = await RerankAsync(query, documentList, cancellationToken);
-        
+
         // Apply topK filtering if specified
         if (topK.HasValue && topK.Value > 0)
         {
             rankedDocuments = rankedDocuments.Take(topK.Value).ToList();
         }
-        
+
         return new RerankResponse
         {
             Results = rankedDocuments.Select(doc => new RerankResult
@@ -315,4 +315,4 @@ public class RerankingService : IRerankService, IDisposable
     {
         return Task.FromResult<IReadOnlyList<string>>(new List<string> { _model });
     }
-} 
+}

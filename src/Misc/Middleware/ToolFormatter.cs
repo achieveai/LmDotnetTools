@@ -12,4 +12,4 @@ namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 public delegate IEnumerable<(ConsoleColorPair Color, string Text)> ToolFormatter(
     string toolCallName,
     IEnumerable<JsonFragmentUpdate> fragmentUpdates
-); 
+);

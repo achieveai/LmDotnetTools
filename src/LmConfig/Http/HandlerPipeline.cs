@@ -38,4 +38,4 @@ public sealed class HandlerBuilder : IHttpHandlerBuilder
             handler = _wrappers[i](handler, logger);
         return handler;
     }
-} 
+}

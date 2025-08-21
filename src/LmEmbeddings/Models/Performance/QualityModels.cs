@@ -54,4 +54,4 @@ public record CoherenceMetrics
     /// </summary>
     [JsonPropertyName("silhouette_score")]
     public double? SilhouetteScore { get; init; }
-} 
+}
