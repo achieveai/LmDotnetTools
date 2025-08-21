@@ -146,4 +146,4 @@ public record ProviderSelectionCriteria
     {
         PreferredTags = new[] { "reliable", "stable", "official", "flagship" }
     };
-} 
+}

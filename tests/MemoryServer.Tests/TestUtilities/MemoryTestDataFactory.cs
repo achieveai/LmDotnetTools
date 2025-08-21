@@ -42,53 +42,53 @@ public static class MemoryTestDataFactory
     public static IEnumerable<object[]> GetSessionMatchingTestCases()
     {
         // Format: context1, context2, shouldMatch, description
-        yield return new object[] { 
-            SessionContext.ForUser("user1"), 
-            SessionContext.ForUser("user1"), 
-            true, 
-            "Same user contexts should match" 
+        yield return new object[] {
+            SessionContext.ForUser("user1"),
+            SessionContext.ForUser("user1"),
+            true,
+            "Same user contexts should match"
         };
-        
-        yield return new object[] { 
-            SessionContext.ForUser("user1"), 
-            SessionContext.ForUser("user2"), 
-            false, 
-            "Different user contexts should not match" 
+
+        yield return new object[] {
+            SessionContext.ForUser("user1"),
+            SessionContext.ForUser("user2"),
+            false,
+            "Different user contexts should not match"
         };
-        
-        yield return new object[] { 
-            SessionContext.ForAgent("user1", "agent1"), 
-            SessionContext.ForAgent("user1", "agent1"), 
-            true, 
-            "Same user-agent contexts should match" 
+
+        yield return new object[] {
+            SessionContext.ForAgent("user1", "agent1"),
+            SessionContext.ForAgent("user1", "agent1"),
+            true,
+            "Same user-agent contexts should match"
         };
-        
-        yield return new object[] { 
-            SessionContext.ForAgent("user1", "agent1"), 
-            SessionContext.ForAgent("user1", "agent2"), 
-            false, 
-            "Different agent contexts should not match" 
+
+        yield return new object[] {
+            SessionContext.ForAgent("user1", "agent1"),
+            SessionContext.ForAgent("user1", "agent2"),
+            false,
+            "Different agent contexts should not match"
         };
-        
-        yield return new object[] { 
-            SessionContext.ForUser("user1"), 
-            SessionContext.ForAgent("user1", "agent1"), 
-            false, 
-            "User context should not match user-agent context (strict matching)" 
+
+        yield return new object[] {
+            SessionContext.ForUser("user1"),
+            SessionContext.ForAgent("user1", "agent1"),
+            false,
+            "User context should not match user-agent context (strict matching)"
         };
-        
-        yield return new object[] { 
-            SessionContext.ForRun("user1", "agent1", "run1"), 
-            SessionContext.ForRun("user1", "agent1", "run1"), 
-            true, 
-            "Same full contexts should match" 
+
+        yield return new object[] {
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            true,
+            "Same full contexts should match"
         };
-        
-        yield return new object[] { 
-            SessionContext.ForRun("user1", "agent1", "run1"), 
-            SessionContext.ForRun("user1", "agent1", "run2"), 
-            false, 
-            "Different run contexts should not match" 
+
+        yield return new object[] {
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            SessionContext.ForRun("user1", "agent1", "run2"),
+            false,
+            "Different run contexts should not match"
         };
     }
 
@@ -111,39 +111,39 @@ public static class MemoryTestDataFactory
     /// </summary>
     public static IEnumerable<object?[]> GetMetadataTestCases()
     {
-        yield return new object?[] { 
-            null, 
-            "Null metadata" 
+        yield return new object?[] {
+            null,
+            "Null metadata"
         };
-        
-        yield return new object?[] { 
-            new Dictionary<string, object>(), 
-            "Empty metadata dictionary" 
+
+        yield return new object?[] {
+            new Dictionary<string, object>(),
+            "Empty metadata dictionary"
         };
-        
-        yield return new object?[] { 
-            new Dictionary<string, object> { { "key1", "value1" } }, 
-            "Single metadata entry" 
+
+        yield return new object?[] {
+            new Dictionary<string, object> { { "key1", "value1" } },
+            "Single metadata entry"
         };
-        
-        yield return new object?[] { 
-            new Dictionary<string, object> 
-            { 
-                { "key1", "value1" }, 
-                { "key2", 42 }, 
-                { "key3", true } 
-            }, 
-            "Multiple metadata entries with different types" 
+
+        yield return new object?[] {
+            new Dictionary<string, object>
+            {
+                { "key1", "value1" },
+                { "key2", 42 },
+                { "key3", true }
+            },
+            "Multiple metadata entries with different types"
         };
-        
-        yield return new object?[] { 
-            new Dictionary<string, object> 
-            { 
-                { "source", "api" }, 
-                { "priority", 5 }, 
-                { "tags", new[] { "important", "user-generated" } } 
-            }, 
-            "Complex metadata with arrays" 
+
+        yield return new object?[] {
+            new Dictionary<string, object>
+            {
+                { "source", "api" },
+                { "priority", 5 },
+                { "tags", new[] { "important", "user-generated" } }
+            },
+            "Complex metadata with arrays"
         };
     }
 
@@ -151,10 +151,10 @@ public static class MemoryTestDataFactory
     /// Creates a test memory with specified parameters.
     /// </summary>
     public static Memory CreateTestMemory(
-        int id = 1, 
-        string content = "Test memory content", 
-        string userId = "test-user", 
-        string? agentId = null, 
+        int id = 1,
+        string content = "Test memory content",
+        string userId = "test-user",
+        string? agentId = null,
         string? runId = null,
         Dictionary<string, object>? metadata = null)
     {
@@ -190,4 +190,4 @@ public static class MemoryTestDataFactory
         }
         return memories;
     }
-} 
+}

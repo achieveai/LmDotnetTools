@@ -24,7 +24,7 @@ public static class ServiceCollectionExtensions
     /// <param name="configuration">The configuration containing model and provider settings.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfig(
-        this IServiceCollection services, 
+        this IServiceCollection services,
         IConfiguration configuration)
     {
         return services.AddLmConfig(configuration.GetSection("LmConfig"));
@@ -37,7 +37,7 @@ public static class ServiceCollectionExtensions
     /// <param name="configurationSection">The configuration section containing model and provider settings.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfig(
-        this IServiceCollection services, 
+        this IServiceCollection services,
         IConfigurationSection configurationSection)
     {
         // Configure AppConfig from configuration
@@ -54,7 +54,7 @@ public static class ServiceCollectionExtensions
     /// <param name="appConfig">The pre-configured AppConfig instance.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfig(
-        this IServiceCollection services, 
+        this IServiceCollection services,
         AppConfig appConfig)
     {
         ArgumentNullException.ThrowIfNull(appConfig);
@@ -73,7 +73,7 @@ public static class ServiceCollectionExtensions
     /// <param name="configFilePath">Path to the JSON configuration file.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfigFromFile(
-        this IServiceCollection services, 
+        this IServiceCollection services,
         string configFilePath)
     {
         ValidateStringParameter(configFilePath, nameof(configFilePath));
@@ -167,7 +167,7 @@ public static class ServiceCollectionExtensions
         ValidateStringParameter(resourceName, nameof(resourceName));
 
         assembly ??= Assembly.GetCallingAssembly();
-        
+
         var appConfig = LoadConfigFromEmbeddedResource(resourceName, assembly);
         return services.AddLmConfig(appConfig);
     }
@@ -183,7 +183,7 @@ public static class ServiceCollectionExtensions
         Func<Stream> streamFactory)
     {
         ArgumentNullException.ThrowIfNull(streamFactory);
-        
+
         var appConfig = LoadConfigFromStream(streamFactory);
         return services.AddLmConfig(appConfig);
     }
@@ -199,7 +199,7 @@ public static class ServiceCollectionExtensions
         Func<Task<Stream>> streamFactory)
     {
         ArgumentNullException.ThrowIfNull(streamFactory);
-        
+
         var appConfig = LoadConfigFromStreamAsync(streamFactory);
         return services.AddLmConfig(appConfig);
     }
@@ -208,7 +208,7 @@ public static class ServiceCollectionExtensions
     /// Shared method to register core LmConfig services, eliminating duplication.
     /// </summary>
     private static IServiceCollection RegisterLmConfigServices(
-        IServiceCollection services, 
+        IServiceCollection services,
         bool registerAsDefaultAgent)
     {
         // Register core services
@@ -240,10 +240,10 @@ public static class ServiceCollectionExtensions
                 return inner;
             });
         }
-        
+
         // Register the unified agent
         services.AddScoped<UnifiedAgent>();
-        
+
         // Register as default agent if requested
         if (registerAsDefaultAgent)
         {
@@ -299,7 +299,7 @@ public static class ServiceCollectionExtensions
             options.AllowTrailingCommas = true;
 
             var config = JsonSerializer.Deserialize<AppConfig>(stream, options);
-            
+
             if (config?.Models == null || !config.Models.Any())
                 throw new InvalidOperationException("Configuration must contain at least one model");
 
@@ -322,7 +322,7 @@ public static class ServiceCollectionExtensions
         // Build a temporary service provider to validate configuration
         using var provider = services.BuildServiceProvider();
         var modelResolver = provider.GetRequiredService<IModelResolver>();
-        
+
         var validationTask = modelResolver.ValidateConfigurationAsync();
         var validation = validationTask.GetAwaiter().GetResult();
 
@@ -380,13 +380,13 @@ public static class ServiceCollectionExtensions
         {
             using var reader = new StreamReader(resourceStream);
             var json = reader.ReadToEnd();
-            
+
             var options = JsonSerializerOptionsFactory.CreateMinimal(
                 namingPolicy: JsonNamingPolicy.CamelCase);
             options.PropertyNameCaseInsensitive = true;
             options.AllowTrailingCommas = true;
             options.ReadCommentHandling = JsonCommentHandling.Skip;
-            
+
             var config = JsonSerializer.Deserialize<AppConfig>(json, options);
 
             if (config?.Models?.Any() != true)
@@ -413,9 +413,9 @@ public static class ServiceCollectionExtensions
     {
         using var stream = streamFactory();
         using var reader = new StreamReader(stream);
-        
+
         var json = reader.ReadToEnd();
-        
+
         try
         {
             var options = JsonSerializerOptionsFactory.CreateMinimal(
@@ -423,7 +423,7 @@ public static class ServiceCollectionExtensions
             options.PropertyNameCaseInsensitive = true;
             options.AllowTrailingCommas = true;
             options.ReadCommentHandling = JsonCommentHandling.Skip;
-            
+
             var config = JsonSerializer.Deserialize<AppConfig>(json, options);
 
             if (config?.Models?.Any() != true)
@@ -468,4 +468,4 @@ public class LmConfigOptions
     /// Optional action to configure HTTP clients for providers.
     /// </summary>
     public Action<IServiceCollection>? ConfigureHttpClients { get; set; }
-} 
+}

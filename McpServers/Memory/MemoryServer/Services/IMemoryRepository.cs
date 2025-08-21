@@ -229,4 +229,4 @@ public class VectorSearchResult
     /// Distance value from the vector search.
     /// </summary>
     public float Distance { get; set; }
-} 
+}

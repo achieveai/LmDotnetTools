@@ -27,7 +27,7 @@ public class GraphRepository : IGraphRepository
     public async Task<Entity> AddEntityAsync(Entity entity, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // Generate ID if not provided
@@ -67,7 +67,7 @@ public class GraphRepository : IGraphRepository
 
             await command.ExecuteNonQueryAsync(cancellationToken);
 
-            _logger.LogInformation("Added entity {EntityId} '{EntityName}' for session {SessionContext}", 
+            _logger.LogInformation("Added entity {EntityId} '{EntityName}' for session {SessionContext}",
                 entity.Id, entity.Name, sessionContext);
             return entity;
         });
@@ -76,7 +76,7 @@ public class GraphRepository : IGraphRepository
     public async Task<Entity?> GetEntityByIdAsync(int entityId, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -107,7 +107,7 @@ public class GraphRepository : IGraphRepository
     public async Task<Entity?> GetEntityByNameAsync(string name, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -140,7 +140,7 @@ public class GraphRepository : IGraphRepository
     public async Task<IEnumerable<Entity>> GetEntitiesAsync(SessionContext sessionContext, int limit = 100, int offset = 0, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -174,7 +174,7 @@ public class GraphRepository : IGraphRepository
     public async Task<Entity> UpdateEntityAsync(Entity entity, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // Verify entity exists and belongs to session
@@ -219,7 +219,7 @@ public class GraphRepository : IGraphRepository
                 throw new InvalidOperationException($"Entity {entity.Id} could not be updated");
             }
 
-            _logger.LogInformation("Updated entity {EntityId} '{EntityName}' for session {SessionContext}", 
+            _logger.LogInformation("Updated entity {EntityId} '{EntityName}' for session {SessionContext}",
                 entity.Id, entity.Name, sessionContext);
             return entity;
         });
@@ -228,7 +228,7 @@ public class GraphRepository : IGraphRepository
     public async Task<bool> DeleteEntityAsync(int entityId, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // First delete related relationships
@@ -283,7 +283,7 @@ public class GraphRepository : IGraphRepository
     public async Task<Relationship> AddRelationshipAsync(Relationship relationship, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // Generate ID if not provided
@@ -324,7 +324,7 @@ public class GraphRepository : IGraphRepository
 
             await command.ExecuteNonQueryAsync(cancellationToken);
 
-            _logger.LogInformation("Added relationship {RelationshipId} '{Source}' -> '{Target}' for session {SessionContext}", 
+            _logger.LogInformation("Added relationship {RelationshipId} '{Source}' -> '{Target}' for session {SessionContext}",
                 relationship.Id, relationship.Source, relationship.Target, sessionContext);
             return relationship;
         });
@@ -333,7 +333,7 @@ public class GraphRepository : IGraphRepository
     public async Task<Relationship?> GetRelationshipByIdAsync(int relationshipId, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -364,7 +364,7 @@ public class GraphRepository : IGraphRepository
     public async Task<IEnumerable<Relationship>> GetRelationshipsAsync(SessionContext sessionContext, int limit = 100, int offset = 0, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -398,7 +398,7 @@ public class GraphRepository : IGraphRepository
     public async Task<IEnumerable<Relationship>> GetRelationshipsForEntityAsync(string entityName, SessionContext sessionContext, bool? asSource = null, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             var whereClause = asSource switch
@@ -438,7 +438,7 @@ public class GraphRepository : IGraphRepository
     public async Task<Relationship> UpdateRelationshipAsync(Relationship relationship, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // Verify relationship exists and belongs to session
@@ -483,7 +483,7 @@ public class GraphRepository : IGraphRepository
                 throw new InvalidOperationException($"Relationship {relationship.Id} could not be updated");
             }
 
-            _logger.LogInformation("Updated relationship {RelationshipId} '{Source} {RelationshipType} {Target}' for session {SessionContext}", 
+            _logger.LogInformation("Updated relationship {RelationshipId} '{Source} {RelationshipType} {Target}' for session {SessionContext}",
                 relationship.Id, relationship.Source, relationship.RelationshipType, relationship.Target, sessionContext);
             return relationship;
         });
@@ -492,7 +492,7 @@ public class GraphRepository : IGraphRepository
     public async Task<bool> DeleteRelationshipAsync(int relationshipId, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             using var command = connection.CreateCommand();
@@ -526,17 +526,17 @@ public class GraphRepository : IGraphRepository
     #region Graph Traversal Operations
 
     public async Task<IEnumerable<(Entity Entity, Relationship? Relationship, int Depth)>> TraverseGraphAsync(
-        string startEntityName, 
-        SessionContext sessionContext, 
-        int maxDepth = 2, 
-        IEnumerable<string>? relationshipTypes = null, 
+        string startEntityName,
+        SessionContext sessionContext,
+        int maxDepth = 2,
+        IEnumerable<string>? relationshipTypes = null,
         CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
-            var relationshipFilter = relationshipTypes != null && relationshipTypes.Any() 
+            var relationshipFilter = relationshipTypes != null && relationshipTypes.Any()
                 ? $"AND r.relationship_type IN ({string.Join(",", relationshipTypes.Select((_, i) => $"@relType{i}"))})"
                 : "";
 
@@ -604,7 +604,7 @@ public class GraphRepository : IGraphRepository
                 var entity = MapEntityFromReader(reader);
                 var relationship = reader.IsDBNull("rel_id") ? null : MapRelationshipFromReader(reader, "rel_");
                 var depth = Convert.ToInt32(reader["depth"]);
-                
+
                 results.Add((entity, relationship, depth));
             }
 
@@ -615,7 +615,7 @@ public class GraphRepository : IGraphRepository
     public async Task<IEnumerable<Relationship>> SearchRelationshipsAsync(string query, SessionContext sessionContext, int limit = 10, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -661,7 +661,7 @@ public class GraphRepository : IGraphRepository
     public async Task<IEnumerable<Entity>> SearchEntitiesAsync(string query, SessionContext sessionContext, int limit = 10, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -703,7 +703,7 @@ public class GraphRepository : IGraphRepository
         CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -721,10 +721,10 @@ public class GraphRepository : IGraphRepository
                 LIMIT @limit";
 
             var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
-            
+
             // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
             var queryEmbeddingJson = "[" + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
-            
+
             command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
             command.Parameters.AddWithValue("@userId", sessionContext.UserId);
             command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
@@ -761,7 +761,7 @@ public class GraphRepository : IGraphRepository
         CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -779,10 +779,10 @@ public class GraphRepository : IGraphRepository
                 LIMIT @limit";
 
             var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
-            
+
             // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
             var queryEmbeddingJson = "[" + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
-            
+
             command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
             command.Parameters.AddWithValue("@userId", sessionContext.UserId);
             command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
@@ -816,7 +816,7 @@ public class GraphRepository : IGraphRepository
     public async Task StoreEntityEmbeddingAsync(int entityId, float[] embedding, string modelName, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // Store the embedding in the vec0 table
@@ -828,7 +828,7 @@ public class GraphRepository : IGraphRepository
 
             // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
             var embeddingJson = "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
-            
+
             embeddingCommand.Parameters.AddWithValue("@entityId", entityId);
             embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
 
@@ -855,7 +855,7 @@ public class GraphRepository : IGraphRepository
     public async Task StoreRelationshipEmbeddingAsync(int relationshipId, float[] embedding, string modelName, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // Store the embedding in the vec0 table
@@ -867,7 +867,7 @@ public class GraphRepository : IGraphRepository
 
             // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
             var embeddingJson = "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
-            
+
             embeddingCommand.Parameters.AddWithValue("@relationshipId", relationshipId);
             embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
 
@@ -894,7 +894,7 @@ public class GraphRepository : IGraphRepository
     public async Task<float[]?> GetEntityEmbeddingAsync(int entityId, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -924,7 +924,7 @@ public class GraphRepository : IGraphRepository
     public async Task<float[]?> GetRelationshipEmbeddingAsync(int relationshipId, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -958,7 +958,7 @@ public class GraphRepository : IGraphRepository
     public async Task<int> GenerateNextIdAsync(CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             return await GenerateNextIdAsync(connection, transaction, cancellationToken);
@@ -1006,7 +1006,7 @@ public class GraphRepository : IGraphRepository
     public async Task<GraphStatistics> GetGraphStatisticsAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             var stats = new GraphStatistics();
@@ -1018,11 +1018,11 @@ public class GraphRepository : IGraphRepository
                 WHERE user_id = @userId 
                   AND (@agentId IS NULL OR agent_id = @agentId)
                   AND (@runId IS NULL OR run_id = @runId)";
-            
+
             entityCountCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
             entityCountCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
             entityCountCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            
+
             stats.EntityCount = Convert.ToInt32(await entityCountCommand.ExecuteScalarAsync(cancellationToken));
 
             // Get relationship count and statistics
@@ -1035,11 +1035,11 @@ public class GraphRepository : IGraphRepository
                 WHERE user_id = @userId 
                   AND (@agentId IS NULL OR agent_id = @agentId)
                   AND (@runId IS NULL OR run_id = @runId)";
-            
+
             relationshipStatsCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
             relationshipStatsCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
             relationshipStatsCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            
+
             using var reader = await relationshipStatsCommand.ExecuteReaderAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken))
             {
@@ -1058,11 +1058,11 @@ public class GraphRepository : IGraphRepository
                 GROUP BY relationship_type
                 ORDER BY count DESC
                 LIMIT 10";
-            
+
             topRelTypesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
             topRelTypesCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
             topRelTypesCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            
+
             using var topRelTypesReader = await topRelTypesCommand.ExecuteReaderAsync(cancellationToken);
             while (await topRelTypesReader.ReadAsync(cancellationToken))
             {
@@ -1089,11 +1089,11 @@ public class GraphRepository : IGraphRepository
                 GROUP BY entity_name
                 ORDER BY connection_count DESC
                 LIMIT 10";
-            
+
             topEntitiesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
             topEntitiesCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
             topEntitiesCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            
+
             using var topEntitiesReader = await topEntitiesCommand.ExecuteReaderAsync(cancellationToken);
             while (await topEntitiesReader.ReadAsync(cancellationToken))
             {
@@ -1152,4 +1152,4 @@ public class GraphRepository : IGraphRepository
     }
 
     #endregion
-} 
+}

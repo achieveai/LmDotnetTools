@@ -40,7 +40,7 @@ public class PerformanceModelsTests
         // Assert
         Assert.NotNull(json);
         Assert.NotNull(deserializedMetrics);
-        
+
         foreach (var expectedProperty in expectedJsonProperties)
         {
             Assert.Contains(expectedProperty, json);
@@ -50,7 +50,7 @@ public class PerformanceModelsTests
         Assert.Equal(metrics.RequestId, deserializedMetrics.RequestId);
         Assert.Equal(metrics.Service, deserializedMetrics.Service);
         Assert.Equal(metrics.Success, deserializedMetrics.Success);
-        
+
         Debug.WriteLine($"✓ RequestMetrics serialization successful: {json.Length} characters");
     }
 
@@ -70,7 +70,7 @@ public class PerformanceModelsTests
 
         // Assert
         Assert.NotNull(deserializedTiming);
-        
+
         if (isValid)
         {
             Assert.Equal(timing.ValidationMs, deserializedTiming.ValidationMs);
@@ -129,7 +129,7 @@ public class PerformanceModelsTests
         // Assert
         Assert.Contains(expectedStringValue, json);
         Assert.Equal(profileType, deserializedType);
-        
+
         Debug.WriteLine($"✓ ProfileType serialized as: {json}");
     }
 
@@ -216,7 +216,7 @@ public class PerformanceModelsTests
 
         // Assert
         Assert.NotNull(deserializedQuality);
-        
+
         if (scoresInValidRange && quality.AvgQualityScore.HasValue)
         {
             Assert.True(quality.AvgQualityScore >= 0.0 && quality.AvgQualityScore <= 1.0);
@@ -271,7 +271,7 @@ public class PerformanceModelsTests
         // Assert
         Assert.Contains(expectedStringValue, json);
         Assert.Equal(trend, deserializedTrend);
-        
+
         Debug.WriteLine($"✓ TrendDirection serialized as: {json}");
     }
 
@@ -484,4 +484,4 @@ public class PerformanceModelsTests
     };
 
     #endregion
-} 
+}

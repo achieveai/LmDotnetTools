@@ -205,7 +205,7 @@ public static class ValidationHelper
     public static void ValidateApiKey(string? apiKey, [CallerArgumentExpression(nameof(apiKey))] string? parameterName = null)
     {
         ValidateNotNullOrWhiteSpace(apiKey, parameterName);
-        
+
         if (apiKey!.Length < 10)
         {
             throw new ArgumentException("API key appears to be too short", parameterName);
@@ -221,8 +221,8 @@ public static class ValidationHelper
     public static void ValidateBaseUrl(string? baseUrl, [CallerArgumentExpression(nameof(baseUrl))] string? parameterName = null)
     {
         ValidateNotNullOrWhiteSpace(baseUrl, parameterName);
-        
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) || 
+
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) ||
             (uri.Scheme != "http" && uri.Scheme != "https"))
         {
             throw new ArgumentException("Base URL must be a valid HTTP or HTTPS URL", parameterName);
@@ -239,7 +239,7 @@ public static class ValidationHelper
         where T : class
     {
         ValidateNotNullOrEmpty(messages, parameterName);
-        
+
         if (!messages!.Any())
         {
             throw new ArgumentException("At least one message is required", parameterName);
@@ -272,7 +272,7 @@ public static class ValidationHelper
         ValidateNotNull(request);
 
         var requestType = request!.GetType();
-        
+
         // Validate Model property
         var modelProperty = requestType.GetProperty("Model");
         if (modelProperty != null)
@@ -323,7 +323,7 @@ public static class ValidationHelper
         ValidateNotNull(request);
 
         var requestType = request!.GetType();
-        
+
         // Validate Query property
         var queryProperty = requestType.GetProperty("Query");
         if (queryProperty != null)

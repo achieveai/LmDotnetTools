@@ -24,7 +24,7 @@ public class SimpleLoggingTests
         logger.LogDebug("Debug message");
         logger.LogError("Error message");
         logger.LogWarning("Warning message");
-        
+
         Assert.NotNull(logger);
     }
 
@@ -39,7 +39,7 @@ public class SimpleLoggingTests
         logger.LogDebug("Debug message");
         logger.LogError("Error message");
         logger.LogWarning("Warning message");
-        
+
         Assert.NotNull(logger);
     }
 
@@ -53,16 +53,16 @@ public class SimpleLoggingTests
         // Assert - Verify that LogEventIds are properly defined
         Assert.Equal(1001, LogEventIds.AgentRequestInitiated.Id);
         Assert.Equal("AgentRequestInitiated", LogEventIds.AgentRequestInitiated.Name);
-        
+
         Assert.Equal(1002, LogEventIds.AgentRequestCompleted.Id);
         Assert.Equal("AgentRequestCompleted", LogEventIds.AgentRequestCompleted.Name);
-        
+
         Assert.Equal(1003, LogEventIds.AgentRequestFailed.Id);
         Assert.Equal("AgentRequestFailed", LogEventIds.AgentRequestFailed.Name);
-        
+
         Assert.Equal(2001, LogEventIds.MiddlewareProcessing.Id);
         Assert.Equal("MiddlewareProcessing", LogEventIds.MiddlewareProcessing.Name);
-        
+
         Assert.Equal(3001, LogEventIds.ProviderResolved.Id);
         Assert.Equal("ProviderResolved", LogEventIds.ProviderResolved.Name);
     }
@@ -231,7 +231,7 @@ public class SimpleLoggingTests
         logger.LogError(testException, "An error occurred");
         logger.LogWarning(testException, "A warning occurred");
         logger.LogInformation(testException, "Information with exception");
-        
+
         Assert.NotNull(logger);
     }
 
@@ -245,7 +245,7 @@ public class SimpleLoggingTests
         // Arrange
         var mockLoggerFactory = new Mock<ILoggerFactory>();
         var mockLogger = new Mock<ILogger>();
-        
+
         mockLoggerFactory.Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!))
             .Returns(mockLogger.Object);
 

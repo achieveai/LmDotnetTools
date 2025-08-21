@@ -52,7 +52,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         try
         {
             // Step 1: Determine optimal strategy weights
-            var weights = options.PreferredWeights ?? 
+            var weights = options.PreferredWeights ??
                          await DetermineStrategyWeightsAsync(content, documentType, cancellationToken);
 
             _logger.LogDebug("Strategy weights determined: Structure={Structure:F2}, Narrative={Narrative:F2}, Topic={Topic:F2}",
@@ -151,7 +151,7 @@ public class HybridSegmentationService : IHybridSegmentationService
 
             // Normalize and validate weights
             weights.Normalize();
-            
+
             _logger.LogDebug("Final weights: Structure={Structure:F2}, Narrative={Narrative:F2}, Topic={Topic:F2}, Method={Method}",
                 weights.StructureWeight, weights.NarrativeWeight, weights.TopicWeight, weights.Method);
 
@@ -160,7 +160,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Error determining strategy weights, using defaults");
-            
+
             // Return equal weights as fallback
             return new StrategyWeights
             {
@@ -203,7 +203,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error combining segmentation results");
-            
+
             // Fallback: return results from highest-weighted strategy
             return GetHighestWeightedStrategyResults(structureSegments, narrativeSegments, topicSegments, weights);
         }
@@ -246,16 +246,16 @@ public class HybridSegmentationService : IHybridSegmentationService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error validating hybrid segmentation");
-            
+
             // Return basic validation
             validation.OverallQuality = 0.5;
-            validation.Issues.Add(new ValidationIssue 
-            { 
+            validation.Issues.Add(new ValidationIssue
+            {
                 Type = ValidationIssueType.PoorCoherence,
                 Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
                 Description = "Validation failed due to processing error"
             });
-            
+
             return validation;
         }
     }
@@ -312,12 +312,12 @@ public class HybridSegmentationService : IHybridSegmentationService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error adapting segmentation strategy");
-            
+
             // Return default configuration
             config.PrimaryStrategy = SegmentationStrategy.Hybrid;
             config.AdaptationConfidence = 0.5;
             config.AdaptationReasons.Add("Default configuration due to adaptation error");
-            
+
             return Task.FromResult(config);
         }
     }
@@ -381,30 +381,30 @@ public class HybridSegmentationService : IHybridSegmentationService
     private DocumentCharacteristics AnalyzeDocumentCharacteristics(string content)
     {
         var characteristics = new DocumentCharacteristics();
-        
+
         // Basic text analysis
         var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         var words = content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        
+
         characteristics.LineCount = lines.Length;
         characteristics.WordCount = words.Length;
         characteristics.CharacterCount = content.Length;
-        
+
         // Structural indicators
         characteristics.HasHeadings = content.Contains('#') || lines.Any(l => l.Trim().All(char.IsUpper) && l.Trim().Length > 3);
         characteristics.HasLists = content.Contains("- ") || content.Contains("* ") || content.Contains("1. ");
         characteristics.HasCodeBlocks = content.Contains("```") || content.Contains("    ");
         characteristics.HasTables = content.Contains("|") && content.Split('|').Length > 3;
-        
+
         // Narrative indicators  
         characteristics.NarrativeFlow = CalculateNarrativeFlow(content);
         characteristics.TemporalMarkers = CountTemporalMarkers(content);
         characteristics.CausationIndicators = CountCausationIndicators(content);
-        
+
         // Topic indicators
         characteristics.TopicDiversity = CalculateTopicDiversity(content);
         characteristics.KeywordDensity = CalculateKeywordDensity(content);
-        
+
         return characteristics;
     }
 
@@ -458,7 +458,7 @@ public class HybridSegmentationService : IHybridSegmentationService
 
         // Normalize to ensure weights sum to 1.0
         adjusted.Normalize();
-        
+
         return adjusted;
     }
 
@@ -472,7 +472,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         {
             // Use the available LLM service method to get strategy recommendations
             var strategyRecommendation = await _llmService.AnalyzeOptimalStrategyAsync(content, documentType, cancellationToken);
-            
+
             // Convert strategy recommendation to weights
             return ConvertStrategyRecommendationToWeights(strategyRecommendation);
         }
@@ -490,44 +490,44 @@ public class HybridSegmentationService : IHybridSegmentationService
     {
         return recommendation.Strategy switch
         {
-            SegmentationStrategy.StructureBased => new StrategyWeights 
-            { 
-                StructureWeight = 0.7, 
-                NarrativeWeight = 0.15, 
-                TopicWeight = 0.15, 
+            SegmentationStrategy.StructureBased => new StrategyWeights
+            {
+                StructureWeight = 0.7,
+                NarrativeWeight = 0.15,
+                TopicWeight = 0.15,
                 Confidence = recommendation.Confidence,
                 Method = WeightDeterminationMethod.LlmAnalysis,
                 Rationale = recommendation.Reasoning ?? "LLM recommends structure-based approach"
             },
-            SegmentationStrategy.NarrativeBased => new StrategyWeights 
-            { 
-                StructureWeight = 0.15, 
-                NarrativeWeight = 0.7, 
-                TopicWeight = 0.15, 
+            SegmentationStrategy.NarrativeBased => new StrategyWeights
+            {
+                StructureWeight = 0.15,
+                NarrativeWeight = 0.7,
+                TopicWeight = 0.15,
                 Confidence = recommendation.Confidence,
                 Method = WeightDeterminationMethod.LlmAnalysis,
                 Rationale = recommendation.Reasoning ?? "LLM recommends narrative-based approach"
             },
-            SegmentationStrategy.TopicBased => new StrategyWeights 
-            { 
-                StructureWeight = 0.15, 
-                NarrativeWeight = 0.15, 
-                TopicWeight = 0.7, 
+            SegmentationStrategy.TopicBased => new StrategyWeights
+            {
+                StructureWeight = 0.15,
+                NarrativeWeight = 0.15,
+                TopicWeight = 0.7,
                 Confidence = recommendation.Confidence,
                 Method = WeightDeterminationMethod.LlmAnalysis,
                 Rationale = recommendation.Reasoning ?? "LLM recommends topic-based approach"
             },
-            SegmentationStrategy.Hybrid => new StrategyWeights 
-            { 
-                StructureWeight = 0.33, 
-                NarrativeWeight = 0.33, 
-                TopicWeight = 0.34, 
+            SegmentationStrategy.Hybrid => new StrategyWeights
+            {
+                StructureWeight = 0.33,
+                NarrativeWeight = 0.33,
+                TopicWeight = 0.34,
                 Confidence = recommendation.Confidence,
                 Method = WeightDeterminationMethod.LlmAnalysis,
                 Rationale = recommendation.Reasoning ?? "LLM recommends balanced hybrid approach"
             },
-            _ => new StrategyWeights 
-            { 
+            _ => new StrategyWeights
+            {
                 Confidence = 0.5,
                 Method = WeightDeterminationMethod.LlmAnalysis,
                 Rationale = "Default weights due to unknown strategy recommendation"
@@ -587,7 +587,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         {
             var segmentWords = words.Skip(i).Take(segmentSize);
             var segmentContent = string.Join(" ", segmentWords);
-            
+
             segments.Add(new DocumentSegment
             {
                 Id = $"hybrid-fallback-{segments.Count + 1}",
@@ -659,7 +659,7 @@ public class HybridSegmentationService : IHybridSegmentationService
 
     private List<DocumentSegment> ApplyFinalQualityChecks(List<DocumentSegment> segments, HybridSegmentationOptions options)
     {
-        return segments.Where(s => s.Content.Length >= options.MinSegmentSize && 
+        return segments.Where(s => s.Content.Length >= options.MinSegmentSize &&
                                   s.Content.Length <= options.MaxSegmentSize)
                       .Take(options.MaxSegments)
                       .ToList();
@@ -709,7 +709,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     private List<ValidationIssue> IdentifyValidationIssues(List<DocumentSegment> segments, HybridSegmentationValidation validation)
     {
         var issues = new List<ValidationIssue>();
-        
+
         if (validation.OverallQuality < 0.7)
         {
             issues.Add(new ValidationIssue
@@ -726,12 +726,12 @@ public class HybridSegmentationService : IHybridSegmentationService
     private List<string> GenerateImprovementRecommendations(HybridSegmentationValidation validation, StrategyWeights weights)
     {
         var recommendations = new List<string>();
-        
+
         if (validation.OverallQuality < 0.8)
         {
             recommendations.Add("Consider adjusting strategy weights for better results");
         }
-        
+
         if (validation.BoundaryConsensusQuality < 0.7)
         {
             recommendations.Add("Improve boundary consensus by refining individual strategies");
@@ -832,7 +832,7 @@ public class HybridSegmentationService : IHybridSegmentationService
                           .Where(w => w.Length > 3)
                           .Select(w => w.ToLowerInvariant())
                           .ToList();
-        
+
         var uniqueWords = words.Distinct().Count();
         return Math.Min(1.0, (double)uniqueWords / Math.Max(1, words.Count) * 5);
     }

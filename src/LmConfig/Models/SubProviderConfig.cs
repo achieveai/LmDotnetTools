@@ -54,4 +54,4 @@ public record SubProviderConfig
     /// </summary>
     [JsonPropertyName("metadata")]
     public IReadOnlyDictionary<string, object>? Metadata { get; init; }
-} 
+}

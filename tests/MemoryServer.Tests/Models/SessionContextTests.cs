@@ -26,12 +26,12 @@ public class SessionContextTests
 
         // Assert
         Assert.Equal(expectedMatch, actualMatch);
-        
+
         // Test symmetry - matching should be symmetric
         var reverseMatch = context2.Matches(context1);
         Assert.Equal(expectedMatch, reverseMatch);
         Debug.WriteLine($"Reverse match (symmetry test): {reverseMatch}");
-        
+
         Debug.WriteLine("✅ Session matching test passed");
     }
 
@@ -76,7 +76,7 @@ public class SessionContextTests
         Assert.Equal(userId, context.UserId);
         Assert.Equal(agentId, context.AgentId);
         Assert.Equal(runId, context.RunId);
-        
+
         Debug.WriteLine("✅ Factory method test passed");
     }
 
@@ -174,7 +174,7 @@ public class SessionContextTests
         yield return new object[] { SessionContext.ForUser("user1"), SessionScope.User, "User-only context should have User scope" };
         yield return new object[] { SessionContext.ForAgent("user1", "agent1"), SessionScope.Agent, "User-agent context should have Agent scope" };
         yield return new object[] { SessionContext.ForRun("user1", "agent1", "run1"), SessionScope.Run, "Full context should have Run scope" };
-        
+
         // Edge case: user-run without agent (unusual but possible)
         var userRunContext = new SessionContext { UserId = "user1", RunId = "run1" };
         yield return new object[] { userRunContext, SessionScope.Run, "User-run context (no agent) should have Run scope" };
@@ -185,7 +185,7 @@ public class SessionContextTests
         yield return new object[] { SessionContext.ForUser("user1"), "user1", "User-only context toString" };
         yield return new object[] { SessionContext.ForAgent("user1", "agent1"), "user1/agent1", "User-agent context toString" };
         yield return new object[] { SessionContext.ForRun("user1", "agent1", "run1"), "user1/agent1/run1", "Full context toString" };
-        
+
         var userRunContext = new SessionContext { UserId = "user1", RunId = "run1" };
         yield return new object[] { userRunContext, "user1//run1", "User-run context (no agent) toString" };
     }
@@ -203,51 +203,51 @@ public class SessionContextTests
     {
         // The actual implementation uses strict matching, not hierarchical matching
         // User level should NOT match agent level (strict matching)
-        yield return new object[] { 
-            SessionContext.ForUser("user1"), 
-            SessionContext.ForAgent("user1", "agent1"), 
-            false, 
-            "User context should not match user-agent context (strict matching)" 
+        yield return new object[] {
+            SessionContext.ForUser("user1"),
+            SessionContext.ForAgent("user1", "agent1"),
+            false,
+            "User context should not match user-agent context (strict matching)"
         };
 
         // User level should NOT match run level (strict matching)
-        yield return new object[] { 
-            SessionContext.ForUser("user1"), 
-            SessionContext.ForRun("user1", "agent1", "run1"), 
-            false, 
-            "User context should not match full context (strict matching)" 
+        yield return new object[] {
+            SessionContext.ForUser("user1"),
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            false,
+            "User context should not match full context (strict matching)"
         };
 
         // Agent level should NOT match run level (strict matching)
-        yield return new object[] { 
-            SessionContext.ForAgent("user1", "agent1"), 
-            SessionContext.ForRun("user1", "agent1", "run1"), 
-            false, 
-            "User-agent context should not match full context (strict matching)" 
+        yield return new object[] {
+            SessionContext.ForAgent("user1", "agent1"),
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            false,
+            "User-agent context should not match full context (strict matching)"
         };
 
         // Different agents should not match
-        yield return new object[] { 
-            SessionContext.ForAgent("user1", "agent1"), 
-            SessionContext.ForAgent("user1", "agent2"), 
-            false, 
-            "Different agents should not match" 
+        yield return new object[] {
+            SessionContext.ForAgent("user1", "agent1"),
+            SessionContext.ForAgent("user1", "agent2"),
+            false,
+            "Different agents should not match"
         };
 
         // Different runs should not match
-        yield return new object[] { 
-            SessionContext.ForRun("user1", "agent1", "run1"), 
-            SessionContext.ForRun("user1", "agent1", "run2"), 
-            false, 
-            "Different runs should not match" 
+        yield return new object[] {
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            SessionContext.ForRun("user1", "agent1", "run2"),
+            false,
+            "Different runs should not match"
         };
 
         // Same contexts should match
-        yield return new object[] { 
-            SessionContext.ForAgent("user1", "agent1"), 
-            SessionContext.ForAgent("user1", "agent1"), 
-            true, 
-            "Same agent contexts should match" 
+        yield return new object[] {
+            SessionContext.ForAgent("user1", "agent1"),
+            SessionContext.ForAgent("user1", "agent1"),
+            true,
+            "Same agent contexts should match"
         };
     }
-} 
+}

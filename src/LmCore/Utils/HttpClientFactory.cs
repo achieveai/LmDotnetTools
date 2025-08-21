@@ -155,4 +155,4 @@ public static class HttpClientFactory
             "OPENAI" or _ => CreateForOpenAI(apiKey, endpointUrl, timeout, connectionHeaders)
         };
     }
-} 
+}

@@ -48,7 +48,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         var totalStopwatch = Stopwatch.StartNew();
         var metrics = new UnifiedSearchMetrics();
 
-        _logger.LogDebug("Starting unified search for query '{Query}' with options: FTS={EnableFts}, Vector={EnableVector}", 
+        _logger.LogDebug("Starting unified search for query '{Query}' with options: FTS={EnableFts}, Vector={EnableVector}",
             query, options.EnableFtsSearch, options.EnableVectorSearch);
 
         try
@@ -101,7 +101,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         var metrics = new UnifiedSearchMetrics();
 
         var searchOperationCount = GetSearchOperationCount(options, queryEmbedding != null);
-        _logger.LogDebug("Starting unified search with {SearchCount} parallel operations. EnableFts: {EnableFts}, EnableVector: {EnableVector}, HasEmbedding: {HasEmbedding}", 
+        _logger.LogDebug("Starting unified search with {SearchCount} parallel operations. EnableFts: {EnableFts}, EnableVector: {EnableVector}, HasEmbedding: {HasEmbedding}",
             searchOperationCount, options.EnableFtsSearch, options.EnableVectorSearch, queryEmbedding != null);
 
         try
@@ -178,17 +178,17 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 {
                     var rerankingResults = await _rerankingEngine.RerankResultsAsync(query, results, sessionContext, null, cancellationToken);
                     finalResults = rerankingResults.Results;
-                    
+
                     // Update metrics with reranking information
                     metrics.RerankingDuration = rerankingResults.Metrics.TotalDuration;
                     metrics.WasReranked = rerankingResults.WasReranked;
                     metrics.RerankingPositionChanges = rerankingResults.Metrics.PositionChanges;
-                    
+
                     if (rerankingResults.Metrics.HasFailures)
                     {
                         metrics.Errors.AddRange(rerankingResults.Metrics.Errors);
                     }
-                    
+
                     _logger.LogDebug("Reranking completed: {WasReranked}, {PositionChanges} position changes in {Duration}ms",
                         rerankingResults.WasReranked, rerankingResults.Metrics.PositionChanges, rerankingResults.Metrics.TotalDuration.TotalMilliseconds);
                 }
@@ -208,16 +208,16 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 {
                     var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(finalResults, sessionContext, null, cancellationToken);
                     finalResults = deduplicationResults.Results;
-                    
+
                     // Update metrics with deduplication information
                     metrics.DeduplicationDuration = deduplicationResults.Metrics.TotalDuration;
                     metrics.DuplicatesRemoved = deduplicationResults.Metrics.DuplicatesRemoved;
-                    
+
                     if (deduplicationResults.Metrics.HasFailures)
                     {
                         metrics.Errors.AddRange(deduplicationResults.Metrics.Errors);
                     }
-                    
+
                     _logger.LogDebug("Deduplication completed: {DuplicatesRemoved} duplicates removed in {Duration}ms",
                         deduplicationResults.Metrics.DuplicatesRemoved, deduplicationResults.Metrics.TotalDuration.TotalMilliseconds);
                 }
@@ -238,16 +238,16 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 {
                     var enrichmentResults = await _resultEnricher.EnrichResultsAsync(finalResults, sessionContext, null, cancellationToken);
                     enrichedResults = enrichmentResults.Results;
-                    
+
                     // Update metrics with enrichment information
                     metrics.EnrichmentDuration = enrichmentResults.Metrics.TotalDuration;
                     metrics.ItemsEnriched = enrichmentResults.Metrics.ResultsEnriched;
-                    
+
                     if (enrichmentResults.Metrics.HasFailures)
                     {
                         metrics.Errors.AddRange(enrichmentResults.Metrics.Errors);
                     }
-                    
+
                     _logger.LogDebug("Enrichment completed: {ItemsEnriched} results enriched, {RelatedItemsAdded} related items added in {Duration}ms",
                         enrichmentResults.Metrics.ResultsEnriched, enrichmentResults.Metrics.RelatedItemsAdded, enrichmentResults.Metrics.TotalDuration.TotalMilliseconds);
                 }
@@ -320,7 +320,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         try
         {
             var memories = await _memoryRepository.SearchAsync(query, sessionContext, options.MaxResultsPerSource, 0.0f, cancellationToken);
-            
+
             lock (results)
             {
                 foreach (var memory in memories)
@@ -367,7 +367,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         try
         {
             var vectorResults = await _memoryRepository.SearchVectorAsync(queryEmbedding, sessionContext, options.MaxResultsPerSource, options.VectorSimilarityThreshold, cancellationToken);
-            
+
             lock (results)
             {
                 foreach (var vectorResult in vectorResults)
@@ -414,7 +414,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         try
         {
             var entities = await _graphRepository.SearchEntitiesAsync(query, sessionContext, options.MaxResultsPerSource, cancellationToken);
-            
+
             lock (results)
             {
                 foreach (var entity in entities)
@@ -463,7 +463,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         try
         {
             var vectorResults = await _graphRepository.SearchEntitiesVectorAsync(queryEmbedding, sessionContext, options.MaxResultsPerSource, options.VectorSimilarityThreshold, cancellationToken);
-            
+
             lock (results)
             {
                 foreach (var vectorResult in vectorResults)
@@ -512,7 +512,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         try
         {
             var relationships = await _graphRepository.SearchRelationshipsAsync(query, sessionContext, options.MaxResultsPerSource, cancellationToken);
-            
+
             lock (results)
             {
                 foreach (var relationship in relationships)
@@ -561,7 +561,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         try
         {
             var vectorResults = await _graphRepository.SearchRelationshipsVectorAsync(queryEmbedding, sessionContext, options.MaxResultsPerSource, options.VectorSimilarityThreshold, cancellationToken);
-            
+
             lock (results)
             {
                 foreach (var vectorResult in vectorResults)
@@ -616,4 +616,4 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         if (options.EnableVectorSearch && hasEmbedding) count += 3; // Memory, Entity, Relationship Vector
         return count;
     }
-} 
+}

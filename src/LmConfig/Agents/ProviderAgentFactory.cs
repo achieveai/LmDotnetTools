@@ -58,9 +58,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
             throw new ArgumentNullException(nameof(resolution));
 
         var compatibilityType = GetCompatibilityType(resolution);
-        
-        _logger.LogDebug("Provider resolution and agent type selection: Provider={Provider}, Model={Model}, Compatibility={Compatibility}, EndpointUrl={EndpointUrl}, HasApiKey={HasApiKey}", 
-            resolution.EffectiveProviderName, resolution.EffectiveModelName, compatibilityType, 
+
+        _logger.LogDebug("Provider resolution and agent type selection: Provider={Provider}, Model={Model}, Compatibility={Compatibility}, EndpointUrl={EndpointUrl}, HasApiKey={HasApiKey}",
+            resolution.EffectiveProviderName, resolution.EffectiveModelName, compatibilityType,
             resolution.Connection.EndpointUrl, !string.IsNullOrEmpty(resolution.Connection.GetApiKey()));
 
         return compatibilityType switch
@@ -75,7 +75,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
     public IStreamingAgent CreateStreamingAgent(ProviderResolution resolution)
     {
         var agent = CreateAgent(resolution);
-        
+
         if (agent is IStreamingAgent streamingAgent)
             return streamingAgent;
 
@@ -88,7 +88,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         if (string.IsNullOrWhiteSpace(providerName))
             return false;
 
-        return ProviderCompatibility.ContainsKey(providerName) && 
+        return ProviderCompatibility.ContainsKey(providerName) &&
                ProviderCompatibility[providerName] != "Replicate"; // Replicate not supported yet
     }
 
@@ -139,7 +139,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         }
 
         // Default to OpenAI compatibility for unknown providers
-        _logger.LogWarning("Unknown provider {Provider}, defaulting to OpenAI compatibility", 
+        _logger.LogWarning("Unknown provider {Provider}, defaulting to OpenAI compatibility",
             resolution.EffectiveProviderName);
         return "OpenAI";
     }
@@ -150,14 +150,14 @@ public class ProviderAgentFactory : IProviderAgentFactory
         {
             // Create Anthropic client
             var client = CreateAnthropicClient(resolution);
-            
+
             // Create agent with the resolved model name and logger
             var agentName = $"{resolution.EffectiveProviderName}-{resolution.EffectiveModelName}";
             var agentLogger = _loggerFactory?.CreateLogger<AnthropicAgent>();
-            
+
             _logger.LogDebug("Creating Anthropic agent: Provider={Provider}, Model={Model}, AgentType={AgentType}",
                 resolution.EffectiveProviderName, resolution.EffectiveModelName, "AnthropicAgent");
-            
+
             return new AnthropicAgent(agentName, client, agentLogger);
         }
         catch (Exception ex)
@@ -174,14 +174,14 @@ public class ProviderAgentFactory : IProviderAgentFactory
         {
             // Create OpenAI client
             var client = CreateOpenAIClient(resolution);
-            
+
             // Create agent with the resolved model name and logger
             var agentName = $"{resolution.EffectiveProviderName}-{resolution.EffectiveModelName}";
             var agentLogger = _loggerFactory?.CreateLogger<OpenClientAgent>();
-            
+
             _logger.LogDebug("Creating OpenAI agent: Provider={Provider}, Model={Model}, AgentType={AgentType}",
                 resolution.EffectiveProviderName, resolution.EffectiveModelName, "OpenClientAgent");
-            
+
             var agent = new OpenClientAgent(agentName, client, agentLogger) as IAgent;
 
             // Automatically inject OpenRouter usage middleware if this is an OpenRouter provider
@@ -227,7 +227,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         try
         {
             _logger.LogDebug("Factory configuration interaction: Checking service provider for IConfiguration");
-            
+
             // Get configuration from DI
             var configuration = _serviceProvider.GetService<IConfiguration>();
             if (configuration == null)
@@ -281,4 +281,4 @@ public class ProviderAgentFactory : IProviderAgentFactory
             return agent;
         }
     }
-} 
+}

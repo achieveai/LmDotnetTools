@@ -12,7 +12,7 @@ public static class HttpClientFactory
         ProviderConfig? provider = null,
         IHttpHandlerBuilder? pipeline = null,
         TimeSpan? timeout = null,
-        IReadOnlyDictionary<string,string>? headers = null,
+        IReadOnlyDictionary<string, string>? headers = null,
         ILogger? logger = null)
     {
         var inner = new HttpClientHandler();
@@ -50,4 +50,4 @@ public static class HttpClientFactory
                 throw new ArgumentOutOfRangeException();
         }
     }
-} 
+}

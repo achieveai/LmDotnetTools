@@ -62,7 +62,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// <param name="logger">The logger instance for diagnostic and error logging</param>
     /// <param name="httpClient">The HTTP client for making API requests</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="logger"/> or <paramref name="httpClient"/> is null</exception>
-    protected BaseRerankService(ILogger logger, HttpClient httpClient) 
+    protected BaseRerankService(ILogger logger, HttpClient httpClient)
         : base(logger, httpClient)
     {
     }
@@ -109,7 +109,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
         ValidationHelper.ValidateNotNullOrWhiteSpace(query);
         ValidationHelper.ValidateStringCollectionElements(documents);
         ValidationHelper.ValidateNotNullOrWhiteSpace(model);
-        
+
         if (topK.HasValue)
         {
             ValidationHelper.ValidatePositive(topK.Value);
@@ -160,7 +160,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
             throw new ArgumentException("All documents must be non-empty", nameof(request));
         if (request.TopN.HasValue && request.TopN.Value <= 0)
             throw new ArgumentException("TopN must be positive", nameof(request));
-        
+
         ThrowIfDisposed();
     }
-} 
+}

@@ -25,7 +25,7 @@ public class MemoryServiceTests
         _mockRepository = new MockMemoryRepository();
         _mockLogger = new Mock<ILogger<MemoryService>>();
         _mockEmbeddingManager = new Mock<IEmbeddingManager>();
-        
+
         _options = new MemoryServerOptions
         {
             Memory = new MemoryOptions
@@ -44,12 +44,12 @@ public class MemoryServiceTests
         optionsMock.Setup(x => x.Value).Returns(_options);
 
         var mockGraphMemoryService = new Mock<IGraphMemoryService>();
-        
+
         // Setup mock embedding manager
         _mockEmbeddingManager.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
         _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
-        
+
         _memoryService = new MemoryService(_mockRepository, mockGraphMemoryService.Object, _mockEmbeddingManager.Object, _mockLogger.Object, optionsMock.Object);
     }
 
@@ -61,7 +61,7 @@ public class MemoryServiceTests
         // Arrange
         Debug.WriteLine($"Testing AddMemoryAsync: {description}");
         Debug.WriteLine($"Content length: {content.Length}, Should succeed: {shouldSucceed}");
-        
+
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
@@ -69,7 +69,7 @@ public class MemoryServiceTests
         if (shouldSucceed)
         {
             var result = await _memoryService.AddMemoryAsync(content, sessionContext);
-            
+
             Debug.WriteLine($"Successfully added memory with ID: {result.Id}");
             Assert.NotNull(result);
             Assert.Equal(content.Trim(), result.Content);
@@ -80,11 +80,11 @@ public class MemoryServiceTests
         {
             var exception = await Assert.ThrowsAsync<ArgumentException>(
                 () => _memoryService.AddMemoryAsync(content, sessionContext));
-            
+
             Debug.WriteLine($"Expected exception thrown: {exception.Message}");
             Assert.DoesNotContain(nameof(_mockRepository.AddAsync), _mockRepository.MethodCalls);
         }
-        
+
         Debug.WriteLine("✅ AddMemoryAsync validation test passed");
     }
 
@@ -96,7 +96,7 @@ public class MemoryServiceTests
         // Arrange
         Debug.WriteLine($"Testing AddMemoryAsync with metadata: {description}");
         Debug.WriteLine($"Metadata: {(metadata == null ? "null" : $"{metadata.Count} entries")}");
-        
+
         var content = "Test memory content";
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
@@ -109,7 +109,7 @@ public class MemoryServiceTests
         Assert.NotNull(result);
         Assert.Equal(metadata, result.Metadata);
         Assert.Equal(metadata, _mockRepository.LastCallParameters["metadata"]);
-        
+
         Debug.WriteLine("✅ AddMemoryAsync metadata test passed");
     }
 
@@ -121,7 +121,7 @@ public class MemoryServiceTests
         // Arrange
         Debug.WriteLine($"Testing SearchMemoriesAsync: {description}");
         Debug.WriteLine($"Query: '{query}', Limit: {limit}, Threshold: {scoreThreshold}");
-        
+
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
@@ -138,7 +138,7 @@ public class MemoryServiceTests
 
         // Assert
         Assert.NotNull(results);
-        
+
         if (string.IsNullOrWhiteSpace(query))
         {
             Assert.Empty(results);
@@ -147,13 +147,13 @@ public class MemoryServiceTests
         else
         {
             Assert.Contains(nameof(_mockRepository.SearchAsync), _mockRepository.MethodCalls);
-            
+
             // Verify limit is applied correctly (respecting service limits)
             var expectedLimit = Math.Min(limit, _options.Memory.DefaultSearchLimit * 2);
             Assert.Equal(expectedLimit, _mockRepository.LastCallParameters["limit"]);
             Debug.WriteLine($"Limit correctly applied: {expectedLimit}");
         }
-        
+
         Debug.WriteLine("✅ SearchMemoriesAsync test passed");
     }
 
@@ -165,13 +165,13 @@ public class MemoryServiceTests
         // Arrange
         Debug.WriteLine($"Testing GetAllMemoriesAsync session isolation: {description}");
         Debug.WriteLine($"Session context: {sessionContext}");
-        
+
         _mockRepository.Reset();
 
         // Add memories for different sessions
         var user1Context = SessionContext.ForUser("user1");
         var user2Context = SessionContext.ForUser("user2");
-        
+
         _mockRepository.AddTestMemory(MemoryTestDataFactory.CreateTestMemory(1, "User1 memory", "user1"));
         _mockRepository.AddTestMemory(MemoryTestDataFactory.CreateTestMemory(2, "User2 memory", "user2"));
 
@@ -182,14 +182,14 @@ public class MemoryServiceTests
         // Assert
         Assert.NotNull(results);
         Assert.Contains(nameof(_mockRepository.GetAllAsync), _mockRepository.MethodCalls);
-        
+
         // All returned memories should match the session context
         foreach (var memory in results)
         {
             Assert.True(memory.GetSessionContext().Matches(sessionContext));
             Debug.WriteLine($"Memory {memory.Id} correctly matches session context");
         }
-        
+
         Debug.WriteLine("✅ Session isolation test passed");
     }
 
@@ -201,7 +201,7 @@ public class MemoryServiceTests
         // Arrange
         Debug.WriteLine($"Testing UpdateMemoryAsync: {description}");
         Debug.WriteLine($"New content length: {newContent.Length}, Should succeed: {shouldSucceed}");
-        
+
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
@@ -213,7 +213,7 @@ public class MemoryServiceTests
         if (shouldSucceed)
         {
             var result = await _memoryService.UpdateMemoryAsync(1, newContent, sessionContext);
-            
+
             Debug.WriteLine($"Successfully updated memory: {result?.Content}");
             Assert.NotNull(result);
             Assert.Equal(newContent.Trim(), result.Content);
@@ -223,11 +223,11 @@ public class MemoryServiceTests
         {
             var exception = await Assert.ThrowsAsync<ArgumentException>(
                 () => _memoryService.UpdateMemoryAsync(1, newContent, sessionContext));
-            
+
             Debug.WriteLine($"Expected exception thrown: {exception.Message}");
             Assert.DoesNotContain(nameof(_mockRepository.UpdateAsync), _mockRepository.MethodCalls);
         }
-        
+
         Debug.WriteLine("✅ UpdateMemoryAsync test passed");
     }
 
@@ -252,7 +252,7 @@ public class MemoryServiceTests
         Assert.Contains(nameof(_mockRepository.DeleteAsync), _mockRepository.MethodCalls);
         Assert.Equal(1, _mockRepository.LastCallParameters["id"]);
         Assert.Equal(sessionContext, _mockRepository.LastCallParameters["sessionContext"]);
-        
+
         Debug.WriteLine("✅ DeleteMemoryAsync test passed");
     }
 
@@ -280,7 +280,7 @@ public class MemoryServiceTests
         Assert.Equal(3, deletedCount);
         Assert.Contains(nameof(_mockRepository.DeleteAllAsync), _mockRepository.MethodCalls);
         Assert.Equal(sessionContext, _mockRepository.LastCallParameters["sessionContext"]);
-        
+
         Debug.WriteLine("✅ DeleteAllMemoriesAsync test passed");
     }
 
@@ -316,7 +316,7 @@ public class MemoryServiceTests
         Assert.Equal(71, stats.TotalContentSize); // 5 + 21 + 45
         Assert.Equal(71.0 / 3.0, stats.AverageContentLength); // 71 / 3
         Assert.Contains(nameof(_mockRepository.GetStatsAsync), _mockRepository.MethodCalls);
-        
+
         Debug.WriteLine("✅ GetMemoryStatsAsync test passed");
     }
 
@@ -340,7 +340,7 @@ public class MemoryServiceTests
         Assert.Contains(nameof(_mockRepository.GetHistoryAsync), _mockRepository.MethodCalls);
         Assert.Equal(1, _mockRepository.LastCallParameters["id"]);
         Assert.Equal(sessionContext, _mockRepository.LastCallParameters["sessionContext"]);
-        
+
         Debug.WriteLine("✅ GetMemoryHistoryAsync test passed");
     }
 
@@ -360,4 +360,4 @@ public class MemoryServiceTests
         yield return new object[] { "   ", false, "Whitespace-only content should fail" };
         yield return new object[] { new string('A', 10001), false, "Over-length content should fail" };
     }
-} 
+}

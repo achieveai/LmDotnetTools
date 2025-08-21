@@ -20,10 +20,10 @@ public class MemoryIdGeneratorTests : IDisposable
         // Create direct in-memory connection to avoid SqliteManager deadlock issues
         _connection = new SqliteConnection("Data Source=:memory:");
         _connection.Open();
-        
+
         // Initialize schema directly
         InitializeSchemaDirectly();
-        
+
         _mockLogger = new Mock<ILogger<MemoryIdGenerator>>();
         _idGenerator = new TestMemoryIdGenerator(_connection, _mockLogger.Object);
     }
@@ -35,11 +35,11 @@ public class MemoryIdGeneratorTests : IDisposable
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );";
-        
+
         using var command = _connection.CreateCommand();
         command.CommandText = createTableSql;
         command.ExecuteNonQuery();
-        
+
         Debug.WriteLine("✅ Schema initialized directly");
     }
 
@@ -88,7 +88,7 @@ public class MemoryIdGeneratorTests : IDisposable
 
         // Assert
         Assert.Equal(count, generatedIds.Count);
-        
+
         // Verify IDs are sequential starting from 1
         for (int i = 0; i < count; i++)
         {
@@ -97,7 +97,7 @@ public class MemoryIdGeneratorTests : IDisposable
 
         // Verify all IDs are unique
         Assert.Equal(count, generatedIds.Distinct().Count());
-        
+
         Debug.WriteLine($"✅ Sequential ID generation test passed for {count} IDs");
     }
 
@@ -122,10 +122,10 @@ public class MemoryIdGeneratorTests : IDisposable
         // Assert
         Assert.Equal(taskCount, ids.Length);
         Assert.Equal(taskCount, ids.Distinct().Count()); // All IDs should be unique
-        
+
         // Verify all IDs are in expected range
         Assert.All(ids, id => Assert.InRange(id, 1, taskCount));
-        
+
         Debug.WriteLine("✅ Concurrent ID generation test passed");
     }
 
@@ -154,32 +154,32 @@ internal class TestMemoryIdGenerator
     public async Task<int> GenerateNextIdAsync(CancellationToken cancellationToken = default)
     {
         await _generationSemaphore.WaitAsync(cancellationToken);
-        
+
         try
         {
             using var transaction = _connection.BeginTransaction();
-            
+
             try
             {
                 using var command = _connection.CreateCommand();
                 command.Transaction = transaction;
-                
+
                 // Insert into sequence table and get the generated ID
                 command.CommandText = @"
                     INSERT INTO memory_id_sequence DEFAULT VALUES;
                     SELECT last_insert_rowid();";
-                
+
                 var result = await command.ExecuteScalarAsync(cancellationToken);
                 var id = Convert.ToInt32(result);
-                
+
                 // Validate ID range for safety
                 if (id <= 0)
                 {
                     throw new InvalidOperationException($"Generated ID {id} is not positive");
                 }
-                
+
                 transaction.Commit();
-                
+
                 _logger.LogDebug("Generated memory ID: {Id}", id);
                 return id;
             }
@@ -199,4 +199,4 @@ internal class TestMemoryIdGenerator
             _generationSemaphore.Release();
         }
     }
-} 
+}

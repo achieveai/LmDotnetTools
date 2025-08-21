@@ -106,10 +106,10 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         // Configure HttpClient
         if (!string.IsNullOrEmpty(_options.ApiKey))
         {
-            HttpClient.DefaultRequestHeaders.Authorization = 
+            HttpClient.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
         }
-        
+
         if (!string.IsNullOrEmpty(_options.BaseUrl))
         {
             HttpClient.BaseAddress = new Uri(_options.BaseUrl);
@@ -209,7 +209,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
             var json = JsonSerializer.Serialize(requestPayload, _jsonOptions);
             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-            Logger.LogDebug("Sending embedding request to OpenAI for {InputCount} inputs using model {Model} with API type {ApiType}", 
+            Logger.LogDebug("Sending embedding request to OpenAI for {InputCount} inputs using model {Model} with API type {ApiType}",
                 request.Inputs.Count, request.Model, request.ApiType);
 
             var response = await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
@@ -307,7 +307,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         // Use explicit format with validation
         var detectedFormat = DetectEmbeddingFormat(embedding);
         var requestedFormat = encodingFormat.ToLowerInvariant();
-        
+
         // Validate that the requested format matches the detected format
         if (detectedFormat != requestedFormat)
         {
@@ -333,7 +333,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     private static float[] DetectAndDecodeEmbedding(object embedding)
     {
         var detectedFormat = DetectEmbeddingFormat(embedding);
-        
+
         return detectedFormat switch
         {
             "base64" => DecodeBase64Embedding(embedding.ToString()!),
@@ -425,4 +425,4 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         public int PromptTokens { get; set; }
         public int TotalTokens { get; set; }
     }
-} 
+}

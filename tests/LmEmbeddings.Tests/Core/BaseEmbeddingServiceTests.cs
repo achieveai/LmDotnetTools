@@ -162,7 +162,7 @@ public class BaseEmbeddingServiceTests
 
         // Assert
         Assert.NotNull(payload);
-        
+
         foreach (var expectedKey in expectedKeys)
         {
             Assert.True(payload.ContainsKey(expectedKey), $"Missing expected key: {expectedKey}");
@@ -273,40 +273,40 @@ public class BaseEmbeddingServiceTests
 
     public static IEnumerable<object[]> RequestValidationTestCases => new List<object[]>
     {
-        new object[] 
-        { 
-            new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "text2" } }, 
-            true, 
-            "", 
-            "Valid request should succeed" 
+        new object[]
+        {
+            new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "text2" } },
+            true,
+            "",
+            "Valid request should succeed"
         },
-        new object[] 
-        { 
-            new EmbeddingRequest { Model = "", Inputs = new[] { "text1" } }, 
-            false, 
-            "Value cannot be null, empty, or whitespace", 
-            "Empty model should fail" 
+        new object[]
+        {
+            new EmbeddingRequest { Model = "", Inputs = new[] { "text1" } },
+            false,
+            "Value cannot be null, empty, or whitespace",
+            "Empty model should fail"
         },
-        new object[] 
-        { 
-            new EmbeddingRequest { Model = "test-model", Inputs = new string[0] }, 
-            false, 
-            "Collection cannot be empty", 
-            "Empty inputs should fail" 
+        new object[]
+        {
+            new EmbeddingRequest { Model = "test-model", Inputs = new string[0] },
+            false,
+            "Collection cannot be empty",
+            "Empty inputs should fail"
         },
-        new object[] 
-        { 
-            new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "" } }, 
-            false, 
-            "Collection cannot contain null, empty, or whitespace elements", 
-            "Empty input text should fail" 
+        new object[]
+        {
+            new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "" } },
+            false,
+            "Collection cannot contain null, empty, or whitespace elements",
+            "Empty input text should fail"
         },
-        new object[] 
-        { 
-            new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "   " } }, 
-            false, 
-            "Collection cannot contain null, empty, or whitespace elements", 
-            "Whitespace input text should fail" 
+        new object[]
+        {
+            new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "   " } },
+            false,
+            "Collection cannot contain null, empty, or whitespace elements",
+            "Whitespace input text should fail"
         }
     };
 
@@ -314,10 +314,10 @@ public class BaseEmbeddingServiceTests
     {
         new object[]
         {
-            new EmbeddingRequest 
-            { 
-                Model = "test-model", 
-                Inputs = new[] { "text1" }, 
+            new EmbeddingRequest
+            {
+                Model = "test-model",
+                Inputs = new[] { "text1" },
                 ApiType = EmbeddingApiType.Default,
                 EncodingFormat = "float",
                 Dimensions = 512,
@@ -329,10 +329,10 @@ public class BaseEmbeddingServiceTests
         },
         new object[]
         {
-            new EmbeddingRequest 
-            { 
-                Model = "jina-model", 
-                Inputs = new[] { "text1" }, 
+            new EmbeddingRequest
+            {
+                Model = "jina-model",
+                Inputs = new[] { "text1" },
                 ApiType = EmbeddingApiType.Jina,
                 Normalized = true,
                 EncodingFormat = "float",
@@ -344,10 +344,10 @@ public class BaseEmbeddingServiceTests
         },
         new object[]
         {
-            new EmbeddingRequest 
-            { 
-                Model = "basic-model", 
-                Inputs = new[] { "text1" }, 
+            new EmbeddingRequest
+            {
+                Model = "basic-model",
+                Inputs = new[] { "text1" },
                 ApiType = EmbeddingApiType.Default
             },
             new[] { "input", "model" },
@@ -385,7 +385,7 @@ public class BaseEmbeddingServiceTests
 
     public class TestEmbeddingService : BaseEmbeddingService
     {
-        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient) 
+        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient)
             : base(logger, httpClient) { }
 
         public override int EmbeddingSize => 1536;
@@ -466,4 +466,4 @@ public class BaseEmbeddingServiceTests
     }
 
     #endregion
-} 
+}

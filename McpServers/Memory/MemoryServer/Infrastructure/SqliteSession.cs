@@ -25,31 +25,31 @@ public class SqliteSession : ISqliteSession
     {
         _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        
+
         SessionId = Guid.NewGuid().ToString("N")[..8]; // Short session ID for logging
         _sessionStopwatch = Stopwatch.StartNew();
         _lastActivity = DateTime.UtcNow;
-        
+
         _logger.LogDebug("SQLite session {SessionId} created", SessionId);
     }
 
     public async Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation, CancellationToken cancellationToken = default)
     {
         if (operation == null) throw new ArgumentNullException(nameof(operation));
-        
+
         await EnsureConnectionAsync(cancellationToken);
-        
+
         try
         {
             _operationCount++;
             _lastActivity = DateTime.UtcNow;
-            
+
             _logger.LogDebug("Executing operation {OperationCount} in session {SessionId}", _operationCount, SessionId);
-            
+
             var result = await operation(_connection!);
-            
+
             _logger.LogDebug("Operation {OperationCount} completed successfully in session {SessionId}", _operationCount, SessionId);
-            
+
             return result;
         }
         catch (Exception ex)
@@ -62,23 +62,23 @@ public class SqliteSession : ISqliteSession
     public async Task<T> ExecuteInTransactionAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> operation, CancellationToken cancellationToken = default)
     {
         if (operation == null) throw new ArgumentNullException(nameof(operation));
-        
+
         await EnsureConnectionAsync(cancellationToken);
-        
+
         using var transaction = _connection!.BeginTransaction();
         try
         {
             _operationCount++;
             _lastActivity = DateTime.UtcNow;
-            
+
             _logger.LogDebug("Executing transactional operation {OperationCount} in session {SessionId}", _operationCount, SessionId);
-            
+
             var result = await operation(_connection, transaction);
-            
+
             await transaction.CommitAsync(cancellationToken);
-            
+
             _logger.LogDebug("Transactional operation {OperationCount} committed successfully in session {SessionId}", _operationCount, SessionId);
-            
+
             return result;
         }
         catch (Exception ex)
@@ -134,7 +134,7 @@ public class SqliteSession : ISqliteSession
     {
         if (_disposed) return;
 
-        _logger.LogDebug("Disposing SQLite session {SessionId} after {ElapsedMs}ms with {OperationCount} operations", 
+        _logger.LogDebug("Disposing SQLite session {SessionId} after {ElapsedMs}ms with {OperationCount} operations",
             SessionId, _sessionStopwatch.ElapsedMilliseconds, _operationCount);
 
         try
@@ -157,7 +157,7 @@ public class SqliteSession : ISqliteSession
                 {
                     _logger.LogWarning(ex, "Failed to execute WAL checkpoint during disposal of session {SessionId}", SessionId);
                 }
-                
+
                 await _connection.DisposeAsync();
                 _logger.LogDebug("Connection disposed for session {SessionId}", SessionId);
             }
@@ -171,8 +171,8 @@ public class SqliteSession : ISqliteSession
             _connection = null;
             _disposed = true;
             _sessionStopwatch.Stop();
-            
-            _logger.LogDebug("SQLite session {SessionId} disposed successfully after {ElapsedMs}ms", 
+
+            _logger.LogDebug("SQLite session {SessionId} disposed successfully after {ElapsedMs}ms",
                 SessionId, _sessionStopwatch.ElapsedMilliseconds);
         }
     }
@@ -181,23 +181,23 @@ public class SqliteSession : ISqliteSession
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(SqliteSession), $"Session {SessionId} is disposed");
-            
+
         if (_connection == null)
         {
             _logger.LogDebug("Creating connection for session {SessionId}", SessionId);
-            
+
             _connection = new SqliteConnection(_connectionString);
             await _connection.OpenAsync(cancellationToken);
-            
+
             // Configure connection for optimal performance and reliability
             await ConfigureConnectionAsync(_connection, cancellationToken);
-            
+
             _logger.LogDebug("Connection established for session {SessionId}", SessionId);
         }
         else if (_connection.State != ConnectionState.Open)
         {
             _logger.LogWarning("Connection for session {SessionId} is in {State} state, recreating", SessionId, _connection.State);
-            
+
             await _connection.DisposeAsync();
             _connection = new SqliteConnection(_connectionString);
             await _connection.OpenAsync(cancellationToken);
@@ -211,7 +211,7 @@ public class SqliteSession : ISqliteSession
         try
         {
             connection.EnableExtensions(true);
-            
+
             // Load sqlite-vec extension - this is required for vector functionality
             connection.LoadExtension("vec0");
             _logger.LogInformation("sqlite-vec extension loaded successfully for session {SessionId}", SessionId);
@@ -246,7 +246,7 @@ public class SqliteSession : ISqliteSession
                 _logger.LogWarning(ex, "Failed to execute pragma '{Pragma}' for session {SessionId}", pragma, SessionId);
             }
         }
-        
+
         _logger.LogDebug("Connection configured with performance pragmas for session {SessionId}", SessionId);
     }
-} 
+}

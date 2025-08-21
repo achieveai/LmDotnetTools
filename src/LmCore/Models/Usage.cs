@@ -35,11 +35,11 @@ public record Usage
 
     // Unified access properties for convenience
     [JsonIgnore]
-    public int TotalReasoningTokens => 
+    public int TotalReasoningTokens =>
         OutputTokenDetails?.ReasoningTokens ?? 0;
 
     [JsonIgnore]
-    public int TotalCachedTokens => 
+    public int TotalCachedTokens =>
         InputTokenDetails?.CachedTokens ?? 0;
 
     [JsonIgnore]

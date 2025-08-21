@@ -23,30 +23,30 @@ public class OpenClient : BaseHttpService, IOpenClient
     private readonly string _baseUrl;
     private const string ProviderName = "OpenAI";
 
-    public OpenClient(string apiKey, string baseUrl, IPerformanceTracker? performanceTracker = null, ILogger? logger = null) 
+    public OpenClient(string apiKey, string baseUrl, IPerformanceTracker? performanceTracker = null, ILogger? logger = null)
         : base(logger ?? NullLogger.Instance, CreateHttpClient(apiKey, baseUrl))
     {
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
-        
+
         _baseUrl = baseUrl.TrimEnd('/');
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
-        
+
         // Log client initialization with provider details
-        Logger.LogInformation("OpenAI Client initialized - Provider: {ProviderName}, Endpoint: {BaseUrl}", 
+        Logger.LogInformation("OpenAI Client initialized - Provider: {ProviderName}, Endpoint: {BaseUrl}",
             GetProviderName(_baseUrl), _baseUrl);
     }
 
-    public OpenClient(HttpClient httpClient, string baseUrl, IPerformanceTracker? performanceTracker = null, ILogger? logger = null) 
+    public OpenClient(HttpClient httpClient, string baseUrl, IPerformanceTracker? performanceTracker = null, ILogger? logger = null)
         : base(logger ?? NullLogger.Instance, httpClient)
     {
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
-        
+
         _baseUrl = baseUrl.TrimEnd('/');
         _performanceTracker = performanceTracker ?? new PerformanceTracker();
-        
+
         // Log client initialization with provider details
-        Logger.LogInformation("OpenAI Client initialized (with HttpClient) - Provider: {ProviderName}, Endpoint: {BaseUrl}", 
+        Logger.LogInformation("OpenAI Client initialized (with HttpClient) - Provider: {ProviderName}, Endpoint: {BaseUrl}",
             GetProviderName(_baseUrl), _baseUrl);
     }
 
@@ -86,30 +86,30 @@ public class OpenClient : BaseHttpService, IOpenClient
     {
         var providerName = GetProviderName(_baseUrl);
         var requestId = Guid.NewGuid().ToString("N")[..8];
-        
+
         // Log request details
-        Logger.LogInformation("Chat completion request - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Endpoint: {Endpoint}", 
+        Logger.LogInformation("Chat completion request - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Endpoint: {Endpoint}",
             providerName, chatCompletionRequest.Model, requestId, _baseUrl);
-        
-        Logger.LogDebug("Request details - RequestId: {RequestId}, Temperature: {Temperature}, MaxTokens: {MaxTokens}, Messages: {MessageCount}", 
+
+        Logger.LogDebug("Request details - RequestId: {RequestId}, Temperature: {Temperature}, MaxTokens: {MaxTokens}, Messages: {MessageCount}",
             requestId, chatCompletionRequest.Temperature, chatCompletionRequest.MaxTokens, chatCompletionRequest.Messages.Count);
 
         var metrics = RequestMetrics.StartNew(ProviderName, chatCompletionRequest.Model, "ChatCompletion");
-        
+
         try
         {
             chatCompletionRequest = chatCompletionRequest with { Stream = false };
-            
+
             var response = await ExecuteHttpWithRetryAsync(
                 async () =>
                 {
                     var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions");
                     var jsonContent = JsonSerializer.Serialize(chatCompletionRequest, S_jsonSerializerOptions);
                     request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-                    
-                    Logger.LogTrace("Sending request - RequestId: {RequestId}, PayloadSize: {PayloadSize}", 
+
+                    Logger.LogTrace("Sending request - RequestId: {RequestId}, PayloadSize: {PayloadSize}",
                         requestId, jsonContent.Length);
-                    
+
                     return await HttpClient.SendAsync(request, cancellationToken);
                 },
                 async (httpResponse) =>
@@ -117,25 +117,25 @@ public class OpenClient : BaseHttpService, IOpenClient
                     httpResponse.EnsureSuccessStatusCode();
                     var responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken);
                     var chatResponse = await JsonSerializer.DeserializeAsync<ChatCompletionResponse>(
-                        responseStream, S_jsonSerializerOptions, cancellationToken) 
+                        responseStream, S_jsonSerializerOptions, cancellationToken)
                         ?? throw new Exception("Failed to deserialize response");
-                    
+
                     // Log response details
-                    Logger.LogTrace("Chat completion response - Provider: {Provider}, Model: {Model}, CompletionId: {CompletionId}, RequestId: {RequestId}", 
+                    Logger.LogTrace("Chat completion response - Provider: {Provider}, Model: {Model}, CompletionId: {CompletionId}, RequestId: {RequestId}",
                         providerName, chatResponse.Model ?? chatCompletionRequest.Model, chatResponse.Id, requestId);
-                    
+
                     if (chatResponse.Usage != null)
                     {
-                        Logger.LogTrace("Usage data received - RequestId: {RequestId}, CompletionId: {CompletionId}, PromptTokens: {PromptTokens}, CompletionTokens: {CompletionTokens}, TotalTokens: {TotalTokens}, HasCost: {HasCost}", 
-                            requestId, chatResponse.Id, chatResponse.Usage.PromptTokens, chatResponse.Usage.CompletionTokens, 
+                        Logger.LogTrace("Usage data received - RequestId: {RequestId}, CompletionId: {CompletionId}, PromptTokens: {PromptTokens}, CompletionTokens: {CompletionTokens}, TotalTokens: {TotalTokens}, HasCost: {HasCost}",
+                            requestId, chatResponse.Id, chatResponse.Usage.PromptTokens, chatResponse.Usage.CompletionTokens,
                             chatResponse.Usage.TotalTokens, chatResponse.Usage.ExtraProperties?.ContainsKey("estimated_cost") == true);
                     }
                     else
                     {
-                        Logger.LogWarning("No usage data in response - Provider: {Provider}, Model: {Model}, CompletionId: {CompletionId}, RequestId: {RequestId}", 
+                        Logger.LogWarning("No usage data in response - Provider: {Provider}, Model: {Model}, CompletionId: {CompletionId}, RequestId: {RequestId}",
                             providerName, chatResponse.Model ?? chatCompletionRequest.Model, chatResponse.Id, requestId);
                     }
-                    
+
                     return chatResponse;
                 },
                 cancellationToken: cancellationToken);
@@ -149,12 +149,12 @@ public class OpenClient : BaseHttpService, IOpenClient
                     CompletionTokens = response.Usage.CompletionTokens,
                     TotalTokens = response.Usage.TotalTokens
                 } : null);
-            
+
             _performanceTracker.TrackRequest(completedMetrics);
-            
-            Logger.LogInformation("Request completed successfully - Provider: {Provider}, Model: {Model}, CompletionId: {CompletionId}, RequestId: {RequestId}, Duration: {Duration}ms", 
+
+            Logger.LogInformation("Request completed successfully - Provider: {Provider}, Model: {Model}, CompletionId: {CompletionId}, RequestId: {RequestId}, Duration: {Duration}ms",
                 providerName, response.Model ?? chatCompletionRequest.Model, response.Id, requestId, completedMetrics.Duration.TotalMilliseconds);
-            
+
             return response;
         }
         catch (Exception ex)
@@ -164,12 +164,12 @@ public class OpenClient : BaseHttpService, IOpenClient
                 statusCode: 0,
                 errorMessage: ex.Message,
                 exceptionType: ex.GetType().Name);
-            
+
             _performanceTracker.TrackRequest(completedMetrics);
-            
-            Logger.LogError(ex, "Request failed - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Error: {ErrorMessage}", 
+
+            Logger.LogError(ex, "Request failed - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Error: {ErrorMessage}",
                 providerName, chatCompletionRequest.Model, requestId, ex.Message);
-            
+
             throw;
         }
     }
@@ -180,18 +180,18 @@ public class OpenClient : BaseHttpService, IOpenClient
     {
         var providerName = GetProviderName(_baseUrl);
         var requestId = Guid.NewGuid().ToString("N")[..8];
-        
+
         // Log streaming request details
-        Logger.LogInformation("Streaming chat completion request - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Endpoint: {Endpoint}", 
+        Logger.LogInformation("Streaming chat completion request - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Endpoint: {Endpoint}",
             providerName, chatCompletionRequest.Model, requestId, _baseUrl);
 
         var metrics = RequestMetrics.StartNew(ProviderName, chatCompletionRequest.Model, "StreamingChatCompletion");
-        
+
         chatCompletionRequest = chatCompletionRequest with { Stream = true };
-        
+
         // Setup the HTTP request and get the stream
         var streamEnumerable = await SetupStreamingRequestAsync(chatCompletionRequest, metrics, requestId, cancellationToken);
-        
+
         // Enumerate the stream and yield results
         await foreach (var response in streamEnumerable.WithCancellation(cancellationToken))
         {
@@ -206,7 +206,7 @@ public class OpenClient : BaseHttpService, IOpenClient
         CancellationToken cancellationToken)
     {
         var providerName = GetProviderName(_baseUrl);
-        
+
         try
         {
             var streamResponse = await ExecuteHttpWithRetryAsync(
@@ -215,27 +215,27 @@ public class OpenClient : BaseHttpService, IOpenClient
                     var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions");
                     var jsonContent = JsonSerializer.Serialize(chatCompletionRequest, S_jsonSerializerOptions);
                     request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-                    
-                    Logger.LogTrace("Sending streaming request - RequestId: {RequestId}, PayloadSize: {PayloadSize}", 
+
+                    Logger.LogTrace("Sending streaming request - RequestId: {RequestId}, PayloadSize: {PayloadSize}",
                         requestId, jsonContent.Length);
-                    
+
                     return await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 },
                 async (httpResponse) =>
                 {
                     var stream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken);
-                    
-                    Logger.LogInformation("Streaming response started - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}", 
+
+                    Logger.LogInformation("Streaming response started - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}",
                         providerName, chatCompletionRequest.Model, requestId);
-                    
+
                     return (httpResponse, stream);
                 },
                 cancellationToken: cancellationToken);
-            
+
             // Track successful setup
             var successMetrics = metrics.Complete(statusCode: 200);
             _performanceTracker.TrackRequest(successMetrics);
-            
+
             return ProcessStreamingResponseAsync(streamResponse.stream, streamResponse.httpResponse, requestId, cancellationToken);
         }
         catch (Exception ex)
@@ -245,12 +245,12 @@ public class OpenClient : BaseHttpService, IOpenClient
                 statusCode: 0,
                 errorMessage: ex.Message,
                 exceptionType: ex.GetType().Name);
-            
+
             _performanceTracker.TrackRequest(completedMetrics);
-            
-            Logger.LogError(ex, "Streaming request failed - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Error: {ErrorMessage}", 
+
+            Logger.LogError(ex, "Streaming request failed - Provider: {Provider}, Model: {Model}, RequestId: {RequestId}, Error: {ErrorMessage}",
                 providerName, chatCompletionRequest.Model, requestId, ex.Message);
-            
+
             throw;
         }
     }
@@ -307,10 +307,10 @@ public class OpenClient : BaseHttpService, IOpenClient
                     // Log streaming chunk details
                     if (res.Id != null && !string.IsNullOrEmpty(res.Id))
                     {
-                        Logger.LogTrace("Streaming chunk received - RequestId: {RequestId}, CompletionId: {CompletionId}, Model: {Model}", 
+                        Logger.LogTrace("Streaming chunk received - RequestId: {RequestId}, CompletionId: {CompletionId}, Model: {Model}",
                             requestId, res.Id, res.Model);
                     }
-                    
+
                     // Apply filtering logic to reduce noise in streaming output
                     if (ShouldSkipStreamingResponse(res))
                     {
@@ -370,7 +370,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                 }
 
                 // Check if reasoning is empty or null
-                var hasReasoning = !string.IsNullOrEmpty(delta.Reasoning) || 
+                var hasReasoning = !string.IsNullOrEmpty(delta.Reasoning) ||
                                  !string.IsNullOrEmpty(delta.ReasoningContent);
 
                 // Check if there are tool calls present

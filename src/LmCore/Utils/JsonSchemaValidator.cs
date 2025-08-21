@@ -16,7 +16,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
     // JsonSerializerOptions with Union converter for proper serialization
     public static readonly JsonSerializerOptions SchemaSerializationOptions = new()
     {
-        Converters = 
+        Converters =
         {
             new UnionJsonConverter<string, IReadOnlyList<string>>()
         }
@@ -73,9 +73,9 @@ public class JsonSchemaValidator : IJsonSchemaValidator
 
         try
         {
-            var evaluationOptions = new EvaluationOptions 
-            { 
-                OutputFormat = OutputFormat.Hierarchical 
+            var evaluationOptions = new EvaluationOptions
+            {
+                OutputFormat = OutputFormat.Hierarchical
             };
 
             var result = jsonSchema.Evaluate(dataNode, evaluationOptions);
@@ -135,7 +135,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
     private static List<string> ExtractValidationErrors(EvaluationResults result)
     {
         var errors = new List<string>();
-        
+
         if (result.HasErrors)
         {
             // Extract error details from the evaluation result
@@ -143,8 +143,8 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             {
                 if (detail.HasErrors)
                 {
-                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"]?.ToString()) 
-                        ? detail.Errors["error"].ToString() 
+                    var errorMessage = !string.IsNullOrEmpty(detail.Errors?["error"]?.ToString())
+                        ? detail.Errors["error"].ToString()
                         : $"Validation failed at '{detail.InstanceLocation}'";
                     errors.Add(errorMessage);
                 }

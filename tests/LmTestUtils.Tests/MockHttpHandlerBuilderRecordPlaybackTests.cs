@@ -41,18 +41,18 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 }
             }
         };
-        
+
         await File.WriteAllTextAsync(testFilePath, JsonSerializer.Serialize(testData, new JsonSerializerOptions { WriteIndented = true }));
-        
+
         try
         {
             // Create handler with record/playback
             var handler = MockHttpHandlerBuilder.Create()
                 .WithRecordPlayback(testFilePath)
                 .Build();
-            
+
             using var httpClient = new HttpClient(handler);
-            
+
             // Make a request that matches the recorded data
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions")
             {
@@ -65,17 +65,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                     }
                     """, Encoding.UTF8, "application/json")
             };
-            
+
             // Act
             var response = await httpClient.SendAsync(request);
-            
+
             // Assert
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var responseContent = await response.Content.ReadAsStringAsync();
             var responseJson = JsonDocument.Parse(responseContent);
-            
+
             Assert.Equal("test-response", responseJson.RootElement.GetProperty("id").GetString());
-            Assert.Equal("Hello! How can I help?", 
+            Assert.Equal("Hello! How can I help?",
                 responseJson.RootElement
                     .GetProperty("choices")[0]
                     .GetProperty("message")
@@ -86,7 +86,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             File.Delete(testFilePath);
         }
     }
-    
+
     [Fact]
     public async Task WithRecordPlayback_NoMatchingRequest_ShouldThrowException()
     {
@@ -114,17 +114,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 }
             }
         };
-        
+
         await File.WriteAllTextAsync(testFilePath, JsonSerializer.Serialize(testData, new JsonSerializerOptions { WriteIndented = true }));
-        
+
         try
         {
             var handler = MockHttpHandlerBuilder.Create()
                 .WithRecordPlayback(testFilePath)
                 .Build();
-            
+
             using var httpClient = new HttpClient(handler);
-            
+
             // Make a request that doesn't match the recorded data
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions")
             {
@@ -137,7 +137,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                     }
                     """, Encoding.UTF8, "application/json")
             };
-            
+
             // Act & Assert
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => httpClient.SendAsync(request));
             Assert.Contains("No recorded interaction found", exception.Message);
@@ -147,7 +147,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             File.Delete(testFilePath);
         }
     }
-    
+
     [Fact]
     public async Task WithRecordPlayback_FlexibleMatching_ShouldMatchBasedOnKeyProperties()
     {
@@ -178,17 +178,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 }
             }
         };
-        
+
         await File.WriteAllTextAsync(testFilePath, JsonSerializer.Serialize(testData, new JsonSerializerOptions { WriteIndented = true }));
-        
+
         try
         {
             var handler = MockHttpHandlerBuilder.Create()
                 .WithRecordPlayback(testFilePath)
                 .Build();
-            
+
             using var httpClient = new HttpClient(handler);
-            
+
             // Make a request with same model and messages but different formatting/extra properties
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
             {
@@ -204,15 +204,15 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                     }
                     """, Encoding.UTF8, "application/json")
             };
-            
+
             // Act
             var response = await httpClient.SendAsync(request);
-            
+
             // Assert - Should match despite extra properties
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var responseContent = await response.Content.ReadAsStringAsync();
             var responseJson = JsonDocument.Parse(responseContent);
-            
+
             Assert.Equal("msg_flexible_match", responseJson.RootElement.GetProperty("id").GetString());
         }
         finally
@@ -220,26 +220,26 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             File.Delete(testFilePath);
         }
     }
-    
+
     [Fact]
     public async Task WithRecordPlayback_NonExistentFile_ShouldCreateEmptyDataSet()
     {
         // Arrange - Use a non-existent file path
         var testFilePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".json");
-        
+
         try
         {
             var handler = MockHttpHandlerBuilder.Create()
                 .WithRecordPlayback(testFilePath)
                 .Build();
-            
+
             using var httpClient = new HttpClient(handler);
-            
+
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions")
             {
                 Content = new StringContent("""{"model": "gpt-4"}""", Encoding.UTF8, "application/json")
             };
-            
+
             // Act & Assert - Should throw since no recorded interactions and no API forwarding
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => httpClient.SendAsync(request));
             Assert.Contains("No recorded interaction found", exception.Message);
@@ -250,7 +250,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 File.Delete(testFilePath);
         }
     }
-    
+
     [Fact]
     public void RequestMatcher_ExactMatch_ShouldMatchIdenticalRequests()
     {
@@ -263,17 +263,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 ]
             }
             """;
-        
+
         var incomingRequest = JsonDocument.Parse(requestJson).RootElement;
         var recordedRequest = JsonDocument.Parse(requestJson).RootElement;
-        
+
         // Act
         var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: true);
-        
+
         // Assert
         Assert.True(matches);
     }
-    
+
     [Fact]
     public void RequestMatcher_FlexibleMatch_ShouldMatchKeyProperties()
     {
@@ -288,7 +288,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 ]
             }
             """;
-        
+
         var recordedRequestJson = """
             {
                 "model": "gpt-4",
@@ -297,17 +297,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 ]
             }
             """;
-        
+
         var incomingRequest = JsonDocument.Parse(incomingRequestJson).RootElement;
         var recordedRequest = JsonDocument.Parse(recordedRequestJson).RootElement;
-        
+
         // Act
         var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: false);
-        
+
         // Assert
         Assert.True(matches);
     }
-    
+
     [Fact]
     public void RequestMatcher_DifferentModel_ShouldNotMatch()
     {
@@ -320,7 +320,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 ]
             }
             """;
-        
+
         var recordedRequestJson = """
             {
                 "model": "gpt-4",
@@ -329,17 +329,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 ]
             }
             """;
-        
+
         var incomingRequest = JsonDocument.Parse(incomingRequestJson).RootElement;
         var recordedRequest = JsonDocument.Parse(recordedRequestJson).RootElement;
-        
+
         // Act
         var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: false);
-        
+
         // Assert
         Assert.False(matches);
     }
-    
+
     [Fact]
     public async Task WithRecordPlayback_WithRequestCapture_ShouldCaptureRequestsAndPlayback()
     {
@@ -369,18 +369,18 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 }
             }
         };
-        
+
         await File.WriteAllTextAsync(testFilePath, JsonSerializer.Serialize(testData, new JsonSerializerOptions { WriteIndented = true }));
-        
+
         try
         {
             var handler = MockHttpHandlerBuilder.Create()
                 .CaptureRequests(out var capture)
                 .WithRecordPlayback(testFilePath)
                 .Build();
-            
+
             using var httpClient = new HttpClient(handler);
-            
+
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
             {
                 Content = new StringContent("""
@@ -392,23 +392,23 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                     }
                     """, Encoding.UTF8, "application/json")
             };
-            
+
             // Act
             var response = await httpClient.SendAsync(request);
-            
+
             // Assert
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            
+
             // Debug: Check what was captured
             System.Diagnostics.Debug.WriteLine($"Request count: {capture.RequestCount}");
             System.Diagnostics.Debug.WriteLine($"Last request body: {capture.LastRequestBody}");
-            
+
             // Verify request was captured
             var capturedRequest = capture.GetAnthropicRequest();
             Assert.NotNull(capturedRequest);
             Assert.Equal("claude-3-sonnet-20240229", capturedRequest.Model);
             Assert.Equal("What's the weather?", capturedRequest.Messages.First().Content);
-            
+
             // Verify response was from playback
             var responseContent = await response.Content.ReadAsStringAsync();
             var responseJson = JsonDocument.Parse(responseContent);
@@ -419,7 +419,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             File.Delete(testFilePath);
         }
     }
-    
+
     [Fact]
     public async Task WithRecordPlayback_AnthropicToolUse_ShouldMatchAndPlayback()
     {
@@ -465,17 +465,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                 }
             }
         };
-        
+
         await File.WriteAllTextAsync(testFilePath, JsonSerializer.Serialize(testData, new JsonSerializerOptions { WriteIndented = true }));
-        
+
         try
         {
             var handler = MockHttpHandlerBuilder.Create()
                 .WithRecordPlayback(testFilePath)
                 .Build();
-            
+
             using var httpClient = new HttpClient(handler);
-            
+
             var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
             {
                 Content = new StringContent("""
@@ -497,15 +497,15 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                     }
                     """, Encoding.UTF8, "application/json")
             };
-            
+
             // Act
             var response = await httpClient.SendAsync(request);
-            
+
             // Assert
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var responseContent = await response.Content.ReadAsStringAsync();
             var responseJson = JsonDocument.Parse(responseContent);
-            
+
             Assert.Equal("msg_tool_response", responseJson.RootElement.GetProperty("id").GetString());
             var toolUse = responseJson.RootElement.GetProperty("content")[0];
             Assert.Equal("tool_use", toolUse.GetProperty("type").GetString());
@@ -516,4 +516,4 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             File.Delete(testFilePath);
         }
     }
-} 
+}

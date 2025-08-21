@@ -102,4 +102,4 @@ public record MultimodalCapability
     /// </summary>
     [JsonPropertyName("supports_video_generation")]
     public bool SupportsVideoGeneration { get; init; } = false;
-} 
+}

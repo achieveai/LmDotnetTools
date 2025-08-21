@@ -223,7 +223,7 @@ public class ServerEmbeddings : BaseEmbeddingService
 
         // Apply text chunking if needed
         var processedInputs = ApplyTextChunking(request.Inputs);
-        
+
         var chunkedRequest = new EmbeddingRequest
         {
             Inputs = processedInputs,
@@ -292,7 +292,7 @@ public class ServerEmbeddings : BaseEmbeddingService
             try
             {
                 var response = await httpOperation();
-                
+
                 if (response.IsSuccessStatusCode)
                 {
                     return await responseProcessor(response);
@@ -321,7 +321,7 @@ public class ServerEmbeddings : BaseEmbeddingService
                 var delay = TimeSpan.FromSeconds(attempt);
                 Logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms. Error: {Error}",
                     attempt, maxRetries + 1, delay.TotalMilliseconds, lastException?.Message);
-                
+
                 await Task.Delay(delay, cancellationToken);
             }
         }
@@ -370,7 +370,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         {
             var remainingLength = text.Length - currentIndex;
             var chunkLength = Math.Min(maxLength, remainingLength);
-            
+
             // Try to break at word boundaries if possible
             if (chunkLength < remainingLength)
             {
@@ -400,7 +400,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         lock (_batchLock)
         {
             var batch = new List<BatchRequest>();
-            
+
             // Dequeue up to maxBatchSize items
             while (batch.Count < _maxBatchSize && _batchQueue.TryDequeue(out var request))
             {
@@ -424,7 +424,7 @@ public class ServerEmbeddings : BaseEmbeddingService
                     };
 
                     var response = await GenerateEmbeddingsAsync(request);
-                    
+
                     // Complete each task with its corresponding embedding
                     for (int i = 0; i < batch.Count && i < response.Embeddings.Count; i++)
                     {
@@ -465,4 +465,4 @@ public class ServerEmbeddings : BaseEmbeddingService
         }
         base.Dispose(disposing);
     }
-} 
+}

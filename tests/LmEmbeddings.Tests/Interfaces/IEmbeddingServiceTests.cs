@@ -70,8 +70,8 @@ public class IEmbeddingServiceTests
     [Theory]
     [MemberData(nameof(GetEmbeddingTestCases))]
     public async Task GetEmbeddingAsync_ValidInputs_ReturnsExpectedEmbedding(
-        string sentence, 
-        int expectedEmbeddingSize, 
+        string sentence,
+        int expectedEmbeddingSize,
         string description)
     {
         // Arrange
@@ -82,7 +82,7 @@ public class IEmbeddingServiceTests
 
         var mockService = CreateMockEmbeddingService(expectedEmbeddingSize);
         var expectedEmbedding = GenerateTestEmbedding(expectedEmbeddingSize);
-        
+
         mockService.Setup(s => s.GetEmbeddingAsync(sentence, It.IsAny<CancellationToken>()))
                .ReturnsAsync(expectedEmbedding);
 
@@ -99,15 +99,15 @@ public class IEmbeddingServiceTests
         Assert.NotNull(result);
         Assert.Equal(expectedEmbeddingSize, result.Length);
         Assert.All(result, value => Assert.True(value >= -1.0f && value <= 1.0f, "Embedding values should be normalized"));
-        
+
         mockService.Verify(s => s.GetEmbeddingAsync(sentence, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Theory]
     [MemberData(nameof(InvalidInputTestCases))]
     public async Task GetEmbeddingAsync_InvalidInputs_ThrowsExpectedException(
-        string? sentence, 
-        Type expectedExceptionType, 
+        string? sentence,
+        Type expectedExceptionType,
         string description)
     {
         // Arrange
@@ -120,9 +120,9 @@ public class IEmbeddingServiceTests
                .ThrowsAsync(new ArgumentException("Invalid input"));
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync(expectedExceptionType, 
+        var exception = await Assert.ThrowsAsync(expectedExceptionType,
             () => mockService.Object.GetEmbeddingAsync(sentence!));
-        
+
         Debug.WriteLine($"Exception message: {exception.Message}");
         Assert.NotNull(exception);
     }
@@ -132,10 +132,10 @@ public class IEmbeddingServiceTests
     {
         // Arrange
         Debug.WriteLine("Testing GetEmbeddingAsync cancellation behavior");
-        
+
         var mockService = CreateMockEmbeddingService(1536);
         var cancellationTokenSource = new CancellationTokenSource();
-        
+
         mockService.Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
                .ThrowsAsync(new OperationCanceledException());
 
@@ -145,7 +145,7 @@ public class IEmbeddingServiceTests
         Debug.WriteLine("Requesting cancellation and calling GetEmbeddingAsync");
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => mockService.Object.GetEmbeddingAsync("test", cancellationTokenSource.Token));
-        
+
         Debug.WriteLine("Cancellation was properly handled");
     }
 
@@ -168,7 +168,7 @@ public class IEmbeddingServiceTests
     {
         // Arrange
         var mockService = CreateMockEmbeddingService(1536);
-        
+
         if (input == null)
         {
             mockService.Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -199,8 +199,8 @@ public class IEmbeddingServiceTests
     [MemberData(nameof(GenerateEmbeddingsTestCases))]
     [Trait("Category", "Performance")]
     public async Task GenerateEmbeddingsAsync_ValidInputs_ReturnsExpectedResponse(
-        string[] inputs, 
-        string model, 
+        string[] inputs,
+        string model,
         string description)
     {
         // Arrange
@@ -233,7 +233,7 @@ public class IEmbeddingServiceTests
         Assert.NotNull(result);
         Assert.Equal(inputs.Length, result.Embeddings.Count);
         Assert.Equal(model, result.Model);
-        
+
         for (int i = 0; i < inputs.Length; i++)
         {
             var embedding = result.Embeddings.ElementAt(i);
@@ -254,7 +254,7 @@ public class IEmbeddingServiceTests
         // Arrange
         Debug.WriteLine("Testing EmbeddingSize property");
         const int expectedSize = 1536;
-        
+
         var mockService = CreateMockEmbeddingService(expectedSize);
 
         // Act
@@ -263,7 +263,7 @@ public class IEmbeddingServiceTests
         // Assert
         Debug.WriteLine($"EmbeddingSize returned: {result}");
         Assert.Equal(expectedSize, result);
-        
+
         mockService.VerifyGet(s => s.EmbeddingSize, Times.Once);
     }
 
@@ -275,7 +275,7 @@ public class IEmbeddingServiceTests
     {
         // Arrange
         Debug.WriteLine($"Testing EmbeddingSize property with size: {expectedSize}");
-        
+
         var mockService = CreateMockEmbeddingService(expectedSize);
 
         // Act
@@ -296,13 +296,13 @@ public class IEmbeddingServiceTests
     {
         // Arrange
         Debug.WriteLine("Testing Dispose method - single call");
-        
+
         var mockService = CreateMockEmbeddingService(1536);
 
         // Act & Assert
         Debug.WriteLine("Calling Dispose()");
         mockService.Object.Dispose();
-        
+
         Debug.WriteLine("Dispose completed successfully");
         mockService.Verify(s => s.Dispose(), Times.Once);
     }
@@ -312,7 +312,7 @@ public class IEmbeddingServiceTests
     {
         // Arrange
         Debug.WriteLine("Testing Dispose method - multiple calls");
-        
+
         var mockService = CreateMockEmbeddingService(1536);
 
         // Act & Assert
@@ -320,7 +320,7 @@ public class IEmbeddingServiceTests
         mockService.Object.Dispose();
         mockService.Object.Dispose();
         mockService.Object.Dispose();
-        
+
         Debug.WriteLine("Multiple Dispose calls completed successfully");
         mockService.Verify(s => s.Dispose(), Times.Exactly(3));
     }
@@ -331,7 +331,7 @@ public class IEmbeddingServiceTests
     {
         // Arrange
         Debug.WriteLine("Testing GetEmbeddingAsync after disposal");
-        
+
         var mockService = CreateMockEmbeddingService(1536);
         mockService.Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
                .ThrowsAsync(new ObjectDisposedException("EmbeddingService"));
@@ -342,7 +342,7 @@ public class IEmbeddingServiceTests
         Debug.WriteLine("Attempting to call GetEmbeddingAsync after disposal");
         await Assert.ThrowsAsync<ObjectDisposedException>(
             () => mockService.Object.GetEmbeddingAsync("test"));
-        
+
         Debug.WriteLine("ObjectDisposedException was properly thrown");
     }
 
@@ -357,7 +357,7 @@ public class IEmbeddingServiceTests
     {
         var mock = new Mock<IEmbeddingService>();
         mock.SetupGet(s => s.EmbeddingSize).Returns(embeddingSize);
-        
+
         mock.Setup(s => s.GetAvailableModelsAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { "text-embedding-3-small", "text-embedding-3-large" });
 
@@ -371,12 +371,12 @@ public class IEmbeddingServiceTests
     {
         var random = new Random(42); // Fixed seed for reproducible tests
         var embedding = new float[size];
-        
+
         for (int i = 0; i < size; i++)
         {
             embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Values between -1 and 1
         }
-        
+
         return embedding;
     }
 
@@ -405,4 +405,4 @@ public class IEmbeddingServiceTests
     }
 
     #endregion
-} 
+}

@@ -15,7 +15,7 @@ public abstract class RequestCaptureBase
     private readonly List<HttpRequestMessage> _capturedRequests = new();
     private readonly List<string> _capturedBodies = new();
     private readonly List<object> _capturedResponses = new();
-    
+
     /// <summary>
     /// Shared JsonSerializerOptions that can handle both OpenAI and Anthropic provider types
     /// </summary>
@@ -25,17 +25,17 @@ public abstract class RequestCaptureBase
     /// Gets all captured HTTP requests
     /// </summary>
     public IReadOnlyList<HttpRequestMessage> Requests => _capturedRequests.AsReadOnly();
-    
+
     /// <summary>
     /// Gets all captured request bodies as strings
     /// </summary>
     public IReadOnlyList<string> RequestBodies => _capturedBodies.AsReadOnly();
-    
+
     /// <summary>
     /// Gets the most recent captured request
     /// </summary>
     public HttpRequestMessage? LastRequest => _capturedRequests.LastOrDefault();
-    
+
     /// <summary>
     /// Gets the most recent captured request body
     /// </summary>
@@ -52,7 +52,7 @@ public abstract class RequestCaptureBase
     internal async Task CaptureAsync(HttpRequestMessage request)
     {
         _capturedRequests.Add(request);
-        
+
         if (request.Content != null)
         {
             var body = await request.Content.ReadAsStringAsync();
@@ -99,7 +99,7 @@ public abstract class RequestCaptureBase
         var response = _capturedResponses.LastOrDefault();
         if (response is T typedResponse)
             return typedResponse;
-        
+
         if (response is string jsonResponse)
         {
             try
@@ -111,7 +111,7 @@ public abstract class RequestCaptureBase
                 return null;
             }
         }
-        
+
         return null;
     }
 
@@ -142,7 +142,7 @@ public abstract class RequestCaptureBase
                 {
                     // Skip invalid JSON
                 }
-                
+
                 if (deserialized != null)
                     yield return deserialized;
             }
@@ -208,4 +208,4 @@ public abstract class RequestCaptureBase
 
         return options;
     }
-} 
+}

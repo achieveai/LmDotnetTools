@@ -15,7 +15,7 @@ public class EmbeddingApiTypeTests
     public void EmbeddingApiType_Values_ShouldHaveCorrectValues(EmbeddingApiType apiType, int expectedValue, string description)
     {
         Debug.WriteLine($"Testing API type: {apiType} = {expectedValue} ({description})");
-        
+
         // Act & Assert
         Assert.Equal(expectedValue, (int)apiType);
         Debug.WriteLine($"✓ API type {apiType} has correct value {expectedValue}");
@@ -26,10 +26,10 @@ public class EmbeddingApiTypeTests
     public void EmbeddingApiType_ToString_ShouldReturnCorrectString(EmbeddingApiType apiType, string expectedString)
     {
         Debug.WriteLine($"Testing API type string representation: {apiType}");
-        
+
         // Act
         var result = apiType.ToString();
-        
+
         // Assert
         Assert.Equal(expectedString, result);
         Debug.WriteLine($"✓ API type {apiType} string representation: '{result}'");
@@ -40,7 +40,7 @@ public class EmbeddingApiTypeTests
     public void EmbeddingApiType_Parse_ShouldParseCorrectly(string input, EmbeddingApiType expected, bool shouldSucceed)
     {
         Debug.WriteLine($"Testing API type parsing: '{input}' -> {expected} (should succeed: {shouldSucceed})");
-        
+
         // Act & Assert
         if (shouldSucceed)
         {
@@ -52,7 +52,7 @@ public class EmbeddingApiTypeTests
         else
         {
             var success = Enum.TryParse<EmbeddingApiType>(input, true, out var result);
-            
+
             // For numeric values outside the defined range, TryParse succeeds but we should check if it's a defined value
             if (success && int.TryParse(input, out var numericValue))
             {
@@ -72,10 +72,10 @@ public class EmbeddingApiTypeTests
     public void EmbeddingApiType_DefaultValue_ShouldBeDefault()
     {
         Debug.WriteLine("Testing default value of EmbeddingApiType");
-        
+
         // Act
         var defaultValue = default(EmbeddingApiType);
-        
+
         // Assert
         Assert.Equal(EmbeddingApiType.Default, defaultValue);
         Assert.Equal(0, (int)defaultValue);
@@ -86,13 +86,13 @@ public class EmbeddingApiTypeTests
     public void EmbeddingApiType_AllValues_ShouldBeUnique()
     {
         Debug.WriteLine("Testing that all EmbeddingApiType values are unique");
-        
+
         // Arrange
         var allValues = Enum.GetValues<EmbeddingApiType>();
         var intValues = allValues.Select(v => (int)v).ToArray();
-        
+
         Debug.WriteLine($"All API type values: {string.Join(", ", allValues.Select(v => $"{v}({(int)v})"))}");
-        
+
         // Act & Assert
         var uniqueValues = intValues.Distinct().ToArray();
         Assert.Equal(intValues.Length, uniqueValues.Length);
@@ -102,12 +102,12 @@ public class EmbeddingApiTypeTests
     [Theory]
     [MemberData(nameof(ApiTypeCompatibilityTestCases))]
     public void EmbeddingApiType_Compatibility_ShouldWorkWithDifferentScenarios(
-        EmbeddingApiType apiType, 
-        string scenario, 
+        EmbeddingApiType apiType,
+        string scenario,
         bool expectedCompatibility)
     {
         Debug.WriteLine($"Testing API type compatibility: {apiType} with {scenario}");
-        
+
         // Act & Assert based on scenario
         switch (scenario)
         {
@@ -116,13 +116,13 @@ public class EmbeddingApiTypeTests
                 Assert.Equal(expectedCompatibility, isOpenAICompatible);
                 Debug.WriteLine($"✓ {apiType} OpenAI compatibility: {isOpenAICompatible}");
                 break;
-                
+
             case "Jina":
                 var isJinaCompatible = apiType == EmbeddingApiType.Jina;
                 Assert.Equal(expectedCompatibility, isJinaCompatible);
                 Debug.WriteLine($"✓ {apiType} Jina compatibility: {isJinaCompatible}");
                 break;
-                
+
             case "Default":
                 var isDefault = apiType == EmbeddingApiType.Default;
                 Assert.Equal(expectedCompatibility, isDefault);
@@ -177,4 +177,4 @@ public class EmbeddingApiTypeTests
         new object[] { EmbeddingApiType.Default, "Default", true },
         new object[] { EmbeddingApiType.Jina, "Default", false }
     };
-} 
+}

@@ -43,7 +43,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
     {
         var messageList = messages.ToList();
         var modelId = options?.ModelId ?? "claude-3-5-sonnet-20241022";
-        
+
         _logger.LogInformation(LogEventIds.AgentRequestInitiated,
             "API request initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Type={RequestType}",
             modelId, Name, messageList.Count, "Non-streaming");
@@ -52,7 +52,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         {
             var startTime = DateTime.UtcNow;
             var request = AnthropicRequest.FromMessages(messages, options);
-            
+
             _logger.LogDebug(LogEventIds.RequestConversion,
                 "Request converted: Model={Model}, MaxTokens={MaxTokens}, Temperature={Temperature}, SystemPrompt={HasSystemPrompt}",
                 request.Model, request.MaxTokens, request.Temperature, !string.IsNullOrEmpty(request.System));
@@ -71,11 +71,11 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
 
             // Convert to messages using the Models namespace extension
             var resultMessages = Models.AnthropicExtensions.ToMessages(response, Name);
-            
+
             _logger.LogDebug(LogEventIds.MessageTransformation,
                 "Messages transformed: Agent={AgentName}, ResponseMessageCount={MessageCount}, ResponseId={ResponseId}",
                 Name, resultMessages.Count(), response.Id);
-                
+
             return resultMessages;
         }
         catch (Exception ex)
@@ -95,7 +95,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
     {
         var messageList = messages.ToList();
         var modelId = options?.ModelId ?? "claude-3-5-sonnet-20241022";
-        
+
         _logger.LogInformation(LogEventIds.AgentRequestInitiated,
             "API request initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Type={RequestType}",
             modelId, Name, messageList.Count, "Streaming");
@@ -105,7 +105,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             var request = AnthropicRequest.FromMessages(messages, options)
               with
             { Stream = true };
-            
+
             _logger.LogDebug(LogEventIds.RequestConversion,
                 "Streaming request converted: Model={Model}, MaxTokens={MaxTokens}, Temperature={Temperature}, SystemPrompt={HasSystemPrompt}",
                 request.Model, request.MaxTokens, request.Temperature, !string.IsNullOrEmpty(request.System));
@@ -129,7 +129,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
         var startTime = DateTime.UtcNow;
         var chunkCount = 0;
         var modelId = request.Model ?? "claude-3-5-sonnet-20241022";
-        
+
         // Create a parser to track state across events
         var parser = new AnthropicStreamParser();
 
@@ -152,11 +152,11 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             try
             {
                 chunkCount++;
-                
+
                 _logger.LogDebug(LogEventIds.StreamingEventProcessed,
                     "Streaming event processed: Agent={AgentName}, ChunkNumber={ChunkNumber}, EventType={EventType}",
                     Name, chunkCount, streamEvent.GetType().Name);
-                
+
                 // Process the event directly without serialization/deserialization
                 messages = parser.ProcessStreamEvent(streamEvent);
             }
@@ -173,7 +173,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
                 _logger.LogDebug(LogEventIds.MessageTransformation,
                     "Message transformed: Agent={AgentName}, MessageType={MessageType}",
                     Name, message.GetType().Name);
-                
+
                 // Set the agent name for all messages
                 if (message is TextMessage textMessage)
                 {
@@ -196,9 +196,9 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
                 }
             }
         }
-        
+
         var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        
+
         _logger.LogInformation(LogEventIds.AgentStreamingCompleted,
             "Streaming completed: Model={Model}, Agent={AgentName}, ChunkCount={ChunkCount}, Duration={Duration}ms",
             modelId, Name, chunkCount, duration);

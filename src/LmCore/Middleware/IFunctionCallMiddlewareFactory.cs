@@ -12,7 +12,7 @@ public interface IFunctionCallMiddlewareFactory
     /// <param name="configure">Optional configuration for the function registry</param>
     /// <returns>Configured FunctionCallMiddleware</returns>
     FunctionCallMiddleware Create(string? name = null, Action<FunctionRegistry>? configure = null);
-    
+
     /// <summary>
     /// Create FunctionCallMiddleware with a result callback
     /// </summary>
@@ -21,7 +21,7 @@ public interface IFunctionCallMiddlewareFactory
     /// <param name="configure">Optional configuration for the function registry</param>
     /// <returns>Configured FunctionCallMiddleware with callback</returns>
     FunctionCallMiddleware Create(IToolResultCallback? resultCallback, string? name = null, Action<FunctionRegistry>? configure = null);
-    
+
     /// <summary>
     /// Create a FunctionRegistry with all registered providers
     /// </summary>

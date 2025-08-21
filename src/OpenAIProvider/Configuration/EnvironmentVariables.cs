@@ -10,31 +10,31 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Configuration;
 public static class EnvironmentVariables
 {
     #region OpenRouter Usage Middleware Environment Variables
-    
+
     /// <summary>
     /// Enable/disable OpenRouter usage tracking middleware (default: true).
     /// </summary>
     public const string EnableUsageMiddleware = "ENABLE_USAGE_MIDDLEWARE";
-    
+
     /// <summary>
     /// Enable/disable inline usage accounting in requests (default: true).
     /// </summary>
     public const string EnableInlineUsage = "ENABLE_INLINE_USAGE";
-    
+
     /// <summary>
     /// Cache TTL in seconds for usage data (default: 300).
     /// </summary>
     public const string UsageCacheTtlSec = "USAGE_CACHE_TTL_SEC";
-    
+
     /// <summary>
     /// OpenRouter API key for usage lookup (required when middleware enabled).
     /// </summary>
     public const string OpenRouterApiKey = "OPENROUTER_API_KEY";
-    
+
     #endregion
 
     #region Configuration Reading Helpers
-    
+
     /// <summary>
     /// Gets the EnableUsageMiddleware setting from configuration.
     /// </summary>
@@ -46,7 +46,7 @@ public static class EnvironmentVariables
             EnableUsageMiddleware, null, "true");
         return bool.TryParse(value, out var result) ? result : true;
     }
-    
+
     /// <summary>
     /// Gets the EnableInlineUsage setting from configuration.
     /// </summary>
@@ -58,7 +58,7 @@ public static class EnvironmentVariables
             EnableInlineUsage, null, "true");
         return bool.TryParse(value, out var result) ? result : true;
     }
-    
+
     /// <summary>
     /// Gets the usage cache TTL in seconds from configuration.
     /// </summary>
@@ -70,7 +70,7 @@ public static class EnvironmentVariables
             UsageCacheTtlSec, null, "300");
         return int.TryParse(value, out var result) && result > 0 ? result : 300;
     }
-    
+
     /// <summary>
     /// Gets the OpenRouter API key from configuration.
     /// </summary>
@@ -81,11 +81,11 @@ public static class EnvironmentVariables
         return EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
             OpenRouterApiKey, null, "");
     }
-    
+
     #endregion
 
     #region Validation and Fail-Fast Logic
-    
+
     /// <summary>
     /// Validates that required configuration is present for OpenRouter usage middleware.
     /// </summary>
@@ -94,15 +94,15 @@ public static class EnvironmentVariables
     public static void ValidateOpenRouterUsageConfiguration(IConfiguration configuration)
     {
         var enableUsageMiddleware = GetEnableUsageMiddleware(configuration);
-        
+
         if (!enableUsageMiddleware)
         {
             // Middleware disabled, no validation needed
             return;
         }
-        
+
         var openRouterApiKey = GetOpenRouterApiKey(configuration);
-        
+
         if (string.IsNullOrWhiteSpace(openRouterApiKey))
         {
             throw new InvalidOperationException(
@@ -110,7 +110,7 @@ public static class EnvironmentVariables
                 $"Either set the API key or disable the middleware by setting {EnableUsageMiddleware}=false.");
         }
     }
-    
+
     /// <summary>
     /// Creates a configuration summary for logging/debugging purposes.
     /// </summary>
@@ -122,14 +122,14 @@ public static class EnvironmentVariables
         var enableInlineUsage = GetEnableInlineUsage(configuration);
         var cacheTtlSec = GetUsageCacheTtlSec(configuration);
         var apiKeyPresent = !string.IsNullOrWhiteSpace(GetOpenRouterApiKey(configuration));
-        
+
         return $"OpenRouter Usage Middleware Configuration: " +
                $"Enabled={enableUsageMiddleware}, " +
                $"InlineUsage={enableInlineUsage}, " +
                $"CacheTtl={cacheTtlSec}s, " +
                $"ApiKeyPresent={apiKeyPresent}";
     }
-    
+
     #endregion
 }
 
@@ -146,13 +146,13 @@ public static class EnvironmentVariablesServiceExtensions
     /// <param name="configuration">Configuration instance</param>
     /// <returns>Service collection for chaining</returns>
     public static IServiceCollection ValidateOpenRouterUsageConfiguration(
-        this IServiceCollection services, 
+        this IServiceCollection services,
         IConfiguration configuration)
     {
         EnvironmentVariables.ValidateOpenRouterUsageConfiguration(configuration);
         return services;
     }
-    
+
     /// <summary>
     /// Adds OpenRouter usage configuration as a singleton service.
     /// </summary>
@@ -166,7 +166,7 @@ public static class EnvironmentVariablesServiceExtensions
         // Register configuration values as singleton
         services.AddSingleton<IOpenRouterUsageConfiguration>(provider =>
             new OpenRouterUsageConfiguration(configuration));
-            
+
         return services;
     }
 }
@@ -180,17 +180,17 @@ public interface IOpenRouterUsageConfiguration
     /// Whether usage middleware is enabled.
     /// </summary>
     bool EnableUsageMiddleware { get; }
-    
+
     /// <summary>
     /// Whether inline usage accounting is enabled.
     /// </summary>
     bool EnableInlineUsage { get; }
-    
+
     /// <summary>
     /// Cache TTL in seconds for usage data.
     /// </summary>
     int UsageCacheTtlSec { get; }
-    
+
     /// <summary>
     /// OpenRouter API key for usage lookup.
     /// </summary>
@@ -209,9 +209,9 @@ public class OpenRouterUsageConfiguration : IOpenRouterUsageConfiguration
         UsageCacheTtlSec = EnvironmentVariables.GetUsageCacheTtlSec(configuration);
         OpenRouterApiKey = EnvironmentVariables.GetOpenRouterApiKey(configuration);
     }
-    
+
     public bool EnableUsageMiddleware { get; }
     public bool EnableInlineUsage { get; }
     public int UsageCacheTtlSec { get; }
     public string? OpenRouterApiKey { get; }
-} 
+}

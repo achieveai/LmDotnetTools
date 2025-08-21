@@ -35,13 +35,13 @@ public class FunctionProviderRegistry : IFunctionProviderRegistry
     public IEnumerable<IFunctionProvider> GetProviders()
     {
         var allProviders = new List<IFunctionProvider>();
-        
+
         // Add directly registered providers
         allProviders.AddRange(_providers);
-        
+
         // Add providers from factories
         allProviders.AddRange(_factories.Select(f => f(_serviceProvider)));
-        
+
         // Add providers from types (resolved via DI)
         foreach (var type in _providerTypes)
         {

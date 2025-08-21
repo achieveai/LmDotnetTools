@@ -33,7 +33,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateNotNullOrWhiteSpace(value));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateNotNullOrWhiteSpace passed for valid string");
     }
@@ -47,7 +47,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateNotNullOrWhiteSpace(value));
-        
+
         Assert.Contains("cannot be null, empty, or whitespace", exception.Message);
         Debug.WriteLine($"✓ ValidateNotNullOrWhiteSpace correctly threw ArgumentException: {exception.Message}");
     }
@@ -65,7 +65,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateNotNull(value));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateNotNull passed for valid object");
     }
@@ -77,7 +77,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentNullException>(() => ValidationHelper.ValidateNotNull<object>(null));
-        
+
         Debug.WriteLine($"✓ ValidateNotNull correctly threw ArgumentNullException: {exception.Message}");
     }
 
@@ -94,7 +94,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateNotNullOrEmpty(collection));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateNotNullOrEmpty passed for valid collection");
     }
@@ -108,7 +108,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws(expectedExceptionType, () => ValidationHelper.ValidateNotNullOrEmpty(collection));
-        
+
         Debug.WriteLine($"✓ ValidateNotNullOrEmpty correctly threw {expectedExceptionType.Name}: {exception.Message}");
     }
 
@@ -125,7 +125,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateStringCollectionElements(collection));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateStringCollectionElements passed for valid collection");
     }
@@ -138,7 +138,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateStringCollectionElements(collection));
-        
+
         Debug.WriteLine($"✓ ValidateStringCollectionElements correctly threw ArgumentException: {exception.Message}");
     }
 
@@ -155,7 +155,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidatePositive(value));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidatePositive passed for positive number");
     }
@@ -169,7 +169,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidatePositive(value));
-        
+
         Assert.Contains("must be positive", exception.Message);
         Debug.WriteLine($"✓ ValidatePositive correctly threw ArgumentException: {exception.Message}");
     }
@@ -187,7 +187,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateRange(value, min, max));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateRange passed for value in range");
     }
@@ -201,7 +201,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentOutOfRangeException>(() => ValidationHelper.ValidateRange(value, min, max));
-        
+
         Debug.WriteLine($"✓ ValidateRange correctly threw ArgumentOutOfRangeException: {exception.Message}");
     }
 
@@ -218,7 +218,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateEnumDefined(value));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateEnumDefined passed for valid enum value");
     }
@@ -232,7 +232,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateEnumDefined(value));
-        
+
         Assert.Contains("Invalid EmbeddingApiType value", exception.Message);
         Debug.WriteLine($"✓ ValidateEnumDefined correctly threw ArgumentException: {exception.Message}");
     }
@@ -250,7 +250,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateAllowedValues(value, allowedValues));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateAllowedValues passed for valid value");
     }
@@ -264,7 +264,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateAllowedValues(value, allowedValues));
-        
+
         Debug.WriteLine($"✓ ValidateAllowedValues correctly threw ArgumentException: {exception.Message}");
     }
 
@@ -281,7 +281,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Record.Exception(() => ValidationHelper.ValidateEmbeddingRequest(request));
-        
+
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateEmbeddingRequest passed for valid request");
     }
@@ -295,7 +295,7 @@ public class ValidationHelperTests
 
         // Act & Assert
         var exception = Assert.Throws(expectedExceptionType, () => ValidationHelper.ValidateEmbeddingRequest(request));
-        
+
         Debug.WriteLine($"✓ ValidateEmbeddingRequest correctly threw {expectedExceptionType.Name}: {exception.Message}");
     }
 
@@ -460,4 +460,4 @@ public class ValidationHelperTests
     };
 
     #endregion
-} 
+}

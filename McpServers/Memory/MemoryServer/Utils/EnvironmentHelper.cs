@@ -27,7 +27,7 @@ public static class EnvironmentHelper
             {
                 // Find workspace root by looking for .env file or solution file
                 string? envPath = FindEnvFile();
-                
+
                 if (envPath != null)
                 {
                     Console.WriteLine($"Loading environment variables from: {envPath}");
@@ -58,7 +58,7 @@ public static class EnvironmentHelper
     private static string? FindEnvFile()
     {
         var currentDir = Environment.CurrentDirectory;
-        
+
         while (!string.IsNullOrEmpty(currentDir))
         {
             var envPath = Path.Combine(currentDir, ".env");
@@ -92,4 +92,4 @@ public static class EnvironmentHelper
             _envLoaded = false;
         }
     }
-} 
+}

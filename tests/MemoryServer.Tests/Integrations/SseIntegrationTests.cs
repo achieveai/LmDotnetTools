@@ -35,7 +35,7 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/sse"));
 
         // Assert - SSE endpoint should exist (even if it returns method not allowed for HEAD)
-        Assert.True(response.StatusCode == System.Net.HttpStatusCode.OK || 
+        Assert.True(response.StatusCode == System.Net.HttpStatusCode.OK ||
                    response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed ||
                    response.StatusCode == System.Net.HttpStatusCode.BadRequest);
         _output.WriteLine($"✅ SSE endpoint exists and responds: {response.StatusCode}");
@@ -62,23 +62,23 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
     {
         // This test verifies that the SSE transport infrastructure is properly configured
         // Note: SSE endpoints are designed for persistent connections, not simple HTTP requests
-        
+
         // Arrange
         var client = _fixture.CreateHttpClient();
-        
+
         // Act & Assert - Check that SSE endpoint exists using HEAD request
         var sseResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/sse"));
-        
+
         // Log actual status codes for debugging
         _output.WriteLine($"SSE endpoint status: {sseResponse.StatusCode}");
-        
+
         // The server should have the SSE endpoint available
         Assert.NotNull(sseResponse);
-        
+
         // Check if endpoint exists (not returning NotFound)
         var sseExists = sseResponse.StatusCode != System.Net.HttpStatusCode.NotFound;
         Assert.True(sseExists, $"SSE endpoint should exist. Status: {sseResponse.StatusCode}");
-        
+
         _output.WriteLine($"✅ SSE infrastructure in place - SSE: {sseResponse.StatusCode}");
         _output.WriteLine("📝 Note: SSE endpoints are designed for persistent connections, not simple HTTP requests");
     }
@@ -91,16 +91,16 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
 
         // Act & Assert - Check that actual MemoryServer services are available
         Assert.NotNull(services);
-        
+
         // Verify core MemoryServer services are registered (not just basic MCP)
         var memoryService = services.GetService<MemoryServer.Services.IMemoryService>();
         var sessionResolver = services.GetService<MemoryServer.Services.ISessionContextResolver>();
         var memoryTools = services.GetService<MemoryServer.Tools.MemoryMcpTools>();
-        
+
         Assert.NotNull(memoryService);
         Assert.NotNull(sessionResolver);
         Assert.NotNull(memoryTools);
-        
+
         _output.WriteLine($"✅ MemoryServer services properly registered in SSE transport");
     }
 
@@ -154,4 +154,4 @@ public class SimpleTestTool
 {
     [McpServerTool, Description("Simple test tool that returns a greeting")]
     public static string SayHello(string name) => $"Hello, {name}!";
-} 
+}

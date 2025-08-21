@@ -55,17 +55,17 @@ public class ThinkingModeTests
     public async Task ThinkingMode_ShouldBeIncludedInRequest()
     {
         Console.WriteLine("Starting ThinkingMode_ShouldBeIncludedInRequest test");
-        
+
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+            .RespondWithAnthropicMessage("This is a mock response for testing.",
                 "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
 
         var httpClient = new HttpClient(handler);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
-        
+
         var thinking = new AnthropicThinking(2048);
         Console.WriteLine($"Created thinking with budget: {thinking.BudgetTokens}");
 
@@ -93,7 +93,7 @@ public class ThinkingModeTests
 
         // Assert using the RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
-        
+
         var capturedRequest = requestCapture.GetAnthropicRequest();
         Assert.NotNull(capturedRequest);
         Assert.NotNull(capturedRequest.Thinking);
@@ -111,7 +111,7 @@ public class ThinkingModeTests
 
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.", 
+            .RespondWithAnthropicMessage("This is a mock response for testing.",
                 "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
@@ -165,7 +165,7 @@ public class ThinkingModeTests
 
         // Assert using RequestCapture API
         Assert.Equal(1, requestCapture.RequestCount);
-        
+
         var capturedRequest = requestCapture.GetAnthropicRequest();
         Assert.NotNull(capturedRequest);
         Assert.NotNull(capturedRequest.Thinking);
@@ -182,7 +182,7 @@ public class ThinkingModeTests
         Assert.Equal("python_mcp-execute_python_in_container", tools[0].Name);
         Assert.NotNull(tools[0].Description);
         Assert.NotNull(tools[0].InputSchema);
-        
+
         TestLogger.Log($"Thinking budget verified: {capturedRequest.Thinking.BudgetTokens}");
     }
 }

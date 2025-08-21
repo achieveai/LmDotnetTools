@@ -27,7 +27,7 @@ public class TopicBasedDomainSpecificTests
         _output = output;
         _mockLlmService = new Mock<ILlmProviderIntegrationService>();
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
-        
+
         var loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.AddConsole().SetMinimumLevel(LogLevel.Information);
@@ -60,17 +60,17 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         result.Should().NotBeEmpty();
-        
+
         // Legal documents should recognize section structure
         result.Should().HaveCountGreaterThan(3); // Should identify multiple legal sections
-        
+
         // Verify segments contain legal terminology
         var allContent = string.Join(" ", result.Select(s => s.Content));
         allContent.Should().ContainAny("whereas", "hereby", "agreement", "party", "clause", "provision");
-        
+
         // Legal segments should have reasonable size for clauses/sections
         result.All(s => s.Content.Length >= 50).Should().BeTrue();
-        
+
         // Verify legal-specific metadata
         foreach (var segment in result)
         {
@@ -81,7 +81,7 @@ public class TopicBasedDomainSpecificTests
         _output.WriteLine($"Legal Document Segmentation:");
         _output.WriteLine($"  Segments created: {result.Count()}");
         _output.WriteLine($"  Average segment length: {result.Average(s => s.Content.Length):F0} characters");
-        
+
         foreach (var (segment, index) in result.Select((s, i) => (s, i)))
         {
             _output.WriteLine($"  Segment {index + 1}: {segment.Content.Substring(0, Math.Min(50, segment.Content.Length))}...");
@@ -99,10 +99,10 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         boundaries.Should().NotBeEmpty();
-        
+
         // Legal documents should identify boundaries at clause transitions
         boundaries.Should().HaveCountGreaterThan(2);
-        
+
         // Boundaries should be positioned at legal section markers
         // Check that boundaries don't split clauses inappropriately
         foreach (var boundary in boundaries)
@@ -137,9 +137,9 @@ public class TopicBasedDomainSpecificTests
         // Assert
         analysis.Should().NotBeNull();
         analysis.CoherenceScore.Should().BeInRange(0.0, 1.0);
-        
+
         // Legal text should have reasonable coherence despite formal structure
-        analysis.CoherenceScore.Should().BeGreaterThan(0.6, 
+        analysis.CoherenceScore.Should().BeGreaterThan(0.6,
             "Legal clauses should maintain thematic coherence despite formal language");
 
         _output.WriteLine($"Legal Coherence Analysis:");
@@ -167,14 +167,14 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         result.Should().NotBeEmpty();
-        
+
         // Technical docs should identify API sections, code examples, etc.
         result.Should().HaveCountGreaterThan(4);
-        
+
         // Verify segments contain technical terminology
         var allContent = string.Join(" ", result.Select(s => s.Content));
         allContent.Should().ContainAny("API", "function", "method", "parameter", "return", "example", "code");
-        
+
         // Technical segments should handle code blocks appropriately
         var codeSegments = result.Where(s => s.Content.Contains("```") || s.Content.Contains("function")).ToList();
         codeSegments.Should().NotBeEmpty("Should identify code-containing segments");
@@ -196,10 +196,10 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         boundaries.Should().NotBeEmpty();
-        
+
         // Technical docs should identify boundaries between different API sections
         boundaries.Should().HaveCountGreaterThan(3);
-        
+
         // Should recognize transitions between concepts (API -> Examples -> Parameters)
         foreach (var boundary in boundaries)
         {
@@ -238,7 +238,7 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         analysis.Should().NotBeNull();
-        
+
         // Technical content mixing text and code should maintain coherence
         analysis.CoherenceScore.Should().BeGreaterThan(0.7,
             "Code examples with explanations should maintain thematic coherence");
@@ -267,14 +267,14 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         result.Should().NotBeEmpty();
-        
+
         // Academic papers should identify standard sections
         result.Should().HaveCountGreaterThan(4); // Abstract, Introduction, Methods, Results, Discussion, etc.
-        
+
         // Verify academic terminology and structure
         var allContent = string.Join(" ", result.Select(s => s.Content));
         allContent.Should().ContainAny("abstract", "methodology", "results", "discussion", "conclusion", "research", "study");
-        
+
         // Academic segments should be substantial
         result.Average(s => s.Content.Length).Should().BeGreaterThan(300,
             "Academic sections should be substantial in length");
@@ -295,10 +295,10 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         boundaries.Should().NotBeEmpty();
-        
+
         // Academic papers should identify clear section boundaries
         boundaries.Should().HaveCountGreaterThan(3);
-        
+
         // Boundaries should align with academic paper structure
         foreach (var boundary in boundaries)
         {
@@ -328,7 +328,7 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         analysis.Should().NotBeNull();
-        
+
         // Academic methodology should have high coherence
         analysis.CoherenceScore.Should().BeGreaterThan(0.8,
             "Academic methodology sections should maintain high thematic coherence");
@@ -365,7 +365,7 @@ public class TopicBasedDomainSpecificTests
         validation.Should().NotBeNull();
         validation.OverallQuality.Should().BeInRange(0.0, 1.0);
         validation.AverageTopicCoherence.Should().BeInRange(0.0, 1.0);
-        
+
         // Domain-specific documents should have reasonable quality scores
         validation.OverallQuality.Should().BeGreaterThan(0.6,
             $"{documentType} documents should maintain good overall quality");
@@ -417,10 +417,10 @@ public class TopicBasedDomainSpecificTests
 
         // Assert
         result.Should().NotBeEmpty();
-        
+
         // Should handle mixed content appropriately
         result.Should().HaveCountGreaterThan(2);
-        
+
         // Should not fail on mixed domain content
         result.All(s => !string.IsNullOrWhiteSpace(s.Content)).Should().BeTrue();
 

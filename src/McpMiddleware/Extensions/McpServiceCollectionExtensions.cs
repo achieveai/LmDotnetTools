@@ -14,7 +14,7 @@ public static class McpServiceCollectionExtensions
     /// <summary>
     /// Register MCP function provider for specific assembly
     /// </summary>
-    public static IServiceCollection AddMcpFunctions(this IServiceCollection services, 
+    public static IServiceCollection AddMcpFunctions(this IServiceCollection services,
         Assembly? assembly = null, string? name = null)
     {
         return services.AddFunctionProvider(sp => new McpFunctionProvider(assembly, name));

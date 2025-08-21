@@ -16,7 +16,7 @@ public interface IResponseProvider
     /// Determines if this provider can handle the given request
     /// </summary>
     bool CanHandle(HttpRequestMessage request, int requestIndex);
-    
+
     /// <summary>
     /// Creates an HTTP response for the given request
     /// </summary>
@@ -47,8 +47,8 @@ public interface IHttpHandlerMiddleware
     /// <param name="next">Function to call the next middleware in the chain, null if this is the last middleware</param>
     /// <returns>HttpResponseMessage if handled, null to indicate no handling</returns>
     Task<HttpResponseMessage?> HandleAsync(
-        HttpRequestMessage request, 
-        int requestIndex, 
+        HttpRequestMessage request,
+        int requestIndex,
         Func<Task<HttpResponseMessage?>>? next);
 }
 
@@ -58,15 +58,15 @@ public interface IHttpHandlerMiddleware
 internal class ResponseProviderMiddleware : IHttpHandlerMiddleware
 {
     private readonly IResponseProvider _provider;
-    
+
     public ResponseProviderMiddleware(IResponseProvider provider)
     {
         _provider = provider;
     }
-    
+
     public async Task<HttpResponseMessage?> HandleAsync(
-        HttpRequestMessage request, 
-        int requestIndex, 
+        HttpRequestMessage request,
+        int requestIndex,
         Func<Task<HttpResponseMessage?>>? next)
     {
         if (_provider.CanHandle(request, requestIndex))
@@ -81,7 +81,7 @@ internal class ResponseProviderMiddleware : IHttpHandlerMiddleware
                 return next != null ? await next() : null;
             }
         }
-        
+
         return next != null ? await next() : null;
     }
 }
@@ -92,15 +92,15 @@ internal class ResponseProviderMiddleware : IHttpHandlerMiddleware
 internal class RequestProcessorMiddleware : IHttpHandlerMiddleware
 {
     private readonly IRequestProcessor _processor;
-    
+
     public RequestProcessorMiddleware(IRequestProcessor processor)
     {
         _processor = processor;
     }
-    
+
     public async Task<HttpResponseMessage?> HandleAsync(
-        HttpRequestMessage request, 
-        int requestIndex, 
+        HttpRequestMessage request,
+        int requestIndex,
         Func<Task<HttpResponseMessage?>>? next)
     {
         await _processor.ProcessRequestAsync(request, requestIndex);
@@ -114,15 +114,15 @@ internal class RequestProcessorMiddleware : IHttpHandlerMiddleware
 internal class RequestCaptureMiddleware : IHttpHandlerMiddleware
 {
     private readonly RequestCaptureBase _capture;
-    
+
     public RequestCaptureMiddleware(RequestCaptureBase capture)
     {
         _capture = capture;
     }
-    
+
     public async Task<HttpResponseMessage?> HandleAsync(
-        HttpRequestMessage request, 
-        int requestIndex, 
+        HttpRequestMessage request,
+        int requestIndex,
         Func<Task<HttpResponseMessage?>>? next)
     {
         await _capture.CaptureAsync(request);
@@ -150,8 +150,8 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
     }
 
     public async Task<HttpResponseMessage?> HandleAsync(
-        HttpRequestMessage request, 
-        int requestIndex, 
+        HttpRequestMessage request,
+        int requestIndex,
         Func<Task<HttpResponseMessage?>>? next)
     {
         if (_disposed)
@@ -163,19 +163,19 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
         {
             // Clone the request for forwarding
             var forwardRequest = await CloneRequestAsync(request);
-            
+
             // Set authentication
             forwardRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
-            
+
             // Forward to real API
             var response = await _httpClient.SendAsync(forwardRequest, HttpCompletionOption.ResponseHeadersRead);
-            
+
             // Record the interaction if callback provided
             if (_onNewInteraction != null && request.Content != null)
             {
                 await RecordInteractionAsync(request, response);
             }
-            
+
             return response;
         }
         catch
@@ -188,28 +188,28 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
     private async Task<HttpRequestMessage> CloneRequestAsync(HttpRequestMessage request)
     {
         var clone = new HttpRequestMessage(request.Method, request.RequestUri);
-        
+
         // Copy headers efficiently
         foreach (var header in request.Headers)
         {
             clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
-        
+
         // Copy content efficiently using byte arrays
         if (request.Content != null)
         {
             byte[] contentBytes = await request.Content.ReadAsByteArrayAsync();
             var byteContent = new ByteArrayContent(contentBytes);
-            
+
             // Copy content headers
             foreach (var header in request.Content.Headers)
             {
                 byteContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
-            
+
             clone.Content = byteContent;
         }
-        
+
         return clone;
     }
 
@@ -221,15 +221,15 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
             {
                 return;
             }
-            
+
             // Read request and response content
             var requestContent = await request.Content.ReadAsStringAsync();
             var responseContent = await response.Content.ReadAsStringAsync();
-            
+
             // Parse to JsonElements
             using var requestDoc = JsonDocument.Parse(requestContent);
             using var responseDoc = JsonDocument.Parse(responseContent);
-            
+
             var interaction = new RecordedInteraction
             {
                 SerializedRequest = requestDoc.RootElement.Clone(),
@@ -238,7 +238,7 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
                 RecordedAt = DateTime.UtcNow,
                 Provider = DetermineProvider(request)
             };
-            
+
             _onNewInteraction(interaction);
         }
         catch
@@ -278,8 +278,8 @@ internal class DelegateMiddleware : IHttpHandlerMiddleware
     }
 
     public Task<HttpResponseMessage?> HandleAsync(
-        HttpRequestMessage request, 
-        int requestIndex, 
+        HttpRequestMessage request,
+        int requestIndex,
         Func<Task<HttpResponseMessage?>>? next)
     {
         return _middleware(request, requestIndex, next);
@@ -295,17 +295,17 @@ public static class RequestExtensions
     /// Checks if this is the first request (index 0)
     /// </summary>
     public static bool IsFirstMessage(this HttpRequestMessage request, int requestIndex) => requestIndex == 0;
-    
+
     /// <summary>
     /// Checks if this is the second request (index 1)
     /// </summary>
     public static bool IsSecondMessage(this HttpRequestMessage request, int requestIndex) => requestIndex == 1;
-    
+
     /// <summary>
     /// Checks if this is the nth request (index n-1)
     /// </summary>
     public static bool IsNthMessage(this HttpRequestMessage request, int requestIndex, int n) => requestIndex == n - 1;
-    
+
     /// <summary>
     /// Checks if the request contains tool results
     /// </summary>
@@ -314,13 +314,13 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null) return false;
-            
+
             var content = request.Content.ReadAsStringAsync().Result;
             if (string.IsNullOrEmpty(content)) return false;
-            
+
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
-            
+
             // Check if there's a messages array with tool_result content
             if (root.TryGetProperty("messages", out var messagesElement) && messagesElement.ValueKind == JsonValueKind.Array)
             {
@@ -330,7 +330,7 @@ public static class RequestExtensions
                     {
                         foreach (var contentItem in contentElement.EnumerateArray())
                         {
-                            if (contentItem.TryGetProperty("type", out var typeElement) && 
+                            if (contentItem.TryGetProperty("type", out var typeElement) &&
                                 typeElement.GetString() == "tool_result")
                             {
                                 return true;
@@ -339,7 +339,7 @@ public static class RequestExtensions
                     }
                 }
             }
-            
+
             return false;
         }
         catch
@@ -347,7 +347,7 @@ public static class RequestExtensions
             return false;
         }
     }
-    
+
     /// <summary>
     /// Checks if the request contains a specific text in any message content
     /// </summary>
@@ -356,7 +356,7 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null) return false;
-            
+
             var content = request.Content.ReadAsStringAsync().Result;
             return content.Contains(text, StringComparison.OrdinalIgnoreCase);
         }
@@ -365,7 +365,7 @@ public static class RequestExtensions
             return false;
         }
     }
-    
+
     /// <summary>
     /// Checks if the request has a specific role in messages
     /// </summary>
@@ -374,25 +374,25 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null) return false;
-            
+
             var content = request.Content.ReadAsStringAsync().Result;
             if (string.IsNullOrEmpty(content)) return false;
-            
+
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
-            
+
             if (root.TryGetProperty("messages", out var messagesElement) && messagesElement.ValueKind == JsonValueKind.Array)
             {
                 foreach (var message in messagesElement.EnumerateArray())
                 {
-                    if (message.TryGetProperty("role", out var roleElement) && 
+                    if (message.TryGetProperty("role", out var roleElement) &&
                         roleElement.GetString() == role)
                     {
                         return true;
                     }
                 }
             }
-            
+
             return false;
         }
         catch
@@ -400,7 +400,7 @@ public static class RequestExtensions
             return false;
         }
     }
-    
+
     /// <summary>
     /// Gets the count of messages in the request
     /// </summary>
@@ -409,18 +409,18 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null) return 0;
-            
+
             var content = request.Content.ReadAsStringAsync().Result;
             if (string.IsNullOrEmpty(content)) return 0;
-            
+
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
-            
+
             if (root.TryGetProperty("messages", out var messagesElement) && messagesElement.ValueKind == JsonValueKind.Array)
             {
                 return messagesElement.GetArrayLength();
             }
-            
+
             return 0;
         }
         catch
@@ -428,7 +428,7 @@ public static class RequestExtensions
             return 0;
         }
     }
-    
+
     /// <summary>
     /// Checks if the request mentions a specific tool name
     /// </summary>
@@ -437,7 +437,7 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null) return false;
-            
+
             var content = request.Content.ReadAsStringAsync().Result;
             return content.Contains(toolName, StringComparison.OrdinalIgnoreCase);
         }
@@ -446,7 +446,7 @@ public static class RequestExtensions
             return false;
         }
     }
-    
+
     /// <summary>
     /// Checks if this is an Anthropic API request
     /// </summary>
@@ -455,7 +455,7 @@ public static class RequestExtensions
         return request.RequestUri?.Host?.Contains("anthropic", StringComparison.OrdinalIgnoreCase) == true ||
                request.Headers.Any(h => h.Key.Contains("anthropic", StringComparison.OrdinalIgnoreCase));
     }
-    
+
     /// <summary>
     /// Checks if this is an OpenAI API request
     /// </summary>
@@ -492,7 +492,7 @@ internal class MultiConditionalResponseProvider : IResponseProvider
             if (condition(request, requestIndex))
                 return true;
         }
-        
+
         // If no condition matches, check if we have a default provider
         return _defaultProvider != null;
     }
@@ -505,15 +505,15 @@ internal class MultiConditionalResponseProvider : IResponseProvider
             if (condition(request, requestIndex))
                 return provider.CreateResponseAsync(request, requestIndex);
         }
-        
+
         // Fall back to default provider if available
         if (_defaultProvider != null)
             return _defaultProvider.CreateResponseAsync(request, requestIndex);
-        
+
         // If no default, return a generic error
         var errorResponse = new HttpResponseMessage(HttpStatusCode.BadRequest)
         {
-            Content = new StringContent("No matching condition found and no default response configured", 
+            Content = new StringContent("No matching condition found and no default response configured",
                 Encoding.UTF8, "text/plain")
         };
         return Task.FromResult(errorResponse);
@@ -532,9 +532,9 @@ public class ConversationState
     public int RequestCount => _requestCount;
 
     public int IncrementRequestCount() => Interlocked.Increment(ref _requestCount);
-    
+
     public int DecrementRequestCount() => Interlocked.Decrement(ref _requestCount);
-    
+
     /// <summary>
     /// Ensures request count is incremented only once per request index
     /// </summary>
@@ -546,26 +546,26 @@ public class ConversationState
             IncrementRequestCount();
         }
     }
-    
+
     public void Set<T>(string key, T value) where T : notnull
     {
         _state[key] = value;
     }
-    
+
     public T? Get<T>(string key) where T : class
     {
         return _state.TryGetValue(key, out var value) ? value as T : null;
     }
-    
+
     public T GetValue<T>(string key, T defaultValue = default!) where T : struct
     {
         if (_state.TryGetValue(key, out var value) && value is T typedValue)
             return typedValue;
         return defaultValue;
     }
-    
+
     public bool Has(string key) => _state.ContainsKey(key);
-    
+
     public void Clear() => _state.Clear();
 }
 
@@ -580,7 +580,7 @@ internal class StatefulResponseProvider : IResponseProvider
 
     public StatefulResponseProvider(
         ConversationState state,
-        Func<HttpRequestMessage, int, ConversationState, bool> condition, 
+        Func<HttpRequestMessage, int, ConversationState, bool> condition,
         IResponseProvider innerProvider)
     {
         _state = state;
@@ -635,10 +635,10 @@ internal class SimpleJsonResponseProvider : IResponseProvider, IDisposable
         var content = new ByteArrayContent(_cachedContentBytes);
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
         response.Content = content;
-        
+
         return Task.FromResult(response);
     }
-    
+
     public void Dispose()
     {
         if (!_disposed)
@@ -662,7 +662,7 @@ internal class ErrorResponseProvider : IResponseProvider, IDisposable
     {
         _statusCode = statusCode;
         _errorMessage = errorMessage;
-        
+
         // Pre-encode the error message bytes once during construction if provided
         if (!string.IsNullOrEmpty(_errorMessage))
         {
@@ -680,7 +680,7 @@ internal class ErrorResponseProvider : IResponseProvider, IDisposable
         }
 
         var response = new HttpResponseMessage(_statusCode);
-        
+
         if (_cachedContentBytes != null)
         {
             var content = new ByteArrayContent(_cachedContentBytes);
@@ -690,7 +690,7 @@ internal class ErrorResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-    
+
     public void Dispose()
     {
         if (!_disposed)
@@ -716,7 +716,7 @@ internal class AnthropicErrorResponseProvider : IResponseProvider, IDisposable
         _statusCode = statusCode;
         _errorType = errorType;
         _errorMessage = errorMessage;
-        
+
         // Pre-serialize the JSON response once during construction
         var errorResponse = new
         {
@@ -748,7 +748,7 @@ internal class AnthropicErrorResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-    
+
     public void Dispose()
     {
         if (!_disposed)
@@ -778,7 +778,7 @@ internal class OpenAIErrorResponseProvider : IResponseProvider, IDisposable
         _errorMessage = errorMessage;
         _param = param;
         _code = code;
-        
+
         // Pre-serialize the JSON response once during construction
         var errorResponse = new
         {
@@ -811,7 +811,7 @@ internal class OpenAIErrorResponseProvider : IResponseProvider, IDisposable
 
         return Task.FromResult(response);
     }
-    
+
     public void Dispose()
     {
         if (!_disposed)
@@ -1006,7 +1006,7 @@ internal class TimeoutResponseProvider : IResponseProvider
     {
         // Simulate a timeout by delaying longer than typical client timeout
         await Task.Delay(_timeoutMilliseconds);
-        
+
         return new HttpResponseMessage(HttpStatusCode.RequestTimeout)
         {
             Content = new StringContent(
@@ -1034,7 +1034,7 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
     private string? _cachedFileContent;
     private readonly int _streamingDelayMs;
     private bool _disposed;
-    
+
     // Static cache for file contents to avoid repeated disk reads
     private static readonly ConcurrentDictionary<string, string> _fileContentCache = new();
 
@@ -1042,7 +1042,7 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
     {
         _filePath = filePath;
         _streamingDelayMs = streamingDelayMs;
-        
+
         // Preload file content if file exists
         if (File.Exists(_filePath))
         {
@@ -1056,7 +1056,7 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
         {
             throw new ObjectDisposedException(nameof(StreamingFileResponseProvider));
         }
-        
+
         return true;
     }
 
@@ -1066,7 +1066,7 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
         {
             throw new ObjectDisposedException(nameof(StreamingFileResponseProvider));
         }
-        
+
         // Check if file exists and content is cached
         if (_cachedFileContent == null)
         {
@@ -1074,27 +1074,27 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
             {
                 throw new FileNotFoundException($"SSE file not found: {_filePath}");
             }
-            
+
             // Cache miss - load file content
             _cachedFileContent = _fileContentCache.GetOrAdd(_filePath, path => File.ReadAllText(path));
         }
-        
+
         // Create SSE stream from cached content
         var sseStream = new SseFileStream(_cachedFileContent, _streamingDelayMs);
-        
+
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StreamContent(sseStream)
         };
-        
+
         // Set the correct content type for Server-Sent Events
         response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
         response.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
         response.Headers.Add("Connection", "keep-alive");
-        
+
         return Task.FromResult(response);
     }
-    
+
     public void Dispose()
     {
         if (!_disposed)
@@ -1125,13 +1125,13 @@ internal class RetryScenarioResponseProvider : IResponseProvider
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
         var currentCount = Interlocked.Increment(ref _requestCount);
-        
+
         if (currentCount <= _failureCount)
         {
             // Return failure response
             return Task.FromResult(new HttpResponseMessage(_failureStatus));
         }
-        
+
         // Return success response after failures
         var successResponse = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -1155,7 +1155,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
     {
         _sequence = sequence;
         _streamingDelayMs = streamingDelayMs;
-        
+
         // Pre-serialize the sequence to JSON and cache the bytes
         var json = JsonSerializer.Serialize(_sequence);
         _cachedContentBytes = Encoding.UTF8.GetBytes(json);
@@ -1167,7 +1167,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         {
             throw new ObjectDisposedException(nameof(StreamingSequenceResponseProvider));
         }
-        
+
         return true;
     }
 
@@ -1177,32 +1177,32 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         {
             throw new ObjectDisposedException(nameof(StreamingSequenceResponseProvider));
         }
-        
+
         // Convert the sequence to SSE format instead of raw JSON
         var sseContent = ConvertSequenceToSSE(_sequence);
         var sseBytes = Encoding.UTF8.GetBytes(sseContent);
         var memoryStream = new MemoryStream(sseBytes);
-        
+
         // Create a custom stream that will simulate streaming with delays
         var streamingStream = new StreamingMemoryStream(memoryStream, _streamingDelayMs);
-        
+
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StreamContent(streamingStream)
         };
-        
+
         // Set appropriate headers for Server-Sent Events
         response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
         response.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
         response.Headers.Add("Connection", "keep-alive");
-        
+
         return Task.FromResult(response);
     }
-    
+
     private string ConvertSequenceToSSE(object sequence)
     {
         var sseBuilder = new StringBuilder();
-        
+
         try
         {
             // If the sequence is an array or enumerable, convert each item to an SSE event
@@ -1222,7 +1222,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
                 sseBuilder.AppendLine($"data: {jsonData}");
                 sseBuilder.AppendLine();
             }
-            
+
             // Add final [DONE] marker for streaming completion
             sseBuilder.AppendLine("data: [DONE]");
             sseBuilder.AppendLine();
@@ -1233,10 +1233,10 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
             sseBuilder.AppendLine("data: {\"error\": \"Failed to serialize sequence\"}");
             sseBuilder.AppendLine();
         }
-        
+
         return sseBuilder.ToString();
     }
-    
+
     public void Dispose()
     {
         if (!_disposed)
@@ -1244,7 +1244,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
             _disposed = true;
         }
     }
-    
+
     /// <summary>
     /// A memory stream wrapper that adds configurable delays to simulate streaming
     /// </summary>
@@ -1253,54 +1253,54 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         private readonly MemoryStream _innerStream;
         private readonly int _delayMs;
         private bool _disposed;
-        
+
         public StreamingMemoryStream(MemoryStream innerStream, int delayMs)
         {
             _innerStream = innerStream;
             _delayMs = delayMs;
         }
-        
+
         public override bool CanRead => !_disposed && _innerStream.CanRead;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => _innerStream.Length;
-        public override long Position 
-        { 
-            get => _innerStream.Position; 
-            set => throw new NotSupportedException(); 
+        public override long Position
+        {
+            get => _innerStream.Position;
+            set => throw new NotSupportedException();
         }
-        
+
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             if (_disposed)
             {
                 throw new ObjectDisposedException(nameof(StreamingMemoryStream));
             }
-            
+
             // Add optional delay to simulate streaming
             if (_delayMs > 0)
             {
                 await Task.Delay(_delayMs, cancellationToken);
             }
-            
+
             return _innerStream.Read(buffer, offset, count);
         }
-        
+
         public override int Read(byte[] buffer, int offset, int count)
         {
             if (_disposed)
             {
                 throw new ObjectDisposedException(nameof(StreamingMemoryStream));
             }
-            
+
             return _innerStream.Read(buffer, offset, count);
         }
-        
+
         public override void Flush() { }
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        
+
         protected override void Dispose(bool disposing)
         {
             if (!_disposed)
@@ -1444,8 +1444,8 @@ public class EnhancedConditionalBuilder
     public EnhancedConditionalBuilder WhenAnthropicMessage(
         Func<HttpRequestMessage, int, bool> condition,
         string content = "Hello! How can I help you?",
-        string model = "claude-3-sonnet-20240229", 
-        int inputTokens = 10, 
+        string model = "claude-3-sonnet-20240229",
+        int inputTokens = 10,
         int outputTokens = 20)
     {
         var response = new
@@ -1499,9 +1499,9 @@ public class EnhancedConditionalBuilder
     {
         var defaultProvider = new SimpleJsonResponseProvider(jsonResponse);
         var newMultiProvider = new MultiConditionalResponseProvider(defaultProvider);
-        
+
         // Copy existing conditions via reflection
-        var field = typeof(MultiConditionalResponseProvider).GetField("_conditionalProviders", 
+        var field = typeof(MultiConditionalResponseProvider).GetField("_conditionalProviders",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         if (field?.GetValue(_multiProvider) is List<(Func<HttpRequestMessage, int, bool>, IResponseProvider)> conditions)
         {
@@ -1510,7 +1510,7 @@ public class EnhancedConditionalBuilder
                 newMultiProvider.AddCondition(condition, provider);
             }
         }
-        
+
         _parent.AddResponseProvider(newMultiProvider);
         return _parent;
     }
@@ -1541,7 +1541,7 @@ public class ConditionalBuilder
 
     public MockHttpHandlerBuilder ThenRespondWith(string jsonResponse)
     {
-        _parent.AddResponseProvider(new ConditionalResponseProvider(_condition, 
+        _parent.AddResponseProvider(new ConditionalResponseProvider(_condition,
             new SimpleJsonResponseProvider(jsonResponse)));
         return _parent;
     }
@@ -1568,16 +1568,16 @@ public class ConditionalBuilder
         };
 
         var jsonResponse = JsonSerializer.Serialize(response);
-        _parent.AddResponseProvider(new ConditionalResponseProvider(_condition, 
+        _parent.AddResponseProvider(new ConditionalResponseProvider(_condition,
             new SimpleJsonResponseProvider(jsonResponse)));
         return _parent;
     }
 
-    public MockHttpHandlerBuilder ThenRespondWithToolUse(string toolName, object inputData, 
+    public MockHttpHandlerBuilder ThenRespondWithToolUse(string toolName, object inputData,
         string? textContent = null)
     {
         textContent ??= $"I'll help you use the {toolName} tool.";
-        
+
         var response = new
         {
             type = "message",
@@ -1608,7 +1608,7 @@ public class ConditionalBuilder
         };
 
         var jsonResponse = JsonSerializer.Serialize(response);
-        _parent.AddResponseProvider(new ConditionalResponseProvider(_condition, 
+        _parent.AddResponseProvider(new ConditionalResponseProvider(_condition,
             new SimpleJsonResponseProvider(jsonResponse)));
         return _parent;
     }
@@ -1651,14 +1651,14 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var requestIndex = Interlocked.Increment(ref _requestIndex) - 1;
-        
+
         var response = await _middlewarePipeline(request, requestIndex);
-        
+
         if (response == null)
         {
             throw new InvalidOperationException($"No middleware handled request #{requestIndex} to {request.RequestUri}");
         }
-        
+
         return response;
     }
 
@@ -1666,12 +1666,12 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
         IEnumerable<IHttpHandlerMiddleware> middlewares)
     {
         var middlewareList = middlewares.ToList();
-        
+
         return async (request, index) =>
         {
             // Build the pipeline dynamically for each request
             Func<Task<HttpResponseMessage?>>? next = null;
-            
+
             // Build the chain from the end backwards
             for (int i = middlewareList.Count - 1; i >= 0; i--)
             {
@@ -1679,7 +1679,7 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
                 var currentNext = next;
                 next = () => middleware.HandleAsync(request, index, currentNext);
             }
-            
+
             // Execute the pipeline
             return next != null ? await next() : null;
         };
@@ -1689,7 +1689,7 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
     {
         // Dispose any middleware that implement IDisposable
         // Note: We can't access the middleware list here, but they should be disposed by their owners
-        
+
         // Call base dispose
         base.Dispose();
     }
@@ -1795,7 +1795,7 @@ public class MockHttpHandlerBuilder
     {
         // Check if the JSON represents an array or if SSE is forced
         bool shouldUseSSE = forceSSE || IsJsonArray(jsonResponse);
-        
+
         if (shouldUseSSE)
         {
             try
@@ -1811,7 +1811,7 @@ public class MockHttpHandlerBuilder
                 // If parsing fails, fall back to regular JSON
             }
         }
-        
+
         // Use regular JSON response
         return RespondWithJson(jsonResponse, statusCode);
     }
@@ -1820,7 +1820,7 @@ public class MockHttpHandlerBuilder
     {
         if (string.IsNullOrWhiteSpace(json))
             return false;
-            
+
         var trimmed = json.Trim();
         return trimmed.StartsWith('[') && trimmed.EndsWith(']');
     }
@@ -1995,7 +1995,7 @@ public class MockHttpHandlerBuilder
     /// </summary>
     public MockHttpHandlerBuilder RespondWithPythonMcpTool(string baseName, object inputData)
     {
-        return RespondWithToolUse($"python_mcp-{baseName}", inputData, 
+        return RespondWithToolUse($"python_mcp-{baseName}", inputData,
             $"I'll help you by using the {baseName} function.");
     }
 
@@ -2419,30 +2419,30 @@ public class MockHttpHandlerBuilder
     {
         // Create middleware list with proper ordering
         var middlewares = new List<IHttpHandlerMiddleware>();
-        
+
         // Add request capture middleware FIRST - this ensures requests are captured 
         // regardless of which middleware handles the response
         var captureMiddlewares = _middlewares.OfType<RequestCaptureMiddleware>().ToList();
         middlewares.AddRange(captureMiddlewares);
-        
+
         // Add record/playback middleware after capture (high priority for response handling)
         if (!string.IsNullOrEmpty(_recordPlaybackPath))
         {
             var recordPlaybackMiddleware = new RecordPlaybackMiddleware(_recordPlaybackPath);
             middlewares.Add(recordPlaybackMiddleware);
         }
-        
+
         // Add real HTTP handler middleware if forwarding is configured
         if (!string.IsNullOrEmpty(_forwardToBaseUrl) && !string.IsNullOrEmpty(_forwardToApiKey))
         {
             var realHttpMiddleware = new RealHttpHandlerMiddleware(_forwardToBaseUrl, _forwardToApiKey);
             middlewares.Add(realHttpMiddleware);
         }
-        
+
         // Add all other middleware (excluding capture middleware to avoid duplicates)
         var otherMiddlewares = _middlewares.Where(m => !(m is RequestCaptureMiddleware)).ToList();
         middlewares.AddRange(otherMiddlewares);
-        
+
         return new MockHttpHandler(middlewares);
     }
 
@@ -2465,18 +2465,18 @@ internal class SseFileStream : Stream, IDisposable
 {
     // Static cache for parsed SSE events to avoid repeated parsing
     private static readonly ConcurrentDictionary<string, byte[]> _parsedContentCache = new();
-    
+
     private readonly byte[] _content;
     private int _position = 0;
     private bool _disposed;
-    
+
     // Configurable delay for streaming simulation (0 for no delay)
     private readonly int _streamingDelayMs;
 
     public SseFileStream(string fileContent, int streamingDelayMs = 5)
     {
         _streamingDelayMs = streamingDelayMs;
-        
+
         // Use cached content if available, otherwise parse and cache
         _content = _parsedContentCache.GetOrAdd(fileContent, ParseAndFormatSseContent);
     }
@@ -2485,10 +2485,10 @@ internal class SseFileStream : Stream, IDisposable
     public override bool CanSeek => false;
     public override bool CanWrite => false;
     public override long Length => _content.Length;
-    public override long Position 
-    { 
-        get => _position; 
-        set => throw new NotSupportedException(); 
+    public override long Position
+    {
+        get => _position;
+        set => throw new NotSupportedException();
     }
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
@@ -2497,13 +2497,13 @@ internal class SseFileStream : Stream, IDisposable
         {
             throw new ObjectDisposedException(nameof(SseFileStream));
         }
-        
+
         // Optional delay to simulate streaming
         if (_streamingDelayMs > 0)
         {
             await Task.Delay(_streamingDelayMs, cancellationToken);
         }
-        
+
         if (_position >= _content.Length)
         {
             return 0; // End of stream
@@ -2512,7 +2512,7 @@ internal class SseFileStream : Stream, IDisposable
         var bytesToRead = Math.Min(count, _content.Length - _position);
         Array.Copy(_content, _position, buffer, offset, bytesToRead);
         _position += bytesToRead;
-        
+
         return bytesToRead;
     }
 
@@ -2523,7 +2523,7 @@ internal class SseFileStream : Stream, IDisposable
         {
             throw new ObjectDisposedException(nameof(SseFileStream));
         }
-        
+
         if (_position >= _content.Length)
         {
             return 0; // End of stream
@@ -2532,7 +2532,7 @@ internal class SseFileStream : Stream, IDisposable
         var bytesToRead = Math.Min(count, _content.Length - _position);
         Array.Copy(_content, _position, buffer, offset, bytesToRead);
         _position += bytesToRead;
-        
+
         return bytesToRead;
     }
 
@@ -2540,7 +2540,7 @@ internal class SseFileStream : Stream, IDisposable
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    
+
     protected override void Dispose(bool disposing)
     {
         if (!_disposed)
@@ -2554,7 +2554,7 @@ internal class SseFileStream : Stream, IDisposable
     private static byte[] ParseAndFormatSseContent(string content)
     {
         var events = ParseSseEvents(content);
-        
+
         // Pre-calculate the total content size with capacity estimation
         var totalContent = new StringBuilder(content.Length);
         foreach (var sseEvent in events)
@@ -2569,7 +2569,7 @@ internal class SseFileStream : Stream, IDisposable
             }
             totalContent.AppendLine(); // Empty line to separate events
         }
-        
+
         return Encoding.UTF8.GetBytes(totalContent.ToString());
     }
 
@@ -2666,18 +2666,18 @@ public static class RequestMatcher
         try
         {
             // Handle undefined/null cases
-            if (incomingRequest.ValueKind == JsonValueKind.Undefined || 
+            if (incomingRequest.ValueKind == JsonValueKind.Undefined ||
                 recordedRequest.ValueKind == JsonValueKind.Undefined)
             {
                 return false;
             }
-            
+
             // Exact match mode - compare JSON directly
             if (exactMatch)
             {
                 return JsonElement.DeepEquals(incomingRequest, recordedRequest);
             }
-            
+
             // Flexible match mode - match key properties
             return MatchesFlexibly(incomingRequest, recordedRequest);
         }
@@ -2686,54 +2686,54 @@ public static class RequestMatcher
             return false;
         }
     }
-    
+
     private static bool MatchesFlexibly(
         JsonElement incoming,
         JsonElement recorded)
     {
         // Match model if present
-        if (recorded.TryGetProperty("model", out var recordedModel) && 
+        if (recorded.TryGetProperty("model", out var recordedModel) &&
             incoming.TryGetProperty("model", out var incomingModel))
         {
             if (recordedModel.GetString() != incomingModel.GetString())
                 return false;
         }
-        
+
         // Match messages content if present
-        if (recorded.TryGetProperty("messages", out var recordedMessages) && 
+        if (recorded.TryGetProperty("messages", out var recordedMessages) &&
             incoming.TryGetProperty("messages", out var incomingMessages))
         {
             if (!MatchMessages(incomingMessages, recordedMessages))
                 return false;
         }
-        
+
         // Match tools if present  
-        if (recorded.TryGetProperty("tools", out var recordedTools) && 
+        if (recorded.TryGetProperty("tools", out var recordedTools) &&
             incoming.TryGetProperty("tools", out var incomingTools))
         {
             if (!MatchTools(incomingTools, recordedTools))
                 return false;
         }
-        
+
         return true;
     }
-    
+
     private static bool MatchMessages(JsonElement incoming, JsonElement recorded)
     {
         if (incoming.ValueKind != JsonValueKind.Array || recorded.ValueKind != JsonValueKind.Array)
             return false;
-            
+
         var incomingArray = incoming.EnumerateArray().ToArray();
         var recordedArray = recorded.EnumerateArray().ToArray();
-        
+
         if (incomingArray.Length != recordedArray.Length)
             return false;
-            
+
         for (int i = 0; i < incomingArray.Length; i++)
         {
             var incomingMsg = incomingArray[i];
             var recordedMsg = recordedArray[i];
-            
+
             // Match role using DeepEquals for robust comparison
             if (recordedMsg.TryGetProperty("role", out var recordedRole) &&
                 incomingMsg.TryGetProperty("role", out var incomingRole))
@@ -2741,7 +2741,7 @@ public static class RequestMatcher
                 if (!JsonElement.DeepEquals(incomingRole, recordedRole))
                     return false;
             }
-            
+
             // Match content using DeepEquals for robust comparison
             if (recordedMsg.TryGetProperty("content", out var recordedContent) &&
                 incomingMsg.TryGetProperty("content", out var incomingContent))
@@ -2750,27 +2750,27 @@ public static class RequestMatcher
                     return false;
             }
         }
-        
+
         return true;
     }
-    
+
     private static bool MatchTools(JsonElement incoming, JsonElement recorded)
     {
         if (incoming.ValueKind != JsonValueKind.Array || recorded.ValueKind != JsonValueKind.Array)
             return false;
-            
+
         var incomingArray = incoming.EnumerateArray().ToArray();
         var recordedArray = recorded.EnumerateArray().ToArray();
-        
+
         if (incomingArray.Length != recordedArray.Length)
             return false;
-            
+
         // For tools, just check that the tool names match (parameters might vary)
         for (int i = 0; i < incomingArray.Length; i++)
         {
             var incomingTool = incomingArray[i];
             var recordedTool = recordedArray[i];
-            
+
             if (recordedTool.TryGetProperty("function", out var recordedFunc) &&
                 incomingTool.TryGetProperty("function", out var incomingFunc))
             {
@@ -2782,7 +2782,7 @@ public static class RequestMatcher
                 }
             }
         }
-        
+
         return true;
     }
 }
@@ -2799,10 +2799,10 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
     private readonly string _baseUrlTrimmed;
     private readonly AuthenticationHeaderValue _authHeader;
     private bool _disposed;
-    
+
     // Static cache for provider determination to avoid repeated string checks
     private static readonly ConcurrentDictionary<string, string> _providerCache = new();
-    
+
     public ApiForwardingProvider(
         string baseUrl,
         string apiKey,
@@ -2812,48 +2812,48 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
         _apiKey = apiKey;
         _httpClient = new HttpClient();
         _onNewInteraction = onNewInteraction;
-        
+
         // Pre-compute frequently used values
         _baseUrlTrimmed = _baseUrl.TrimEnd('/');
         _authHeader = new AuthenticationHeaderValue("Bearer", _apiKey);
     }
-    
+
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
     {
         if (_disposed)
         {
             throw new ObjectDisposedException(nameof(ApiForwardingProvider));
         }
-        
+
         return true;
     }
-    
+
     public async Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
         if (_disposed)
         {
             throw new ObjectDisposedException(nameof(ApiForwardingProvider));
         }
-        
+
         // Clone the request for forwarding - use optimized method
         var forwardRequest = await CloneRequestAsync(request);
-        
+
         // Set the base URL and authentication
         forwardRequest.RequestUri = request.RequestUri;
         forwardRequest.Headers.Authorization = _authHeader;
-        
+
         // Forward to real API
         var response = await _httpClient.SendAsync(forwardRequest, HttpCompletionOption.ResponseHeadersRead);
-        
+
         // Record the interaction if callback provided
         if (_onNewInteraction != null && request.Content != null)
         {
             await RecordInteractionAsync(request, response);
         }
-        
+
         return response;
     }
-    
+
     private async Task RecordInteractionAsync(HttpRequestMessage request, HttpResponseMessage response)
     {
         try
@@ -2862,15 +2862,15 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
             {
                 return;
             }
-            
+
             // Read request and response content only when needed for recording
             var requestContent = await request.Content.ReadAsStringAsync();
             var responseContent = await response.Content.ReadAsStringAsync();
-            
+
             // Use JsonDocument.Parse with minimal allocations
             using var requestDoc = JsonDocument.Parse(requestContent);
             using var responseDoc = JsonDocument.Parse(responseContent);
-            
+
             var interaction = new RecordedInteraction
             {
                 SerializedRequest = requestDoc.RootElement.Clone(),
@@ -2879,7 +2879,7 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
                 RecordedAt = DateTime.UtcNow,
                 Provider = GetCachedProvider(request)
             };
-            
+
             _onNewInteraction(interaction);
         }
         catch
@@ -2887,50 +2887,50 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
             // Ignore recording errors - don't fail the actual request
         }
     }
-    
+
     private async Task<HttpRequestMessage> CloneRequestAsync(HttpRequestMessage request)
     {
         var clone = new HttpRequestMessage(request.Method, request.RequestUri);
-        
+
         // Copy headers efficiently
         foreach (var header in request.Headers)
         {
             clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
-        
+
         // Copy content efficiently using byte arrays instead of strings when possible
         if (request.Content != null)
         {
             byte[] contentBytes = await request.Content.ReadAsByteArrayAsync();
             var byteContent = new ByteArrayContent(contentBytes);
-            
+
             // Copy content headers
             foreach (var header in request.Content.Headers)
             {
                 byteContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
-            
+
             clone.Content = byteContent;
         }
-        
+
         return clone;
     }
-    
+
     private string GetCachedProvider(HttpRequestMessage request)
     {
         // Create a cache key based on the request URI
         string cacheKey = request.RequestUri?.Host ?? "unknown";
-        
+
         return _providerCache.GetOrAdd(cacheKey, _ => DetermineProvider(request));
     }
-    
+
     private string DetermineProvider(HttpRequestMessage request)
     {
         if (request.IsAnthropicRequest()) return "Anthropic";
         if (request.IsOpenAIRequest()) return "OpenAI";
         return "OpenAI";
     }
-    
+
     public void Dispose()
     {
         if (!_disposed)
@@ -2953,14 +2953,14 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
     private readonly object _cacheLock = new();
     private int _matchedInteractions = 0;
     private bool _disposed;
-    
+
     public RecordPlaybackMiddleware(string filePath)
     {
         _filePath = filePath;
-        
+
         // Load existing recorded data
         _recordedData = LoadRecordedData();
-        
+
         // Pre-cache all response bytes for known interactions
         PreCacheResponses();
     }
@@ -2974,7 +2974,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             if (!_cachedResponseBytes.ContainsKey(cacheKey))
             {
                 byte[] responseBytes;
-                
+
                 if (interaction.IsStreaming && interaction.SerializedResponseFragments.Count > 0)
                 {
                     // For SSE responses, reconstruct the SSE format from fragments
@@ -2989,7 +2989,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                     var responseJson = JsonSerializer.Serialize(interaction.SerializedResponse);
                     responseBytes = Encoding.UTF8.GetBytes(responseJson);
                 }
-                
+
                 _cachedResponseBytes[cacheKey] = responseBytes;
             }
         }
@@ -3002,7 +3002,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         {
             return "undefined-request";
         }
-        
+
         // Serialize to canonical JSON to ensure consistent hashing
         var jsonOptions = new JsonSerializerOptions
         {
@@ -3010,20 +3010,20 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             PropertyNamingPolicy = null,
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never
         };
-        
+
         var canonicalJson = JsonSerializer.Serialize(interaction.SerializedRequest, jsonOptions);
-        
+
         // Compute SHA256 hash
         using var sha256 = SHA256.Create();
         var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(canonicalJson));
-        
+
         // Convert to hex string
         return Convert.ToHexString(hashBytes);
     }
 
     public async Task<HttpResponseMessage?> HandleAsync(
-        HttpRequestMessage request, 
-        int requestIndex, 
+        HttpRequestMessage request,
+        int requestIndex,
         Func<Task<HttpResponseMessage?>>? next)
     {
         if (_disposed)
@@ -3043,12 +3043,12 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             {
                 var originalContentType = request.Content.Headers.ContentType;
                 var originalHeaders = request.Content.Headers.ToList();
-                
+
                 request.Content = new StringContent(
                     requestContent,
                     Encoding.UTF8,
                     originalContentType?.MediaType ?? "application/json");
-                
+
                 // Restore any additional headers
                 foreach (var header in originalHeaders)
                 {
@@ -3132,21 +3132,21 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         {
             // Check if this is an SSE response
             bool isSSE = IsServerSentEventsResponse(response);
-            
+
             // Read response content
             var responseContent = await response.Content.ReadAsStringAsync();
-            
+
             // Reset response content stream so it can be read again by the caller
             if (!string.IsNullOrEmpty(responseContent))
             {
                 var originalContentType = response.Content.Headers.ContentType;
                 var originalHeaders = response.Content.Headers.ToList();
-                
+
                 response.Content = new StringContent(
                     responseContent,
                     Encoding.UTF8,
                     originalContentType?.MediaType ?? (isSSE ? "text/event-stream" : "application/json"));
-                
+
                 // Restore any additional headers
                 foreach (var header in originalHeaders)
                 {
@@ -3171,7 +3171,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 // Parse SSE content into fragments
                 var sseFragments = ParseSSEContent(responseContent);
                 interaction.SerializedResponseFragments = sseFragments;
-                
+
                 // For SSE, set SerializedResponse to undefined since we use fragments
                 interaction.SerializedResponse = default;
             }
@@ -3197,7 +3197,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                     // If parsing fails, use undefined element
                     responseElement = default;
                 }
-                
+
                 interaction.SerializedResponse = responseElement;
                 interaction.SerializedResponseFragments = new List<JsonElement>();
             }
@@ -3206,7 +3206,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             lock (_cacheLock)
             {
                 _newInteractions.Add(interaction);
-                
+
                 // Cache the response bytes for this new interaction
                 string cacheKey = GenerateCacheKey(interaction);
                 if (!_cachedResponseBytes.ContainsKey(cacheKey))
@@ -3253,7 +3253,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
     private List<JsonElement> ParseSSEContent(string sseContent)
     {
         var fragments = new List<JsonElement>();
-        
+
         if (string.IsNullOrEmpty(sseContent))
         {
             return fragments;
@@ -3263,12 +3263,12 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         {
             // Split SSE content by double newlines (event boundaries)
             var events = sseContent.Split(new[] { "\n\n", "\r\n\r\n" }, StringSplitOptions.RemoveEmptyEntries);
-            
+
             foreach (var eventBlock in events)
             {
                 var dataLines = new List<string>();
                 var lines = eventBlock.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                
+
                 foreach (var line in lines)
                 {
                     // Extract data lines (lines starting with "data: ")
@@ -3281,7 +3281,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                         }
                     }
                 }
-                
+
                 // Parse each data line as JSON and add to fragments
                 foreach (var dataLine in dataLines)
                 {
@@ -3303,21 +3303,21 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             // If SSE parsing fails completely, return empty list
             // The caller will handle this gracefully
         }
-        
+
         return fragments;
     }
 
     private string ReconstructSSEFromFragments(List<JsonElement> fragments)
     {
         var sseBuilder = new StringBuilder();
-        
+
         foreach (var fragment in fragments)
         {
             try
             {
                 // Serialize each fragment back to JSON
                 var jsonData = JsonSerializer.Serialize(fragment);
-                
+
                 // Format as SSE event
                 sseBuilder.AppendLine($"data: {jsonData}");
                 sseBuilder.AppendLine(); // Empty line to separate events
@@ -3327,21 +3327,21 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 // Skip malformed fragments
             }
         }
-        
+
         // Add final [DONE] marker for streaming completion
         if (fragments.Count > 0)
         {
             sseBuilder.AppendLine("data: [DONE]");
             sseBuilder.AppendLine();
         }
-        
+
         return sseBuilder.ToString();
     }
 
     private void SaveNewInteractions()
     {
         if (_newInteractions.Count == 0 || _disposed) return;
-        
+
         try
         {
             lock (_cacheLock)
@@ -3350,10 +3350,10 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 _recordedData.Interactions.AddRange(_newInteractions);
                 _newInteractions.Clear();
             }
-            
+
             // Save updated data to file
-            var json = JsonSerializer.Serialize(_recordedData, new JsonSerializerOptions 
-            { 
+            var json = JsonSerializer.Serialize(_recordedData, new JsonSerializerOptions
+            {
                 WriteIndented = true,
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault
             });
@@ -3364,12 +3364,12 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             // Ignore save errors - don't fail the actual request
         }
     }
-    
+
     private HttpResponseMessage CreateResponseFromRecording(RecordedInteraction interaction)
     {
         string cacheKey = GenerateCacheKey(interaction);
         byte[] responseBytes;
-        
+
         // Try to get cached response bytes
         lock (_cacheLock)
         {
@@ -3393,11 +3393,11 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 _cachedResponseBytes[cacheKey] = responseBytes;
             }
         }
-        
+
         // Create response with cached bytes
         var response = new HttpResponseMessage(HttpStatusCode.OK);
         var content = new ByteArrayContent(responseBytes);
-        
+
         // Set appropriate content type based on whether it's streaming
         if (interaction.IsStreaming)
         {
@@ -3409,18 +3409,18 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         {
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
         }
-        
+
         response.Content = content;
         return response;
     }
-    
+
     private RecordPlaybackData LoadRecordedData()
     {
         if (!File.Exists(_filePath))
         {
             return new RecordPlaybackData();
         }
-        
+
         try
         {
             var json = File.ReadAllText(_filePath);
@@ -3432,18 +3432,18 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             return new RecordPlaybackData();
         }
     }
-    
 
-    
+
+
     public void Dispose()
     {
         if (!_disposed)
         {
             _disposed = true;
-            
+
             // Save any remaining new interactions before disposing
             SaveNewInteractions();
-            
+
             // Clear caches
             _cachedResponseBytes.Clear();
         }

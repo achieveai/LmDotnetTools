@@ -225,9 +225,9 @@ public class GraphDecisionInstructionTests
     public static IEnumerable<object?[]> ValidInstructionTestCases => new List<object?[]>
     {
         // Format: testName, operation, entityData, relationshipData, confidence, reasoning, sessionContext
-        new object?[] 
-        { 
-            "Add entity instruction", 
+        new object?[]
+        {
+            "Add entity instruction",
             GraphDecisionOperation.ADD,
             new Entity { Name = "John", Type = "person", UserId = "user123" },
             null,
@@ -235,9 +235,9 @@ public class GraphDecisionInstructionTests
             "New entity detected in conversation",
             new SessionContext { UserId = "user123" }
         },
-        new object?[] 
-        { 
-            "Update relationship instruction", 
+        new object?[]
+        {
+            "Update relationship instruction",
             GraphDecisionOperation.UPDATE,
             null,
             new Relationship { Source = "Alice", RelationshipType = "works_at", Target = "Google", UserId = "user456" },
@@ -245,9 +245,9 @@ public class GraphDecisionInstructionTests
             "Relationship confidence updated based on new information",
             new SessionContext { UserId = "user456", AgentId = "agent789" }
         },
-        new object?[] 
-        { 
-            "Delete entity instruction", 
+        new object?[]
+        {
+            "Delete entity instruction",
             GraphDecisionOperation.DELETE,
             new Entity { Name = "Obsolete Entity", UserId = "user789" },
             null,
@@ -255,9 +255,9 @@ public class GraphDecisionInstructionTests
             "Entity no longer relevant based on conversation context",
             new SessionContext { UserId = "user789", AgentId = "agent123", RunId = "run456" }
         },
-        new object?[] 
-        { 
-            "No operation instruction", 
+        new object?[]
+        {
+            "No operation instruction",
             GraphDecisionOperation.NONE,
             null,
             null,
@@ -281,54 +281,54 @@ public class GraphDecisionInstructionTests
     public static IEnumerable<object?[]> OperationValidationTestCases => new List<object?[]>
     {
         // Format: testName, operation, entityData, relationshipData, expectedValid, expectedIssue
-        new object?[] 
-        { 
-            "Valid ADD entity", 
+        new object?[]
+        {
+            "Valid ADD entity",
             GraphDecisionOperation.ADD,
             new Entity { Name = "Test", UserId = "user123" },
             null,
             true,
             ""
         },
-        new object?[] 
-        { 
-            "Valid UPDATE relationship", 
+        new object?[]
+        {
+            "Valid UPDATE relationship",
             GraphDecisionOperation.UPDATE,
             null,
             new Relationship { Source = "A", RelationshipType = "rel", Target = "B", UserId = "user123" },
             true,
             ""
         },
-        new object?[] 
-        { 
-            "Invalid - both entity and relationship", 
+        new object?[]
+        {
+            "Invalid - both entity and relationship",
             GraphDecisionOperation.ADD,
             new Entity { Name = "Test", UserId = "user123" },
             new Relationship { Source = "A", RelationshipType = "rel", Target = "B", UserId = "user123" },
             false,
             "both entity and relationship"
         },
-        new object?[] 
-        { 
-            "Invalid - no data for ADD", 
+        new object?[]
+        {
+            "Invalid - no data for ADD",
             GraphDecisionOperation.ADD,
             null,
             null,
             false,
             "either entity or relationship"
         },
-        new object?[] 
-        { 
-            "Valid NONE operation", 
+        new object?[]
+        {
+            "Valid NONE operation",
             GraphDecisionOperation.NONE,
             null,
             null,
             true,
             ""
         },
-        new object?[] 
-        { 
-            "Invalid NONE with data", 
+        new object?[]
+        {
+            "Invalid NONE with data",
             GraphDecisionOperation.NONE,
             new Entity { Name = "Test", UserId = "user123" },
             null,
@@ -340,17 +340,17 @@ public class GraphDecisionInstructionTests
     public static IEnumerable<object?[]> SerializationTestCases => new List<object?[]>
     {
         // Format: testName, instruction
-        new object?[] 
-        { 
-            "Entity instruction", 
-            new GraphDecisionInstruction 
-            { 
+        new object?[]
+        {
+            "Entity instruction",
+            new GraphDecisionInstruction
+            {
                 Operation = GraphDecisionOperation.ADD,
-                EntityData = new Entity 
-                { 
-                    Id = 1, 
-                    Name = "Test Entity", 
-                    Type = "test", 
+                EntityData = new Entity
+                {
+                    Id = 1,
+                    Name = "Test Entity",
+                    Type = "test",
                     UserId = "user123",
                     Confidence = 0.8f
                 },
@@ -359,21 +359,21 @@ public class GraphDecisionInstructionTests
                 Reasoning = "Test entity reasoning",
                 SessionContext = new SessionContext { UserId = "user123" },
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         },
-        new object?[] 
-        { 
-            "Relationship instruction", 
-            new GraphDecisionInstruction 
-            { 
+        new object?[]
+        {
+            "Relationship instruction",
+            new GraphDecisionInstruction
+            {
                 Operation = GraphDecisionOperation.UPDATE,
                 EntityData = null,
-                RelationshipData = new Relationship 
-                { 
-                    Id = 2, 
-                    Source = "Alice", 
-                    RelationshipType = "works_at", 
-                    Target = "Google", 
+                RelationshipData = new Relationship
+                {
+                    Id = 2,
+                    Source = "Alice",
+                    RelationshipType = "works_at",
+                    Target = "Google",
                     UserId = "user456",
                     Confidence = 0.95f
                 },
@@ -381,13 +381,13 @@ public class GraphDecisionInstructionTests
                 Reasoning = "Relationship update reasoning",
                 SessionContext = new SessionContext { UserId = "user456", AgentId = "agent789" },
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         },
-        new object?[] 
-        { 
-            "NONE operation instruction", 
-            new GraphDecisionInstruction 
-            { 
+        new object?[]
+        {
+            "NONE operation instruction",
+            new GraphDecisionInstruction
+            {
                 Operation = GraphDecisionOperation.NONE,
                 EntityData = null,
                 RelationshipData = null,
@@ -395,9 +395,9 @@ public class GraphDecisionInstructionTests
                 Reasoning = "No changes needed",
                 SessionContext = new SessionContext { UserId = "user789", AgentId = "agent123", RunId = "run456" },
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         }
     };
 
     #endregion
-} 
+}

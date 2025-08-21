@@ -28,7 +28,7 @@ public static class TokenGeneratorCommand
         };
 
         var agentIdOption = new Option<string>(
-            name: "--agentId", 
+            name: "--agentId",
             description: "The agent identifier for the token")
         {
             IsRequired = true
@@ -70,16 +70,16 @@ public static class TokenGeneratorCommand
 
             // Build service provider
             var services = new ServiceCollection();
-            
+
             // Configure JWT options
             services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
-            
+
             // Add logging
             services.AddLogging(builder =>
             {
                 builder.AddConsole();
             });
-            
+
             // Add token service
             services.AddScoped<ITokenService, TokenService>();
 
@@ -121,7 +121,7 @@ public static class TokenGeneratorCommand
             Environment.Exit(1);
             return Task.CompletedTask;
         }
-        
+
         return Task.CompletedTask;
     }
-} 
+}

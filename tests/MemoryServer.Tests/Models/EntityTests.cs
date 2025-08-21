@@ -202,70 +202,70 @@ public class EntityTests
     public static IEnumerable<object?[]> ValidEntityTestCases => new List<object?[]>
     {
         // Format: testName, name, type, aliases, userId, agentId, runId, confidence, sourceMemoryIds, metadata
-        new object?[] 
-        { 
-            "Basic entity with minimal data", 
-            "John Doe", 
-            "person", 
-            null, 
-            "user123", 
-            null, 
-            null, 
-            0.8f, 
-            null, 
-            null 
+        new object?[]
+        {
+            "Basic entity with minimal data",
+            "John Doe",
+            "person",
+            null,
+            "user123",
+            null,
+            null,
+            0.8f,
+            null,
+            null
         },
-        new object?[] 
-        { 
-            "Entity with aliases", 
-            "New York City", 
-            "place", 
-            new List<string> { "NYC", "The Big Apple", "Manhattan" }, 
-            "user456", 
-            "agent789", 
-            null, 
-            0.9f, 
-            new List<int> { 1, 2, 3 }, 
-            null 
+        new object?[]
+        {
+            "Entity with aliases",
+            "New York City",
+            "place",
+            new List<string> { "NYC", "The Big Apple", "Manhattan" },
+            "user456",
+            "agent789",
+            null,
+            0.9f,
+            new List<int> { 1, 2, 3 },
+            null
         },
-        new object?[] 
-        { 
-            "Entity with full session context", 
-            "Machine Learning", 
-            "concept", 
-            new List<string> { "ML", "AI subset" }, 
-            "user789", 
-            "agent123", 
-            "run456", 
-            0.95f, 
-            new List<int> { 10, 20 }, 
+        new object?[]
+        {
+            "Entity with full session context",
+            "Machine Learning",
+            "concept",
+            new List<string> { "ML", "AI subset" },
+            "user789",
+            "agent123",
+            "run456",
+            0.95f,
+            new List<int> { 10, 20 },
             new Dictionary<string, object> { { "domain", "technology" }, { "complexity", "high" } }
         },
-        new object?[] 
-        { 
-            "Entity with maximum confidence", 
-            "Earth", 
-            "planet", 
-            new List<string> { "Terra", "World", "Blue Planet" }, 
-            "user999", 
-            "agent999", 
-            "run999", 
-            1.0f, 
-            new List<int> { 100, 200, 300, 400 }, 
+        new object?[]
+        {
+            "Entity with maximum confidence",
+            "Earth",
+            "planet",
+            new List<string> { "Terra", "World", "Blue Planet" },
+            "user999",
+            "agent999",
+            "run999",
+            1.0f,
+            new List<int> { 100, 200, 300, 400 },
             new Dictionary<string, object> { { "type", "celestial_body" }, { "habitable", true }, { "radius_km", 6371 } }
         },
-        new object?[] 
-        { 
-            "Entity with minimum confidence", 
-            "Uncertain Entity", 
-            "unknown", 
-            null, 
-            "user000", 
-            null, 
-            null, 
-            0.0f, 
-            null, 
-            null 
+        new object?[]
+        {
+            "Entity with minimum confidence",
+            "Uncertain Entity",
+            "unknown",
+            null,
+            "user000",
+            null,
+            null,
+            0.0f,
+            null,
+            null
         }
     };
 
@@ -294,30 +294,30 @@ public class EntityTests
     public static IEnumerable<object?[]> SerializationTestCases => new List<object?[]>
     {
         // Format: testName, entity
-        new object?[] 
-        { 
-            "Simple entity", 
-            new Entity 
-            { 
-                Id = 1, 
-                Name = "Test Entity", 
-                Type = "test", 
-                UserId = "user123", 
+        new object?[]
+        {
+            "Simple entity",
+            new Entity
+            {
+                Id = 1,
+                Name = "Test Entity",
+                Type = "test",
+                UserId = "user123",
                 Confidence = 0.8f,
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         },
-        new object?[] 
-        { 
-            "Entity with aliases and metadata", 
-            new Entity 
-            { 
-                Id = 2, 
-                Name = "Complex Entity", 
-                Type = "complex", 
+        new object?[]
+        {
+            "Entity with aliases and metadata",
+            new Entity
+            {
+                Id = 2,
+                Name = "Complex Entity",
+                Type = "complex",
                 Aliases = new List<string> { "alias1", "alias2" },
-                UserId = "user456", 
+                UserId = "user456",
                 AgentId = "agent789",
                 RunId = "run123",
                 Confidence = 0.95f,
@@ -325,18 +325,18 @@ public class EntityTests
                 Metadata = new Dictionary<string, object> { { "key1", "value1" }, { "key2", 42 } },
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         },
-        new object?[] 
-        { 
-            "Entity with null collections", 
-            new Entity 
-            { 
-                Id = 3, 
-                Name = "Null Collections Entity", 
-                Type = null, 
+        new object?[]
+        {
+            "Entity with null collections",
+            new Entity
+            {
+                Id = 3,
+                Name = "Null Collections Entity",
+                Type = null,
                 Aliases = null,
-                UserId = "user789", 
+                UserId = "user789",
                 AgentId = null,
                 RunId = null,
                 Confidence = 0.5f,
@@ -344,9 +344,9 @@ public class EntityTests
                 Metadata = null,
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         }
     };
 
     #endregion
-} 
+}

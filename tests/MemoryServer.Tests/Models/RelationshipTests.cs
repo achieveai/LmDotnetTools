@@ -247,81 +247,81 @@ public class RelationshipTests
     public static IEnumerable<object?[]> ValidRelationshipTestCases => new List<object?[]>
     {
         // Format: testName, source, relationshipType, target, userId, agentId, runId, confidence, sourceMemoryId, temporalContext, metadata
-        new object?[] 
-        { 
-            "Basic relationship with minimal data", 
-            "John", 
-            "likes", 
-            "Pizza", 
-            "user123", 
-            null, 
-            null, 
-            0.8f, 
-            null, 
-            null, 
-            null 
+        new object?[]
+        {
+            "Basic relationship with minimal data",
+            "John",
+            "likes",
+            "Pizza",
+            "user123",
+            null,
+            null,
+            0.8f,
+            null,
+            null,
+            null
         },
-        new object?[] 
-        { 
-            "Relationship with full context", 
-            "Alice", 
-            "works_at", 
-            "Google", 
-            "user456", 
-            "agent789", 
-            "run123", 
-            0.9f, 
-            42, 
-            "2024-01-15", 
+        new object?[]
+        {
+            "Relationship with full context",
+            "Alice",
+            "works_at",
+            "Google",
+            "user456",
+            "agent789",
+            "run123",
+            0.9f,
+            42,
+            "2024-01-15",
             new Dictionary<string, object> { { "department", "engineering" }, { "start_date", "2023-06-01" } }
         },
-        new object?[] 
-        { 
-            "Relationship with temporal context", 
-            "Bob", 
-            "visited", 
-            "Paris", 
-            "user789", 
-            null, 
-            "run456", 
-            0.95f, 
-            100, 
-            "last summer", 
-            null 
+        new object?[]
+        {
+            "Relationship with temporal context",
+            "Bob",
+            "visited",
+            "Paris",
+            "user789",
+            null,
+            "run456",
+            0.95f,
+            100,
+            "last summer",
+            null
         },
-        new object?[] 
-        { 
-            "Complex relationship with metadata", 
-            "Company A", 
-            "acquired", 
-            "Company B", 
-            "user999", 
-            "agent999", 
-            "run999", 
-            1.0f, 
-            200, 
-            "Q3 2023", 
-            new Dictionary<string, object> 
-            { 
-                { "amount", "$1.2B" }, 
-                { "type", "cash_deal" }, 
+        new object?[]
+        {
+            "Complex relationship with metadata",
+            "Company A",
+            "acquired",
+            "Company B",
+            "user999",
+            "agent999",
+            "run999",
+            1.0f,
+            200,
+            "Q3 2023",
+            new Dictionary<string, object>
+            {
+                { "amount", "$1.2B" },
+                { "type", "cash_deal" },
                 { "regulatory_approval", true },
                 { "completion_date", "2023-09-15" }
             }
         },
-        new object?[] 
-        { 
-            "Relationship with minimum confidence", 
-            "Uncertain Entity", 
-            "might_be_related_to", 
-            "Another Entity", 
-            "user000", 
-            null, 
-            null, 
-            0.0f, 
-            null, 
-            null, 
-            null 
+        new object?[]
+        {
+            "Relationship with minimum confidence",
+            "Uncertain Entity",
+            "might_be_related_to",
+            "Another Entity",
+            "user000",
+            null,
+            null,
+            0.0f,
+            null,
+            null,
+            null
         }
     };
 
@@ -352,31 +352,31 @@ public class RelationshipTests
     public static IEnumerable<object?[]> SerializationTestCases => new List<object?[]>
     {
         // Format: testName, relationship
-        new object?[] 
-        { 
-            "Simple relationship", 
-            new Relationship 
-            { 
-                Id = 1, 
-                Source = "John", 
-                RelationshipType = "likes", 
-                Target = "Pizza", 
-                UserId = "user123", 
+        new object?[]
+        {
+            "Simple relationship",
+            new Relationship
+            {
+                Id = 1,
+                Source = "John",
+                RelationshipType = "likes",
+                Target = "Pizza",
+                UserId = "user123",
                 Confidence = 0.8f,
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         },
-        new object?[] 
-        { 
-            "Relationship with all fields", 
-            new Relationship 
-            { 
-                Id = 2, 
-                Source = "Alice", 
-                RelationshipType = "works_at", 
-                Target = "Google", 
-                UserId = "user456", 
+        new object?[]
+        {
+            "Relationship with all fields",
+            new Relationship
+            {
+                Id = 2,
+                Source = "Alice",
+                RelationshipType = "works_at",
+                Target = "Google",
+                UserId = "user456",
                 AgentId = "agent789",
                 RunId = "run123",
                 Confidence = 0.95f,
@@ -385,18 +385,18 @@ public class RelationshipTests
                 Metadata = new Dictionary<string, object> { { "department", "AI" }, { "level", "senior" } },
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         },
-        new object?[] 
-        { 
-            "Relationship with null optional fields", 
-            new Relationship 
-            { 
-                Id = 3, 
-                Source = "Bob", 
-                RelationshipType = "visited", 
-                Target = "Paris", 
-                UserId = "user789", 
+        new object?[]
+        {
+            "Relationship with null optional fields",
+            new Relationship
+            {
+                Id = 3,
+                Source = "Bob",
+                RelationshipType = "visited",
+                Target = "Paris",
+                UserId = "user789",
                 AgentId = null,
                 RunId = null,
                 Confidence = 0.7f,
@@ -405,7 +405,7 @@ public class RelationshipTests
                 Metadata = null,
                 CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            } 
+            }
         }
     };
 
@@ -421,4 +421,4 @@ public class RelationshipTests
     };
 
     #endregion
-} 
+}

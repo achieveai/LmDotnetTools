@@ -19,4 +19,4 @@ public interface ITokenService
     /// <param name="token">The JWT token to validate</param>
     /// <returns>True if the token is valid, false otherwise</returns>
     bool ValidateToken(string token);
-} 
+}

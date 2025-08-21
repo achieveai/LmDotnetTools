@@ -89,4 +89,4 @@ public class ReasoningMessageTests
         Assert.Equal("gen-123", finalMsg.GenerationId);
         Assert.Equal(ReasoningVisibility.Plain, finalMsg.Visibility);
     }
-} 
+}

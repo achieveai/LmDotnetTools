@@ -73,4 +73,4 @@ public interface ISessionManager
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of cleaned up sessions</returns>
     Task<int> CleanupExpiredSessionsAsync(TimeSpan maxAge, CancellationToken cancellationToken = default);
-} 
+}

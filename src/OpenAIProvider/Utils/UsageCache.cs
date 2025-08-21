@@ -68,7 +68,7 @@ public class UsageCache : IDisposable
             ExtraProperties = (usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty)
                 .SetItem("is_cached", false)
         };
-        
+
         _cache.Set(completionId, storedUsage, new MemoryCacheEntryOptions
         {
             AbsoluteExpirationRelativeToNow = _defaultTtl,
@@ -101,7 +101,7 @@ public class UsageCache : IDisposable
         // This is a simple implementation - in production you might want to track keys
         // Note: This is not thread-safe during clear operations, but that's acceptable
         // since Clear is typically only used in testing scenarios
-        
+
         // For now, just do nothing as MemoryCache will auto-expire entries
         // In a production scenario, you might want to implement key tracking
     }
@@ -143,4 +143,4 @@ public class CacheStatistics
     /// Whether the cache has been disposed.
     /// </summary>
     public bool IsDisposed { get; init; }
-} 
+}

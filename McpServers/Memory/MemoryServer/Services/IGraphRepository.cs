@@ -9,7 +9,7 @@ namespace MemoryServer.Services;
 public interface IGraphRepository
 {
     // Entity Operations
-    
+
     /// <summary>
     /// Adds a new entity to the graph database.
     /// </summary>
@@ -66,7 +66,7 @@ public interface IGraphRepository
     Task<bool> DeleteEntityAsync(int entityId, SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     // Relationship Operations
-    
+
     /// <summary>
     /// Adds a new relationship to the graph database.
     /// </summary>
@@ -124,7 +124,7 @@ public interface IGraphRepository
     Task<bool> DeleteRelationshipAsync(int relationshipId, SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     // Graph Traversal Operations
-    
+
     /// <summary>
     /// Finds connected entities using graph traversal.
     /// </summary>
@@ -135,10 +135,10 @@ public interface IGraphRepository
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of connected entities with their relationships.</returns>
     Task<IEnumerable<(Entity Entity, Relationship? Relationship, int Depth)>> TraverseGraphAsync(
-        string startEntityName, 
-        SessionContext sessionContext, 
-        int maxDepth = 2, 
-        IEnumerable<string>? relationshipTypes = null, 
+        string startEntityName,
+        SessionContext sessionContext,
+        int maxDepth = 2,
+        IEnumerable<string>? relationshipTypes = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -232,7 +232,7 @@ public interface IGraphRepository
     Task<float[]?> GetRelationshipEmbeddingAsync(int relationshipId, CancellationToken cancellationToken = default);
 
     // Utility Operations
-    
+
     /// <summary>
     /// Generates the next available integer ID for entities or relationships.
     /// </summary>
@@ -320,4 +320,4 @@ public class RelationshipVectorSearchResult
     /// Distance value from the vector search.
     /// </summary>
     public float Distance { get; set; }
-} 
+}

@@ -15,26 +15,26 @@ public class ToolCallParsingComponentsTests
         // Arrange
         var parser = new ToolCallTextParser();
         var text = "Hello world, this is just regular text.";
-        
+
         // Act
         var result = parser.Parse(text);
-        
+
         // Assert
         Assert.Single(result);
         var chunk = Assert.IsType<TextChunk>(result[0]);
         Assert.Equal(text, chunk.Text);
     }
-    
+
     [Fact]
     public void ToolCallTextParser_WithSingleToolCall_ReturnsToolCallChunk()
     {
         // Arrange
         var parser = new ToolCallTextParser();
         var text = "<tool_call name=\"GetWeather\">\n```json\n{\"location\": \"San Francisco\"}\n```\n</tool_call>";
-        
+
         // Act
         var result = parser.Parse(text);
-        
+
         // Assert
         Assert.Single(result);
         var chunk = Assert.IsType<ToolCallChunk>(result[0]);
@@ -42,44 +42,44 @@ public class ToolCallParsingComponentsTests
         Assert.Contains("San Francisco", chunk.Content);
         Assert.Equal(text, chunk.RawMatch);
     }
-    
-    [Fact] 
+
+    [Fact]
     public void ToolCallTextParser_WithTextAndToolCall_ReturnsAlternatingChunks()
     {
         // Arrange
         var parser = new ToolCallTextParser();
         var text = "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\"location\": \"San Francisco\"}\n```\n</tool_call> Hope that helps!";
-        
+
         // Act
         var result = parser.Parse(text);
-        
+
         // Assert
         Assert.Equal(3, result.Count);
-        
+
         var textChunk1 = Assert.IsType<TextChunk>(result[0]);
         Assert.Equal("Here's the weather: ", textChunk1.Text);
-        
+
         var toolChunk = Assert.IsType<ToolCallChunk>(result[1]);
         Assert.Equal("GetWeather", toolChunk.ToolName);
-        
+
         var textChunk2 = Assert.IsType<TextChunk>(result[2]);
         Assert.Equal(" Hope that helps!", textChunk2.Text);
     }
-    
+
     [Fact]
     public void PartialToolCallDetector_WithCompleteText_ReturnsNoMatch()
     {
         // Arrange
         var detector = new PartialToolCallDetector();
         var text = "Hello world, complete sentence.";
-        
+
         // Act
         var result = detector.DetectPartialStart(text);
-        
+
         // Assert
         Assert.False(result.IsMatch);
     }
-    
+
     [Theory]
     [InlineData("Hello <", 6, "<")]
     [InlineData("Hello <t", 6, "<t")]
@@ -93,16 +93,16 @@ public class ToolCallParsingComponentsTests
     {
         // Arrange
         var detector = new PartialToolCallDetector();
-        
+
         // Act
         var result = detector.DetectPartialStart(text);
-        
+
         // Assert
         Assert.True(result.IsMatch);
         Assert.Equal(expectedIndex, result.StartIndex);
         Assert.Equal(expectedPattern, result.PartialPattern);
     }
-    
+
     [Fact]
     public void SafeTextExtractor_WithNoPartialPattern_ReturnsAllTextAsSafe()
     {
@@ -110,15 +110,15 @@ public class ToolCallParsingComponentsTests
         var detector = new PartialToolCallDetector();
         var extractor = new SafeTextExtractor(detector);
         var text = "Hello world, complete text.";
-        
+
         // Act
         var result = extractor.ExtractSafeText(text);
-        
+
         // Assert
         Assert.Equal(text, result.SafeText);
         Assert.Equal(string.Empty, result.RemainingBuffer);
     }
-    
+
     [Fact]
     public void SafeTextExtractor_WithPartialPattern_SplitsCorrectly()
     {
@@ -126,15 +126,15 @@ public class ToolCallParsingComponentsTests
         var detector = new PartialToolCallDetector();
         var extractor = new SafeTextExtractor(detector);
         var text = "Hello world, then partial <tool_ca";
-        
+
         // Act
         var result = extractor.ExtractSafeText(text);
-        
+
         // Assert
         Assert.Equal("Hello world, then partial ", result.SafeText);
         Assert.Equal("<tool_ca", result.RemainingBuffer);
     }
-    
+
     [Fact]
     public void SafeTextExtractor_WithJustPartialPattern_ReturnsEmptySafeText()
     {
@@ -142,15 +142,15 @@ public class ToolCallParsingComponentsTests
         var detector = new PartialToolCallDetector();
         var extractor = new SafeTextExtractor(detector);
         var text = "<tool_call";
-        
+
         // Act
         var result = extractor.ExtractSafeText(text);
-        
+
         // Assert
         Assert.Equal(string.Empty, result.SafeText);
         Assert.Equal("<tool_call", result.RemainingBuffer);
     }
-    
+
     [Theory]
     [InlineData("Hello world", "Hello world", "")]  // No tool call - all text is safe
     [InlineData("Complete sentence.", "Complete sentence.", "")]  // No tool call - all text is safe
@@ -174,15 +174,15 @@ public class ToolCallParsingComponentsTests
         // Arrange
         var detector = new PartialToolCallDetector();
         var extractor = new SafeTextExtractor(detector);
-        
+
         // Act
         var result = extractor.ExtractSafeText(input);
-        
+
         // Assert
         Assert.Equal(expectedSafe, result.SafeText);
         Assert.Equal(expectedBuffer, result.RemainingBuffer);
     }
-    
+
     [Theory]
     [InlineData("Simple text", 1, typeof(TextChunk))]  // Just text
     [InlineData("<tool_call name=\"Test\">```json\n{\"arg\": \"value\"}\n```</tool_call>", 1, typeof(ToolCallChunk))]  // Just tool call
@@ -195,15 +195,15 @@ public class ToolCallParsingComponentsTests
     {
         // Arrange
         var parser = new ToolCallTextParser();
-        
+
         // Act
         var result = parser.Parse(input);
-        
+
         // Assert
         Assert.Equal(expectedCount, result.Count);
         Assert.IsType(expectedFirstType, result[0]);
     }
-    
+
     [Theory]
     [InlineData("Text with <tool_call name=\"GetWeather\">```json\n{\"location\": \"NYC\"}\n```</tool_call> done", "GetWeather", "location")]  // Basic tool call
     [InlineData("Call <tool_call name=\"CalculateSum\">```json\n{\"a\": 5, \"b\": 10}\n```</tool_call>", "CalculateSum", "a")]  // Math tool
@@ -213,16 +213,16 @@ public class ToolCallParsingComponentsTests
     {
         // Arrange
         var parser = new ToolCallTextParser();
-        
+
         // Act
         var result = parser.Parse(input);
-        
+
         // Assert
         var toolCall = result.OfType<ToolCallChunk>().First();
         Assert.Equal(expectedToolName, toolCall.ToolName);
         Assert.Contains(expectedContentContains, toolCall.Content);
     }
-    
+
     [Theory]
     [InlineData("Normal text", false, -1)]  // No partial pattern
     [InlineData("Text with <div>", false, -1)]  // Regular HTML tag
@@ -239,10 +239,10 @@ public class ToolCallParsingComponentsTests
     {
         // Arrange
         var detector = new PartialToolCallDetector();
-        
+
         // Act
         var result = detector.DetectPartialStart(input);
-        
+
         // Assert
         Assert.Equal(shouldMatch, result.IsMatch);
         if (shouldMatch)
@@ -255,7 +255,7 @@ public class ToolCallParsingComponentsTests
             Assert.Equal(-1, result.StartIndex);
         }
     }
-    
+
     [Theory]
     [InlineData("")]  // Empty string
     [InlineData("   ")]  // Whitespace only
@@ -266,17 +266,17 @@ public class ToolCallParsingComponentsTests
         var parser = new ToolCallTextParser();
         var detector = new PartialToolCallDetector();
         var extractor = new SafeTextExtractor(detector);
-        
+
         // Act & Assert - Should not throw exceptions
         var parseResult = parser.Parse(input);
         var detectResult = detector.DetectPartialStart(input);
         var extractResult = extractor.ExtractSafeText(input);
-        
+
         // Basic validation
         Assert.NotNull(parseResult);
         Assert.NotNull(detectResult);
         Assert.NotNull(extractResult);
-        
+
         if (string.IsNullOrEmpty(input))
         {
             Assert.False(detectResult.IsMatch);
@@ -284,7 +284,7 @@ public class ToolCallParsingComponentsTests
             Assert.Equal(string.Empty, extractResult.RemainingBuffer);
         }
     }
-    
+
     [Fact]
     public void AllComponents_WithNullInput_HandleGracefully()
     {
@@ -293,19 +293,19 @@ public class ToolCallParsingComponentsTests
         var detector = new PartialToolCallDetector();
         var extractor = new SafeTextExtractor(detector);
         string? nullInput = null;
-        
+
         // Act & Assert - Should not throw exceptions
         var parseResult = parser.Parse(nullInput!);
         var detectResult = detector.DetectPartialStart(nullInput!);
         var extractResult = extractor.ExtractSafeText(nullInput!);
-        
+
         // Basic validation for null input
         Assert.NotNull(parseResult);
         Assert.False(detectResult.IsMatch);
         Assert.Equal(string.Empty, extractResult.SafeText);
         Assert.Equal(string.Empty, extractResult.RemainingBuffer);
     }
-    
+
     [Fact]
     public void StreamingScenario_ToolCallSplitAcrossChunks_WorksCorrectly()
     {
@@ -313,7 +313,7 @@ public class ToolCallParsingComponentsTests
         var detector = new PartialToolCallDetector();
         var extractor = new SafeTextExtractor(detector);
         var parser = new ToolCallTextParser();
-        
+
         // Simulate the streaming chunks from the debug output
         var chunks = new[]
         {
@@ -325,24 +325,24 @@ public class ToolCallParsingComponentsTests
             "<tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n",
             "</tool_call>"
         };
-        
+
         var buffer = new StringBuilder();
         var emittedTextChunks = new List<string>();
         var detectedToolCalls = new List<ToolCallChunk>();
-        
+
         // Process each chunk as it would arrive in streaming
         foreach (var chunk in chunks)
         {
             buffer.Append(chunk);
             var currentText = buffer.ToString();
-            
+
             var safeResult = extractor.ExtractSafeText(currentText);
-            
+
             if (!string.IsNullOrEmpty(safeResult.SafeText))
             {
                 // Parse the safe text for tool calls
                 var parsedChunks = parser.Parse(safeResult.SafeText);
-                
+
                 foreach (var parsedChunk in parsedChunks)
                 {
                     if (parsedChunk is TextChunk textChunk)
@@ -354,13 +354,13 @@ public class ToolCallParsingComponentsTests
                         detectedToolCalls.Add(toolCallChunk);
                     }
                 }
-                
+
                 // Update buffer
                 buffer.Clear();
                 buffer.Append(safeResult.RemainingBuffer);
             }
         }
-        
+
         // Final flush
         if (buffer.Length > 0)
         {
@@ -377,14 +377,14 @@ public class ToolCallParsingComponentsTests
                 }
             }
         }
-        
+
         // Verify results
         Assert.Single(detectedToolCalls); // Should detect exactly one tool call
         var toolCall = detectedToolCalls[0];
         Assert.Equal("GetWeather", toolCall.ToolName);
         Assert.Contains("San Francisco", toolCall.Content);
         Assert.Contains("fahrenheit", toolCall.Content);
-        
+
         // Verify the non-tool call text was emitted correctly
         var allEmittedText = string.Join("", emittedTextChunks);
         Assert.Equal("Here's the weather: ", allEmittedText);

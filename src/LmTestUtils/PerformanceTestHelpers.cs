@@ -53,7 +53,7 @@ public static class PerformanceTestHelpers
         int completionTokens = 20)
     {
         var metrics = CreateTestRequestMetrics(providerName, model, operation);
-        
+
         var usage = new Usage
         {
             PromptTokens = promptTokens,
@@ -206,7 +206,7 @@ public static class PerformanceTestHelpers
         var result = await operation();
         var endTime = DateTime.UtcNow;
         var duration = endTime - startTime;
-        
+
         return (result, duration);
     }
 
@@ -224,7 +224,7 @@ public static class PerformanceTestHelpers
     {
         var minDuration = expectedDuration - tolerance;
         var maxDuration = expectedDuration + tolerance;
-        
+
         return actualDuration >= minDuration && actualDuration <= maxDuration;
     }
-} 
+}

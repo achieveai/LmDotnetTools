@@ -22,4 +22,4 @@ public static class StandardWrappers
         (inner, logger) => new CachingHttpMessageHandler(store, options, inner, logger);
 
     // Future: add a retry wrapper here or inside LmConfig depending on policy location.
-} 
+}

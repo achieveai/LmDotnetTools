@@ -128,13 +128,13 @@ public class UnifiedSearchEngineTests
         var sessionContext = CreateTestSessionContext();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(() => 
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             _unifiedSearchEngine.SearchAllSourcesAsync("", sessionContext));
-        
-        await Assert.ThrowsAsync<ArgumentException>(() => 
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             _unifiedSearchEngine.SearchAllSourcesAsync("   ", sessionContext));
-        
-        await Assert.ThrowsAsync<ArgumentException>(() => 
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             _unifiedSearchEngine.SearchAllSourcesAsync(null!, sessionContext));
     }
 
@@ -144,18 +144,18 @@ public class UnifiedSearchEngineTests
         // Arrange
         var sessionContext = CreateTestSessionContext();
         var query = "test query";
-        
+
         // Setup mock responses
         var mockMemories = new List<Memory>
         {
             new Memory { Id = 1, Content = "Test memory content", UserId = sessionContext.UserId, CreatedAt = DateTime.UtcNow }
         };
-        
+
         var mockEntities = new List<Entity>
         {
             new Entity { Id = 1, Name = "Test Entity", Type = "Person", UserId = sessionContext.UserId, CreatedAt = DateTime.UtcNow }
         };
-        
+
         var mockRelationships = new List<Relationship>
         {
             new Relationship { Id = 1, Source = "Entity1", Target = "Entity2", RelationshipType = "WORKS_WITH", UserId = sessionContext.UserId, CreatedAt = DateTime.UtcNow }
@@ -187,7 +187,7 @@ public class UnifiedSearchEngineTests
         Assert.NotNull(results);
         Assert.NotNull(results.Results);
         Assert.NotNull(results.Metrics);
-        
+
         // Should have results from all three sources
         Assert.True(results.TotalResults >= 3);
         Assert.True(results.MemoryResults >= 1);
@@ -245,7 +245,7 @@ public class UnifiedSearchEngineTests
 
         // Assert
         Assert.NotNull(results);
-        
+
         // Verify that vector search methods were called
         _mockMemoryRepository.Verify(x => x.SearchVectorAsync(It.IsAny<float[]>(), It.IsAny<SessionContext>(), It.IsAny<int>(), It.IsAny<float>(), It.IsAny<CancellationToken>()), Times.Once);
         _mockGraphRepository.Verify(x => x.SearchEntitiesVectorAsync(It.IsAny<float[]>(), It.IsAny<SessionContext>(), It.IsAny<int>(), It.IsAny<float>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -292,7 +292,7 @@ public class UnifiedSearchEngineTests
 
         // Assert
         Assert.NotNull(results);
-        
+
         // Verify that embedding generation was NOT called since we provided a pre-generated embedding
         _mockEmbeddingManager.Verify(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
 
@@ -337,18 +337,18 @@ public class UnifiedSearchEngineTests
         // Arrange
         var sessionContext = CreateTestSessionContext();
         var query = "test query";
-        
+
         // Setup mock responses with different scores
         var mockMemories = new List<Memory>
         {
             new Memory { Id = 1, Content = "Test memory", UserId = sessionContext.UserId, CreatedAt = DateTime.UtcNow }
         };
-        
+
         var mockEntities = new List<Entity>
         {
             new Entity { Id = 1, Name = "Test Entity", Type = "Person", UserId = sessionContext.UserId, CreatedAt = DateTime.UtcNow }
         };
-        
+
         var mockRelationships = new List<Relationship>
         {
             new Relationship { Id = 1, Source = "Entity1", Target = "Entity2", RelationshipType = "WORKS_WITH", UserId = sessionContext.UserId, CreatedAt = DateTime.UtcNow }
@@ -384,7 +384,7 @@ public class UnifiedSearchEngineTests
 
         // Results should be ordered by weighted score (Memory > Entity > Relationship)
         var sortedResults = results.Results.OrderByDescending(r => r.Score).ToList();
-        
+
         if (sortedResults.Count >= 3)
         {
             var memoryResult = sortedResults.FirstOrDefault(r => r.Type == UnifiedResultType.Memory);
@@ -413,4 +413,4 @@ public class UnifiedSearchEngineTests
             AgentId = $"test_agent_{Guid.NewGuid():N}"
         };
     }
-} 
+}

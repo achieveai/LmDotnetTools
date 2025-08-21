@@ -476,4 +476,4 @@ public class EnrichmentOptions
     /// Minimum relevance score for including related items (0.0 to 1.0).
     /// </summary>
     public float MinRelevanceScore { get; set; } = 0.6f;
-} 
+}

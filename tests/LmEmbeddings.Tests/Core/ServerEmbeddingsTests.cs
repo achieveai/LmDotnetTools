@@ -29,13 +29,13 @@ public class ServerEmbeddingsTests
         string endpoint, string model, int embeddingSize, string apiKey, int maxBatchSize, EmbeddingApiType apiType, string description)
     {
         Debug.WriteLine($"Testing constructor with: {description}");
-        
+
         // Act & Assert
         var service = new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, apiType, _logger);
-        
+
         Assert.NotNull(service);
         Assert.Equal(embeddingSize, service.EmbeddingSize);
-        
+
         service.Dispose();
         Debug.WriteLine($"Constructor test passed: {description}");
     }
@@ -46,11 +46,11 @@ public class ServerEmbeddingsTests
         string endpoint, string model, int embeddingSize, string apiKey, int maxBatchSize, Type expectedExceptionType, string description)
     {
         Debug.WriteLine($"Testing invalid constructor parameters: {description}");
-        
+
         // Act & Assert
         var exception = Assert.Throws(expectedExceptionType, () =>
             new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, EmbeddingApiType.Default, _logger));
-        
+
         Assert.NotNull(exception);
         Debug.WriteLine($"Expected exception thrown: {exception.GetType().Name} - {description}");
     }
@@ -60,14 +60,14 @@ public class ServerEmbeddingsTests
     public async Task GetEmbeddingAsync_WithValidInput_ReturnsEmbedding(string input, string description)
     {
         Debug.WriteLine($"Testing basic embedding generation: {description}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1));
         using var service = CreateServerEmbeddings(fakeHandler);
-        
+
         // Act
         var result = await service.GetEmbeddingAsync(input);
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.Equal(1536, result.Length);
@@ -79,7 +79,7 @@ public class ServerEmbeddingsTests
     public async Task GenerateEmbeddingsAsync_WithBatchProcessing_ProcessesConcurrently()
     {
         Debug.WriteLine("Testing batch processing with concurrent requests");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(3));
         using var service = CreateServerEmbeddings(fakeHandler, maxBatchSize: 2);
@@ -89,12 +89,12 @@ public class ServerEmbeddingsTests
             Inputs = texts,
             Model = "test-model"
         };
-        
+
         // Act
         var stopwatch = Stopwatch.StartNew();
         var result = await service.GenerateEmbeddingsAsync(request);
         stopwatch.Stop();
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.Equal(3, result.Embeddings.Count);
@@ -106,20 +106,20 @@ public class ServerEmbeddingsTests
     public async Task GenerateEmbeddingsAsync_WithRetryLogic_UsesLinearBackoff()
     {
         Debug.WriteLine("Testing linear backoff retry logic");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(2, EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1));
         using var service = CreateServerEmbeddings(fakeHandler);
-        
+
         // Act
         var stopwatch = Stopwatch.StartNew();
         var result = await service.GetEmbeddingAsync("test text");
         stopwatch.Stop();
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.Equal(1536, result.Length);
-        
+
         // Verify linear backoff timing (should be approximately 1s + 2s = 3s for 2 retries)
         Assert.True(stopwatch.ElapsedMilliseconds >= 2900, $"Expected at least 2900ms for linear backoff, got {stopwatch.ElapsedMilliseconds}ms");
         Debug.WriteLine($"Linear backoff retry completed in {stopwatch.ElapsedMilliseconds}ms");
@@ -130,7 +130,7 @@ public class ServerEmbeddingsTests
     public async Task GenerateEmbeddingsAsync_WithLongText_ChunksAutomatically(string longText, int expectedChunks, string description)
     {
         Debug.WriteLine($"Testing text chunking: {description}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(expectedChunks));
         using var service = CreateServerEmbeddings(fakeHandler);
@@ -139,10 +139,10 @@ public class ServerEmbeddingsTests
             Inputs = new[] { longText },
             Model = "test-model"
         };
-        
+
         // Act
         var result = await service.GenerateEmbeddingsAsync(request);
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.True(result.Embeddings.Count >= expectedChunks, $"Expected at least {expectedChunks} chunks, got {result.Embeddings.Count}");
@@ -154,14 +154,14 @@ public class ServerEmbeddingsTests
     public async Task GenerateEmbeddingsAsync_WithDifferentApiTypes_FormatsCorrectly(EmbeddingApiType apiType, string description)
     {
         Debug.WriteLine($"Testing API type formatting: {description}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1));
         using var service = CreateServerEmbeddings(fakeHandler, apiType: apiType);
-        
+
         // Act
         var result = await service.GetEmbeddingAsync("test");
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.Equal(1536, result.Length);
@@ -172,14 +172,14 @@ public class ServerEmbeddingsTests
     public async Task GetAvailableModelsAsync_ReturnsConfiguredModel()
     {
         Debug.WriteLine("Testing GetAvailableModelsAsync");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
         using var service = CreateServerEmbeddings(fakeHandler, model: "test-model");
-        
+
         // Act
         var models = await service.GetAvailableModelsAsync();
-        
+
         // Assert
         Assert.NotNull(models);
         Assert.Single(models);
@@ -228,7 +228,7 @@ public class ServerEmbeddingsTests
 
     // Helper Methods
     private ServerEmbeddings CreateServerEmbeddings(
-        FakeHttpMessageHandler httpHandler, 
+        FakeHttpMessageHandler httpHandler,
         string endpoint = "https://api.test.com",
         string model = "test-model",
         int embeddingSize = 1536,
@@ -240,4 +240,4 @@ public class ServerEmbeddingsTests
         var service = new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, apiType, _logger, httpClient);
         return service;
     }
-} 
+}

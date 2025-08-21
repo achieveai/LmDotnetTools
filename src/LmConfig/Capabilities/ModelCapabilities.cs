@@ -107,15 +107,15 @@ public record ModelCapabilities
         return capability.ToLowerInvariant() switch
         {
             "thinking" => Thinking?.Type != ThinkingType.None,
-            "multimodal" => Multimodal?.SupportsImages == true || 
-                           Multimodal?.SupportsAudio == true || 
+            "multimodal" => Multimodal?.SupportsImages == true ||
+                           Multimodal?.SupportsAudio == true ||
                            Multimodal?.SupportsVideo == true,
             "function_calling" or "tools" => FunctionCalling?.SupportsTools == true,
             "streaming" => SupportsStreaming,
             "json_mode" => ResponseFormats?.SupportsJsonMode == true,
             "json_schema" => ResponseFormats?.SupportsJsonSchema == true,
             "structured_output" => ResponseFormats?.SupportsStructuredOutput == true,
-            _ => SupportedFeatures.Contains(capability) || 
+            _ => SupportedFeatures.Contains(capability) ||
                  CustomCapabilities?.ContainsKey(capability) == true
         };
     }
@@ -131,8 +131,8 @@ public record ModelCapabilities
         if (Thinking?.Type != ThinkingType.None)
             capabilities.Add("thinking");
 
-        if (Multimodal?.SupportsImages == true || 
-            Multimodal?.SupportsAudio == true || 
+        if (Multimodal?.SupportsImages == true ||
+            Multimodal?.SupportsAudio == true ||
             Multimodal?.SupportsVideo == true)
             capabilities.Add("multimodal");
 
@@ -158,4 +158,4 @@ public record ModelCapabilities
 
         return capabilities.Distinct().ToList();
     }
-} 
+}

@@ -91,4 +91,4 @@ public record RerankUsage
     /// </summary>
     [JsonPropertyName("search_units")]
     public required int SearchUnits { get; init; }
-} 
+}

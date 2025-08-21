@@ -420,4 +420,4 @@ public enum ValidationSeverity
     /// Critical severity - system integrity at risk.
     /// </summary>
     Critical
-} 
+}

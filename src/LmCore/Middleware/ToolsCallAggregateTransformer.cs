@@ -34,10 +34,10 @@ public static class ToolsCallAggregateTransformer
         for (int i = 0; i < toolCalls.Count; i++)
         {
             var toolCall = toolCalls[i];
-            
+
             // Find matching result by ToolCallId or by index
             ToolCallResult? toolResult = null;
-            
+
             // First try to find by ToolCallId
             foreach (var result in toolResults)
             {
@@ -47,7 +47,7 @@ public static class ToolsCallAggregateTransformer
                     break;
                 }
             }
-            
+
             // If not found by ID, try by index
             if (toolResult == null && i < toolResults.Count)
             {
@@ -158,12 +158,12 @@ public static class ToolsCallAggregateTransformer
         var formattedResponse = FormatToolResponse(toolResult.Result);
 
         var result = new StringBuilder();
-        
+
         // Format tool call
         result.AppendLine($"<tool_call name=\"{functionName}\">");
         result.AppendLine(formattedArgs);
         result.AppendLine("</tool_call>");
-        
+
         // Format tool response
         result.AppendLine($"<tool_response name=\"{functionName}\">");
         result.AppendLine(formattedResponse);
@@ -214,9 +214,9 @@ public static class ToolsCallAggregateTransformer
             return null;
 
         text = text.Trim();
-        
+
         // Quick check if it looks like JSON
-        if (!(text.StartsWith('{') && text.EndsWith('}')) && 
+        if (!(text.StartsWith('{') && text.EndsWith('}')) &&
             !(text.StartsWith('[') && text.EndsWith(']')))
         {
             return null;
@@ -246,12 +246,12 @@ public static class ToolsCallAggregateTransformer
         ImmutableDictionary<string, object> second)
     {
         var result = first;
-        
+
         foreach (var kvp in second)
         {
             result = result.SetItem(kvp.Key, kvp.Value);
         }
-        
+
         return result;
     }
 }

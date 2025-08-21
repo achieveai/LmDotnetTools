@@ -25,11 +25,11 @@ public static class ServerEmbeddingsExtensions
         var requestId = Guid.NewGuid().ToString();
         var stopwatch = Stopwatch.StartNew();
         var startTime = DateTime.UtcNow;
-        
+
         try
         {
             var textList = texts.ToList();
-            
+
             // Validate inputs
             if (!textList.Any())
             {
@@ -53,12 +53,12 @@ public static class ServerEmbeddingsExtensions
 
             // Generate embeddings using the correct method
             var response = await service.GenerateEmbeddingsAsync(request, cancellationToken);
-            
+
             stopwatch.Stop();
 
             // Convert embeddings to the expected format
             var embeddings = response.Embeddings?.Select(e => e.Vector?.ToList() ?? new List<float>()).ToList() ?? new List<List<float>>();
-            
+
             // Create performance metrics
             var metrics = new RequestMetrics
             {
@@ -84,7 +84,7 @@ public static class ServerEmbeddingsExtensions
         catch (Exception ex)
         {
             stopwatch.Stop();
-            
+
             // Create metrics even for failed requests
             var metrics = new RequestMetrics
             {
@@ -117,7 +117,7 @@ public static class ServerEmbeddingsExtensions
         {
             // Test basic connectivity with a simple text
             var testEmbedding = await service.GetEmbeddingAsync("health check test");
-            
+
             checks.Add(new ComponentHealth
             {
                 Component = "API Connectivity",
@@ -136,8 +136,8 @@ public static class ServerEmbeddingsExtensions
 
             stopwatch.Stop();
 
-            var overallStatus = checks.All(c => c.Status == HealthStatus.Healthy) 
-                ? HealthStatus.Healthy 
+            var overallStatus = checks.All(c => c.Status == HealthStatus.Healthy)
+                ? HealthStatus.Healthy
                 : HealthStatus.Degraded;
 
             return new HealthCheckResult
@@ -151,7 +151,7 @@ public static class ServerEmbeddingsExtensions
         catch (Exception ex)
         {
             stopwatch.Stop();
-            
+
             return new HealthCheckResult
             {
                 Service = "ServerEmbeddings",
@@ -230,9 +230,9 @@ public static class ServerEmbeddingsExtensions
     {
         var valueList = values.ToList();
         if (!valueList.Any()) return 0;
-        
+
         var average = valueList.Average();
         var sumOfSquares = valueList.Sum(v => Math.Pow(v - average, 2));
         return Math.Sqrt(sumOfSquares / valueList.Count);
     }
-} 
+}

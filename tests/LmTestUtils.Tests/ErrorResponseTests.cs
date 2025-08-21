@@ -22,10 +22,10 @@ public class ErrorResponseTests
 
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
         Assert.Equal("Invalid request parameters", json.RootElement.GetProperty("error").GetProperty("message").GetString());
@@ -46,10 +46,10 @@ public class ErrorResponseTests
 
         // Assert
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("rate_limit_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
         Assert.Equal("Rate limit exceeded", json.RootElement.GetProperty("error").GetProperty("message").GetString());
@@ -70,10 +70,10 @@ public class ErrorResponseTests
 
         // Assert
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("authentication_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
         Assert.Equal("Invalid API key", json.RootElement.GetProperty("error").GetProperty("message").GetString());
@@ -94,10 +94,10 @@ public class ErrorResponseTests
 
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("Invalid model specified", json.RootElement.GetProperty("error").GetProperty("message").GetString());
         Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
         Assert.Equal("model", json.RootElement.GetProperty("error").GetProperty("param").GetString());
@@ -119,10 +119,10 @@ public class ErrorResponseTests
 
         // Assert
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("Rate limit exceeded", json.RootElement.GetProperty("error").GetProperty("message").GetString());
         Assert.Equal("rate_limit_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
     }
@@ -142,10 +142,10 @@ public class ErrorResponseTests
 
         // Assert
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("Invalid API key", json.RootElement.GetProperty("error").GetProperty("message").GetString());
         Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
         Assert.Equal("invalid_api_key", json.RootElement.GetProperty("error").GetProperty("code").GetString());
@@ -173,7 +173,7 @@ public class ErrorResponseTests
         // Third request (200 with success message)
         var response3 = await client.GetAsync("https://api.anthropic.com/v1/messages");
         Assert.Equal(HttpStatusCode.OK, response3.StatusCode);
-        
+
         var content = await response3.Content.ReadAsStringAsync();
         Assert.Equal("Success after retries", content);
     }
@@ -199,7 +199,7 @@ public class ErrorResponseTests
         // Third request (200)
         var response3 = await client.GetAsync("https://api.anthropic.com/v1/messages");
         Assert.Equal(HttpStatusCode.OK, response3.StatusCode);
-        
+
         var content = await response3.Content.ReadAsStringAsync();
         Assert.Equal("Final success", content);
     }
@@ -221,10 +221,10 @@ public class ErrorResponseTests
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.True(response.Headers.Contains("Retry-After"));
         Assert.Equal("60", response.Headers.GetValues("Retry-After").First());
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("rate_limit_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
     }
@@ -246,10 +246,10 @@ public class ErrorResponseTests
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.True(response.Headers.Contains("Retry-After"));
         Assert.Equal("30", response.Headers.GetValues("Retry-After").First());
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("Rate limit exceeded. Please retry after 30 seconds.", json.RootElement.GetProperty("error").GetProperty("message").GetString());
         Assert.Equal(30, json.RootElement.GetProperty("error").GetProperty("retry_after").GetInt32());
     }
@@ -269,10 +269,10 @@ public class ErrorResponseTests
 
         // Assert
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        
+
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
-        
+
         Assert.Equal("Invalid API key provided.", json.RootElement.GetProperty("error").GetProperty("message").GetString());
         Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
         Assert.Equal("invalid_api_key", json.RootElement.GetProperty("error").GetProperty("code").GetString());
@@ -337,7 +337,7 @@ public class ErrorResponseTests
 
         // Act & Assert - All requests should get the same response (rate limit) 
         // because that's the first provider and it can handle all requests
-        
+
         // First request - Anthropic rate limit (expected)
         var response1 = await client.GetAsync("https://api.anthropic.com/v1/messages");
         Assert.Equal(HttpStatusCode.TooManyRequests, response1.StatusCode);
@@ -356,4 +356,4 @@ public class ErrorResponseTests
         var content3 = await response3.Content.ReadAsStringAsync();
         Assert.Contains("rate_limit_error", content3);
     }
-} 
+}

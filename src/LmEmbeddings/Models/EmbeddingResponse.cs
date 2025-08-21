@@ -61,4 +61,4 @@ public class EmbeddingUsage
     /// Total number of tokens used
     /// </summary>
     public int TotalTokens { get; init; }
-} 
+}

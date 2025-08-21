@@ -48,7 +48,7 @@ public class TypeFunctionProvider : IFunctionProvider
     {
         var functions = new List<FunctionDescriptor>();
         var bindingFlags = BindingFlags.Public | BindingFlags.NonPublic;
-        
+
         // If we have an instance, only include instance methods
         // If we don't have an instance (type-only), only include static methods
         if (_instance != null)
@@ -68,14 +68,14 @@ public class TypeFunctionProvider : IFunctionProvider
         {
             var contract = CreateFunctionContract(method);
             var handler = CreateHandler(method);
-            
+
             var descriptor = new FunctionDescriptor
             {
                 Contract = contract,
                 Handler = handler,
                 ProviderName = ProviderName
             };
-            
+
             functions.Add(descriptor);
         }
 
@@ -115,7 +115,7 @@ public class TypeFunctionProvider : IFunctionProvider
         var name = functionAttr?.FunctionName ?? method.Name;
 
         // Get description from FunctionAttribute or DescriptionAttribute
-        var description = functionAttr?.Description 
+        var description = functionAttr?.Description
             ?? method.GetCustomAttribute<DescriptionAttribute>()?.Description
             ?? $"Executes {method.Name}";
 
@@ -155,7 +155,7 @@ public class TypeFunctionProvider : IFunctionProvider
     private bool IsNullable(ParameterInfo parameter)
     {
         var paramType = parameter.ParameterType;
-        
+
         // Check for Nullable<T> value types
         if (Nullable.GetUnderlyingType(paramType) != null)
             return true;
@@ -170,7 +170,7 @@ public class TypeFunctionProvider : IFunctionProvider
                 // Flag 2 means nullable, 1 means not nullable
                 return nullableAttribute.NullableFlags[0] == 2;
             }
-            
+
             // Check the context attribute on the method or type
             var method = parameter.Member as MethodInfo;
             if (method != null)
@@ -180,14 +180,14 @@ public class TypeFunctionProvider : IFunctionProvider
                 {
                     return methodNullable.Flag == 2;
                 }
-                
+
                 var typeNullable = method.DeclaringType?.GetCustomAttribute<System.Runtime.CompilerServices.NullableContextAttribute>();
                 if (typeNullable != null)
                 {
                     return typeNullable.Flag == 2;
                 }
             }
-            
+
             // Default to non-nullable for reference types without annotations
             return false;
         }
@@ -203,7 +203,7 @@ public class TypeFunctionProvider : IFunctionProvider
             {
                 // Get the instance to invoke on
                 object? target = method.IsStatic ? null : _instance;
-                
+
                 if (!method.IsStatic && target == null)
                 {
                     throw new InvalidOperationException(
@@ -221,7 +221,7 @@ public class TypeFunctionProvider : IFunctionProvider
                     for (int i = 0; i < parameters.Length; i++)
                     {
                         var param = parameters[i];
-                        
+
                         if (argsDict != null && argsDict.TryGetValue(param.Name!, out var argValue))
                         {
                             // Deserialize the argument
@@ -247,16 +247,16 @@ public class TypeFunctionProvider : IFunctionProvider
 
                 // Invoke the method
                 object? result;
-                
+
                 if (IsAsyncMethod(method))
                 {
                     // Handle async methods
                     var task = method.Invoke(target, paramValues);
-                    
+
                     if (task is Task nonGenericTask)
                     {
                         await nonGenericTask.ConfigureAwait(false);
-                        
+
                         // Check if it's Task<T>
                         if (method.ReturnType.IsGenericType)
                         {
@@ -282,8 +282,8 @@ public class TypeFunctionProvider : IFunctionProvider
                 // Serialize the result
                 if (result != null && method.ReturnType != typeof(void))
                 {
-                    return JsonSerializer.Serialize(result, new JsonSerializerOptions 
-                    { 
+                    return JsonSerializer.Serialize(result, new JsonSerializerOptions
+                    {
                         WriteIndented = false,
                         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                     });
@@ -295,16 +295,16 @@ public class TypeFunctionProvider : IFunctionProvider
             {
                 // Unwrap the real exception
                 var innerException = tie.InnerException ?? tie;
-                return JsonSerializer.Serialize(new 
-                { 
+                return JsonSerializer.Serialize(new
+                {
                     error = innerException.Message,
                     type = innerException.GetType().Name
                 });
             }
             catch (Exception ex)
             {
-                return JsonSerializer.Serialize(new 
-                { 
+                return JsonSerializer.Serialize(new
+                {
                     error = ex.Message,
                     type = ex.GetType().Name
                 });
@@ -314,8 +314,8 @@ public class TypeFunctionProvider : IFunctionProvider
 
     private bool IsAsyncMethod(MethodInfo method)
     {
-        return method.ReturnType == typeof(Task) 
-            || (method.ReturnType.IsGenericType 
+        return method.ReturnType == typeof(Task)
+            || (method.ReturnType.IsGenericType
                 && method.ReturnType.GetGenericTypeDefinition() == typeof(Task<>));
     }
 }
@@ -334,8 +334,8 @@ public static class FunctionRegistryTypeExtensions
     /// <param name="priority">Provider priority (default 100)</param>
     /// <returns>The registry for chaining</returns>
     public static FunctionRegistry AddFunctionsFromType(
-        this FunctionRegistry registry, 
-        Type type, 
+        this FunctionRegistry registry,
+        Type type,
         string? providerName = null,
         int priority = 100)
     {
@@ -352,8 +352,8 @@ public static class FunctionRegistryTypeExtensions
     /// <param name="priority">Provider priority (default 100)</param>
     /// <returns>The registry for chaining</returns>
     public static FunctionRegistry AddFunctionsFromObject(
-        this FunctionRegistry registry, 
-        object instance, 
+        this FunctionRegistry registry,
+        object instance,
         string? providerName = null,
         int priority = 100)
     {
@@ -393,11 +393,11 @@ public static class FunctionRegistryTypeExtensions
         int priority = 100)
     {
         assembly ??= Assembly.GetCallingAssembly();
-        
+
         var typesWithFunctions = assembly.GetTypes()
             .Where(t => !t.IsAbstract && !t.IsInterface)
             .Where(t => t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)
-                .Any(m => m.GetCustomAttribute<FunctionAttribute>() != null 
+                .Any(m => m.GetCustomAttribute<FunctionAttribute>() != null
                        || m.GetCustomAttribute<DescriptionAttribute>() != null))
             .ToList();
 

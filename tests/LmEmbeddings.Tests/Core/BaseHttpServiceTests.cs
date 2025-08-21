@@ -183,7 +183,7 @@ public class BaseHttpServiceTests
         // Assert
         Assert.Equal("success", result);
         Assert.Equal(3, attempts);
-        Assert.True(stopwatch.ElapsedMilliseconds >= 1000, 
+        Assert.True(stopwatch.ElapsedMilliseconds >= 1000,
             $"Expected at least 1000ms for retries, got {stopwatch.ElapsedMilliseconds}ms");
         Debug.WriteLine($"✓ ExecuteWithRetryAsync succeeded after {attempts} attempts in {stopwatch.ElapsedMilliseconds}ms");
     }
@@ -374,4 +374,4 @@ public class BaseHttpServiceTests
     }
 
     #endregion
-} 
+}

@@ -296,16 +296,16 @@ public class JsonFragmentAccumulatorTests
         // Assert
         // Fragment 1 should have one PartialString with the entire first fragment's string content
         AssertSingleStringUpdate(updates1, JsonFragmentKind.PartialString, "First ");
-        
+
         // Fragment 2 should have one PartialString with the entire second fragment's string content
         AssertSingleStringUpdate(updates2, JsonFragmentKind.PartialString, "second ");
-        
+
         // Fragment 3 should have one PartialString with content up to the quote, then a CompleteString
         AssertSingleStringUpdate(updates3, JsonFragmentKind.PartialString, "third");
-        
+
         // Should also have a CompleteString in the last fragment
         Assert.Contains(updates3, u => u.Kind == JsonFragmentKind.CompleteString);
-        
+
         // Verify the final JSON is correct
         Assert.Equal("{\"message\":\"First second third\"}", accumulator.CurrentJson);
     }
@@ -330,15 +330,15 @@ public class JsonFragmentAccumulatorTests
         // Assert
         // Fragment 1 should have one PartialString with content up to (but not including) the escape char
         AssertSingleStringUpdate(updates1, JsonFragmentKind.PartialString, "before");
-        
+
         // Fragment 2 should have PartialString with the content after the escape sequence
         var partialStrings2 = updates2.Where(u => u.Kind == JsonFragmentKind.PartialString).ToList();
         Assert.Contains(partialStrings2, u => u.TextValue == "after");
-        
+
         // And verify the complete string at the end includes the proper escape sequence
         var completeString = Assert.Single(updates2, u => u.Kind == JsonFragmentKind.CompleteString);
         Assert.Equal("\"before\\\"after\"", completeString.TextValue);
-        
+
         // Verify the final JSON is correct 
         Assert.Equal("{\"escaped\":\"before\\\"after\"}", accumulator.CurrentJson);
     }
@@ -349,28 +349,28 @@ public class JsonFragmentAccumulatorTests
     public static IEnumerable<object[]> JsonCompletionTestCases => new List<object[]>
     {
         // Simple object completion
-        new object[] { 
+        new object[] {
             "test_tool",
             new[] { "{\"key\":", " \"value\"}" },
             "Simple object should emit JsonComplete event when closed"
         },
         
         // Simple array completion
-        new object[] { 
+        new object[] {
             "test_tool",
             new[] { "[1,", " 2, 3]" },
             "Simple array should emit JsonComplete event when closed"
         },
         
         // Nested object completion
-        new object[] { 
+        new object[] {
             "test_tool",
             new[] { "{\"outer\": {\"inner\":", " \"value\"}}" },
             "Nested object should emit JsonComplete event when fully closed"
         },
         
         // Single value completion
-        new object[] { 
+        new object[] {
             "test_tool",
             new[] { "\"simple", "_string\"" },
             "Simple string should emit JsonComplete event when closed"
@@ -382,35 +382,35 @@ public class JsonFragmentAccumulatorTests
     public void Test_JsonCompletionEvent(string toolName, string[] fragments, string description)
     {
         System.Diagnostics.Debug.WriteLine($"Testing: {description}");
-        
+
         var generator = new JsonFragmentToStructuredUpdateGenerator(toolName);
         var allUpdates = new List<JsonFragmentUpdate>();
-        
+
         // Process all fragments
         foreach (var fragment in fragments)
         {
             var updates = generator.AddFragment(fragment).ToList();
             allUpdates.AddRange(updates);
-            
+
             System.Diagnostics.Debug.WriteLine($"Fragment: '{fragment}' -> {updates.Count} updates");
             foreach (var update in updates)
             {
                 System.Diagnostics.Debug.WriteLine($"  {update.Kind}: {update.Path} = {update.TextValue}");
             }
         }
-        
+
         // Verify that JSON is complete
         Assert.True(generator.IsComplete, "Generator should report JSON as complete");
-        
+
         // Verify that we got exactly one JsonComplete event
         var completionEvents = allUpdates.Where(u => u.Kind == JsonFragmentKind.JsonComplete).ToList();
         Assert.Single(completionEvents);
-        
+
         var completionEvent = completionEvents.First();
         Assert.Equal("root", completionEvent.Path);
         Assert.NotNull(completionEvent.TextValue);
         Assert.True(completionEvent.TextValue!.Length > 0);
-        
+
         System.Diagnostics.Debug.WriteLine($"✓ JsonComplete event emitted with JSON: {completionEvent.TextValue}");
     }
 

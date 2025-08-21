@@ -61,4 +61,4 @@ public class EmbeddingRequest
     /// </summary>
     [JsonExtensionData]
     public Dictionary<string, object>? AdditionalOptions { get; init; }
-} 
+}

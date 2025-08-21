@@ -50,7 +50,7 @@ public class GraphDecisionEngineTests
 
         // Assert
         Assert.Equal(expectedInstructionCount, instructions.Count);
-        
+
         for (int i = 0; i < expectedOperations.Count && i < instructions.Count; i++)
         {
             Assert.Equal(expectedOperations[i], instructions[i].Operation);
@@ -151,9 +151,9 @@ public class GraphDecisionEngineTests
             existingEntity, newEntity, sessionContext);
 
         // Assert
-        Assert.True(instruction.Confidence >= expectedMinConfidence, 
+        Assert.True(instruction.Confidence >= expectedMinConfidence,
             $"Confidence {instruction.Confidence} should be >= {expectedMinConfidence}");
-        Assert.True(instruction.Confidence <= expectedMaxConfidence, 
+        Assert.True(instruction.Confidence <= expectedMaxConfidence,
             $"Confidence {instruction.Confidence} should be <= {expectedMaxConfidence}");
 
         Debug.WriteLine($"✅ Calculated confidence: {instruction.Confidence}");
@@ -326,4 +326,4 @@ public class GraphDecisionEngineTests
     };
 
     #endregion
-} 
+}
