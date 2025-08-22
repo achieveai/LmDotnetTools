@@ -282,12 +282,12 @@ public static class Program
                     }
 
                     var pendingTasks = taskManager.GetCurrentTaskContext();
-                    if (pendingTasks.Any())
+                    if (!string.IsNullOrWhiteSpace(pendingTasks))
                     {
                         replyMessages.Add(
                             new TextMessage
                             {
-                                Text = $"Here are your tasks that you want to keep in mind and work on.\n\n**Pending Tasks**:\n\n{pendingTasks}",
+                                Text = $"REMEMBER: You MUST update task status as you start/complete/remove each phase.\n\n{pendingTasks}",
                                 Role = Role.User,
                                 FromAgent = "TodoContextMiddleware",
                                 GenerationId = replyMessages[0].GenerationId

@@ -76,7 +76,7 @@ Notes:
       {
         _rootTasksLock.ExitWriteLock();
       }
-      
+
       _tasksById[task.Id] = task;
       return $"Added task {task.Id}: {task.Title}";
     }
@@ -96,7 +96,7 @@ Notes:
     {
       parent.SubTasks.Add(task);
     }
-    
+
     _tasksById[task.Id] = task;
     return $"Added subtask {task.Id} under task {parent.Id}: {task.Title}";
   }
@@ -128,7 +128,7 @@ Examples:
       {
         _rootTasksLock.ExitWriteLock();
       }
-      
+
       _tasksById.Clear();
       Interlocked.Exchange(ref _nextId, 1);
     }
@@ -161,7 +161,7 @@ Examples:
       {
         _rootTasksLock.ExitWriteLock();
       }
-      
+
       _tasksById[mainTask.Id] = mainTask;
       addedTasks.Add($"Task {mainTask.Id}: {mainTask.Title}");
 
@@ -203,7 +203,7 @@ Examples:
     }
 
     var result = new StringBuilder();
-    
+
     if (clearExisting)
     {
       result.AppendLine("Cleared existing tasks.");
@@ -299,7 +299,7 @@ Examples:
       {
         _rootTasksLock.ExitWriteLock();
       }
-      
+
       RemoveTaskAndSubtasks(task);
       return $"Deleted task {taskId} and all subtasks: {task.Title}";
     }
@@ -474,7 +474,7 @@ Examples:
       return "Error: Provide searchTerm or countType.";
 
     var matches = new List<(TaskItem task, string path)>();
-    
+
     List<TaskItem> rootTasksCopy;
     _rootTasksLock.EnterReadLock();
     try
@@ -528,10 +528,10 @@ Examples:
       {
         subtask = parentTask.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
       }
-      
+
       if (subtask == null)
         return (null, string.Empty, $"Error: Subtask {subtaskId.Value} not found under task {taskId}.");
-      
+
       return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
     }
     else
@@ -539,7 +539,7 @@ Examples:
       // Find main task
       if (!_tasksById.TryGetValue(taskId, out var task))
         return (null, string.Empty, $"Error: Task {taskId} not found.");
-      
+
       return (task, $"task {taskId}", null);
     }
   }
@@ -718,4 +718,43 @@ Examples:
     TaskStatus.Removed => "removed",
     _ => "not started"
   };
+
+  /// <summary>
+  /// Gets the current task context for middleware integration
+  /// </summary>
+  /// <returns>String representation of pending tasks (not started or in progress)</returns>
+  public string GetCurrentTaskContext()
+  {
+    var pendingTasks = new List<string>();
+
+    _rootTasksLock.EnterReadLock();
+    try
+    {
+      foreach (var task in _rootTasks)
+      {
+        if (task.Status == TaskStatus.NotStarted || task.Status == TaskStatus.InProgress)
+        {
+          pendingTasks.Add($"Task {task.Id}: {task.Title} ({NormalizeStatusText(task.Status)})");
+
+          // Add pending subtasks
+          lock (task.SubTasks)
+          {
+            foreach (var subtask in task.SubTasks)
+            {
+              if (subtask.Status == TaskStatus.NotStarted || subtask.Status == TaskStatus.InProgress)
+              {
+                pendingTasks.Add($"  Subtask {subtask.Id}: {subtask.Title} ({NormalizeStatusText(subtask.Status)})");
+              }
+            }
+          }
+        }
+      }
+    }
+    finally
+    {
+      _rootTasksLock.ExitReadLock();
+    }
+
+    return pendingTasks.Count > 0 ? string.Join("\n", pendingTasks) : string.Empty;
+  }
 }
