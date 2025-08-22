@@ -15,7 +15,7 @@ public static class SchemaHelper
     /// </summary>
     private static readonly JsonSerializerOptions SchemaDeserializationOptions = new()
     {
-        Converters = 
+        Converters =
         {
             new UnionJsonConverter<string, IReadOnlyList<string>>()
         }
@@ -71,12 +71,12 @@ public static class SchemaHelper
     {
         // First transform all properties
         var transformedProperties = TransformPropertiesDictionary(schema.Properties);
-        
+
         // For OpenAI structured outputs, ALL properties must be in the required array
         // This is a requirement of OpenAI's structured output API regardless of whether
         // properties are nullable or not. Optional properties are handled via union types with null.
         var requiredPropertyNames = new List<string>();
-        
+
         if (transformedProperties != null)
         {
             foreach (var kvp in transformedProperties)
@@ -85,10 +85,10 @@ public static class SchemaHelper
                 Console.WriteLine($"[DEBUG] Added '{kvp.Key}' to required array (OpenAI requires all properties)");
             }
         }
-        
+
         // Transform the Items schema recursively if it exists (for array types)
         var transformedItems = schema.Items != null ? TransformSchemaUnions(schema.Items) : null;
-        
+
         return new JsonSchemaObject
         {
             Type = TransformUnionType(schema.Type),
@@ -159,23 +159,23 @@ public static class SchemaHelper
         if (unionType.Is<IReadOnlyList<string>>())
         {
             var typeList = unionType.Get<IReadOnlyList<string>>();
-            
+
             // Filter out null types and get the remaining types
             var nonNullTypes = typeList.Where(t => t != "null").ToList();
-            
+
             // If we have exactly one non-null type, convert to simple string
             if (nonNullTypes.Count == 1)
             {
                 return JsonSchemaTypeHelper.ToType(nonNullTypes[0]);
             }
-            
+
             // If we have multiple non-null types, keep the first one as a string
             // (This shouldn't happen much in practice for well-formed schemas)
             if (nonNullTypes.Count > 1)
             {
                 return JsonSchemaTypeHelper.ToType(nonNullTypes[0]);
             }
-            
+
             // If we only had null types, default to "string" for OpenAI compatibility
             return JsonSchemaTypeHelper.ToType("string");
         }

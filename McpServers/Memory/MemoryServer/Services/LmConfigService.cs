@@ -59,10 +59,10 @@ public class LmConfigService : ILmConfigService
     public Task<ModelConfig?> GetOptimalModelAsync(string capability, CancellationToken cancellationToken = default)
     {
         _logger.LogError("DEBUG: GetOptimalModelAsync called with capability: {Capability}", capability);
-        
+
         var modelsWithCapability = GetModelsWithCapability(capability);
         _logger.LogError("DEBUG: Found {Count} models with capability {Capability}", modelsWithCapability.Count, capability);
-        
+
         if (!modelsWithCapability.Any())
         {
             _logger.LogWarning("No models found for capability: {Capability}", capability);
@@ -80,7 +80,7 @@ public class LmConfigService : ILmConfigService
 
         // Select based on fallback strategy
         var strategy = _memoryOptions.LmConfig?.FallbackStrategy ?? "cost-optimized";
-        
+
         var selectedModel = strategy.ToLower() switch
         {
             "cost-optimized" => modelsWithCapability.OrderBy(m => m.GetPrimaryProvider().Pricing.PromptPerMillion).FirstOrDefault(),
@@ -90,7 +90,7 @@ public class LmConfigService : ILmConfigService
 
         if (selectedModel != null)
         {
-            _logger.LogDebug("Selected model {ModelId} for capability {Capability} using strategy {Strategy}", 
+            _logger.LogDebug("Selected model {ModelId} for capability {Capability} using strategy {Strategy}",
                 selectedModel.Id, capability, strategy);
         }
 
@@ -105,22 +105,22 @@ public class LmConfigService : ILmConfigService
         try
         {
             _logger.LogInformation("CreateAgentAsync called with capability: {Capability}", capability);
-            
+
             // First get the optimal model for this capability
             var optimalModel = await GetOptimalModelAsync(capability, cancellationToken);
             _logger.LogInformation("GetOptimalModelAsync returned: {ModelId}", optimalModel?.Id ?? "null");
-            
+
             if (optimalModel == null)
             {
                 _logger.LogError("No optimal model found for capability: {Capability}", capability);
                 throw new InvalidOperationException($"No model found for capability: {capability}");
             }
-            
+
             // Return UnifiedAgent directly - it will handle model resolution, provider dispatching, 
             // and model name translation when GenerateReplyAsync is called
-            _logger.LogInformation("Successfully created UnifiedAgent for model: {ModelId}", 
+            _logger.LogInformation("Successfully created UnifiedAgent for model: {ModelId}",
                 optimalModel.Id);
-            
+
             return _unifiedAgent;
         }
         catch (Exception ex)
@@ -138,7 +138,7 @@ public class LmConfigService : ILmConfigService
         try
         {
             _logger.LogInformation("CreateAgentWithModelAsync called with modelId: {ModelId}, capability: {Capability}", modelId, capability);
-            
+
             // Validate that the model exists in configuration
             var model = _appConfig.GetModel(modelId);
             if (model == null)
@@ -146,18 +146,18 @@ public class LmConfigService : ILmConfigService
                 _logger.LogError("Model {ModelId} not found in configuration", modelId);
                 throw new InvalidOperationException($"Model '{modelId}' not found in configuration. Available models: {string.Join(", ", _appConfig.Models.Select(m => m.Id))}");
             }
-            
+
             // Validate that the model supports the required capability (optional validation)
             var capabilitySupported = model.HasCapability(capability);
             if (!capabilitySupported)
             {
                 _logger.LogWarning("Model {ModelId} may not fully support capability {Capability}, but proceeding with user request", modelId, capability);
             }
-            
+
             // Return UnifiedAgent directly - it will handle model resolution, provider dispatching, 
             // and model name translation when GenerateReplyAsync is called with the specific modelId
             _logger.LogInformation("Successfully created UnifiedAgent for specific model: {ModelId}", modelId);
-            
+
             return Task.FromResult<IAgent>(_unifiedAgent);
         }
         catch (Exception ex)
@@ -179,7 +179,7 @@ public class LmConfigService : ILmConfigService
         var httpClientFactory = _serviceProvider.GetRequiredService<IHttpClientFactory>();
         var httpClient = httpClientFactory.CreateClient("LmDotNet.Reranking");
         var logger = _serviceProvider.GetRequiredService<ILogger<OpenAIEmbeddingService>>();
-        
+
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith("${"))
         {
             throw new InvalidOperationException("Embedding API key not configured. Set EMBEDDING_API_KEY environment variable.");
@@ -242,7 +242,7 @@ public class LmConfigService : ILmConfigService
     public bool ValidateRequiredModels()
     {
         var requiredCapabilities = new[] { "chat" };
-        
+
         foreach (var capability in requiredCapabilities)
         {
             var models = GetModelsWithCapability(capability);
@@ -290,7 +290,7 @@ public class LmConfigService : ILmConfigService
                 _logger.LogWarning("No optimal model found for capability: {Capability}", capability);
                 return null;
             }
-            
+
             // Then resolve the provider for that model to get the effective model name
             var providerResolution = await _modelResolver.ResolveProviderAsync(optimalModel.Id, cancellationToken: cancellationToken);
             if (providerResolution == null)
@@ -298,7 +298,7 @@ public class LmConfigService : ILmConfigService
                 _logger.LogWarning("No provider resolution found for model: {ModelId}", optimalModel.Id);
                 return null;
             }
-            
+
             // Return the effective model name that should be used for API calls
             return providerResolution.EffectiveModelName;
         }
@@ -316,7 +316,7 @@ public class LmConfigService : ILmConfigService
         // First, check if AppConfig is directly provided in configuration
         if (_memoryOptions.LmConfig?.AppConfig != null)
         {
-            _logger.LogInformation("Using AppConfig directly provided in configuration with {ModelCount} models", 
+            _logger.LogInformation("Using AppConfig directly provided in configuration with {ModelCount} models",
                 _memoryOptions.LmConfig.AppConfig.Models.Count);
             return _memoryOptions.LmConfig.AppConfig;
         }
@@ -327,7 +327,7 @@ public class LmConfigService : ILmConfigService
             var config = LoadFromEmbeddedResource();
             if (config != null)
             {
-                _logger.LogInformation("Loaded LmConfig with {ModelCount} models from embedded resource", 
+                _logger.LogInformation("Loaded LmConfig with {ModelCount} models from embedded resource",
                     config.Models.Count);
                 return config;
             }
@@ -339,7 +339,7 @@ public class LmConfigService : ILmConfigService
 
         // Fallback to file system if embedded resource fails
         var configPath = _memoryOptions.LmConfig?.ConfigPath ?? "config/models.json";
-        
+
         if (!File.Exists(configPath))
         {
             var assemblyPath = Path.GetDirectoryName(typeof(AppConfig).Assembly.Location)!;
@@ -361,9 +361,9 @@ public class LmConfigService : ILmConfigService
                 throw new InvalidOperationException($"Invalid or empty LmConfig file at {configPath}. The configuration must contain at least one model.");
             }
 
-            _logger.LogInformation("Loaded LmConfig with {ModelCount} models from file {ConfigPath}", 
+            _logger.LogInformation("Loaded LmConfig with {ModelCount} models from file {ConfigPath}",
                 config.Models.Count, configPath);
-            
+
             return config;
         }
         catch (JsonException ex)
@@ -394,4 +394,4 @@ public class LmConfigService : ILmConfigService
         return config;
     }
     #endregion
-} 
+}

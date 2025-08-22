@@ -50,7 +50,7 @@ public class OpenAIProviderUsageTests
         Assert.Equal(5, usage.InputTokenDetails.CachedTokens);
         Assert.NotNull(usage.OutputTokenDetails);
         Assert.Equal(128, usage.OutputTokenDetails.ReasoningTokens);
-        
+
         // Test unified access
         Assert.Equal(128, usage.TotalReasoningTokens);
         Assert.Equal(5, usage.TotalCachedTokens);
@@ -81,7 +81,7 @@ public class OpenAIProviderUsageTests
         Assert.Equal(158, usage.TotalTokens);
         Assert.Equal(100, usage.ReasoningTokens);
         Assert.Equal(8, usage.CachedTokens);
-        
+
         // Test unified access - OpenRouter direct fields take precedence
         Assert.Equal(100, usage.TotalReasoningTokens);
         Assert.Equal(8, usage.TotalCachedTokens);
@@ -226,4 +226,4 @@ public class OpenAIProviderUsageTests
         Assert.Contains("\"output_tokens_details\"", json);
         Assert.Contains("\"reasoning_tokens\":128", json);
     }
-} 
+}

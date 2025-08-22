@@ -19,4 +19,4 @@ public class RankedDocument
     /// The original document text (optional, for reference)
     /// </summary>
     public string? Document { get; init; }
-} 
+}

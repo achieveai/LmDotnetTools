@@ -9,78 +9,78 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware.Extensions;
 /// </summary>
 public static class FunctionRegistryExtensions
 {
-  /// <summary>
-  /// Adds functions from an MCP client to the registry
-  /// </summary>
-  /// <param name="registry">The function registry</param>
-  /// <param name="mcpClient">The MCP client</param>
-  /// <param name="clientId">Client identifier</param>
-  /// <param name="providerName">Optional provider name</param>
-  /// <param name="logger">Optional logger instance</param>
-  /// <param name="cancellationToken">Cancellation token</param>
-  /// <returns>The function registry for chaining</returns>
-  public static async Task<FunctionRegistry> AddMcpClientAsync(
-    this FunctionRegistry registry,
-    IMcpClient mcpClient,
-    string clientId,
-    string? providerName = null,
-    ILogger<McpClientFunctionProvider>? logger = null,
-    CancellationToken cancellationToken = default)
-  {
-    var provider = await McpClientFunctionProvider.CreateAsync(
-      mcpClient,
-      clientId,
-      providerName,
-      logger,
-      cancellationToken);
+    /// <summary>
+    /// Adds functions from an MCP client to the registry
+    /// </summary>
+    /// <param name="registry">The function registry</param>
+    /// <param name="mcpClient">The MCP client</param>
+    /// <param name="clientId">Client identifier</param>
+    /// <param name="providerName">Optional provider name</param>
+    /// <param name="logger">Optional logger instance</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The function registry for chaining</returns>
+    public static async Task<FunctionRegistry> AddMcpClientAsync(
+      this FunctionRegistry registry,
+      IMcpClient mcpClient,
+      string clientId,
+      string? providerName = null,
+      ILogger<McpClientFunctionProvider>? logger = null,
+      CancellationToken cancellationToken = default)
+    {
+        var provider = await McpClientFunctionProvider.CreateAsync(
+          mcpClient,
+          clientId,
+          providerName,
+          logger,
+          cancellationToken);
 
-    registry.AddProvider(provider);
-    return registry;
-  }
+        registry.AddProvider(provider);
+        return registry;
+    }
 
-  /// <summary>
-  /// Adds functions from multiple MCP clients to the registry
-  /// </summary>
-  /// <param name="registry">The function registry</param>
-  /// <param name="mcpClients">Dictionary of MCP clients</param>
-  /// <param name="providerName">Optional provider name</param>
-  /// <param name="logger">Optional logger instance</param>
-  /// <param name="cancellationToken">Cancellation token</param>
-  /// <returns>The function registry for chaining</returns>
-  public static async Task<FunctionRegistry> AddMcpClientsAsync(
-    this FunctionRegistry registry,
-    Dictionary<string, IMcpClient> mcpClients,
-    string? providerName = null,
-    ILogger<McpClientFunctionProvider>? logger = null,
-    CancellationToken cancellationToken = default)
-  {
-    var provider = await McpClientFunctionProvider.CreateAsync(
-      mcpClients,
-      providerName,
-      logger,
-      cancellationToken);
+    /// <summary>
+    /// Adds functions from multiple MCP clients to the registry
+    /// </summary>
+    /// <param name="registry">The function registry</param>
+    /// <param name="mcpClients">Dictionary of MCP clients</param>
+    /// <param name="providerName">Optional provider name</param>
+    /// <param name="logger">Optional logger instance</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The function registry for chaining</returns>
+    public static async Task<FunctionRegistry> AddMcpClientsAsync(
+      this FunctionRegistry registry,
+      Dictionary<string, IMcpClient> mcpClients,
+      string? providerName = null,
+      ILogger<McpClientFunctionProvider>? logger = null,
+      CancellationToken cancellationToken = default)
+    {
+        var provider = await McpClientFunctionProvider.CreateAsync(
+          mcpClients,
+          providerName,
+          logger,
+          cancellationToken);
 
-    registry.AddProvider(provider);
-    return registry;
-  }
+        registry.AddProvider(provider);
+        return registry;
+    }
 
-  /// <summary>
-  /// Adds functions from an MCP client to the registry (convenience method with automatic client ID)
-  /// </summary>
-  /// <param name="registry">The function registry</param>
-  /// <param name="mcpClient">The MCP client</param>
-  /// <param name="providerName">Optional provider name (defaults to "McpClient-{GUID}")</param>
-  /// <param name="logger">Optional logger instance</param>
-  /// <param name="cancellationToken">Cancellation token</param>
-  /// <returns>The function registry for chaining</returns>
-  public static async Task<FunctionRegistry> AddMcpClientAsync(
-    this FunctionRegistry registry,
-    IMcpClient mcpClient,
-    string? providerName = null,
-    ILogger<McpClientFunctionProvider>? logger = null,
-    CancellationToken cancellationToken = default)
-  {
-    var clientId = providerName ?? $"McpClient-{Guid.NewGuid():N}";
-    return await registry.AddMcpClientAsync(mcpClient, clientId, providerName, logger, cancellationToken);
-  }
+    /// <summary>
+    /// Adds functions from an MCP client to the registry (convenience method with automatic client ID)
+    /// </summary>
+    /// <param name="registry">The function registry</param>
+    /// <param name="mcpClient">The MCP client</param>
+    /// <param name="providerName">Optional provider name (defaults to "McpClient-{GUID}")</param>
+    /// <param name="logger">Optional logger instance</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The function registry for chaining</returns>
+    public static async Task<FunctionRegistry> AddMcpClientAsync(
+      this FunctionRegistry registry,
+      IMcpClient mcpClient,
+      string? providerName = null,
+      ILogger<McpClientFunctionProvider>? logger = null,
+      CancellationToken cancellationToken = default)
+    {
+        var clientId = providerName ?? $"McpClient-{Guid.NewGuid():N}";
+        return await registry.AddMcpClientAsync(mcpClient, clientId, providerName, logger, cancellationToken);
+    }
 }

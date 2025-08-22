@@ -205,4 +205,4 @@ public record CostMetrics
     /// </summary>
     [JsonPropertyName("cost_breakdown")]
     public ImmutableDictionary<string, decimal>? CostBreakdown { get; init; }
-} 
+}

@@ -10,4 +10,4 @@ public class DatabaseOptions
     public int BusyTimeout { get; set; } = 30000;
     public int CommandTimeout { get; set; } = 30;
     public int MaxConnections { get; set; } = 10;
-} 
+}

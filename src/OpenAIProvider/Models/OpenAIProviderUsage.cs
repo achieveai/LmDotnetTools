@@ -50,16 +50,16 @@ public record OpenAIProviderUsage
 
     // Unified access properties with precedence logic
     [JsonIgnore]
-    public int TotalReasoningTokens => 
+    public int TotalReasoningTokens =>
         // OpenRouter direct field takes precedence
-        ReasoningTokens != 0 ? ReasoningTokens : 
+        ReasoningTokens != 0 ? ReasoningTokens :
         // Fallback to OpenAI nested structure
         OutputTokenDetails?.ReasoningTokens ?? 0;
 
     [JsonIgnore]
-    public int TotalCachedTokens => 
+    public int TotalCachedTokens =>
         // OpenRouter direct field takes precedence
-        CachedTokens != 0 ? CachedTokens : 
+        CachedTokens != 0 ? CachedTokens :
         // Fallback to OpenAI nested structure
         InputTokenDetails?.CachedTokens ?? 0;
 
@@ -140,4 +140,4 @@ public record OpenAIOutputTokenDetails
     [JsonPropertyName("reasoning_tokens")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int ReasoningTokens { get; init; }
-} 
+}

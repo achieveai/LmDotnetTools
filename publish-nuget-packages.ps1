@@ -5,22 +5,47 @@
 #   .\publish-nuget-packages.ps1 -ApiKey "your-nuget-api-key"
 #   .\publish-nuget-packages.ps1 -ApiKey $env:NUGET_API_KEY
 #   .\publish-nuget-packages.ps1 -ApiKey (Read-Host "Enter API Key" -AsSecureString | ConvertFrom-SecureString -AsPlainText)
+#   .\publish-nuget-packages.ps1 -LocalOnly
+#   .\publish-nuget-packages.ps1 -LocalFeed -ApiKey "your-api-key"
+#   .\publish-nuget-packages.ps1 -LocalFeed -LocalFeedPath "C:\MyLocalFeed"
 #
 # Parameters:
-#   -ApiKey      : Your NuGet API key (required)
-#   -SkipBuild   : Skip the build step and only publish existing packages
-#   -DryRun      : Show what would be published without actually publishing
+#   -ApiKey        : Your NuGet API key (required unless -LocalOnly is used)
+#   -SkipBuild     : Skip the build step and only publish existing packages
+#   -DryRun        : Show what would be published without actually publishing
+#   -LocalFeed     : Also publish to local NuGet feed
+#   -LocalOnly     : Publish only to local feed (makes ApiKey optional)
+#   -LocalFeedPath : Path to local NuGet feed (default: %USERPROFILE%/.nuget/local-feed)
 
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$ApiKey,
     
     [Parameter(Mandatory = $false)]
     [switch]$SkipBuild,
     
     [Parameter(Mandatory = $false)]
-    [switch]$DryRun
+    [switch]$DryRun,
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$LocalFeed,
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$LocalOnly,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$LocalFeedPath = "$env:USERPROFILE\.nuget\local-feed"
 )
+
+# Validate parameters
+if (!$LocalOnly -and !$ApiKey) {
+    Write-Error "ApiKey is required unless -LocalOnly is specified"
+    exit 1
+}
+
+if ($LocalOnly) {
+    $LocalFeed = $true
+}
 
 function Get-CurrentVersion {
     $propsFile = "Directory.Build.props"
@@ -44,6 +69,17 @@ function Get-CurrentVersion {
     return $version
 }
 
+function Ensure-LocalFeedDirectory {
+    param([string]$Path)
+    
+    if (!(Test-Path $Path)) {
+        Write-Host "Creating local feed directory: $Path" -ForegroundColor Yellow
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+    
+    return Test-Path $Path
+}
+
 $projects = @(
     "src/LmCore/AchieveAi.LmDotnetTools.LmCore.csproj",
     "src/LmConfig/AchieveAi.LmDotnetTools.LmConfig.csproj", 
@@ -65,6 +101,22 @@ if (!$currentVersion) {
 Write-Host "NuGet Package Build and Publish Process" -ForegroundColor Cyan
 Write-Host "Version: $currentVersion" -ForegroundColor Green
 Write-Host "Packages: $($projects.Count)" -ForegroundColor Green
+
+if ($LocalFeed) {
+    Write-Host "Local Feed: $LocalFeedPath" -ForegroundColor Green
+    if (!(Ensure-LocalFeedDirectory $LocalFeedPath)) {
+        Write-Host "Failed to create local feed directory!" -ForegroundColor Red
+        exit 1
+    }
+}
+
+if ($LocalOnly) {
+    Write-Host "Mode: Local Only" -ForegroundColor Yellow
+} elseif ($LocalFeed) {
+    Write-Host "Mode: NuGet.org + Local Feed" -ForegroundColor Yellow
+} else {
+    Write-Host "Mode: NuGet.org Only" -ForegroundColor Yellow
+}
 
 if ($DryRun) {
     Write-Host "DRY RUN MODE - No packages will be published" -ForegroundColor Yellow
@@ -94,14 +146,43 @@ foreach ($project in $projects) {
     if ($nupkgPath) {
         if ($DryRun) {
             Write-Host "  [DRY RUN] Would publish: $($nupkgPath.FullName)" -ForegroundColor Cyan
+            if ($LocalFeed) {
+                Write-Host "  [DRY RUN] Would publish to local feed: $LocalFeedPath" -ForegroundColor Cyan
+            }
+            if (!$LocalOnly) {
+                Write-Host "  [DRY RUN] Would publish to NuGet.org" -ForegroundColor Cyan
+            }
         } else {
-            Write-Host "  Publishing: $($nupkgPath.FullName)" -ForegroundColor Yellow
-            dotnet nuget push $nupkgPath.FullName --api-key $ApiKey --source https://api.nuget.org/v3/index.json
+            $publishSuccess = $true
             
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  ✓ Successfully published $projectName v$currentVersion" -ForegroundColor Green
-            } else {
-                Write-Host "  ✗ Failed to publish $projectName" -ForegroundColor Red
+            # Publish to local feed first if enabled
+            if ($LocalFeed) {
+                Write-Host "  Publishing to local feed: $LocalFeedPath" -ForegroundColor Yellow
+                dotnet nuget push $nupkgPath.FullName --source $LocalFeedPath --skip-duplicate
+                
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "  ✓ Successfully published $projectName v$currentVersion to local feed" -ForegroundColor Green
+                } else {
+                    Write-Host "  ✗ Failed to publish $projectName to local feed" -ForegroundColor Red
+                    $publishSuccess = $false
+                }
+            }
+            
+            # Publish to NuGet.org if not local-only
+            if (!$LocalOnly) {
+                Write-Host "  Publishing to NuGet.org..." -ForegroundColor Yellow
+                dotnet nuget push $nupkgPath.FullName --api-key $ApiKey --source https://api.nuget.org/v3/index.json
+                
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "  ✓ Successfully published $projectName v$currentVersion to NuGet.org" -ForegroundColor Green
+                } else {
+                    Write-Host "  ✗ Failed to publish $projectName to NuGet.org" -ForegroundColor Red
+                    $publishSuccess = $false
+                }
+            }
+            
+            if (!$publishSuccess) {
+                Write-Host "  ⚠ Some publishing operations failed for $projectName" -ForegroundColor Yellow
             }
         }
     } else {
@@ -117,5 +198,14 @@ if ($DryRun) {
     Write-Host "NuGet publishing process completed!" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Published version: $currentVersion" -ForegroundColor Green
-    Write-Host "Packages should be available on NuGet.org within a few minutes" -ForegroundColor Yellow
+    
+    if ($LocalFeed) {
+        Write-Host "Local feed: $LocalFeedPath" -ForegroundColor Green
+    }
+    if (!$LocalOnly) {
+        Write-Host "Packages should be available on NuGet.org within a few minutes" -ForegroundColor Yellow
+    }
+    if ($LocalOnly) {
+        Write-Host "Packages are immediately available in your local feed" -ForegroundColor Green
+    }
 }

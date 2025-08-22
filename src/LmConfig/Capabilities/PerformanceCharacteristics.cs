@@ -108,4 +108,4 @@ public record PerformanceCharacteristics
     /// </summary>
     [JsonPropertyName("rate_limits")]
     public IDictionary<string, object>? RateLimits { get; init; }
-} 
+}

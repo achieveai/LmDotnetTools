@@ -69,7 +69,7 @@ public record CostEstimation
     public required int EstimatedCompletionTokens { get; init; }
     public required PricingConfig PricingInfo { get; init; }
     public DateTime EstimatedAt { get; init; } = DateTime.UtcNow;
-    
+
     /// <summary>
     /// Full provider path for aggregators (e.g., "OpenRouter -> OpenAI")
     /// </summary>
@@ -94,7 +94,7 @@ public record CostReport
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
     public TimeSpan? ResponseTime { get; init; }                // How long the request took
     public string? RequestId { get; init; }                     // For tracking and debugging
-    
+
     /// <summary>
     /// Full provider path for aggregators (e.g., "OpenRouter -> Together AI")
     /// </summary>
@@ -111,17 +111,17 @@ public record CostComparison
     public required int PromptTokens { get; init; }
     public required int CompletionTokens { get; init; }
     public DateTime ComparedAt { get; init; } = DateTime.UtcNow;
-    
+
     /// <summary>
     /// Gets the cheapest cost option.
     /// </summary>
     public CostOption Cheapest => Options.OrderBy(o => o.TotalCost).First();
-    
+
     /// <summary>
     /// Gets the most expensive cost option.
     /// </summary>
     public CostOption MostExpensive => Options.OrderByDescending(o => o.TotalCost).First();
-    
+
     /// <summary>
     /// Gets options grouped by reliability tier.
     /// </summary>
@@ -145,21 +145,21 @@ public record CostOption
     public IReadOnlyList<string>? Tags { get; init; }
     public string? ReliabilityTier { get; init; }               // "high", "medium", "low"
     public double? UptimePercentage { get; init; }              // 99.9, 99.5, etc.
-    
+
     /// <summary>
     /// Full provider path for aggregators.
     /// </summary>
     public string ProviderPath => SubProvider != null ? $"{Provider} -> {SubProvider}" : Provider;
-    
+
     /// <summary>
     /// Cost savings compared to a reference cost.
     /// </summary>
     public decimal CalculateSavings(decimal referenceCost) => referenceCost - TotalCost;
-    
+
     /// <summary>
     /// Percentage savings compared to a reference cost.
     /// </summary>
-    public double CalculateSavingsPercentage(decimal referenceCost) => 
+    public double CalculateSavingsPercentage(decimal referenceCost) =>
         referenceCost > 0 ? (double)((referenceCost - TotalCost) / referenceCost * 100) : 0;
 }
 
@@ -174,4 +174,4 @@ public enum ProviderSelectionStrategy
     Balanced,          // Balance cost and performance
     HighQuality,       // Prefer highest quality providers
     HighReliability    // Prefer most reliable providers (high uptime)
-} 
+}

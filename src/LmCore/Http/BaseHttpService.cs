@@ -11,12 +11,12 @@ public abstract class BaseHttpService : IDisposable
     /// Logger instance for the service
     /// </summary>
     protected readonly ILogger Logger;
-    
+
     /// <summary>
     /// HTTP client for making API requests
     /// </summary>
     protected readonly HttpClient HttpClient;
-    
+
     /// <summary>
     /// Tracks whether the service has been disposed
     /// </summary>
@@ -49,7 +49,7 @@ public abstract class BaseHttpService : IDisposable
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        
+
         return await HttpRetryHelper.ExecuteWithRetryAsync(
             operation,
             Logger,
@@ -74,7 +74,7 @@ public abstract class BaseHttpService : IDisposable
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        
+
         return await HttpRetryHelper.ExecuteHttpWithRetryAsync(
             httpOperation,
             responseProcessor,
@@ -120,4 +120,4 @@ public abstract class BaseHttpService : IDisposable
         Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
-} 
+}

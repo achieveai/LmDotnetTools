@@ -28,4 +28,4 @@ public interface IResultEnricher
     /// </summary>
     /// <returns>True if enrichment service is available, false otherwise.</returns>
     bool IsEnrichmentAvailable();
-} 
+}

@@ -39,7 +39,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? NullLogger.Instance;
         _semaphore = new SemaphoreSlim(1, 1);
-        
+
         if (innerHandler != null)
         {
             InnerHandler = innerHandler;
@@ -66,7 +66,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
         {
             // Generate cache key from URL and POST body
             var cacheKey = await GenerateCacheKeyAsync(request, cancellationToken);
-            
+
             // Try to get from cache first
             var cachedResponse = await GetFromCacheAsync(cacheKey, cancellationToken);
             if (cachedResponse != null)
@@ -101,10 +101,10 @@ public class CachingHttpMessageHandler : DelegatingHandler
     private async Task<string> GenerateCacheKeyAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var keyBuilder = new StringBuilder();
-        
+
         // Add URL
         keyBuilder.Append(request.RequestUri?.ToString() ?? "");
-        
+
         // Add POST body if present
         if (request.Content != null)
         {
@@ -120,7 +120,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
         }
 
         var keyString = keyBuilder.ToString();
-        
+
         // Generate SHA256 hash
         using var sha256 = SHA256.Create();
         var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(keyString));
@@ -303,7 +303,7 @@ public class CachingHttpContent : HttpContent
             length = _originalContent.Headers.ContentLength.Value;
             return length >= 0;
         }
-        
+
         length = 0;
         return false;
     }
@@ -356,16 +356,16 @@ public class CachingStream : Stream
     public override bool CanSeek => false; // Don't allow seeking to keep it simple
     public override bool CanWrite => false;
     public override long Length => _originalStream.Length;
-    public override long Position 
-    { 
-        get => _originalStream.Position; 
-        set => throw new NotSupportedException("Seeking is not supported"); 
+    public override long Position
+    {
+        get => _originalStream.Position;
+        set => throw new NotSupportedException("Seeking is not supported");
     }
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         var bytesRead = await _originalStream.ReadAsync(buffer, offset, count, cancellationToken);
-        
+
         if (bytesRead > 0)
         {
             lock (_lock)
@@ -389,7 +389,7 @@ public class CachingStream : Stream
     public override int Read(byte[] buffer, int offset, int count)
     {
         var bytesRead = _originalStream.Read(buffer, offset, count);
-        
+
         if (bytesRead > 0)
         {
             lock (_lock)
@@ -432,7 +432,7 @@ public class CachingStream : Stream
 
             // Convert byte array to string for storage
             var content = Encoding.UTF8.GetString(data);
-            
+
             var cachedItem = new CachedHttpResponse
             {
                 StatusCode = 200, // We only cache successful responses
@@ -447,7 +447,7 @@ public class CachingStream : Stream
             try
             {
                 await _cache.SetAsync(_cacheKey, cachedItem, CancellationToken.None);
-                _logger.LogDebug("Successfully cached streaming response for key: {CacheKey}, size: {Size} bytes", 
+                _logger.LogDebug("Successfully cached streaming response for key: {CacheKey}, size: {Size} bytes",
                     _cacheKey, data.Length);
             }
             finally
@@ -459,22 +459,22 @@ public class CachingStream : Stream
         {
             _logger.LogWarning(ex, "Failed to cache streaming response: {CacheKey}", _cacheKey);
             // Re-throw in debug builds to help with testing
-            #if DEBUG
+#if DEBUG
             throw;
-            #endif
+#endif
         }
     }
 
     public override void Flush() => _originalStream.Flush();
     public override Task FlushAsync(CancellationToken cancellationToken) => _originalStream.FlushAsync(cancellationToken);
 
-    public override long Seek(long offset, SeekOrigin origin) => 
+    public override long Seek(long offset, SeekOrigin origin) =>
         throw new NotSupportedException("Seeking is not supported");
 
-    public override void SetLength(long value) => 
+    public override void SetLength(long value) =>
         throw new NotSupportedException("SetLength is not supported");
 
-    public override void Write(byte[] buffer, int offset, int count) => 
+    public override void Write(byte[] buffer, int offset, int count) =>
         throw new NotSupportedException("Writing is not supported");
 
     protected override void Dispose(bool disposing)
@@ -482,20 +482,20 @@ public class CachingStream : Stream
         if (disposing && !_disposed)
         {
             Task? taskToWait = null;
-            
+
             lock (_lock)
             {
                 _disposed = true;
-                
+
                 // Trigger caching if we haven't already
                 if (!_cacheAttempted)
                 {
                     _cachingTask = Task.Run(TryCacheDataAsync, CancellationToken.None);
                 }
-                
+
                 taskToWait = _cachingTask;
             }
-            
+
             // Wait for the caching task to complete (but don't block indefinitely)
             try
             {
@@ -505,10 +505,10 @@ public class CachingStream : Stream
             {
                 _logger.LogWarning(ex, "Failed to wait for caching task completion during dispose");
             }
-            
+
             _buffer?.Dispose();
             _originalStream?.Dispose();
         }
         base.Dispose(disposing);
     }
-} 
+}

@@ -27,13 +27,13 @@ public class RerankingServiceTests
         string endpoint, string model, string apiKey, string description)
     {
         Debug.WriteLine($"Testing constructor with: {description}");
-        
+
         // Act & Assert
         var options = new RerankingOptions { BaseUrl = endpoint, DefaultModel = model, ApiKey = apiKey };
         var service = new RerankingService(options, _logger);
-        
+
         Assert.NotNull(service);
-        
+
         service.Dispose();
         Debug.WriteLine($"Constructor test passed: {description}");
     }
@@ -44,11 +44,11 @@ public class RerankingServiceTests
         string endpoint, string model, string apiKey, Type expectedExceptionType, string description)
     {
         Debug.WriteLine($"Testing invalid constructor parameters: {description}");
-        
+
         // Act & Assert
         var exception = Assert.Throws(expectedExceptionType, () =>
             new RerankingService(new RerankingOptions { BaseUrl = endpoint, DefaultModel = model, ApiKey = apiKey }, _logger));
-        
+
         Assert.NotNull(exception);
         Debug.WriteLine($"Expected exception thrown: {exception.GetType().Name} - {description}");
     }
@@ -59,26 +59,26 @@ public class RerankingServiceTests
         string query, string[] documents, string description)
     {
         Debug.WriteLine($"Testing basic reranking: {description}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidRerankResponse(documents.Length));
         using var service = CreateRerankingService(fakeHandler);
-        
+
         // Act
         var result = await service.RerankAsync(query, documents);
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.Equal(documents.Length, result.Count);
         Assert.All(result, doc => Assert.True(doc.Score >= 0 && doc.Score <= 1));
         Assert.All(result, doc => Assert.True(doc.Index >= 0 && doc.Index < documents.Length));
-        
+
         // Verify ordering (highest score first)
         for (int i = 1; i < result.Count; i++)
         {
-            Assert.True(result[i-1].Score >= result[i].Score, "Documents should be ordered by descending score");
+            Assert.True(result[i - 1].Score >= result[i].Score, "Documents should be ordered by descending score");
         }
-        
+
         Debug.WriteLine($"Reranked {result.Count} documents for: {description}");
     }
 
@@ -87,20 +87,20 @@ public class RerankingServiceTests
     public async Task RerankAsync_WithRetryLogic_Uses500msLinearBackoff()
     {
         Debug.WriteLine("Testing 500ms linear backoff retry logic");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(2, CreateValidRerankResponse(3));
         using var service = CreateRerankingService(fakeHandler);
-        
+
         // Act
         var stopwatch = Stopwatch.StartNew();
         var result = await service.RerankAsync("test query", new[] { "doc1", "doc2", "doc3" });
         stopwatch.Stop();
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.Equal(3, result.Count);
-        
+
         // Verify linear backoff timing (should be approximately 500ms + 1000ms = 1500ms for 2 retries)
         Assert.True(stopwatch.ElapsedMilliseconds >= 1400, $"Expected at least 1400ms for linear backoff, got {stopwatch.ElapsedMilliseconds}ms");
         Debug.WriteLine($"Linear backoff retry completed in {stopwatch.ElapsedMilliseconds}ms");
@@ -110,17 +110,17 @@ public class RerankingServiceTests
     public async Task RerankAsync_WithDocumentTruncation_TruncatesOnRetry()
     {
         Debug.WriteLine("Testing document truncation on retry");
-        
+
         // Arrange
         var longDocument = new string('a', 10000); // Very long document
         var documents = new[] { "short doc", longDocument, "another short doc" };
-        
+
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(1, CreateValidRerankResponse(3));
         using var service = CreateRerankingService(fakeHandler);
-        
+
         // Act
         var result = await service.RerankAsync("test query", documents);
-        
+
         // Assert
         Assert.NotNull(result);
         Assert.Equal(3, result.Count);
@@ -133,12 +133,12 @@ public class RerankingServiceTests
         HttpStatusCode[] statusCodes, bool shouldSucceed, string description)
     {
         Debug.WriteLine($"Testing retry scenario: {description}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(
             statusCodes, CreateValidRerankResponse(2));
         using var service = CreateRerankingService(fakeHandler);
-        
+
         // Act & Assert
         if (shouldSucceed)
         {
@@ -161,15 +161,15 @@ public class RerankingServiceTests
         string query, string[] documents, Type expectedExceptionType, string description)
     {
         Debug.WriteLine($"Testing invalid input: {description}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
         using var service = CreateRerankingService(fakeHandler);
-        
+
         // Act & Assert
         var exception = await Assert.ThrowsAsync(expectedExceptionType, () =>
             service.RerankAsync(query, documents));
-        
+
         Assert.NotNull(exception);
         Debug.WriteLine($"Expected exception thrown: {exception.GetType().Name} - {description}");
     }
@@ -179,18 +179,18 @@ public class RerankingServiceTests
     public async Task RerankAsync_WithMaxRetries_RespectsRetryLimit()
     {
         Debug.WriteLine("Testing maximum retry limit (2 retries)");
-        
+
         // Arrange - Always return 500 (retryable error)
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleHandler(
             _ => new HttpResponseMessage(HttpStatusCode.InternalServerError));
         using var service = CreateRerankingService(fakeHandler);
-        
+
         // Act & Assert
         var stopwatch = Stopwatch.StartNew();
         await Assert.ThrowsAsync<HttpRequestException>(() =>
             service.RerankAsync("test", new[] { "doc1" }));
         stopwatch.Stop();
-        
+
         // Should try 3 times total (1 initial + 2 retries) with 500ms + 1000ms delays
         Assert.True(stopwatch.ElapsedMilliseconds >= 1400, $"Expected at least 1400ms for max retries, got {stopwatch.ElapsedMilliseconds}ms");
         Debug.WriteLine($"Max retry test completed in {stopwatch.ElapsedMilliseconds}ms");
@@ -200,18 +200,18 @@ public class RerankingServiceTests
     public async Task RerankAsync_WithNonRetryableError_FailsImmediately()
     {
         Debug.WriteLine("Testing non-retryable error (4xx) fails immediately");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleHandler(
             _ => new HttpResponseMessage(HttpStatusCode.BadRequest));
         using var service = CreateRerankingService(fakeHandler);
-        
+
         // Act & Assert
         var stopwatch = Stopwatch.StartNew();
         await Assert.ThrowsAsync<HttpRequestException>(() =>
             service.RerankAsync("test", new[] { "doc1" }));
         stopwatch.Stop();
-        
+
         // Should fail immediately without retries
         Assert.True(stopwatch.ElapsedMilliseconds < 100, $"Expected immediate failure, got {stopwatch.ElapsedMilliseconds}ms");
         Debug.WriteLine($"Non-retryable error failed immediately in {stopwatch.ElapsedMilliseconds}ms");
@@ -312,4 +312,4 @@ public class RerankingServiceTests
             Debug.WriteLine($"[{logLevel}] {formatter(state, exception)}");
         }
     }
-} 
+}

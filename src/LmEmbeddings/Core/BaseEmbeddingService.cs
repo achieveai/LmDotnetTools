@@ -66,7 +66,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// <param name="logger">The logger instance for diagnostic and error logging</param>
     /// <param name="httpClient">The HTTP client for making API requests</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="logger"/> or <paramref name="httpClient"/> is null</exception>
-    protected BaseEmbeddingService(ILogger logger, HttpClient httpClient) 
+    protected BaseEmbeddingService(ILogger logger, HttpClient httpClient)
         : base(logger, httpClient)
     {
     }
@@ -114,7 +114,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
 
         var defaultModel = availableModels.First();
         var response = await GenerateEmbeddingAsync(sentence, defaultModel, cancellationToken);
-        
+
         if (response.Embeddings?.Any() != true)
             throw new InvalidOperationException("No embeddings returned from service");
 
@@ -447,4 +447,4 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
             ValidationHelper.ValidateAllowedValues(request.EncodingFormat, validFormats);
         }
     }
-} 
+}

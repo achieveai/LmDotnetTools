@@ -72,4 +72,4 @@ public record TokenLimits
     /// </summary>
     [JsonPropertyName("variable_token_limits")]
     public bool VariableTokenLimits { get; init; } = false;
-} 
+}

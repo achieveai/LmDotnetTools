@@ -39,7 +39,7 @@ public class TransportSessionInitializer
             if (sessionDefaults != null)
             {
                 _logger.LogInformation("STDIO session initialized with context: {SessionDefaults}", sessionDefaults);
-                
+
                 // Log environment variables found (for debugging)
                 LogEnvironmentVariables();
             }
@@ -79,7 +79,7 @@ public class TransportSessionInitializer
             if (sessionDefaults != null)
             {
                 _logger.LogInformation("SSE session initialized with context: {SessionDefaults}", sessionDefaults);
-                
+
                 // Log what was found (for debugging)
                 LogSseContext(queryParameters, headers);
             }
@@ -152,21 +152,21 @@ public class TransportSessionInitializer
         // Validate identifier lengths
         if (sessionDefaults.UserId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: UserId too long ({Length} > 100)", 
+            _logger.LogWarning("Session context validation failed: UserId too long ({Length} > 100)",
                 sessionDefaults.UserId.Length);
             return false;
         }
 
         if (!string.IsNullOrEmpty(sessionDefaults.AgentId) && sessionDefaults.AgentId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: AgentId too long ({Length} > 100)", 
+            _logger.LogWarning("Session context validation failed: AgentId too long ({Length} > 100)",
                 sessionDefaults.AgentId.Length);
             return false;
         }
 
         if (!string.IsNullOrEmpty(sessionDefaults.RunId) && sessionDefaults.RunId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: RunId too long ({Length} > 100)", 
+            _logger.LogWarning("Session context validation failed: RunId too long ({Length} > 100)",
                 sessionDefaults.RunId.Length);
             return false;
         }
@@ -206,10 +206,10 @@ public class TransportSessionInitializer
             var relevantParams = queryParameters
                 .Where(kvp => kvp.Key.EndsWith("_id"))
                 .ToList();
-            
+
             if (relevantParams.Any())
             {
-                _logger.LogDebug("Found URL parameters: {Parameters}", 
+                _logger.LogDebug("Found URL parameters: {Parameters}",
                     string.Join(", ", relevantParams.Select(kvp => $"{kvp.Key}={kvp.Value}")));
             }
         }
@@ -219,12 +219,12 @@ public class TransportSessionInitializer
             var relevantHeaders = headers
                 .Where(kvp => kvp.Key.StartsWith("X-Memory-"))
                 .ToList();
-            
+
             if (relevantHeaders.Any())
             {
-                _logger.LogDebug("Found HTTP headers: {Headers}", 
+                _logger.LogDebug("Found HTTP headers: {Headers}",
                     string.Join(", ", relevantHeaders.Select(kvp => $"{kvp.Key}={kvp.Value}")));
             }
         }
     }
-} 
+}

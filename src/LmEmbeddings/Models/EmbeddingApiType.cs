@@ -17,4 +17,4 @@ public enum EmbeddingApiType
     /// like 'normalized' and 'embedding_type'.
     /// </summary>
     Jina = 1
-} 
+}

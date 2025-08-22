@@ -84,13 +84,13 @@ public class GraphMemoryService : IGraphMemoryService
                 var isValid = await _decisionEngine.ValidateGraphUpdateAsync(instruction, sessionContext, cancellationToken);
                 if (!isValid)
                 {
-                    var relationshipInfo = instruction.RelationshipData != null 
+                    var relationshipInfo = instruction.RelationshipData != null
                         ? $"'{instruction.RelationshipData.Source}' --[{instruction.RelationshipData.RelationshipType}]--> '{instruction.RelationshipData.Target}' (confidence: {instruction.RelationshipData.Confidence:F2})"
                         : "null relationship data";
-                    
-                    _logger.LogWarning("RELATIONSHIP VALIDATION FAILED: {RelationshipInfo} | Operation: {Operation} | Reasoning: {Reasoning} | Confidence: {InstructionConfidence:F2}", 
+
+                    _logger.LogWarning("RELATIONSHIP VALIDATION FAILED: {RelationshipInfo} | Operation: {Operation} | Reasoning: {Reasoning} | Confidence: {InstructionConfidence:F2}",
                         relationshipInfo, instruction.Operation, instruction.Reasoning, instruction.Confidence);
-                    
+
                     summary.Warnings.Add($"Skipped invalid instruction: {instruction.Reasoning}");
                     continue;
                 }
@@ -491,13 +491,13 @@ public class GraphMemoryService : IGraphMemoryService
         }
         catch (Exception ex)
         {
-            var instructionInfo = instruction.EntityData != null 
+            var instructionInfo = instruction.EntityData != null
                 ? $"Entity: {instruction.EntityData.Name}"
                 : instruction.RelationshipData != null
                     ? $"Relationship: '{instruction.RelationshipData.Source}' --[{instruction.RelationshipData.RelationshipType}]--> '{instruction.RelationshipData.Target}'"
                     : "Unknown instruction type";
-            
-            _logger.LogError(ex, "EXECUTION FAILED: {InstructionInfo} | Operation: {Operation} | Reasoning: {Reasoning} | Error: {ErrorMessage}", 
+
+            _logger.LogError(ex, "EXECUTION FAILED: {InstructionInfo} | Operation: {Operation} | Reasoning: {Reasoning} | Error: {ErrorMessage}",
                 instructionInfo, instruction.Operation, instruction.Reasoning, ex.Message);
             summary.Warnings.Add($"Failed to execute instruction: {instruction.Reasoning} - {ex.Message}");
         }
@@ -651,7 +651,7 @@ public class GraphMemoryService : IGraphMemoryService
             var memoryIds = results.CombinedResults.Select(r => r.Memory.Id).ToList();
             var entities = await _graphRepository.GetEntitiesAsync(sessionContext, limit: 1000, cancellationToken: cancellationToken);
             var relevantEntities = entities.Where(e => e.SourceMemoryIds?.Any(id => memoryIds.Contains(id)) == true);
-            
+
             foreach (var entity in relevantEntities)
             {
                 if (!results.RelevantEntities.Any(e => e.Name.Equals(entity.Name, StringComparison.OrdinalIgnoreCase)))
@@ -706,4 +706,4 @@ public class GraphMemoryService : IGraphMemoryService
     }
 
     #endregion
-} 
+}

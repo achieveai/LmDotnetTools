@@ -17,7 +17,7 @@ public class TransportSessionInitializerTests
     {
         _mockSessionManager = new Mock<ISessionManager>();
         _mockLogger = new Mock<ILogger<TransportSessionInitializer>>();
-        
+
         _options = new MemoryServerOptions
         {
             SessionDefaults = new SessionDefaultsOptions
@@ -380,4 +380,4 @@ public class TransportSessionInitializerTests
 
         Debug.WriteLine("✅ Session cleanup exception handling test passed");
     }
-} 
+}

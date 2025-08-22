@@ -32,7 +32,7 @@ public static class HttpTestHelpers
     /// <param name="baseAddress">Base address for the client</param>
     /// <returns>HttpClient configured with the specified response</returns>
     public static HttpClient CreateTestHttpClientWithJsonResponse(
-        string jsonResponse, 
+        string jsonResponse,
         HttpStatusCode statusCode = HttpStatusCode.OK,
         string baseAddress = "https://api.test.com")
     {
@@ -161,7 +161,7 @@ public static class HttpTestHelpers
     /// <param name="throwOnMissing">Whether to throw exception if headers are missing</param>
     /// <returns>True if all expected headers are present</returns>
     public static bool ValidateRequestHeaders(
-        HttpRequestMessage request, 
+        HttpRequestMessage request,
         Dictionary<string, string> expectedHeaders,
         bool throwOnMissing = true)
     {
@@ -169,7 +169,7 @@ public static class HttpTestHelpers
         {
             var found = request.Headers.TryGetValues(header.Key, out var values) &&
                        values.Contains(header.Value);
-            
+
             if (!found)
             {
                 if (throwOnMissing)
@@ -280,4 +280,4 @@ public static class HttpTestHelpers
         public AssertionException(string message) : base(message) { }
         public AssertionException(string message, Exception innerException) : base(message, innerException) { }
     }
-} 
+}

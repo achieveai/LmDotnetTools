@@ -76,4 +76,4 @@ public record ModelConfig
             .OrderByDescending(p => p.Priority)
             .ToList();
     }
-} 
+}

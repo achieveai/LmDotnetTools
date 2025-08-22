@@ -11,26 +11,26 @@ public record FunctionDescriptor
     /// The function contract containing metadata and parameter definitions
     /// </summary>
     public required FunctionContract Contract { get; init; }
-    
+
     /// <summary>
     /// The function handler that executes the actual function logic
     /// </summary>
     public required Func<string, Task<string>> Handler { get; init; }
-    
+
     /// <summary>
     /// Unique key for this function (handles class name prefixing for MCP functions)
     /// </summary>
-    public string Key => Contract.ClassName != null 
-        ? $"{Contract.ClassName}-{Contract.Name}" 
+    public string Key => Contract.ClassName != null
+        ? $"{Contract.ClassName}-{Contract.Name}"
         : Contract.Name;
-    
+
     /// <summary>
     /// Display name for error messages and logging
     /// </summary>
-    public string DisplayName => Contract.ClassName != null 
-        ? $"{Contract.ClassName}.{Contract.Name}" 
+    public string DisplayName => Contract.ClassName != null
+        ? $"{Contract.ClassName}.{Contract.Name}"
         : Contract.Name;
-    
+
     /// <summary>
     /// Provider name for debugging and conflict resolution
     /// </summary>

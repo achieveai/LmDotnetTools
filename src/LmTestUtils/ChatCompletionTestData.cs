@@ -197,7 +197,7 @@ public static class ChatCompletionTestData
         {
             new object[] { new[] { ProviderTestDataGenerator.CreateTestMessage("user", "Hello") }, "Single user message" },
             new object[] { ProviderTestDataGenerator.CreateTestMessages(), "Multi-turn conversation" },
-            new object[] { new[] { 
+            new object[] { new[] {
                 ProviderTestDataGenerator.CreateTestMessage("system", "You are a helpful assistant"),
                 ProviderTestDataGenerator.CreateTestMessage("user", "What is 2+2?")
             }, "System message with user question" }
@@ -218,4 +218,4 @@ public static class ChatCompletionTestData
             new object[] { 1000, 2000, 3000, "High token usage" }
         };
     }
-} 
+}

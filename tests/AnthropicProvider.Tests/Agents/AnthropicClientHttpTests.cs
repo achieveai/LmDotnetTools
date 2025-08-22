@@ -43,9 +43,9 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages = new List<AnthropicMessage>
             {
-                new() 
-                { 
-                    Role = "user", 
+                new()
+                {
+                    Role = "user",
                     Content = new List<AnthropicContent>
                     {
                         new AnthropicContent { Type = "text", Text = "Hello Claude" }
@@ -62,7 +62,7 @@ public class AnthropicClientHttpTests
         var textContent = response.Content[0] as AnthropicResponseTextContent;
         Assert.NotNull(textContent);
         Assert.Equal("Test response from Claude", textContent.Text);
-        
+
         // Verify performance tracking with Anthropic-specific usage mapping
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
         Assert.NotNull(metrics);
@@ -78,7 +78,7 @@ public class AnthropicClientHttpTests
         // Arrange & Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
             new AnthropicClient(""));
-        
+
         Assert.Contains("Value cannot be null, empty, or whitespace", exception.Message);
     }
 
@@ -105,7 +105,7 @@ public class AnthropicClientHttpTests
     [Theory]
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(
-        HttpStatusCode[] statusCodes, 
+        HttpStatusCode[] statusCodes,
         bool shouldSucceed)
     {
         // Arrange
@@ -123,9 +123,9 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages = new List<AnthropicMessage>
             {
-                new() 
-                { 
-                    Role = "user", 
+                new()
+                {
+                    Role = "user",
                     Content = new List<AnthropicContent>
                     {
                         new AnthropicContent { Type = "text", Text = "Test" }
@@ -142,10 +142,10 @@ public class AnthropicClientHttpTests
         }
         else
         {
-            await Assert.ThrowsAnyAsync<HttpRequestException>(() => 
+            await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
                 client.CreateChatCompletionsAsync(request));
         }
-        
+
         // Verify performance tracking captured the metrics
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
         Assert.NotNull(metrics);
@@ -158,7 +158,7 @@ public class AnthropicClientHttpTests
         // Arrange
         var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 50, outputTokens: 25);
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            successResponse, 
+            successResponse,
             HttpStatusCode.OK);
 
         var httpClient = new HttpClient(fakeHandler);
@@ -170,9 +170,9 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages = new List<AnthropicMessage>
             {
-                new() 
-                { 
-                    Role = "user", 
+                new()
+                {
+                    Role = "user",
                     Content = new List<AnthropicContent>
                     {
                         new AnthropicContent { Type = "text", Text = "Hello" }
@@ -187,10 +187,10 @@ public class AnthropicClientHttpTests
         // Assert - Verify Anthropic-specific usage mapping
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
         Assert.NotNull(metrics);
-        
+
         // Anthropic InputTokens → LmCore PromptTokens, OutputTokens → CompletionTokens
         Assert.True(metrics.TotalTokensProcessed == 75); // 50 + 25
-        
+
         // Verify response usage
         Assert.NotNull(response.Usage);
         Assert.Equal(50, response.Usage.InputTokens);
@@ -217,9 +217,9 @@ public class AnthropicClientHttpTests
             Stream = true,
             Messages = new List<AnthropicMessage>
             {
-                new() 
-                { 
-                    Role = "user", 
+                new()
+                {
+                    Role = "user",
                     Content = new List<AnthropicContent>
                     {
                         new AnthropicContent { Type = "text", Text = "Hello" }
@@ -231,7 +231,7 @@ public class AnthropicClientHttpTests
         // Act
         var responseStream = await client.StreamingChatCompletionsAsync(request);
         var events = new List<AnthropicStreamEvent>();
-        
+
         await foreach (var streamEvent in responseStream)
         {
             events.Add(streamEvent);
@@ -239,7 +239,7 @@ public class AnthropicClientHttpTests
 
         // Assert
         Assert.NotEmpty(events);
-        
+
         // Verify performance tracking for streaming
         var metrics = _performanceTracker.GetProviderStatistics("Anthropic");
         Assert.NotNull(metrics);
@@ -253,7 +253,7 @@ public class AnthropicClientHttpTests
         // Arrange
         var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 100, outputTokens: 50);
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            successResponse, 
+            successResponse,
             HttpStatusCode.OK);
 
         var httpClient = new HttpClient(fakeHandler);
@@ -265,9 +265,9 @@ public class AnthropicClientHttpTests
             MaxTokens = 1000,
             Messages = new List<AnthropicMessage>
             {
-                new() 
-                { 
-                    Role = "user", 
+                new()
+                {
+                    Role = "user",
                     Content = new List<AnthropicContent>
                     {
                         new AnthropicContent { Type = "text", Text = "Complex reasoning task" }
@@ -287,7 +287,7 @@ public class AnthropicClientHttpTests
         Assert.Equal(0, metrics.FailedRequests);
         Assert.True(metrics.AverageRequestDuration > TimeSpan.Zero);
         Assert.Equal(150, metrics.TotalTokensProcessed); // 100 input + 50 output
-        
+
         // Verify the actual response
         Assert.NotNull(response);
         Assert.NotNull(response.Usage);
@@ -373,11 +373,11 @@ public class AnthropicClientHttpTests
         // Scenario: Max retries exceeded
         yield return new object[]
         {
-            new[] { 
-                HttpStatusCode.ServiceUnavailable, 
-                HttpStatusCode.ServiceUnavailable, 
-                HttpStatusCode.ServiceUnavailable, 
-                HttpStatusCode.ServiceUnavailable 
+            new[] {
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.ServiceUnavailable
             },
             false // should fail after max retries
         };
@@ -451,4 +451,4 @@ public class AnthropicClientHttpTests
 
         return System.Text.Json.JsonSerializer.Serialize(response);
     }
-} 
+}

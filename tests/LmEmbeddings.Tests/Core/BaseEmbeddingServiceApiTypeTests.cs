@@ -34,13 +34,13 @@ public class BaseEmbeddingServiceApiTypeTests
     {
         Debug.WriteLine($"Testing OpenAI HTTP request formatting: {description}");
         Debug.WriteLine($"Input: Model={request.Model}, ApiType={request.ApiType}, Inputs={string.Join(",", request.Inputs)}");
-        
+
         // Arrange
         HttpRequestMessage? capturedRequest = null;
         var fakeHandler = new FakeHttpMessageHandler((httpRequest, cancellationToken) =>
         {
             capturedRequest = httpRequest;
-            
+
             // Return a valid response
             var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -72,7 +72,7 @@ public class BaseEmbeddingServiceApiTypeTests
             Assert.True(payload.ContainsKey(expectedField.Key), $"Missing key: {expectedField.Key}");
             Debug.WriteLine($"✓ {expectedField.Key}: found in payload");
         }
-        
+
         Debug.WriteLine($"✓ OpenAI request formatted correctly with {payload.Count} fields");
     }
 
@@ -85,13 +85,13 @@ public class BaseEmbeddingServiceApiTypeTests
     {
         Debug.WriteLine($"Testing Jina HTTP request formatting: {description}");
         Debug.WriteLine($"Input: Model={request.Model}, ApiType={request.ApiType}, Normalized={request.Normalized}");
-        
+
         // Arrange
         HttpRequestMessage? capturedRequest = null;
         var fakeHandler = new FakeHttpMessageHandler((httpRequest, cancellationToken) =>
         {
             capturedRequest = httpRequest;
-            
+
             var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -122,7 +122,7 @@ public class BaseEmbeddingServiceApiTypeTests
             Assert.True(payload.ContainsKey(expectedField.Key), $"Missing key: {expectedField.Key}");
             Debug.WriteLine($"✓ {expectedField.Key}: found in payload");
         }
-        
+
         Debug.WriteLine($"✓ Jina request formatted correctly with {payload.Count} fields");
     }
 
@@ -136,11 +136,11 @@ public class BaseEmbeddingServiceApiTypeTests
     {
         Debug.WriteLine($"Testing request validation via HTTP: {description}");
         Debug.WriteLine($"Input: ApiType={request.ApiType}, EncodingFormat={request.EncodingFormat}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count));
-        
+
         var httpClient = new HttpClient(fakeHandler)
         {
             BaseAddress = new Uri("https://api.test.com")
@@ -175,7 +175,7 @@ public class BaseEmbeddingServiceApiTypeTests
     {
         Debug.WriteLine($"Testing HTTP error handling: {description}");
         Debug.WriteLine($"Error status: {errorStatus}");
-        
+
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(errorResponse, errorStatus);
         var httpClient = new HttpClient(fakeHandler)
@@ -188,7 +188,7 @@ public class BaseEmbeddingServiceApiTypeTests
         // Act & Assert
         var exception = await Assert.ThrowsAsync(expectedExceptionType,
             () => service.GenerateEmbeddingsAsync(request));
-        
+
         Debug.WriteLine($"Exception caught: {exception.Message}");
         Assert.NotNull(exception);
         Debug.WriteLine("✓ Error handled correctly");
@@ -205,12 +205,12 @@ public class BaseEmbeddingServiceApiTypeTests
     {
         Debug.WriteLine($"Testing retry logic via HTTP: {description}");
         Debug.WriteLine($"Failure count: {failureCount}, Status: {failureStatus}");
-        
+
         // Arrange
         var successResponse = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount, successResponse, failureStatus);
-        
+
         var httpClient = new HttpClient(fakeHandler)
         {
             BaseAddress = new Uri("https://api.test.com")
@@ -222,7 +222,7 @@ public class BaseEmbeddingServiceApiTypeTests
         var stopwatch = Stopwatch.StartNew();
         EmbeddingResponse? result = null;
         Exception? caughtException = null;
-        
+
         try
         {
             result = await service.GenerateEmbeddingsAsync(request);
@@ -232,18 +232,18 @@ public class BaseEmbeddingServiceApiTypeTests
             caughtException = ex;
             Debug.WriteLine($"Exception caught during test: {ex.GetType().Name}: {ex.Message}");
         }
-        
+
         stopwatch.Stop();
 
         // Assert
         Debug.WriteLine($"Execution time: {stopwatch.ElapsedMilliseconds}ms (including retries)");
-        
+
         if (caughtException != null)
         {
             Debug.WriteLine($"Test failed with exception: {caughtException}");
             throw new Exception($"Expected retry to succeed but got exception: {caughtException.Message}", caughtException);
         }
-        
+
         Assert.NotNull(result);
         Debug.WriteLine($"Result is null: {result == null}");
         if (result != null)
@@ -267,13 +267,13 @@ public class BaseEmbeddingServiceApiTypeTests
     {
         Debug.WriteLine($"Testing additional options via HTTP: {description}");
         Debug.WriteLine($"Input: ApiType={request.ApiType}, AdditionalOptions={request.AdditionalOptions?.Count ?? 0} items");
-        
+
         // Arrange
         HttpRequestMessage? capturedRequest = null;
         var fakeHandler = new FakeHttpMessageHandler((httpRequest, cancellationToken) =>
         {
             capturedRequest = httpRequest;
-            
+
             var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -302,7 +302,7 @@ public class BaseEmbeddingServiceApiTypeTests
             Assert.True(payload.ContainsKey(key), $"Missing expected key: {key}");
             Debug.WriteLine($"✓ Found expected key: {key} = {payload[key]}");
         }
-        
+
         Debug.WriteLine($"✓ All {expectedKeys.Length} expected keys found in HTTP payload");
     }
 
@@ -311,7 +311,7 @@ public class BaseEmbeddingServiceApiTypeTests
     /// </summary>
     private class TestEmbeddingService : BaseEmbeddingService
     {
-        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient) 
+        public TestEmbeddingService(ILogger<TestEmbeddingService> logger, HttpClient httpClient)
             : base(logger, httpClient) { }
 
         public override int EmbeddingSize => 1536;
@@ -618,4 +618,4 @@ public class BaseEmbeddingServiceApiTypeTests
             "Jina request with additional options"
         }
     };
-} 
+}

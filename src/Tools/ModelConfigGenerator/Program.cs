@@ -62,7 +62,8 @@ public class Program
                   .ConfigureServices(services =>
                   {
                       services.AddHttpClient();
-                      services.AddTransient<OpenRouterModelService>(provider => {
+                      services.AddTransient<OpenRouterModelService>(provider =>
+                      {
                           var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
                           var httpClient = httpClientFactory.CreateClient();
                           var serviceLogger = provider.GetRequiredService<ILogger<OpenRouterModelService>>();

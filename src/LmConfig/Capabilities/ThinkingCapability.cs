@@ -86,4 +86,4 @@ public enum ThinkingType
     /// Custom or provider-specific thinking implementation.
     /// </summary>
     Custom
-} 
+}

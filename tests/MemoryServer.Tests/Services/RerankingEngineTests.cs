@@ -65,13 +65,13 @@ public class RerankingEngineTests
         var results = CreateTestResults();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(() => 
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             engine.RerankResultsAsync("", results, sessionContext));
-        
-        await Assert.ThrowsAsync<ArgumentException>(() => 
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             engine.RerankResultsAsync("   ", results, sessionContext));
-        
-        await Assert.ThrowsAsync<ArgumentException>(() => 
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             engine.RerankResultsAsync(null!, results, sessionContext));
     }
 
@@ -83,7 +83,7 @@ public class RerankingEngineTests
         var sessionContext = CreateTestSessionContext();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentNullException>(() => 
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
             engine.RerankResultsAsync("test query", null!, sessionContext));
     }
 
@@ -143,11 +143,11 @@ public class RerankingEngineTests
         Assert.Equal(results.Count, result.Results.Count);
         Assert.False(result.WasReranked); // No API key configured, so local scoring
         Assert.Equal("Semantic reranking service not available", result.FallbackReason);
-        
+
         // Verify that scores were modified by multi-dimensional scoring
         var newScores = result.Results.Select(r => r.Score).ToList();
         Assert.NotEqual(originalScores, newScores);
-        
+
         // Results should be sorted by score (descending)
         for (int i = 0; i < result.Results.Count - 1; i++)
         {
@@ -163,7 +163,7 @@ public class RerankingEngineTests
         // Arrange
         var engine = CreateRerankingEngine();
         var sessionContext = CreateTestSessionContext();
-        
+
         // Create results with different creation dates
         var results = new List<UnifiedSearchResult>
         {
@@ -191,12 +191,12 @@ public class RerankingEngineTests
         // Assert
         Assert.NotNull(result);
         Assert.Equal(2, result.Results.Count);
-        
+
         // Recent content should have higher score due to recency boost
         var recentResult = result.Results.First(r => r.Id == 2);
         var oldResult = result.Results.First(r => r.Id == 1);
-        
-        Assert.True(recentResult.Score > oldResult.Score, 
+
+        Assert.True(recentResult.Score > oldResult.Score,
             $"Recent content score ({recentResult.Score}) should be higher than old content score ({oldResult.Score})");
 
         _output.WriteLine($"Recency boost test: Recent={recentResult.Score:F3}, Old={oldResult.Score:F3}");
@@ -208,7 +208,7 @@ public class RerankingEngineTests
         // Arrange
         var engine = CreateRerankingEngine();
         var sessionContext = CreateTestSessionContext();
-        
+
         // Create results with different types but same initial score
         var results = new List<UnifiedSearchResult>
         {
@@ -244,15 +244,15 @@ public class RerankingEngineTests
         // Assert
         Assert.NotNull(result);
         Assert.Equal(3, result.Results.Count);
-        
+
         var memoryResult = result.Results.First(r => r.Type == UnifiedResultType.Memory);
         var entityResult = result.Results.First(r => r.Type == UnifiedResultType.Entity);
         var relationshipResult = result.Results.First(r => r.Type == UnifiedResultType.Relationship);
-        
+
         // Memory should have highest score, then Entity, then Relationship
-        Assert.True(memoryResult.Score >= entityResult.Score, 
+        Assert.True(memoryResult.Score >= entityResult.Score,
             $"Memory score ({memoryResult.Score}) should be >= Entity score ({entityResult.Score})");
-        Assert.True(entityResult.Score >= relationshipResult.Score, 
+        Assert.True(entityResult.Score >= relationshipResult.Score,
             $"Entity score ({entityResult.Score}) should be >= Relationship score ({relationshipResult.Score})");
 
         _output.WriteLine($"Source weights: Memory={memoryResult.Score:F3}, Entity={entityResult.Score:F3}, Relationship={relationshipResult.Score:F3}");
@@ -274,7 +274,7 @@ public class RerankingEngineTests
         Assert.NotNull(result);
         Assert.Equal(2, result.Metrics.CandidateCount); // Should be limited to max candidates
         Assert.Equal(2, result.Results.Count);
-        
+
         _output.WriteLine($"Max candidates test: {result.Metrics.CandidateCount} candidates processed");
     }
 
@@ -284,7 +284,7 @@ public class RerankingEngineTests
         // Arrange
         var engine = CreateRerankingEngine();
         var sessionContext = CreateTestSessionContext();
-        
+
         var results = new List<UnifiedSearchResult>
         {
             new UnifiedSearchResult
@@ -313,10 +313,10 @@ public class RerankingEngineTests
         // Assert
         Assert.NotNull(result);
         Assert.Equal(2, result.Results.Count);
-        
+
         var lowConfidenceResult = result.Results.First(r => r.Id == 1);
         var highConfidenceResult = result.Results.First(r => r.Id == 2);
-        
+
         // High confidence should have higher score
         Assert.True(highConfidenceResult.Score > lowConfidenceResult.Score,
             $"High confidence score ({highConfidenceResult.Score}) should be higher than low confidence score ({lowConfidenceResult.Score})");
@@ -330,7 +330,7 @@ public class RerankingEngineTests
         // Arrange
         var engine = CreateRerankingEngine();
         var sessionContext = CreateTestSessionContext();
-        
+
         // Create results that will likely change positions after scoring
         var results = new List<UnifiedSearchResult>
         {
@@ -358,7 +358,7 @@ public class RerankingEngineTests
         // Assert
         Assert.NotNull(result);
         Assert.True(result.Metrics.PositionChanges >= 0);
-        
+
         _output.WriteLine($"Position changes: {result.Metrics.PositionChanges}");
     }
 
@@ -412,7 +412,7 @@ public class RerankingEngineTests
     private List<UnifiedSearchResult> CreateTestResults(int count = 3)
     {
         var results = new List<UnifiedSearchResult>();
-        
+
         for (int i = 0; i < count; i++)
         {
             results.Add(new UnifiedSearchResult
@@ -427,7 +427,7 @@ public class RerankingEngineTests
                 Confidence = i % 2 == 0 ? 0.8f : null
             });
         }
-        
+
         return results;
     }
-} 
+}

@@ -17,7 +17,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     private readonly SemaphoreSlim _initializationSemaphore;
     private readonly ConcurrentDictionary<string, DateTime> _activeSessions;
     private readonly object _metricsLock = new();
-    
+
     private bool _isInitialized;
     private int _totalSessionsCreated;
     private int _failedSessionCreations;
@@ -30,43 +30,43 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         _connectionString = databaseOptions.ConnectionString ?? throw new ArgumentException("Connection string is required");
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = _loggerFactory.CreateLogger<SqliteSessionFactory>();
-        
+
         _initializationSemaphore = new SemaphoreSlim(1, 1);
         _activeSessions = new ConcurrentDictionary<string, DateTime>();
-        
-        _logger.LogDebug("SQLite session factory created with connection string: {ConnectionString}", 
+
+        _logger.LogDebug("SQLite session factory created with connection string: {ConnectionString}",
             MaskConnectionString(_connectionString));
     }
 
     public async Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
-        
+
         try
         {
             await EnsureInitializedAsync(cancellationToken);
-            
+
             var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
-            
+
             // Track session for metrics
             _activeSessions[session.SessionId] = DateTime.UtcNow;
-            
+
             // Update metrics
             lock (_metricsLock)
             {
                 _totalSessionsCreated++;
                 _sessionCreationTimes.Add(stopwatch.ElapsedMilliseconds);
-                
+
                 // Keep only recent metrics (last 1000 entries)
                 if (_sessionCreationTimes.Count > 1000)
                 {
                     _sessionCreationTimes.RemoveAt(0);
                 }
             }
-            
-            _logger.LogDebug("Created session {SessionId} in {ElapsedMs}ms", 
+
+            _logger.LogDebug("Created session {SessionId} in {ElapsedMs}ms",
                 session.SessionId, stopwatch.ElapsedMilliseconds);
-            
+
             // Wrap session to track disposal
             return new TrackedSqliteSession(session, this);
         }
@@ -76,7 +76,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             {
                 _failedSessionCreations++;
             }
-            
+
             _logger.LogError(ex, "Failed to create session after {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
             throw;
         }
@@ -86,30 +86,30 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     {
         if (string.IsNullOrEmpty(connectionString))
             throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
-        
+
         var stopwatch = Stopwatch.StartNew();
-        
+
         try
         {
             var session = new SqliteSession(connectionString, _loggerFactory.CreateLogger<SqliteSession>());
-            
+
             // Track session for metrics
             _activeSessions[session.SessionId] = DateTime.UtcNow;
-            
+
             lock (_metricsLock)
             {
                 _totalSessionsCreated++;
                 _sessionCreationTimes.Add(stopwatch.ElapsedMilliseconds);
-                
+
                 if (_sessionCreationTimes.Count > 1000)
                 {
                     _sessionCreationTimes.RemoveAt(0);
                 }
             }
-            
-            _logger.LogDebug("Created session {SessionId} with custom connection string in {ElapsedMs}ms", 
+
+            _logger.LogDebug("Created session {SessionId} with custom connection string in {ElapsedMs}ms",
                 session.SessionId, stopwatch.ElapsedMilliseconds);
-            
+
             return Task.FromResult<ISqliteSession>(new TrackedSqliteSession(session, this));
         }
         catch (Exception ex)
@@ -118,8 +118,8 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             {
                 _failedSessionCreations++;
             }
-            
-            _logger.LogError(ex, "Failed to create session with custom connection string after {ElapsedMs}ms", 
+
+            _logger.LogError(ex, "Failed to create session with custom connection string after {ElapsedMs}ms",
                 stopwatch.ElapsedMilliseconds);
             throw;
         }
@@ -136,11 +136,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             if (_isInitialized) return;
 
             _logger.LogInformation("Initializing database schema...");
-            
+
             // Create session directly without going through EnsureInitializedAsync to avoid circular dependency
             var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
             await using var _ = session;
-            
+
             await session.ExecuteAsync(async connection =>
             {
                 // Create all tables first
@@ -205,7 +205,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         try
         {
             await using var session = await CreateSessionAsync(cancellationToken);
-            
+
             var health = await session.GetHealthAsync(cancellationToken);
             return health.IsHealthy;
         }
@@ -221,18 +221,18 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         if (_activeSessions.TryRemove(sessionId, out var createdAt))
         {
             var lifetime = (DateTime.UtcNow - createdAt).TotalMilliseconds;
-            
+
             lock (_metricsLock)
             {
                 _sessionLifetimes.Add(lifetime);
-                
+
                 // Keep only recent metrics
                 if (_sessionLifetimes.Count > 1000)
                 {
                     _sessionLifetimes.RemoveAt(0);
                 }
             }
-            
+
             _logger.LogDebug("Session {SessionId} disposed after {LifetimeMs}ms", sessionId, lifetime);
         }
     }
@@ -248,14 +248,14 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     private async Task ExecuteSchemaScriptsAsync(Microsoft.Data.Sqlite.SqliteConnection connection, CancellationToken cancellationToken)
     {
         var schemaScripts = GetSchemaScripts();
-        
+
         foreach (var script in schemaScripts)
         {
             using var command = connection.CreateCommand();
             command.CommandText = script;
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
-        
+
         _logger.LogDebug("Schema scripts executed successfully");
     }
 
@@ -344,11 +344,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
                 INSERT INTO memory_fts(rowid, content, metadata) VALUES (new.id, new.content, new.metadata);
             END",
-            
+
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
                 UPDATE memory_fts SET content = new.content, metadata = new.metadata WHERE rowid = new.id;
             END",
-            
+
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.id;
             END",
@@ -492,4 +492,4 @@ internal class TrackedSqliteSession : ISqliteSession
             _disposed = true;
         }
     }
-} 
+}

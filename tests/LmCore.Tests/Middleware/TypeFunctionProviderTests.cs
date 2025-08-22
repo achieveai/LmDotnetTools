@@ -9,7 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 public class TypeFunctionProviderTests
 {
     #region Test Classes
-    
+
     public class TestHandlerWithFunctionAttribute
     {
         [Function("add", "Adds two numbers")]
@@ -18,7 +18,7 @@ public class TypeFunctionProviderTests
         [Function("multiply")]
         [Description("Multiplies two numbers")]
         public static int Multiply(
-            [Description("First number")] int x, 
+            [Description("First number")] int x,
             [Description("Second number")] int y) => x * y;
 
         [Function]
@@ -135,7 +135,7 @@ public class TypeFunctionProviderTests
         Assert.Equal("GetLength", getLengthFunc.Contract.Name);
         Assert.Equal("Gets the length of a string", getLengthFunc.Contract.Description);
     }
-    
+
     [Fact]
     public void TypeProvider_WithInstance_ExtractsInstanceDescriptionAttributes()
     {
@@ -334,10 +334,10 @@ public class TypeFunctionProviderTests
     {
         // Arrange
         var registry = new FunctionRegistry();
-        var types = new[] 
-        { 
+        var types = new[]
+        {
             typeof(TestHandlerWithFunctionAttribute),
-            typeof(TestHandlerWithDescriptionAttribute) 
+            typeof(TestHandlerWithDescriptionAttribute)
         };
 
         // Act
@@ -355,17 +355,17 @@ public class TypeFunctionProviderTests
         // Arrange
         var registry = new FunctionRegistry();
         var instance = new TestHandlerMixed();
-        
+
         registry.AddFunctionsFromObject(instance);
         var middleware = registry.BuildMiddleware("TestMiddleware");
 
         // Act - verify middleware was created with functions
         var (contracts, handlers) = registry.Build();
-        
+
         // Assert - TestHandlerMixed has 3 instance methods (calculate, ToUpper, increment)
         Assert.NotNull(middleware);
         Assert.Equal(3, contracts.Count());
-        
+
         // Test execution through handler
         var calculateHandler = handlers["calculate"];
         var result = await calculateHandler(JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 }));

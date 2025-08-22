@@ -14,7 +14,7 @@ public static class LogEventIds
     public static readonly EventId AgentCacheHit = new(1004, "AgentCacheHit");
     public static readonly EventId AgentCacheMiss = new(1005, "AgentCacheMiss");
     public static readonly EventId AgentDelegation = new(1006, "AgentDelegation");
-    
+
     // Provider Resolution Events (3000-3999)
     public static readonly EventId ProviderResolved = new(3001, "ProviderResolved");
     public static readonly EventId ProviderResolutionFailed = new(3002, "ProviderResolutionFailed");

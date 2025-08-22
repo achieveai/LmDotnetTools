@@ -13,18 +13,18 @@ public class ToolsCallAggregateTransformerTests
         // Arrange
         var toolCall = new ToolCall("GetWeather", "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}");
         var toolResult = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies");
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall),
             GenerationId = "test-gen-123"
         };
-        
+
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(toolResult)
         };
-        
+
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "test-agent");
 
         // Act
@@ -35,7 +35,7 @@ public class ToolsCallAggregateTransformerTests
         Assert.Equal(Role.Assistant, result.Role);
         Assert.Equal("test-agent", result.FromAgent);
         Assert.Equal("test-gen-123", result.GenerationId);
-        
+
         var expectedContent = """
             <tool_call name="GetWeather">
             {
@@ -47,7 +47,7 @@ public class ToolsCallAggregateTransformerTests
             Temperature is 22°C with partly cloudy skies
             </tool_response>
             """;
-        
+
         Assert.Equal(expectedContent, result.Text);
     }
 
@@ -59,17 +59,17 @@ public class ToolsCallAggregateTransformerTests
         var toolCall2 = new ToolCall("GetTime", "{\"timezone\":\"PST\"}");
         var toolResult1 = new ToolCallResult(null, "Sunny, 25°C");
         var toolResult2 = new ToolCallResult(null, "3:45 PM");
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall1, toolCall2)
         };
-        
+
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(toolResult1, toolResult2)
         };
-        
+
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -90,21 +90,21 @@ public class ToolsCallAggregateTransformerTests
         var metadata = ImmutableDictionary.Create<string, object>()
             .Add("test_key", "test_value")
             .Add("another_key", 42);
-            
+
         var toolCall = new ToolCall("TestFunction", "{}");
         var toolResult = new ToolCallResult(null, "test result");
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall),
             Metadata = metadata
         };
-        
+
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(toolResult)
         };
-        
+
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -122,17 +122,17 @@ public class ToolsCallAggregateTransformerTests
         // Arrange
         var toolCall = new ToolCall("TestFunction", "invalid json {");
         var toolResult = new ToolCallResult(null, "test result");
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall)
         };
-        
+
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(toolResult)
         };
-        
+
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -146,31 +146,31 @@ public class ToolsCallAggregateTransformerTests
     public void CombineMessageSequence_TextAndAggregateAndText_CombinesCorrectly()
     {
         // Arrange
-        var textMessage1 = new TextMessage 
-        { 
-            Text = "I'll help you with that. Let me check the weather.", 
-            Role = Role.Assistant 
+        var textMessage1 = new TextMessage
+        {
+            Text = "I'll help you with that. Let me check the weather.",
+            Role = Role.Assistant
         };
-        
+
         var toolCall = new ToolCall("GetWeather", "{\"location\":\"Boston\"}");
         var toolResult = new ToolCallResult(null, "Rainy, 18°C");
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall)
         };
-        
+
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(toolResult)
         };
-        
+
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
-        
-        var textMessage2 = new TextMessage 
-        { 
-            Text = "Based on the weather data, you should bring an umbrella!", 
-            Role = Role.Assistant 
+
+        var textMessage2 = new TextMessage
+        {
+            Text = "Based on the weather data, you should bring an umbrella!",
+            Role = Role.Assistant
         };
 
         var messageSequence = new IMessage[] { textMessage1, aggregateMessage, textMessage2 };
@@ -222,7 +222,7 @@ public class ToolsCallAggregateTransformerTests
             8
             </tool_response>
             """;
-        
+
         Assert.Equal(expected, result);
     }
 
@@ -245,7 +245,7 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_NullArgument_ThrowsArgumentNullException()
     {
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => 
+        Assert.Throws<ArgumentNullException>(() =>
             ToolsCallAggregateTransformer.TransformToNaturalFormat(null!));
     }
 
@@ -253,7 +253,7 @@ public class ToolsCallAggregateTransformerTests
     public void CombineMessageSequence_NullArgument_ThrowsArgumentNullException()
     {
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => 
+        Assert.Throws<ArgumentNullException>(() =>
             ToolsCallAggregateTransformer.CombineMessageSequence(null!));
     }
 
@@ -263,17 +263,17 @@ public class ToolsCallAggregateTransformerTests
         // Arrange
         var toolCall = new ToolCall(null, "{}");
         var toolResult = new ToolCallResult(null, "result");
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall)
         };
-        
+
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(toolResult)
         };
-        
+
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act

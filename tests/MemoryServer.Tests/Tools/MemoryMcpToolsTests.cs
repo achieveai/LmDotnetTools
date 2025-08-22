@@ -46,12 +46,12 @@ public class MemoryMcpToolsTests
 
         var mockGraphMemoryService = new Mock<IGraphMemoryService>();
         var memoryServiceLogger = new Mock<ILogger<MemoryService>>();
-        
+
         // Setup mock embedding manager
         _mockEmbeddingManager.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
         _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
-        
+
         _memoryService = new MemoryService(_mockRepository, mockGraphMemoryService.Object, _mockEmbeddingManager.Object, memoryServiceLogger.Object, optionsMock.Object);
 
         // Setup session resolver to return predictable session contexts
@@ -93,7 +93,7 @@ public class MemoryMcpToolsTests
         Assert.NotNull(result);
         var resultJson = JsonSerializer.Serialize(result);
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
-        
+
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.True(resultObj.GetProperty("memory").GetProperty("id").GetInt32() > 0);
         Assert.Equal("Test memory content for MCP", resultObj.GetProperty("memory").GetProperty("content").GetString());
@@ -115,7 +115,7 @@ public class MemoryMcpToolsTests
 
         // Arrange
         _mockRepository.Reset();
-        
+
         // Add a test memory to the mock repository using the same user that will be returned by the session resolver
         var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Searchable test content for MCP search", "test_user", "search_agent", "search_run");
         testMemory.Score = 0.95f; // Set a high relevance score
@@ -134,14 +134,14 @@ public class MemoryMcpToolsTests
         Assert.NotNull(result);
         var resultJson = JsonSerializer.Serialize(result);
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
-        
+
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.Equal("searchable test", resultObj.GetProperty("query").GetString());
         Assert.True(resultObj.GetProperty("total_results").GetInt32() > 0);
 
         var results = resultObj.GetProperty("results").EnumerateArray().ToList();
         Assert.NotEmpty(results);
-        Assert.Contains("Searchable test content for MCP search", 
+        Assert.Contains("Searchable test content for MCP search",
             results.First().GetProperty("content").GetString());
 
         Debug.WriteLine("✅ MCP memory_search tool test passed");
@@ -154,7 +154,7 @@ public class MemoryMcpToolsTests
 
         // Arrange
         _mockRepository.Reset();
-        
+
         // Add test memories to the mock repository using the same user that will be returned by the session resolver
         var memory1 = MemoryTestDataFactory.CreateTestMemory(1, "First memory for get_all test", "test_user", "getall_agent", "getall_run");
         var memory2 = MemoryTestDataFactory.CreateTestMemory(2, "Second memory for get_all test", "test_user", "getall_agent", "getall_run");
@@ -173,7 +173,7 @@ public class MemoryMcpToolsTests
         Assert.NotNull(result);
         var resultJson = JsonSerializer.Serialize(result);
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
-        
+
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.True(resultObj.GetProperty("total_count").GetInt32() >= 2);
 
@@ -190,7 +190,7 @@ public class MemoryMcpToolsTests
 
         // Arrange
         _mockRepository.Reset();
-        
+
         // Add a test memory first using the same user that will be returned by the session resolver
         var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Original content for update test", "test_user", "test_agent", "update_run");
         _mockRepository.AddTestMemory(originalMemory);
@@ -207,7 +207,7 @@ public class MemoryMcpToolsTests
         Assert.NotNull(result);
         var resultJson = JsonSerializer.Serialize(result);
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
-        
+
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.Equal(1, resultObj.GetProperty("memory").GetProperty("id").GetInt32());
         Assert.Equal("Updated content for update test", resultObj.GetProperty("memory").GetProperty("content").GetString());
@@ -222,7 +222,7 @@ public class MemoryMcpToolsTests
 
         // Arrange
         _mockRepository.Reset();
-        
+
         // Add a test memory first using the same user that will be returned by the session resolver
         var testMemory = MemoryTestDataFactory.CreateTestMemory(1, "Content to be deleted", "test_user", "test_agent", "delete_run");
         _mockRepository.AddTestMemory(testMemory);
@@ -238,7 +238,7 @@ public class MemoryMcpToolsTests
         Assert.NotNull(result);
         var resultJson = JsonSerializer.Serialize(result);
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
-        
+
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.Contains("Memory 1 deleted successfully", resultObj.GetProperty("message").GetString());
 
@@ -252,7 +252,7 @@ public class MemoryMcpToolsTests
 
         // Arrange
         _mockRepository.Reset();
-        
+
         // Add test memories using the same user that will be returned by the session resolver
         var memory1 = MemoryTestDataFactory.CreateTestMemory(1, "Stats test memory 1", "test_user", "stats_agent", "stats_run");
         var memory2 = MemoryTestDataFactory.CreateTestMemory(2, "Stats test memory 2", "test_user", "stats_agent", "stats_run");
@@ -270,7 +270,7 @@ public class MemoryMcpToolsTests
         Assert.NotNull(result);
         var resultJson = JsonSerializer.Serialize(result);
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
-        
+
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.True(resultObj.GetProperty("stats").GetProperty("total_memories").GetInt32() >= 2);
 
@@ -295,11 +295,11 @@ public class MemoryMcpToolsTests
         Assert.NotNull(result);
         var resultJson = JsonSerializer.Serialize(result);
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
-        
+
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.True(resultObj.GetProperty("memory").GetProperty("id").GetInt32() > 0);
         Assert.Equal("Test memory without connection ID", resultObj.GetProperty("memory").GetProperty("content").GetString());
 
         Debug.WriteLine("✅ MCP memory_add tool test without connection ID passed");
     }
-} 
+}

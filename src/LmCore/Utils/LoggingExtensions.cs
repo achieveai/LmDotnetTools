@@ -8,7 +8,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 public static class LoggingExtensions
 {
     #region LLM Operation Logging Extensions
-    
+
     /// <summary>
     /// Logs the initiation of an LLM request with structured parameters.
     /// </summary>
@@ -28,7 +28,7 @@ public static class LoggingExtensions
             "LLM request initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Type={RequestType}",
             modelId, agentName, messageCount, requestType);
     }
-    
+
     /// <summary>
     /// Logs the completion of an LLM request with structured parameters.
     /// </summary>
@@ -52,7 +52,7 @@ public static class LoggingExtensions
             "LLM request completed: CompletionId={CompletionId}, Model={Model}, PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, TotalCost={TotalCost:F6}, Duration={Duration}ms",
             completionId, modelId, promptTokens, completionTokens, totalCost, durationMs);
     }
-    
+
     /// <summary>
     /// Logs the failure of an LLM request with structured parameters.
     /// </summary>
@@ -72,7 +72,7 @@ public static class LoggingExtensions
             "LLM request failed: Model={Model}, Agent={AgentType}, MessageCount={MessageCount}",
             modelId, agentType, messageCount);
     }
-    
+
     /// <summary>
     /// Logs the initiation of streaming with structured parameters.
     /// </summary>
@@ -90,7 +90,7 @@ public static class LoggingExtensions
             "Streaming initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}",
             modelId, agentName, messageCount);
     }
-    
+
     /// <summary>
     /// Logs the completion of streaming with structured parameters.
     /// </summary>
@@ -108,11 +108,11 @@ public static class LoggingExtensions
             "Streaming completed: CompletionId={CompletionId}, TotalChunks={TotalChunks}, Duration={Duration}ms",
             completionId, totalChunks, durationMs);
     }
-    
+
     #endregion
-    
+
     #region Function Call Logging Extensions
-    
+
     /// <summary>
     /// Logs the successful execution of a function call.
     /// </summary>
@@ -130,7 +130,7 @@ public static class LoggingExtensions
             "Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
             functionName, durationMs, success);
     }
-    
+
     /// <summary>
     /// Logs the failure of a function call execution.
     /// </summary>
@@ -148,7 +148,7 @@ public static class LoggingExtensions
             "Function execution failed: Name={FunctionName}, Args={Args}",
             functionName, arguments);
     }
-    
+
     /// <summary>
     /// Logs the processing of function arguments.
     /// </summary>
@@ -166,7 +166,7 @@ public static class LoggingExtensions
             "Function arguments processed: Name={FunctionName}, ArgumentCount={ArgumentCount}, ProcessingTime={ProcessingTime}ms",
             functionName, argumentCount, processingTimeMs);
     }
-    
+
     /// <summary>
     /// Logs the transformation of function call results.
     /// </summary>
@@ -184,7 +184,7 @@ public static class LoggingExtensions
             "Function result transformed: Name={FunctionName}, ResultLength={ResultLength}, TransformationTime={TransformationTime}ms",
             functionName, resultLength, transformationTimeMs);
     }
-    
+
     /// <summary>
     /// Logs MCP tool execution.
     /// </summary>
@@ -204,7 +204,7 @@ public static class LoggingExtensions
             "MCP tool executed: Tool={ToolName}, Client={ClientId}, Duration={Duration}ms, Success={Success}",
             toolName, clientId, durationMs, success);
     }
-    
+
     /// <summary>
     /// Logs MCP tool execution failure.
     /// </summary>
@@ -222,11 +222,11 @@ public static class LoggingExtensions
             "MCP tool execution failed: Tool={ToolName}, Client={ClientId}",
             toolName, clientId);
     }
-    
+
     #endregion
-    
+
     #region Performance Metrics Logging Extensions
-    
+
     /// <summary>
     /// Logs streaming performance metrics.
     /// </summary>
@@ -246,7 +246,7 @@ public static class LoggingExtensions
             "Streaming metrics: CompletionId={CompletionId}, TotalChunks={TotalChunks}, TimeToFirstToken={TimeToFirstToken}ms, TokensPerSecond={TokensPerSecond:F2}",
             completionId, totalChunks, timeToFirstTokenMs, tokensPerSecond);
     }
-    
+
     /// <summary>
     /// Logs token processing metrics.
     /// </summary>
@@ -266,7 +266,7 @@ public static class LoggingExtensions
             "Token metrics: PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, TotalTokens={TotalTokens}, TokensPerSecond={TokensPerSecond:F2}",
             promptTokens, completionTokens, totalTokens, tokensPerSecond);
     }
-    
+
     /// <summary>
     /// Logs operation latency metrics.
     /// </summary>
@@ -285,7 +285,7 @@ public static class LoggingExtensions
             "Latency metrics: Operation={Operation}, Latency={Latency}ms, HighLatency={HighLatency}",
             operationName, latencyMs, isHighLatency);
     }
-    
+
     /// <summary>
     /// Logs API response time metrics.
     /// </summary>
@@ -305,7 +305,7 @@ public static class LoggingExtensions
             "API response time: Provider={Provider}, Endpoint={Endpoint}, ResponseTime={ResponseTime}ms, StatusCode={StatusCode}",
             provider, endpoint, responseTimeMs, statusCode);
     }
-    
+
     /// <summary>
     /// Logs cache performance metrics.
     /// </summary>
@@ -325,7 +325,7 @@ public static class LoggingExtensions
             "Cache metrics: Type={CacheType}, Operation={Operation}, Key={Key}, Duration={Duration}ms",
             cacheType, operation, key, durationMs);
     }
-    
+
     /// <summary>
     /// Logs memory usage metrics.
     /// </summary>
@@ -343,11 +343,11 @@ public static class LoggingExtensions
             "Memory metrics: Component={Component}, MemoryUsage={MemoryUsage} bytes, Operation={Operation}",
             component, memoryUsageBytes, operation);
     }
-    
+
     #endregion
-    
+
     #region Middleware Logging Extensions
-    
+
     /// <summary>
     /// Logs middleware processing initiation.
     /// </summary>
@@ -363,7 +363,7 @@ public static class LoggingExtensions
             "Middleware processing: Name={MiddlewareName}, MessageCount={MessageCount}",
             middlewareName, messageCount);
     }
-    
+
     /// <summary>
     /// Logs middleware processing completion.
     /// </summary>
@@ -381,7 +381,7 @@ public static class LoggingExtensions
             "Middleware processing completed: Name={MiddlewareName}, Duration={Duration}ms, TransformedMessages={TransformedMessages}",
             middlewareName, durationMs, transformedMessages);
     }
-    
+
     /// <summary>
     /// Logs middleware processing failure.
     /// </summary>
@@ -397,7 +397,7 @@ public static class LoggingExtensions
             "Middleware processing failed: Name={MiddlewareName}",
             middlewareName);
     }
-    
+
     /// <summary>
     /// Logs usage data enrichment with the specific format required.
     /// </summary>
@@ -421,11 +421,11 @@ public static class LoggingExtensions
             "Usage data enriched: {{completionId: {CompletionId}, model: {Model}, promptTokens: {PromptTokens}, completionTokens: {CompletionTokens}, totalCost: {TotalCost:F6}, cached: {Cached}}}",
             completionId, model, promptTokens, completionTokens, totalCost, cached);
     }
-    
+
     #endregion
-    
+
     #region Provider and Agent Logging Extensions
-    
+
     /// <summary>
     /// Logs model resolution results.
     /// </summary>
@@ -445,7 +445,7 @@ public static class LoggingExtensions
             "Model resolved: RequestedModel={ModelId}, Provider={Provider}, ResolvedModel={ResolvedModel}, ResolutionTime={ResolutionTime}ms",
             modelId, resolvedProvider, resolvedModel, resolutionTimeMs);
     }
-    
+
     /// <summary>
     /// Logs agent delegation decisions.
     /// </summary>
@@ -463,7 +463,7 @@ public static class LoggingExtensions
             "Agent delegated: AgentType={AgentType}, Model={ModelName}, Reason={Reason}",
             agentType, modelName, reason);
     }
-    
+
     /// <summary>
     /// Logs provider resolution failures.
     /// </summary>
@@ -481,6 +481,6 @@ public static class LoggingExtensions
             "Provider resolution failed: ModelId={ModelId}, AvailableProviders={AvailableProviders}",
             modelId, string.Join(", ", availableProviders));
     }
-    
+
     #endregion
 }

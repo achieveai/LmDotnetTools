@@ -34,4 +34,4 @@ public record RerankRequest
     [JsonPropertyName("top_n")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? TopN { get; init; }
-} 
+}

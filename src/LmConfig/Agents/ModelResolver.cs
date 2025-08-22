@@ -20,14 +20,14 @@ public class ModelResolver : IModelResolver
     }
 
     public async Task<ProviderResolution?> ResolveProviderAsync(
-        string modelId, 
+        string modelId,
         ProviderSelectionCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(modelId))
             throw new ArgumentException("Model ID cannot be null or empty", nameof(modelId));
 
-        _logger.LogDebug("Resolving provider for model {ModelId} with criteria {Criteria}", 
+        _logger.LogDebug("Resolving provider for model {ModelId} with criteria {Criteria}",
             modelId, criteria?.ToString() ?? "default");
 
         var model = _config.GetModel(modelId);
@@ -42,7 +42,7 @@ public class ModelResolver : IModelResolver
 
         if (bestProvider != null)
         {
-            _logger.LogInformation("Resolved provider for model {ModelId}: {Provider}", 
+            _logger.LogInformation("Resolved provider for model {ModelId}: {Provider}",
                 modelId, bestProvider.ToString());
         }
         else
@@ -54,7 +54,7 @@ public class ModelResolver : IModelResolver
     }
 
     public async Task<IReadOnlyList<ProviderResolution>> GetAvailableProvidersAsync(
-        string modelId, 
+        string modelId,
         ProviderSelectionCriteria? criteria = null,
         CancellationToken cancellationToken = default)
     {
@@ -122,7 +122,7 @@ public class ModelResolver : IModelResolver
     }
 
     public Task<bool> IsProviderAvailableAsync(
-        string providerName, 
+        string providerName,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(providerName))
@@ -136,7 +136,7 @@ public class ModelResolver : IModelResolver
         var validation = connection.Validate();
         if (!validation.IsValid)
         {
-            _logger.LogDebug("Provider {ProviderName} is not available: {Errors}", 
+            _logger.LogDebug("Provider {ProviderName} is not available: {Errors}",
                 providerName, string.Join(", ", validation.Errors));
             return Task.FromResult(false);
         }
@@ -145,7 +145,7 @@ public class ModelResolver : IModelResolver
         var apiKey = connection.GetApiKey();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            _logger.LogDebug("Provider {ProviderName} is not available: API key not found in environment variable '{EnvVar}'", 
+            _logger.LogDebug("Provider {ProviderName} is not available: API key not found in environment variable '{EnvVar}'",
                 providerName, connection.ApiKeyEnvironmentVariable);
             return Task.FromResult(false);
         }
@@ -163,13 +163,13 @@ public class ModelResolver : IModelResolver
             throw new ArgumentException("Capability cannot be null or empty", nameof(capability));
 
         var modelsWithCapability = _config.GetModelsWithCapability(capability);
-        
+
         if (criteria == null)
             return modelsWithCapability;
 
         // Filter models that have at least one provider matching the criteria
         var filteredModels = new List<ModelConfig>();
-        
+
         foreach (var model in modelsWithCapability)
         {
             var providers = await GetAvailableProvidersAsync(model.Id, criteria, cancellationToken);
@@ -188,7 +188,7 @@ public class ModelResolver : IModelResolver
         CancellationToken cancellationToken = default)
     {
         var modelsWithCapability = await GetModelsWithCapabilityAsync(capability, criteria, cancellationToken);
-        
+
         foreach (var model in modelsWithCapability)
         {
             var resolution = await ResolveProviderAsync(model.Id, criteria, cancellationToken);
@@ -242,10 +242,10 @@ public class ModelResolver : IModelResolver
                 var connectionValidation = connection.Validate();
                 if (!connectionValidation.IsValid)
                 {
-                    errors.AddRange(connectionValidation.Errors.Select(e => 
+                    errors.AddRange(connectionValidation.Errors.Select(e =>
                         $"Provider {provider.Name}: {e}"));
                 }
-                warnings.AddRange(connectionValidation.Warnings.Select(w => 
+                warnings.AddRange(connectionValidation.Warnings.Select(w =>
                     $"Provider {provider.Name}: {w}"));
             }
         }
@@ -265,12 +265,12 @@ public class ModelResolver : IModelResolver
             return true;
 
         // Check include-only providers
-        if (criteria.IncludeOnlyProviders?.Any() == true && 
+        if (criteria.IncludeOnlyProviders?.Any() == true &&
             !criteria.IncludeOnlyProviders.Contains(provider.Name))
             return true;
 
         // Check required tags
-        if (criteria.RequiredTags?.Any() == true && 
+        if (criteria.RequiredTags?.Any() == true &&
             !provider.HasAllTags(criteria.RequiredTags))
             return true;
 
@@ -293,7 +293,7 @@ public class ModelResolver : IModelResolver
             return true;
 
         // Check include-only providers (sub-provider names)
-        if (criteria.IncludeOnlyProviders?.Any() == true && 
+        if (criteria.IncludeOnlyProviders?.Any() == true &&
             !criteria.IncludeOnlyProviders.Contains(subProvider.Name))
             return true;
 
@@ -310,7 +310,7 @@ public class ModelResolver : IModelResolver
     }
 
     private IReadOnlyList<ProviderResolution> SortProvidersByPreference(
-        List<ProviderResolution> resolutions, 
+        List<ProviderResolution> resolutions,
         ProviderSelectionCriteria criteria)
     {
         return resolutions.OrderByDescending(r => CalculateProviderScore(r, criteria)).ToList();
@@ -330,7 +330,7 @@ public class ModelResolver : IModelResolver
         // Adjust for cost preference
         if (criteria.PreferLowerCost)
         {
-            var totalCost = resolution.EffectivePricing.PromptPerMillion + 
+            var totalCost = resolution.EffectivePricing.PromptPerMillion +
                            resolution.EffectivePricing.CompletionPerMillion;
             score += Math.Max(0, 1000 - totalCost); // Higher score for lower cost
         }
@@ -347,4 +347,4 @@ public class ModelResolver : IModelResolver
 
         return score;
     }
-} 
+}

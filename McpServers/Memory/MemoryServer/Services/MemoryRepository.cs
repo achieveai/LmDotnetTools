@@ -54,7 +54,7 @@ public class MemoryRepository : IMemoryRepository
         };
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             using var command = connection.CreateCommand();
@@ -86,7 +86,7 @@ public class MemoryRepository : IMemoryRepository
     public async Task<Memory?> GetByIdAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -140,7 +140,7 @@ public class MemoryRepository : IMemoryRepository
         }
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             using var command = connection.CreateCommand();
@@ -195,7 +195,7 @@ public class MemoryRepository : IMemoryRepository
     public async Task<bool> DeleteAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             using var command = connection.CreateCommand();
@@ -238,7 +238,7 @@ public class MemoryRepository : IMemoryRepository
     public async Task<List<Memory>> GetAllAsync(SessionContext sessionContext, int limit = 100, int offset = 0, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -286,7 +286,7 @@ public class MemoryRepository : IMemoryRepository
             return new List<Memory>();
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             try
@@ -306,7 +306,7 @@ public class MemoryRepository : IMemoryRepository
     private async Task<List<Memory>> SearchWithFts5Async(SqliteConnection connection, string query, SessionContext sessionContext, int limit, CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
-        
+
         // Use FTS5 MATCH for full-text search
         command.CommandText = @"
             SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, m.created_at, m.updated_at, m.version,
@@ -357,7 +357,7 @@ public class MemoryRepository : IMemoryRepository
     private async Task<List<Memory>> SearchWithLikeAsync(SqliteConnection connection, string query, SessionContext sessionContext, int limit, CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
-        
+
         command.CommandText = @"
             SELECT id, content, user_id, agent_id, run_id, metadata, created_at, updated_at, version
             FROM memories 
@@ -400,7 +400,7 @@ public class MemoryRepository : IMemoryRepository
     public async Task<MemoryStats> GetStatsAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -437,7 +437,7 @@ public class MemoryRepository : IMemoryRepository
                 var avgContentLengthOrdinal = reader.GetOrdinal("avg_content_length");
                 var oldestMemoryOrdinal = reader.GetOrdinal("oldest_memory");
                 var newestMemoryOrdinal = reader.GetOrdinal("newest_memory");
-                
+
                 return new MemoryStats
                 {
                     TotalMemories = reader.GetInt32(totalCountOrdinal),
@@ -458,7 +458,7 @@ public class MemoryRepository : IMemoryRepository
     public async Task<int> DeleteAllAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             using var command = connection.CreateCommand();
@@ -529,10 +529,10 @@ public class MemoryRepository : IMemoryRepository
         var createdAtOrdinal = reader.GetOrdinal("created_at");
         var updatedAtOrdinal = reader.GetOrdinal("updated_at");
         var versionOrdinal = reader.GetOrdinal("version");
-        
+
         var metadataJson = reader.IsDBNull(metadataOrdinal) ? null : reader.GetString(metadataOrdinal);
         Dictionary<string, object>? metadata = null;
-        
+
         if (!string.IsNullOrEmpty(metadataJson))
         {
             try
@@ -604,9 +604,9 @@ public class MemoryRepository : IMemoryRepository
         command.CommandText = @"
             SELECT COUNT(*) FROM sqlite_master 
             WHERE type='table' AND name=@tableName";
-        
+
         command.Parameters.AddWithValue("@tableName", tableName);
-        
+
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result != null && Convert.ToInt32(result) > 0;
     }
@@ -625,7 +625,7 @@ public class MemoryRepository : IMemoryRepository
             throw new ArgumentException("Model name cannot be empty", nameof(modelName));
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         await session.ExecuteInTransactionAsync(async (connection, transaction) =>
         {
             // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
@@ -633,10 +633,10 @@ public class MemoryRepository : IMemoryRepository
 
             // Check if we're using vec0 virtual table or regular table with dimension column
             bool hasVec0Table = await CheckForVec0TableAsync(connection, cancellationToken);
-            
+
             using var embeddingCommand = connection.CreateCommand();
             embeddingCommand.Transaction = transaction;
-            
+
             if (hasVec0Table)
             {
                 // Use vec0 virtual table (production schema)
@@ -675,7 +675,7 @@ public class MemoryRepository : IMemoryRepository
                 await metadataCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
-            _logger.LogDebug("Stored embedding for memory {MemoryId} using model {ModelName} (dimension: {Dimension})", 
+            _logger.LogDebug("Stored embedding for memory {MemoryId} using model {ModelName} (dimension: {Dimension})",
                 memoryId, modelName, embedding.Length);
         });
     }
@@ -686,7 +686,7 @@ public class MemoryRepository : IMemoryRepository
     public async Task<float[]?> GetEmbeddingAsync(int memoryId, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -729,11 +729,11 @@ public class MemoryRepository : IMemoryRepository
             throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
-            
+
             // Use sqlite-vec for similarity search with session filtering
             command.CommandText = @"
                 SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, 
@@ -789,7 +789,7 @@ public class MemoryRepository : IMemoryRepository
                 });
             }
 
-            _logger.LogDebug("Vector search returned {Count} results for session {SessionContext} with threshold {Threshold}", 
+            _logger.LogDebug("Vector search returned {Count} results for session {SessionContext} with threshold {Threshold}",
                 results.Count, sessionContext, threshold);
 
             return results;
@@ -863,7 +863,7 @@ public class MemoryRepository : IMemoryRepository
             .Select(x => x.memory.WithScore(x.combinedScore))
             .ToList();
 
-        _logger.LogInformation("Hybrid search returned {Count} results for session {SessionContext} (traditional: {TraditionalCount}, vector: {VectorCount})", 
+        _logger.LogInformation("Hybrid search returned {Count} results for session {SessionContext} (traditional: {TraditionalCount}, vector: {VectorCount})",
             finalResults.Count, sessionContext, traditionalResults.Count, vectorResults.Count);
 
         return finalResults;
@@ -878,7 +878,7 @@ public class MemoryRepository : IMemoryRepository
             throw new ArgumentException("UserId cannot be empty", nameof(userId));
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -924,7 +924,7 @@ public class MemoryRepository : IMemoryRepository
             throw new ArgumentException("AgentId cannot be empty", nameof(agentId));
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
-        
+
         return await session.ExecuteAsync(async connection =>
         {
             using var command = connection.CreateCommand();
@@ -959,4 +959,4 @@ public class MemoryRepository : IMemoryRepository
             return runs;
         });
     }
-} 
+}

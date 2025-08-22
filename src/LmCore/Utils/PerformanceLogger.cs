@@ -34,7 +34,7 @@ public sealed class PerformanceLogger : IDisposable
     /// <param name="logLevel">Log level to use (default: Debug)</param>
     /// <param name="eventId">Event ID to use (default: PerformanceMetrics)</param>
     /// <returns>A disposable performance logger</returns>
-    public static PerformanceLogger Start(ILogger logger, string operationName, 
+    public static PerformanceLogger Start(ILogger logger, string operationName,
         LogLevel logLevel = LogLevel.Debug, EventId? eventId = null)
     {
         return new PerformanceLogger(logger, operationName, logLevel, eventId ?? LogEventIds.PerformanceMetrics);
@@ -107,28 +107,28 @@ public sealed class PerformanceLogger : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
-        
+
         _stopwatch.Stop();
-        
+
         if (_logger.IsEnabled(_logLevel))
         {
             var duration = _stopwatch.ElapsedMilliseconds;
-            
+
             // Build the log message with all properties
             var messageBuilder = new List<string> { "Operation={Operation}", "Duration={Duration}ms" };
             var values = new List<object?> { _operationName, duration };
-            
+
             foreach (var (key, value) in _properties)
             {
                 messageBuilder.Add($"{key}={{{key}}}");
                 values.Add(value);
             }
-            
+
             var message = $"Performance metrics: {string.Join(", ", messageBuilder)}";
-            
+
             _logger.Log(_logLevel, _eventId, message, values.ToArray());
         }
-        
+
         _disposed = true;
     }
 }
@@ -160,7 +160,7 @@ public static class TokenMetrics
     public static void LogTokensPerSecond(ILogger logger, int tokenCount, long durationMs, string? completionId = null)
     {
         var tokensPerSecond = CalculateTokensPerSecond(tokenCount, durationMs);
-        
+
         logger.LogDebug(LogEventIds.TokensPerSecond,
             "Tokens per second: CompletionId={CompletionId}, Tokens={Tokens}, Duration={Duration}ms, TokensPerSecond={TokensPerSecond:F2}",
             completionId, tokenCount, durationMs, tokensPerSecond);
@@ -196,10 +196,10 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     public void RecordFirstToken()
     {
         if (_firstTokenReceived) return;
-        
+
         _firstTokenReceived = true;
         var timeToFirstToken = _stopwatch.ElapsedMilliseconds;
-        
+
         _logger.LogDebug(LogEventIds.TimeToFirstToken,
             "Time to first token: CompletionId={CompletionId}, TimeToFirstToken={TimeToFirstToken}ms",
             _completionId, timeToFirstToken);
@@ -218,7 +218,7 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
-        
+
         _stopwatch.Stop();
         _disposed = true;
     }

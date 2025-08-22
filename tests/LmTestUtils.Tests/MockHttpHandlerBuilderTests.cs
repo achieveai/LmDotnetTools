@@ -31,9 +31,9 @@ namespace LmTestUtils.Tests
                 data: {"type":"message_stop"}
 
                 """;
-            
+
             await File.WriteAllTextAsync(tempFile, sseContent);
-            
+
             try
             {
                 var handler = MockHttpHandlerBuilder.Create()
@@ -77,17 +77,17 @@ namespace LmTestUtils.Tests
                 },
                 max_tokens = 100
             };
-            
+
             var testRequest2 = new
             {
-                model = "claude-3-sonnet-20240229", 
+                model = "claude-3-sonnet-20240229",
                 messages = new[]
                 {
                     new { role = "user", content = "Hello" }
                 },
                 max_tokens = 100
             };
-            
+
             var testRequest3 = new
             {
                 model = "claude-3-sonnet-20240229",
@@ -104,13 +104,13 @@ namespace LmTestUtils.Tests
                 SerializedRequest = JsonSerializer.SerializeToElement(testRequest1),
                 SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test1" })
             };
-            
+
             var interaction2 = new RecordedInteraction
             {
                 SerializedRequest = JsonSerializer.SerializeToElement(testRequest2),
                 SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test2" })
             };
-            
+
             var interaction3 = new RecordedInteraction
             {
                 SerializedRequest = JsonSerializer.SerializeToElement(testRequest3),
@@ -121,7 +121,7 @@ namespace LmTestUtils.Tests
             var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType("AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware");
             var middleware = Activator.CreateInstance(middlewareType!, "test.json");
             var method = middlewareType!.GetMethod("GenerateCacheKey", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            
+
             var key1 = (string)method!.Invoke(middleware, new object[] { interaction1 })!;
             var key2 = (string)method!.Invoke(middleware, new object[] { interaction2 })!;
             var key3 = (string)method!.Invoke(middleware, new object[] { interaction3 })!;
@@ -129,15 +129,15 @@ namespace LmTestUtils.Tests
             // Assert
             // Same request content should generate same hash
             Assert.Equal(key1, key2);
-            
+
             // Different request content should generate different hash
             Assert.NotEqual(key1, key3);
-            
+
             // Keys should be SHA256 hex strings (64 characters)
             Assert.Equal(64, key1.Length);
             Assert.Equal(64, key2.Length);
             Assert.Equal(64, key3.Length);
-            
+
             // Keys should be valid hex strings
             Assert.True(IsValidHexString(key1));
             Assert.True(IsValidHexString(key2));
@@ -158,7 +158,7 @@ namespace LmTestUtils.Tests
             var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType("AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware");
             var middleware = Activator.CreateInstance(middlewareType!, "test.json");
             var method = middlewareType!.GetMethod("GenerateCacheKey", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            
+
             var key = (string)method!.Invoke(middleware, new object[] { interaction })!;
 
             // Assert
@@ -178,7 +178,7 @@ namespace LmTestUtils.Tests
                     "max_tokens": 100
                 }
                 """;
-            
+
             var request2Json = """
                 {
                     "model": "claude-3-sonnet-20240229",
@@ -188,7 +188,7 @@ namespace LmTestUtils.Tests
                     "max_tokens": 100
                 }
                 """;
-            
+
             var request3Json = """
                 {
                     "model": "claude-3-sonnet-20240229",
@@ -206,13 +206,13 @@ namespace LmTestUtils.Tests
             // Act & Assert
             // Same content should match exactly
             Assert.True(RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: true));
-            
+
             // Same content should match flexibly
             Assert.True(RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: false));
-            
+
             // Different content should not match exactly
             Assert.False(RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: true));
-            
+
             // Different content should not match flexibly (different message content)
             Assert.False(RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: false));
         }
@@ -253,7 +253,7 @@ namespace LmTestUtils.Tests
                     }
                 ]
                 """;
-            
+
             var recordedMessagesJson = """
                 [
                     {
@@ -286,16 +286,16 @@ namespace LmTestUtils.Tests
                     }
                 ]
                 """;
-            
+
             var incomingMessages = JsonDocument.Parse(incomingMessagesJson).RootElement;
             var recordedMessages = JsonDocument.Parse(recordedMessagesJson).RootElement;
-            
+
             // Act - This should match because role and content are identical, even though other properties differ
             var matches = RequestMatcher.MatchesRecordedRequest(
                 JsonDocument.Parse($"{{\"messages\": {incomingMessagesJson}}}").RootElement,
                 JsonDocument.Parse($"{{\"messages\": {recordedMessagesJson}}}").RootElement,
                 exactMatch: false);
-            
+
             // Assert
             Assert.True(matches);
         }
@@ -317,7 +317,7 @@ namespace LmTestUtils.Tests
                     }
                 ]
                 """;
-            
+
             var recordedMessagesJson = """
                 [
                     {
@@ -331,13 +331,13 @@ namespace LmTestUtils.Tests
                     }
                 ]
                 """;
-            
+
             // Act - This should NOT match because content text differs
             var matches = RequestMatcher.MatchesRecordedRequest(
                 JsonDocument.Parse($"{{\"messages\": {incomingMessagesJson}}}").RootElement,
                 JsonDocument.Parse($"{{\"messages\": {recordedMessagesJson}}}").RootElement,
                 exactMatch: false);
-            
+
             // Assert
             Assert.False(matches);
         }
@@ -361,7 +361,7 @@ namespace LmTestUtils.Tests
             Assert.Equal(1, capture.RequestCount);
             Assert.NotNull(capture.LastRequestBody);
             Assert.Contains("test", capture.LastRequestBody);
-            
+
             // Verify response was also generated
             var responseContent = await response.Content.ReadAsStringAsync();
             Assert.Contains("response", responseContent);
@@ -394,7 +394,7 @@ namespace LmTestUtils.Tests
             Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
             Assert.True(response.Headers.CacheControl?.NoCache);
             Assert.Contains("keep-alive", response.Headers.GetValues("Connection"));
-            
+
             // Verify SSE format
             Assert.Contains("data: {", content);
             Assert.Contains("\"type\":\"message_start\"", content);
@@ -422,7 +422,7 @@ namespace LmTestUtils.Tests
             // Assert
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
-            
+
             // The JSON array is treated as a single JsonElement, so it will be serialized as one data line
             Assert.Contains("data: [{\"id\":1", content);
             Assert.Contains("data: [DONE]", content);
@@ -451,7 +451,7 @@ namespace LmTestUtils.Tests
             // Assert
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
-            
+
             // Each item should be a separate SSE event
             Assert.Contains("data: {\"id\":1", content);
             Assert.Contains("data: {\"id\":2", content);
@@ -481,7 +481,7 @@ namespace LmTestUtils.Tests
         private static bool IsValidHexString(string input)
         {
             if (string.IsNullOrEmpty(input)) return false;
-            
+
             foreach (char c in input)
             {
                 if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')))
@@ -490,4 +490,4 @@ namespace LmTestUtils.Tests
             return true;
         }
     }
-} 
+}

@@ -178,12 +178,12 @@ public class LoggingSystemIntegrationTests
         // Act - Measure performance
         const int iterations = 100;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        
+
         for (int i = 0; i < iterations; i++)
         {
             await middleware.InvokeAsync(context, mockAgent.Object);
         }
-        
+
         stopwatch.Stop();
 
         // Assert - Should complete quickly even with logging infrastructure
@@ -205,7 +205,7 @@ public class LoggingSystemIntegrationTests
         // Arrange
         var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
         var testException = new InvalidOperationException("Test function failure");
-        
+
         var functions = new List<FunctionContract>
         {
             new FunctionContract
@@ -247,7 +247,7 @@ public class LoggingSystemIntegrationTests
             x => x.Log(
                 LogLevel.Error,
                 It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => 
+                It.Is<It.IsAnyType>((v, t) =>
                     v.ToString()!.Contains("Function execution failed") &&
                     v.ToString()!.Contains("failing_function")),
                 testException,
@@ -288,21 +288,21 @@ public class LoggingSystemIntegrationTests
         // Verify agent events are in the 1000-1999 range
         foreach (var eventId in agentEvents)
         {
-            Assert.True(eventId.Id >= 1000 && eventId.Id < 2000, 
+            Assert.True(eventId.Id >= 1000 && eventId.Id < 2000,
                 $"Agent event {eventId.Name} has ID {eventId.Id} outside expected range 1000-1999");
         }
 
         // Verify middleware events are in the 2000-2999 range
         foreach (var eventId in middlewareEvents)
         {
-            Assert.True(eventId.Id >= 2000 && eventId.Id < 3000, 
+            Assert.True(eventId.Id >= 2000 && eventId.Id < 3000,
                 $"Middleware event {eventId.Name} has ID {eventId.Id} outside expected range 2000-2999");
         }
 
         // Verify provider events are in the 3000-3999 range
         foreach (var eventId in providerEvents)
         {
-            Assert.True(eventId.Id >= 3000 && eventId.Id < 4000, 
+            Assert.True(eventId.Id >= 3000 && eventId.Id < 4000,
                 $"Provider event {eventId.Name} has ID {eventId.Id} outside expected range 3000-3999");
         }
     }
@@ -335,7 +335,7 @@ public class LoggingSystemIntegrationTests
             x => x.Log(
                 LogLevel.Information,
                 LogEventIds.AgentRequestInitiated,
-                It.Is<It.IsAnyType>((v, t) => 
+                It.Is<It.IsAnyType>((v, t) =>
                     v.ToString()!.Contains("test-123") &&
                     v.ToString()!.Contains("gpt-4")),
                 It.IsAny<Exception>(),
@@ -378,13 +378,13 @@ public class LoggingSystemIntegrationTests
         ILoggerFactory? nullLoggerFactory = null;
 
         // Act
-        var logger = nullLoggerFactory?.CreateLogger<LoggingSystemIntegrationTests>() ?? 
+        var logger = nullLoggerFactory?.CreateLogger<LoggingSystemIntegrationTests>() ??
                      NullLogger<LoggingSystemIntegrationTests>.Instance;
 
         // Assert
         Assert.NotNull(logger);
         Assert.IsType<NullLogger<LoggingSystemIntegrationTests>>(logger);
-        
+
         // Should not throw when logging
         logger.LogInformation("Test message with null factory");
         logger.LogError(new Exception("Test"), "Error with null factory");

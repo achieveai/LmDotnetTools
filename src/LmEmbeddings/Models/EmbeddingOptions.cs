@@ -56,5 +56,5 @@ public record EmbeddingModelConfig
     public string Model { get; set; } = "jina-clip-v2";
     public int Dimensions { get; set; } = 1024;
     public bool IsMultiModal { get; set; } = false;
-    public int ChunkSize { get; set; } = 8*1024;
+    public int ChunkSize { get; set; } = 8 * 1024;
 }

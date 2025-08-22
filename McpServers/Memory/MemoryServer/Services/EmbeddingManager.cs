@@ -20,12 +20,12 @@ public class EmbeddingManager : IEmbeddingManager
     private readonly IMemoryCache _cache;
     private readonly ILogger<EmbeddingManager> _logger;
     private readonly EmbeddingOptions _options;
-    
+
     // Cache statistics
     private long _totalRequests = 0;
     private long _cacheHits = 0;
     private long _cacheMisses = 0;
-    
+
     // Cached embedding service to avoid recreating
     private IEmbeddingService? _cachedEmbeddingService;
     private string? _cachedModelName;
@@ -95,12 +95,12 @@ public class EmbeddingManager : IEmbeddingManager
         {
             var embeddingService = await GetEmbeddingServiceAsync(cancellationToken);
             var response = await embeddingService.GenerateEmbeddingAsync(content, ModelName, cancellationToken);
-            
+
             if (response.Embeddings == null || response.Embeddings.Count == 0)
                 throw new InvalidOperationException("Embedding service returned no embeddings");
 
             var embedding = response.Embeddings[0].Vector;
-            
+
             // Cache the result
             var cacheOptions = new MemoryCacheEntryOptions
             {
@@ -162,7 +162,7 @@ public class EmbeddingManager : IEmbeddingManager
             {
                 var embeddingService = await GetEmbeddingServiceAsync(cancellationToken);
                 var uncachedTexts = uncachedContents.Select(x => x.content).ToList();
-                
+
                 var request = new AchieveAi.LmDotnetTools.LmEmbeddings.Models.EmbeddingRequest
                 {
                     Inputs = uncachedTexts,
@@ -179,9 +179,9 @@ public class EmbeddingManager : IEmbeddingManager
                 {
                     var (index, content) = uncachedContents[i];
                     var embedding = response.Embeddings[i].Vector;
-                    
+
                     results[index] = embedding;
-                    
+
                     // Cache the result
                     var cacheKey = GenerateCacheKey(content);
                     var cacheOptions = new MemoryCacheEntryOptions
@@ -223,10 +223,10 @@ public class EmbeddingManager : IEmbeddingManager
         try
         {
             _logger.LogDebug("Performing vector similarity search with threshold {Threshold} and limit {Limit}", threshold, limit);
-            
+
             // Use the repository's vector search functionality
             var searchResults = await _memoryRepository.SearchVectorAsync(queryEmbedding, sessionContext, limit, threshold, cancellationToken);
-            
+
             var results = searchResults.Select(result => new MemorySearchResult
             {
                 Memory = result.Memory,
@@ -307,12 +307,12 @@ public class EmbeddingManager : IEmbeddingManager
             return _cachedEmbeddingService;
 
         _logger.LogDebug("Creating embedding service via LmConfigService");
-        
+
         _cachedEmbeddingService = await _lmConfigService.CreateEmbeddingServiceAsync(cancellationToken);
-        
+
         // Get model information from environment variables
         _cachedModelName = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_MODEL", null, "text-embedding-3-small");
-        
+
         // Set embedding dimension from environment variable or based on model
         var embeddingSizeEnv = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_SIZE");
         if (!string.IsNullOrEmpty(embeddingSizeEnv) && int.TryParse(embeddingSizeEnv, out var customDimension) && customDimension > 0)
@@ -333,7 +333,7 @@ public class EmbeddingManager : IEmbeddingManager
             _logger.LogDebug("Using model-based embedding dimension: {Dimension}", _cachedEmbeddingDimension);
         }
 
-        _logger.LogInformation("Embedding service initialized with model {ModelName} (dimension: {Dimension})", 
+        _logger.LogInformation("Embedding service initialized with model {ModelName} (dimension: {Dimension})",
             _cachedModelName, _cachedEmbeddingDimension);
 
         return _cachedEmbeddingService;
@@ -349,4 +349,4 @@ public class EmbeddingManager : IEmbeddingManager
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return $"embedding:{Convert.ToHexString(hash)[..16]}"; // Use first 16 chars of hex
     }
-} 
+}

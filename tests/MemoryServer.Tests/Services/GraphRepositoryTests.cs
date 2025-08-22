@@ -24,17 +24,17 @@ public class GraphRepositoryTests : IDisposable
     public GraphRepositoryTests()
     {
         _instanceId = Interlocked.Increment(ref _instanceCounter);
-        
+
         _mockLogger = new Mock<ILogger<GraphRepository>>();
-        
+
         // Create a simple logger factory that returns NullLogger instances
         _mockLoggerFactory = new Mock<ILoggerFactory>();
         _mockLoggerFactory.Setup(f => f.CreateLogger(It.IsAny<string>()))
             .Returns(new Mock<ILogger>().Object);
-        
+
         // Create TestSqliteSessionFactory for proper test isolation
         _sessionFactory = new TestSqliteSessionFactory(_mockLoggerFactory.Object);
-        
+
         // Initialize the repository with session factory
         _repository = new GraphRepository(_sessionFactory, _mockLogger.Object);
     }
@@ -193,22 +193,22 @@ public class GraphRepositoryTests : IDisposable
     public async Task DeadlockDetection_SingleEntityAddition_ShouldCompleteWithinTimeout()
     {
         // Create a simple entity
-        var entity = new Entity 
-        { 
-            Name = "TestEntity", 
-            Type = "test", 
-            UserId = "deadlock_test_user", 
-            Confidence = 0.8f 
+        var entity = new Entity
+        {
+            Name = "TestEntity",
+            Type = "test",
+            UserId = "deadlock_test_user",
+            Confidence = 0.8f
         };
-        
+
         var sessionContext = new SessionContext { UserId = "deadlock_test_user" };
-        
+
         // Use timeout wrapper to detect deadlocks quickly
         var result = await WithTimeoutAsync(
-            _repository.AddEntityAsync(entity, sessionContext), 
-            8, 
+            _repository.AddEntityAsync(entity, sessionContext),
+            8,
             "Deadlock Detection Entity Addition");
-        
+
         Assert.NotNull(result);
         Assert.True(result.Id > 0);
     }
@@ -226,25 +226,25 @@ public class GraphRepositoryTests : IDisposable
         },
         new object[]
         {
-            new Entity 
-            { 
-                Name = "New York", 
-                Type = "city", 
-                UserId = "user456", 
+            new Entity
+            {
+                Name = "New York",
+                Type = "city",
+                UserId = "user456",
                 Aliases = new List<string> { "NYC", "Big Apple" },
-                Confidence = 0.9f 
+                Confidence = 0.9f
             },
             new SessionContext { UserId = "user456", AgentId = "agent789" }
         },
         new object[]
         {
-            new Entity 
-            { 
-                Name = "Machine Learning", 
-                Type = "concept", 
-                UserId = "user789", 
+            new Entity
+            {
+                Name = "Machine Learning",
+                Type = "concept",
+                UserId = "user789",
                 Metadata = new Dictionary<string, object> { { "domain", "AI" } },
-                Confidence = 0.95f 
+                Confidence = 0.95f
             },
             new SessionContext { UserId = "user789", AgentId = "agent123", RunId = "run456" }
         }
@@ -275,14 +275,14 @@ public class GraphRepositoryTests : IDisposable
         },
         new object[]
         {
-            new Relationship 
-            { 
-                Source = "Alice", 
-                RelationshipType = "works_at", 
-                Target = "Google", 
-                UserId = "user456", 
+            new Relationship
+            {
+                Source = "Alice",
+                RelationshipType = "works_at",
+                Target = "Google",
+                UserId = "user456",
                 TemporalContext = "since 2023",
-                Confidence = 0.9f 
+                Confidence = 0.9f
             },
             new SessionContext { UserId = "user456", AgentId = "agent789" }
         }
@@ -314,14 +314,14 @@ public class GraphRepositoryTests : IDisposable
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);
-        
+
         var completedTask = await Task.WhenAny(task, timeoutTask);
-        
+
         if (completedTask == timeoutTask)
         {
             throw new TimeoutException($"{operationName} timed out after {timeoutSeconds} seconds");
         }
-        
+
         return await task;
     }
 
@@ -329,14 +329,14 @@ public class GraphRepositoryTests : IDisposable
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);
-        
+
         var completedTask = await Task.WhenAny(task, timeoutTask);
-        
+
         if (completedTask == timeoutTask)
         {
             throw new TimeoutException($"{operationName} timed out after {timeoutSeconds} seconds");
         }
-        
+
         await task;
     }
 
@@ -348,7 +348,7 @@ public class GraphRepositoryTests : IDisposable
         {
             // Cleanup the TestSqliteSessionFactory to remove test database files
             _sessionFactory?.Cleanup();
-            
+
             // Force garbage collection to help release any remaining resources
             GC.Collect();
             GC.WaitForPendingFinalizers();
@@ -368,4 +368,4 @@ public class GraphRepositoryCollection
     // This class has no code, and is never created.
     // Its purpose is simply to be the place to apply [CollectionDefinition] and all the
     // ICollectionFixture<> interfaces.
-} 
+}

@@ -51,7 +51,7 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Adding memory for session {SessionContext}, content length: {Length}", sessionContext, content.Length);
 
         var memory = await _memoryRepository.AddAsync(content, sessionContext, metadata, cancellationToken);
-        
+
         _logger.LogInformation("Added memory {Id} for session {SessionContext}", memory.Id, sessionContext);
 
         // Generate and store embedding if enabled
@@ -99,14 +99,14 @@ public class MemoryService : IMemoryService
             try
             {
                 _logger.LogDebug("Checking if memory {MemoryId} should be segmented", memory.Id);
-                
+
                 var shouldSegment = await _documentSegmentationService.ShouldSegmentAsync(
                     content, DocumentType.Generic, cancellationToken);
 
                 if (shouldSegment)
                 {
                     _logger.LogDebug("Starting document segmentation for memory {MemoryId}", memory.Id);
-                    
+
                     var segmentationRequest = new DocumentSegmentationRequest
                     {
                         DocumentType = DocumentType.Generic,
@@ -158,7 +158,7 @@ public class MemoryService : IMemoryService
         limit = Math.Min(limit, _options.DefaultSearchLimit * 2); // Allow up to 2x default limit
         scoreThreshold = Math.Max(scoreThreshold, 0.0f);
 
-        _logger.LogDebug("Searching memories for session {SessionContext}, query: '{Query}', limit: {Limit}, threshold: {Threshold}", 
+        _logger.LogDebug("Searching memories for session {SessionContext}, query: '{Query}', limit: {Limit}, threshold: {Threshold}",
             sessionContext, query, limit, scoreThreshold);
 
         List<Memory> memories;
@@ -169,31 +169,31 @@ public class MemoryService : IMemoryService
             try
             {
                 _logger.LogDebug("Using hybrid search for query: '{Query}'", query);
-                
+
                 // Generate embedding for the query
                 var queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(query, cancellationToken);
-                
+
                 // Perform hybrid search
                 memories = await _memoryRepository.SearchHybridAsync(
-                    query, 
-                    queryEmbedding, 
-                    sessionContext, 
-                    limit, 
-                    _embeddingOptions.TraditionalSearchWeight, 
-                    _embeddingOptions.VectorSearchWeight, 
+                    query,
+                    queryEmbedding,
+                    sessionContext,
+                    limit,
+                    _embeddingOptions.TraditionalSearchWeight,
+                    _embeddingOptions.VectorSearchWeight,
                     cancellationToken);
-                
-                _logger.LogInformation("Hybrid search found {Count} memories for query '{Query}' in session {SessionContext}", 
+
+                _logger.LogInformation("Hybrid search found {Count} memories for query '{Query}' in session {SessionContext}",
                     memories.Count, query, sessionContext);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Hybrid search failed for query '{Query}', falling back to traditional search", query);
-                
+
                 // Fall back to traditional search
                 memories = await _memoryRepository.SearchAsync(query, sessionContext, limit, scoreThreshold, cancellationToken);
-                
-                _logger.LogInformation("Traditional search (fallback) found {Count} memories for query '{Query}' in session {SessionContext}", 
+
+                _logger.LogInformation("Traditional search (fallback) found {Count} memories for query '{Query}' in session {SessionContext}",
                     memories.Count, query, sessionContext);
             }
         }
@@ -201,8 +201,8 @@ public class MemoryService : IMemoryService
         {
             // Use traditional FTS5 search
             memories = await _memoryRepository.SearchAsync(query, sessionContext, limit, scoreThreshold, cancellationToken);
-            
-            _logger.LogInformation("Traditional search found {Count} memories for query '{Query}' in session {SessionContext}", 
+
+            _logger.LogInformation("Traditional search found {Count} memories for query '{Query}' in session {SessionContext}",
                 memories.Count, query, sessionContext);
         }
 
@@ -218,11 +218,11 @@ public class MemoryService : IMemoryService
         limit = Math.Min(limit, 1000); // Maximum 1000 memories at once
         offset = Math.Max(offset, 0);
 
-        _logger.LogDebug("Getting all memories for session {SessionContext}, limit: {Limit}, offset: {Offset}", 
+        _logger.LogDebug("Getting all memories for session {SessionContext}, limit: {Limit}, offset: {Offset}",
             sessionContext, limit, offset);
 
         var memories = await _memoryRepository.GetAllAsync(sessionContext, limit, offset, cancellationToken);
-        
+
         _logger.LogInformation("Retrieved {Count} memories for session {SessionContext}", memories.Count, sessionContext);
         return memories;
     }
@@ -238,11 +238,11 @@ public class MemoryService : IMemoryService
         if (content.Length > _options.MaxMemoryLength)
             throw new ArgumentException($"Memory content cannot exceed {_options.MaxMemoryLength} characters", nameof(content));
 
-        _logger.LogDebug("Updating memory {Id} for session {SessionContext}, content length: {Length}", 
+        _logger.LogDebug("Updating memory {Id} for session {SessionContext}, content length: {Length}",
             id, sessionContext, content.Length);
 
         var memory = await _memoryRepository.UpdateAsync(id, content, sessionContext, metadata, cancellationToken);
-        
+
         if (memory != null)
         {
             _logger.LogInformation("Updated memory {Id} for session {SessionContext}", id, sessionContext);
@@ -307,7 +307,7 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Deleting memory {Id} for session {SessionContext}", id, sessionContext);
 
         var deleted = await _memoryRepository.DeleteAsync(id, sessionContext, cancellationToken);
-        
+
         if (deleted)
         {
             _logger.LogInformation("Deleted memory {Id} for session {SessionContext}", id, sessionContext);
@@ -328,7 +328,7 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Deleting all memories for session {SessionContext}", sessionContext);
 
         var deletedCount = await _memoryRepository.DeleteAllAsync(sessionContext, cancellationToken);
-        
+
         _logger.LogInformation("Deleted {Count} memories for session {SessionContext}", deletedCount, sessionContext);
         return deletedCount;
     }
@@ -341,10 +341,10 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Getting memory statistics for session {SessionContext}", sessionContext);
 
         var stats = await _memoryRepository.GetStatsAsync(sessionContext, cancellationToken);
-        
-        _logger.LogDebug("Retrieved memory statistics for session {SessionContext}: {TotalMemories} memories", 
+
+        _logger.LogDebug("Retrieved memory statistics for session {SessionContext}: {TotalMemories} memories",
             sessionContext, stats.TotalMemories);
-        
+
         return stats;
     }
 
@@ -356,10 +356,10 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Getting memory history for memory {Id} in session {SessionContext}", id, sessionContext);
 
         var history = await _memoryRepository.GetHistoryAsync(id, sessionContext, cancellationToken);
-        
-        _logger.LogDebug("Retrieved {Count} history entries for memory {Id} in session {SessionContext}", 
+
+        _logger.LogDebug("Retrieved {Count} history entries for memory {Id} in session {SessionContext}",
             history.Count, id, sessionContext);
-        
+
         return history;
     }
 
@@ -374,9 +374,9 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Getting all agents for user {UserId}", userId);
 
         var agents = await _memoryRepository.GetAgentsAsync(userId, cancellationToken);
-        
+
         _logger.LogDebug("Retrieved {Count} agents for user {UserId}", agents.Count, userId);
-        
+
         return agents;
     }
 
@@ -394,9 +394,9 @@ public class MemoryService : IMemoryService
         _logger.LogDebug("Getting all runs for user {UserId} and agent {AgentId}", userId, agentId);
 
         var runs = await _memoryRepository.GetRunsAsync(userId, agentId, cancellationToken);
-        
+
         _logger.LogDebug("Retrieved {Count} runs for user {UserId} and agent {AgentId}", runs.Count, userId, agentId);
-        
+
         return runs;
     }
-} 
+}

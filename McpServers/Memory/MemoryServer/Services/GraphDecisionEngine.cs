@@ -152,7 +152,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
             {
                 // Different entities - calculate similarity
                 var similarity = CalculateEntitySimilarity(existingEntity, newEntity);
-                
+
                 if (similarity >= SimilarityThreshold)
                 {
                     // Merge entities - update existing with new information
@@ -328,8 +328,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
             if (instruction.RelationshipData != null)
             {
                 _logger.LogDebug("RELATIONSHIP VALIDATION: Source='{Source}', Target='{Target}', Type='{Type}'",
-                    instruction.RelationshipData.Source ?? "NULL", 
-                    instruction.RelationshipData.Target ?? "NULL", 
+                    instruction.RelationshipData.Source ?? "NULL",
+                    instruction.RelationshipData.Target ?? "NULL",
                     instruction.RelationshipData.RelationshipType ?? "NULL");
 
                 if (string.IsNullOrWhiteSpace(instruction.RelationshipData.Source) ||
@@ -337,8 +337,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                     string.IsNullOrWhiteSpace(instruction.RelationshipData.RelationshipType))
                 {
                     _logger.LogWarning("VALIDATION FAILED: relationship has empty required fields - Source: '{Source}', Target: '{Target}', Type: '{Type}'",
-                        instruction.RelationshipData.Source ?? "NULL", 
-                        instruction.RelationshipData.Target ?? "NULL", 
+                        instruction.RelationshipData.Source ?? "NULL",
+                        instruction.RelationshipData.Target ?? "NULL",
                         instruction.RelationshipData.RelationshipType ?? "NULL");
                     return Task.FromResult(false);
                 }
@@ -447,7 +447,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     {
         // Check if entity already exists
         var existingEntity = await _graphRepository.GetEntityByNameAsync(entity.Name, sessionContext, cancellationToken);
-        
+
         if (existingEntity != null)
         {
             return await ResolveEntityConflictAsync(existingEntity, entity, sessionContext, cancellationToken);
@@ -473,7 +473,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     {
         // Check if similar relationship already exists
         var existingRelationships = await _graphRepository.GetRelationshipsAsync(sessionContext, limit: 1000, cancellationToken: cancellationToken);
-        
+
         var conflictingRelationship = existingRelationships
             .Where(r => r.RelationshipType.Equals(relationship.RelationshipType, StringComparison.OrdinalIgnoreCase))
             .FirstOrDefault(r =>
@@ -576,10 +576,10 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         // Check if new entity provides a more specific type
         if (string.IsNullOrEmpty(existing.Type) && !string.IsNullOrEmpty(newEntity.Type))
             return true;
-        
+
         if (existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown")
             return true;
-        
+
         return false;
     }
 
@@ -590,19 +590,19 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         var newAliasCount = newEntity.Aliases?.Count ?? 0;
         if (newAliasCount > existingAliasCount)
             return true;
-        
+
         // Check if new entity has more metadata
         var existingMetadataCount = existing.Metadata?.Count ?? 0;
         var newMetadataCount = newEntity.Metadata?.Count ?? 0;
         if (newMetadataCount > existingMetadataCount)
             return true;
-        
+
         // Check if new entity has more source memory IDs
         var existingSourceCount = existing.SourceMemoryIds?.Count ?? 0;
         var newSourceCount = newEntity.SourceMemoryIds?.Count ?? 0;
         if (newSourceCount > existingSourceCount)
             return true;
-        
+
         return false;
     }
 
@@ -630,7 +630,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         if (newEntity.Aliases != null)
             foreach (var alias in newEntity.Aliases)
                 allAliases.Add(alias);
-        
+
         merged.Aliases = allAliases.Count > 0 ? allAliases.ToList() : null;
 
         // Merge source memory IDs
@@ -641,7 +641,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         if (newEntity.SourceMemoryIds != null)
             foreach (var id in newEntity.SourceMemoryIds)
                 allSourceIds.Add(id);
-        
+
         merged.SourceMemoryIds = allSourceIds.Count > 0 ? allSourceIds.ToList() : null;
 
         // Merge metadata
@@ -685,15 +685,15 @@ public class GraphDecisionEngine : IGraphDecisionEngine
             return null;
 
         var merged = new Dictionary<string, object>();
-        
+
         if (existing != null)
             foreach (var kvp in existing)
                 merged[kvp.Key] = kvp.Value;
-        
+
         if (newMetadata != null)
             foreach (var kvp in newMetadata)
                 merged[kvp.Key] = kvp.Value; // New metadata overwrites existing
-        
+
         return merged.Count > 0 ? merged : null;
     }
 
@@ -716,15 +716,15 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         // Check if new relationship has temporal context when existing doesn't
         if (string.IsNullOrEmpty(existing.TemporalContext) && !string.IsNullOrEmpty(newRelationship.TemporalContext))
             return true;
-        
+
         // Check if new relationship has more metadata
         var existingMetadataCount = existing.Metadata?.Count ?? 0;
         var newMetadataCount = newRelationship.Metadata?.Count ?? 0;
         if (newMetadataCount > existingMetadataCount)
             return true;
-        
+
         return false;
     }
 
     #endregion
-} 
+}

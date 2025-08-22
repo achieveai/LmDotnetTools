@@ -383,8 +383,8 @@ public class OpenAiAgentTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", 
-            new[] { "LLM_API_KEY" }, 
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY",
+            new[] { "LLM_API_KEY" },
             "test-api-key");
     }
 
@@ -393,8 +393,8 @@ public class OpenAiAgentTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", 
-            new[] { "LLM_API_BASE_URL" }, 
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL",
+            new[] { "LLM_API_BASE_URL" },
             "https://api.openai.com/v1");
     }
 }

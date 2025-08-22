@@ -13,133 +13,133 @@ namespace MemoryServer.DocumentSegmentation.Tests.Services;
 /// </summary>
 public class SegmentationPromptManagerTests : IDisposable
 {
-  private readonly ILogger<SegmentationPromptManager> _logger;
-  private readonly DocumentSegmentationOptions _options;
-  private readonly SegmentationPromptManager _promptManager;
-  private readonly string _testPromptsPath;
+    private readonly ILogger<SegmentationPromptManager> _logger;
+    private readonly DocumentSegmentationOptions _options;
+    private readonly SegmentationPromptManager _promptManager;
+    private readonly string _testPromptsPath;
 
-  public SegmentationPromptManagerTests()
-  {
-    _logger = new LoggerFactory().CreateLogger<SegmentationPromptManager>();
-    
-    // Create a temporary test prompts file
-    _testPromptsPath = Path.Combine(Path.GetTempPath(), $"test_prompts_{Guid.NewGuid()}.yml");
-    CreateTestPromptsFile();
-
-    _options = new DocumentSegmentationOptions
+    public SegmentationPromptManagerTests()
     {
-      Prompts = new PromptOptions
-      {
-        FilePath = _testPromptsPath,
-        DefaultLanguage = "en",
-        EnableHotReload = false,
-        CacheExpiration = TimeSpan.FromMinutes(30)
-      }
-    };
-    
-    var optionsWrapper = Options.Create(_options);
-    _promptManager = new SegmentationPromptManager(_logger, optionsWrapper);
-  }
+        _logger = new LoggerFactory().CreateLogger<SegmentationPromptManager>();
 
-  [Fact]
-  public async Task GetPromptAsync_WithValidStrategy_ReturnsPromptTemplate()
-  {
-    // Act
-    var result = await _promptManager.GetPromptAsync(SegmentationStrategy.TopicBased);
+        // Create a temporary test prompts file
+        _testPromptsPath = Path.Combine(Path.GetTempPath(), $"test_prompts_{Guid.NewGuid()}.yml");
+        CreateTestPromptsFile();
 
-    // Assert
-    result.Should().NotBeNull();
-    result.SystemPrompt.Should().NotBeEmpty();
-    result.UserPrompt.Should().NotBeEmpty();
-    result.ExpectedFormat.Should().Be("json");
-    result.MaxTokens.Should().BeGreaterThan(0);
-    result.Temperature.Should().BeInRange(0.0, 1.0);
-  }
+        _options = new DocumentSegmentationOptions
+        {
+            Prompts = new PromptOptions
+            {
+                FilePath = _testPromptsPath,
+                DefaultLanguage = "en",
+                EnableHotReload = false,
+                CacheExpiration = TimeSpan.FromMinutes(30)
+            }
+        };
 
-  [Fact]
-  public async Task GetPromptAsync_WithInvalidStrategy_ReturnsFallbackPrompt()
-  {
-    // Act
-    var result = await _promptManager.GetPromptAsync((SegmentationStrategy)999); // Invalid strategy
+        var optionsWrapper = Options.Create(_options);
+        _promptManager = new SegmentationPromptManager(_logger, optionsWrapper);
+    }
 
-    // Assert
-    result.Should().NotBeNull();
-    result.SystemPrompt.Should().NotBeEmpty();
-    result.UserPrompt.Should().NotBeEmpty();
-  }
+    [Fact]
+    public async Task GetPromptAsync_WithValidStrategy_ReturnsPromptTemplate()
+    {
+        // Act
+        var result = await _promptManager.GetPromptAsync(SegmentationStrategy.TopicBased);
 
-  [Fact]
-  public async Task GetQualityValidationPromptAsync_ReturnsValidPrompt()
-  {
-    // Act
-    var result = await _promptManager.GetQualityValidationPromptAsync();
+        // Assert
+        result.Should().NotBeNull();
+        result.SystemPrompt.Should().NotBeEmpty();
+        result.UserPrompt.Should().NotBeEmpty();
+        result.ExpectedFormat.Should().Be("json");
+        result.MaxTokens.Should().BeGreaterThan(0);
+        result.Temperature.Should().BeInRange(0.0, 1.0);
+    }
 
-    // Assert
-    result.Should().NotBeNull();
-    result.SystemPrompt.Should().NotBeEmpty();
-    result.UserPrompt.Should().NotBeEmpty();
-    result.ExpectedFormat.Should().Be("json");
-  }
+    [Fact]
+    public async Task GetPromptAsync_WithInvalidStrategy_ReturnsFallbackPrompt()
+    {
+        // Act
+        var result = await _promptManager.GetPromptAsync((SegmentationStrategy)999); // Invalid strategy
 
-  [Theory]
-  [InlineData(DocumentType.ResearchPaper)]
-  [InlineData(DocumentType.Legal)]
-  [InlineData(DocumentType.Technical)]
-  [InlineData(DocumentType.Email)]
-  [InlineData(DocumentType.Chat)]
-  public async Task GetDomainInstructionsAsync_WithValidDocumentType_ReturnsInstructions(
-    DocumentType documentType)
-  {
-    // Act
-    var result = await _promptManager.GetDomainInstructionsAsync(documentType);
+        // Assert
+        result.Should().NotBeNull();
+        result.SystemPrompt.Should().NotBeEmpty();
+        result.UserPrompt.Should().NotBeEmpty();
+    }
 
-    // Assert
-    result.Should().NotBeNull();
-    result.Should().NotBeEmpty();
-  }
+    [Fact]
+    public async Task GetQualityValidationPromptAsync_ReturnsValidPrompt()
+    {
+        // Act
+        var result = await _promptManager.GetQualityValidationPromptAsync();
 
-  [Fact]
-  public async Task ValidatePromptConfigurationAsync_WithValidConfig_ReturnsTrue()
-  {
-    // Act
-    var result = await _promptManager.ValidatePromptConfigurationAsync();
+        // Assert
+        result.Should().NotBeNull();
+        result.SystemPrompt.Should().NotBeEmpty();
+        result.UserPrompt.Should().NotBeEmpty();
+        result.ExpectedFormat.Should().Be("json");
+    }
 
-    // Assert
-    result.Should().BeTrue();
-  }
+    [Theory]
+    [InlineData(DocumentType.ResearchPaper)]
+    [InlineData(DocumentType.Legal)]
+    [InlineData(DocumentType.Technical)]
+    [InlineData(DocumentType.Email)]
+    [InlineData(DocumentType.Chat)]
+    public async Task GetDomainInstructionsAsync_WithValidDocumentType_ReturnsInstructions(
+      DocumentType documentType)
+    {
+        // Act
+        var result = await _promptManager.GetDomainInstructionsAsync(documentType);
 
-  [Fact]
-  public async Task ReloadPromptsAsync_ReturnsTrue()
-  {
-    // Act
-    var result = await _promptManager.ReloadPromptsAsync();
+        // Assert
+        result.Should().NotBeNull();
+        result.Should().NotBeEmpty();
+    }
 
-    // Assert
-    result.Should().BeTrue();
-  }
+    [Fact]
+    public async Task ValidatePromptConfigurationAsync_WithValidConfig_ReturnsTrue()
+    {
+        // Act
+        var result = await _promptManager.ValidatePromptConfigurationAsync();
 
-  [Theory]
-  [InlineData(SegmentationStrategy.TopicBased)]
-  [InlineData(SegmentationStrategy.StructureBased)]
-  [InlineData(SegmentationStrategy.NarrativeBased)]
-  [InlineData(SegmentationStrategy.Hybrid)]
-  public async Task GetPromptAsync_WithAllMainStrategies_ReturnsValidPrompts(
-    SegmentationStrategy strategy)
-  {
-    // Act
-    var result = await _promptManager.GetPromptAsync(strategy);
+        // Assert
+        result.Should().BeTrue();
+    }
 
-    // Assert
-    result.Should().NotBeNull();
-    result.SystemPrompt.Should().NotBeEmpty();
-    result.UserPrompt.Should().NotBeEmpty();
-    result.UserPrompt.Should().Contain("{DocumentContent}"); // Should have placeholder
-    result.UserPrompt.Should().Contain("{DocumentType}"); // Should have placeholder
-  }
+    [Fact]
+    public async Task ReloadPromptsAsync_ReturnsTrue()
+    {
+        // Act
+        var result = await _promptManager.ReloadPromptsAsync();
 
-  private void CreateTestPromptsFile()
-  {
-    var testYamlContent = @"
+        // Assert
+        result.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(SegmentationStrategy.TopicBased)]
+    [InlineData(SegmentationStrategy.StructureBased)]
+    [InlineData(SegmentationStrategy.NarrativeBased)]
+    [InlineData(SegmentationStrategy.Hybrid)]
+    public async Task GetPromptAsync_WithAllMainStrategies_ReturnsValidPrompts(
+      SegmentationStrategy strategy)
+    {
+        // Act
+        var result = await _promptManager.GetPromptAsync(strategy);
+
+        // Assert
+        result.Should().NotBeNull();
+        result.SystemPrompt.Should().NotBeEmpty();
+        result.UserPrompt.Should().NotBeEmpty();
+        result.UserPrompt.Should().Contain("{DocumentContent}"); // Should have placeholder
+        result.UserPrompt.Should().Contain("{DocumentType}"); // Should have placeholder
+    }
+
+    private void CreateTestPromptsFile()
+    {
+        var testYamlContent = @"
 # Test prompts configuration
 topic_based:
   system_prompt: |
@@ -207,14 +207,14 @@ domain_instructions:
     Group related conversation topics together.
 ";
 
-    File.WriteAllText(_testPromptsPath, testYamlContent);
-  }
-
-  public void Dispose()
-  {
-    if (File.Exists(_testPromptsPath))
-    {
-      File.Delete(_testPromptsPath);
+        File.WriteAllText(_testPromptsPath, testYamlContent);
     }
-  }
+
+    public void Dispose()
+    {
+        if (File.Exists(_testPromptsPath))
+        {
+            File.Delete(_testPromptsPath);
+        }
+    }
 }

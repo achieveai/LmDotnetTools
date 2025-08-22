@@ -38,7 +38,7 @@ public record AppConfig
             }
             return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
         }
-        
+
         return null;
     }
 
@@ -51,7 +51,7 @@ public record AppConfig
     {
         System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModelsWithCapability called with capability: {capability ?? "NULL"}");
         System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
-        
+
         if (Models != null && !string.IsNullOrEmpty(capability))
         {
             System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
@@ -63,7 +63,7 @@ public record AppConfig
             }
             return matchingModels;
         }
-        
+
         return new List<ModelConfig>();
     }
 
@@ -207,4 +207,4 @@ public record ValidationResult
     /// List of validation warnings that don't prevent operation.
     /// </summary>
     public required IReadOnlyList<string> Warnings { get; init; }
-} 
+}

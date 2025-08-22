@@ -80,7 +80,7 @@ public class ResultEnricherTests
         Assert.NotNull(enrichmentResults);
         Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed);
-        
+
         var enrichedResult = enrichmentResults.Results[0];
         Assert.NotNull(enrichedResult.RelevanceExplanation);
         Assert.Contains("Memory relevant because: High relevance match", enrichedResult.RelevanceExplanation);
@@ -110,11 +110,11 @@ public class ResultEnricherTests
         Assert.NotNull(enrichmentResults);
         Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed);
-        
+
         var enrichedResult = enrichmentResults.Results[0];
         Assert.Equal(2, enrichedResult.RelatedRelationships.Count);
         Assert.Equal(2, enrichmentResults.Metrics.RelatedItemsAdded);
-        
+
         // Verify relationships are ordered by confidence
         Assert.Equal("John works_at Microsoft", enrichedResult.RelatedRelationships[0].Content);
         Assert.Equal(0.8f, enrichedResult.RelatedRelationships[0].RelevanceScore);
@@ -135,7 +135,7 @@ public class ResultEnricherTests
         _mockGraphRepository
             .Setup(r => r.GetEntityByNameAsync("John", _sessionContext, It.IsAny<CancellationToken>()))
             .ReturnsAsync(johnEntity);
-        
+
         _mockGraphRepository
             .Setup(r => r.GetEntityByNameAsync("Microsoft", _sessionContext, It.IsAny<CancellationToken>()))
             .ReturnsAsync(microsoftEntity);
@@ -147,11 +147,11 @@ public class ResultEnricherTests
         Assert.NotNull(enrichmentResults);
         Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed);
-        
+
         var enrichedResult = enrichmentResults.Results[0];
         Assert.Equal(2, enrichedResult.RelatedEntities.Count);
         Assert.Equal(2, enrichmentResults.Metrics.RelatedItemsAdded);
-        
+
         // Verify entities are ordered by confidence
         Assert.Equal("John", enrichedResult.RelatedEntities[0].Content);
         Assert.Equal(0.9f, enrichedResult.RelatedEntities[0].RelevanceScore);
@@ -190,13 +190,13 @@ public class ResultEnricherTests
     public async Task EnrichResultsAsync_WithMaxRelatedItems_LimitsResults()
     {
         // Arrange
-        var limitedOptions = new EnrichmentOptions 
-        { 
+        var limitedOptions = new EnrichmentOptions
+        {
             EnableEnrichment = true,
             MaxRelatedItems = 1, // Limit to 1 item
             MinRelevanceScore = 0.0f
         };
-        
+
         var entityResult = CreateEntityResult(1, "John", 0.9f);
         var results = new List<UnifiedSearchResult> { entityResult };
 
@@ -239,7 +239,7 @@ public class ResultEnricherTests
         Assert.Single(enrichmentResults.Results);
         Assert.False(enrichmentResults.WasEnrichmentPerformed);
         Assert.Equal("Enrichment disabled or no results", enrichmentResults.FallbackReason);
-        
+
         // Verify it's converted to EnrichedSearchResult but without enrichment
         var enrichedResult = enrichmentResults.Results[0];
         Assert.Empty(enrichedResult.RelatedEntities);
@@ -265,11 +265,11 @@ public class ResultEnricherTests
         Assert.NotNull(enrichmentResults);
         Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed); // Still performed for other parts
-        
+
         var enrichedResult = enrichmentResults.Results[0];
         Assert.Empty(enrichedResult.RelatedRelationships); // No relationships due to error
         Assert.NotNull(enrichedResult.RelevanceExplanation); // But explanation still generated
-        
+
         // Verify error is logged in metrics
         Assert.Single(enrichmentResults.Metrics.Errors);
         Assert.Contains("Entity enrichment failed for ID 1", enrichmentResults.Metrics.Errors[0]);
@@ -390,4 +390,4 @@ public class ResultEnricherTests
             }
         };
     }
-} 
+}

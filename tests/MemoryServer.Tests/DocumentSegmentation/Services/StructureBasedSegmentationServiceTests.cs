@@ -89,7 +89,7 @@ public class StructureBasedSegmentationServiceTests
         // Assert
         result.Should().NotBeNull();
         result.Should().NotBeEmpty();
-        
+
         foreach (var segment in result)
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
@@ -133,7 +133,7 @@ This is the conclusion section.
         // Assert
         result.Should().NotBeEmpty();
         result.Should().HaveCountGreaterOrEqualTo(3); // Should detect major structural sections
-        
+
         // Check that segments have appropriate structural metadata
         foreach (var segment in result)
         {
@@ -172,7 +172,7 @@ This is a longer section with substantial content that should remain as its own 
 
         // Assert
         result.Should().NotBeEmpty();
-        
+
         // Check that small sections were merged or filtered out
         foreach (var segment in result)
         {

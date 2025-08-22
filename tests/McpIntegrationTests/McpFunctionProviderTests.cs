@@ -32,7 +32,7 @@ public class McpFunctionProviderTests
 
         // Assert
         Assert.NotEmpty(functions);
-        
+
         // Check that calculator functions are found
         var addFunction = functions.FirstOrDefault(f => f.Contract.Name == "Add");
         Assert.NotNull(addFunction);
@@ -72,7 +72,7 @@ public class McpFunctionProviderTests
         // Assert
         Assert.NotEmpty(contracts);
         Assert.NotEmpty(handlers);
-        
+
         // Verify calculator functions are included
         Assert.Contains(contracts, c => c.Name == "Add");
         Assert.Contains(handlers.Keys, k => k == "CalculatorTool-Add");

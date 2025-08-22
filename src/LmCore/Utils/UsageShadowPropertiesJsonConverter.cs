@@ -18,12 +18,12 @@ public class UsageShadowPropertiesJsonConverter : ShadowPropertiesJsonConverter<
                 // OpenAI uses "input_tokens" but we store as "prompt_tokens"
                 var inputTokens = reader.GetInt32();
                 return (true, instance with { PromptTokens = inputTokens });
-                
+
             case "output_tokens":
                 // OpenAI uses "output_tokens" but we store as "completion_tokens"
                 var outputTokens = reader.GetInt32();
                 return (true, instance with { CompletionTokens = outputTokens });
-                
+
             default:
                 return (false, instance);
         }

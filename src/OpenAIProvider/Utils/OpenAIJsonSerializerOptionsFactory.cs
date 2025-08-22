@@ -70,4 +70,4 @@ public static class OpenAIJsonSerializerOptionsFactory
     /// </summary>
     public static JsonSerializerOptions CreateUniversal()
         => CreateForOpenAI(caseInsensitive: true);
-} 
+}

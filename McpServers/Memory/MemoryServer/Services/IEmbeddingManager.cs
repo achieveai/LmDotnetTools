@@ -119,4 +119,4 @@ public class EmbeddingCacheStats
     /// Estimated memory usage of the cache in bytes.
     /// </summary>
     public long EstimatedMemoryUsage { get; set; }
-} 
+}

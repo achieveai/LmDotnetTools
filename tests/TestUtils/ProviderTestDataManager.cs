@@ -31,10 +31,10 @@ public class ProviderTestDataManager
         var options = OpenAIJsonSerializerOptionsFactory.CreateForOpenAI(
             writeIndented: true,
             namingPolicy: JsonNamingPolicy.CamelCase);
-        
+
         // Add test-specific converters not included in the base factories
         options.Converters.Add(new UnionJsonConverter<int, string>());
-        
+
         return options;
     }
 

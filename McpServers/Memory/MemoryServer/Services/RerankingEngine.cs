@@ -36,7 +36,7 @@ public class RerankingEngine : IRerankingEngine
                 };
 
                 _rerankingService = new RerankingService(serviceOptions);
-                
+
                 _logger.LogInformation("RerankingEngine initialized with {Model} model", _options.RerankingModel);
             }
             catch (Exception ex)
@@ -66,7 +66,7 @@ public class RerankingEngine : IRerankingEngine
     {
         if (string.IsNullOrWhiteSpace(query))
             throw new ArgumentException("Query cannot be empty", nameof(query));
-        
+
         if (results == null)
             throw new ArgumentNullException(nameof(results));
 
@@ -74,7 +74,7 @@ public class RerankingEngine : IRerankingEngine
         var totalStopwatch = Stopwatch.StartNew();
         var metrics = new RerankingMetrics();
 
-        _logger.LogDebug("Starting reranking for {ResultCount} results with query '{Query}'", 
+        _logger.LogDebug("Starting reranking for {ResultCount} results with query '{Query}'",
             results.Count, query);
 
         try
@@ -110,10 +110,10 @@ public class RerankingEngine : IRerankingEngine
                     _logger.LogWarning(ex, "Semantic reranking failed, falling back to local scoring");
                     metrics.HasFailures = true;
                     metrics.Errors.Add($"Semantic reranking failed: {ex.Message}");
-                    
+
                     if (!options.EnableGracefulFallback)
                         throw;
-                    
+
                     rerankedResults = await PerformLocalScoringAsync(query, candidates, metrics, cancellationToken);
                     fallbackReason = "Semantic reranking failed";
                 }
@@ -187,11 +187,11 @@ public class RerankingEngine : IRerankingEngine
 
             // Map ranked documents back to unified search results
             var rerankedResults = new List<UnifiedSearchResult>();
-            
+
             foreach (var rankedDoc in rankedDocuments)
             {
                 var originalResult = candidates[rankedDoc.Index];
-                
+
                 // Create new result with updated score
                 var rerankedResult = new UnifiedSearchResult
                 {
@@ -211,7 +211,7 @@ public class RerankingEngine : IRerankingEngine
 
                 // Apply multi-dimensional scoring
                 ApplyMultiDimensionalScoring(rerankedResult, _options);
-                
+
                 rerankedResults.Add(rerankedResult);
             }
 
@@ -300,7 +300,7 @@ public class RerankingEngine : IRerankingEngine
         // Simple content quality heuristics
         var length = content.Length;
         var wordCount = content.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-        
+
         // Prefer content with reasonable length (not too short, not too long)
         var lengthScore = length switch
         {
@@ -375,4 +375,4 @@ public class RerankingEngine : IRerankingEngine
     {
         _rerankingService?.Dispose();
     }
-} 
+}

@@ -12,18 +12,18 @@ public class MessageExtensionsNaturalToolUseTests
         // Arrange
         var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\"}");
         var toolResult = new ToolCallResult(null, "Sunny, 25°C");
-        
+
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall),
             Role = Role.Assistant
         };
-        
+
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(toolResult)
         };
-        
+
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "test-agent");
 
         // Act
@@ -43,10 +43,10 @@ public class MessageExtensionsNaturalToolUseTests
     public void ToNaturalToolUse_WithNonAggregateMessage_ReturnsOriginalMessage()
     {
         // Arrange
-        var textMessage = new TextMessage 
-        { 
-            Text = "Hello, world!", 
-            Role = Role.User 
+        var textMessage = new TextMessage
+        {
+            Text = "Hello, world!",
+            Role = Role.User
         };
 
         // Act
@@ -71,7 +71,7 @@ public class MessageExtensionsNaturalToolUseTests
     {
         // Arrange
         var textMessage = new TextMessage { Text = "Hello", Role = Role.User };
-        
+
         var toolCall = new ToolCall("TestFunction", "{}");
         var toolResult = new ToolCallResult(null, "test result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
@@ -94,10 +94,10 @@ public class MessageExtensionsNaturalToolUseTests
     public void CombineAsNaturalToolUse_WithMixedMessages_CombinesCorrectly()
     {
         // Arrange
-        var prefixMessage = new TextMessage 
-        { 
-            Text = "Let me check that for you.", 
-            Role = Role.Assistant 
+        var prefixMessage = new TextMessage
+        {
+            Text = "Let me check that for you.",
+            Role = Role.Assistant
         };
 
         var toolCall = new ToolCall("CheckWeather", "{\"city\":\"London\"}");
@@ -106,10 +106,10 @@ public class MessageExtensionsNaturalToolUseTests
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
-        var suffixMessage = new TextMessage 
-        { 
-            Text = "Hope that helps!", 
-            Role = Role.Assistant 
+        var suffixMessage = new TextMessage
+        {
+            Text = "Hope that helps!",
+            Role = Role.Assistant
         };
 
         var messages = new IMessage[] { prefixMessage, aggregateMessage, suffixMessage };
@@ -164,10 +164,10 @@ public class MessageExtensionsNaturalToolUseTests
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
-        var messages = new IMessage[] 
-        { 
+        var messages = new IMessage[]
+        {
             new TextMessage { Text = "Hello", Role = Role.User },
-            aggregateMessage 
+            aggregateMessage
         };
 
         // Act
@@ -181,8 +181,8 @@ public class MessageExtensionsNaturalToolUseTests
     public void ContainsTransformableToolCalls_WithoutAggregateMessage_ReturnsFalse()
     {
         // Arrange
-        var messages = new IMessage[] 
-        { 
+        var messages = new IMessage[]
+        {
             new TextMessage { Text = "Hello", Role = Role.User },
             new TextMessage { Text = "World", Role = Role.Assistant }
         };

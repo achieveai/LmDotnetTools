@@ -47,10 +47,10 @@ public class JsonToolFormatter
             if (ShouldIndent(update.Kind))
             {
                 // Special case for EndObject and EndArray - they need one less indent level
-                int indentAmount = update.Kind == JsonFragmentKind.EndObject || 
-                                  update.Kind == JsonFragmentKind.EndArray ? 
+                int indentAmount = update.Kind == JsonFragmentKind.EndObject ||
+                                  update.Kind == JsonFragmentKind.EndArray ?
                                   Math.Max(0, (indentLevel - 1) * 2) : (indentLevel * 2);
-                
+
                 yield return (OperatorColor, "\n" + new string(' ', indentAmount));
             }
 
@@ -90,7 +90,7 @@ public class JsonToolFormatter
                         yield return (StringColor, "\"");
                         continue;
                     }
-                    
+
                     yield return (StringColor, update.TextValue ?? string.Empty);
                     processedStrings.Add(update.Path);
                     break;
@@ -153,4 +153,4 @@ public class JsonToolFormatter
         JsonFragmentKind.EndArray => true,
         _ => false
     };
-} 
+}

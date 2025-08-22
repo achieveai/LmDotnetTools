@@ -35,14 +35,14 @@ public class MockHttpHandlerBuilderTests
 
         // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        
+
         var responseBody = await response.Content.ReadAsStringAsync();
         Assert.NotNull(responseBody);
-        
+
         var json = JsonDocument.Parse(responseBody);
         Assert.Equal("message", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("assistant", json.RootElement.GetProperty("role").GetString());
-        Assert.Equal("Hello from Claude!", 
+        Assert.Equal("Hello from Claude!",
             json.RootElement.GetProperty("content")[0].GetProperty("text").GetString());
         Assert.Equal("claude-3-sonnet-20240229", json.RootElement.GetProperty("model").GetString());
         Assert.Equal(10, json.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32());
@@ -66,13 +66,13 @@ public class MockHttpHandlerBuilderTests
 
         // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        
+
         var responseBody = await response.Content.ReadAsStringAsync();
         Assert.NotNull(responseBody);
-        
+
         var json = JsonDocument.Parse(responseBody);
         Assert.Equal("chat.completion", json.RootElement.GetProperty("object").GetString());
-        Assert.Equal("Hello from GPT!", 
+        Assert.Equal("Hello from GPT!",
             json.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
         Assert.Equal("gpt-4", json.RootElement.GetProperty("model").GetString());
         Assert.Equal(12, json.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32());
@@ -102,7 +102,7 @@ public class MockHttpHandlerBuilderTests
         Assert.NotNull(capture.LastRequest);
         Assert.Equal(HttpMethod.Post, capture.LastRequest.Method);
         Assert.Contains("/v1/messages", capture.LastRequest.RequestUri?.ToString());
-        
+
         var anthropicRequest = capture.GetAnthropicRequest();
         Assert.NotNull(anthropicRequest);
         Assert.Equal("claude-3-sonnet-20240229", anthropicRequest.Model);
@@ -125,7 +125,7 @@ public class MockHttpHandlerBuilderTests
 
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        
+
         var responseBody = await response.Content.ReadAsStringAsync();
         Assert.Contains("Invalid request", responseBody);
     }
@@ -143,7 +143,7 @@ public class MockHttpHandlerBuilderTests
         // First two requests should fail
         var response1 = await httpClient.GetAsync("https://api.test.com/test");
         var response2 = await httpClient.GetAsync("https://api.test.com/test");
-        
+
         // Third request should succeed
         var response3 = await httpClient.GetAsync("https://api.test.com/test");
 
@@ -193,7 +193,7 @@ public class MockHttpHandlerBuilderTests
         // Arrange
         var toolInputData = new { relative_path = "." };
         var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithToolUse("python_mcp-list_directory", toolInputData, 
+            .RespondWithToolUse("python_mcp-list_directory", toolInputData,
                 "I'll help you list the files in the root directory.")
             .Build();
 
@@ -205,9 +205,9 @@ public class MockHttpHandlerBuilderTests
 
         // Assert
         Assert.True(response.IsSuccessStatusCode);
-        
+
         var jsonResponse = await response.Content.ReadAsStringAsync();
-        
+
         Assert.Contains("\"type\":\"tool_use\"", jsonResponse);
         Assert.Contains("\"name\":\"python_mcp-list_directory\"", jsonResponse);
         Assert.Contains("\"relative_path\":\".\"", jsonResponse);
@@ -219,7 +219,7 @@ public class MockHttpHandlerBuilderTests
         Assert.Equal("message", root.GetProperty("type").GetString());
         Assert.Equal("assistant", root.GetProperty("role").GetString());
         Assert.Equal("tool_use", root.GetProperty("stop_reason").GetString());
-        
+
         var content = root.GetProperty("content").EnumerateArray().ToArray();
         Assert.Equal(2, content.Length);
         Assert.Equal("text", content[0].GetProperty("type").GetString());
@@ -249,19 +249,19 @@ public class MockHttpHandlerBuilderTests
 
         // Assert
         Assert.True(response.IsSuccessStatusCode);
-        
+
         var jsonResponse = await response.Content.ReadAsStringAsync();
         using var document = JsonDocument.Parse(jsonResponse);
         var root = document.RootElement;
-        
+
         var content = root.GetProperty("content").EnumerateArray().ToArray();
         Assert.Equal(3, content.Length); // 1 text + 2 tool_use
         Assert.Equal("text", content[0].GetProperty("type").GetString());
         Assert.Contains("2 tool(s)", content[0].GetProperty("text").GetString());
-        
+
         Assert.Equal("tool_use", content[1].GetProperty("type").GetString());
         Assert.Equal("python_mcp-list_directory", content[1].GetProperty("name").GetString());
-        
+
         Assert.Equal("tool_use", content[2].GetProperty("type").GetString());
         Assert.Equal("python_mcp-get_directory_tree", content[2].GetProperty("name").GetString());
     }
@@ -282,12 +282,12 @@ public class MockHttpHandlerBuilderTests
 
         // Act 1 - First request (should get tool use)
         var firstResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""List files using list_directory""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""List files using list_directory""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 2 - Second request with tool results (should get final response)
         var secondResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""List files""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_123"",""name"":""list_directory"",""input"":{}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_123"",""content"":""file1.txt\nfile2.txt""}]}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""List files""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_123"",""name"":""list_directory"",""input"":{}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_123"",""content"":""file1.txt\nfile2.txt""}]}]}",
                 Encoding.UTF8, "application/json"));
 
         // Assert
@@ -325,21 +325,21 @@ public class MockHttpHandlerBuilderTests
 
         // Assert
         Assert.True(response.IsSuccessStatusCode);
-        
+
         var jsonResponse = await response.Content.ReadAsStringAsync();
-        
+
         Assert.Contains("\"name\":\"python_mcp-list_directory\"", jsonResponse);
         Assert.Contains("\"relative_path\":\"code\"", jsonResponse);
-        
+
         // Parse the JSON and check the actual text content (handles JSON escaping properly)
         using var document = JsonDocument.Parse(jsonResponse);
         var root = document.RootElement;
         var content = root.GetProperty("content").EnumerateArray().ToArray();
         var textContent = content[0].GetProperty("text").GetString();
-        
+
         // Check the parsed text content instead of the raw JSON string
         Assert.Equal("I'll help you by using the list_directory function.", textContent);
-        
+
         var toolUse = content[1];
         Assert.Equal("python_mcp-list_directory", toolUse.GetProperty("name").GetString());
         var toolId = toolUse.GetProperty("id").GetString();
@@ -366,22 +366,22 @@ public class MockHttpHandlerBuilderTests
 
         // Act 1 - First request
         var firstResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 2 - Second request  
         var secondResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""World""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""World""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 3 - Request with tool results
         var toolResultResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""result""}]}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""result""}]}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 4 - Request that doesn't match any condition
         var defaultResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""assistant"",""content"":""No match""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""assistant"",""content"":""No match""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Assert
@@ -425,22 +425,22 @@ public class MockHttpHandlerBuilderTests
 
         // Act 1 - Request with tool results
         var toolResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""data""}]}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""data""}]}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 2 - Request mentioning weather  
         var weatherResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""What's the weather like?""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""What's the weather like?""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 3 - Request with 2 messages
         var twoMessageResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""},{""role"":""assistant"",""content"":""Hi""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""},{""role"":""assistant"",""content"":""Hi""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 4 - Request with assistant role
         var assistantResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""assistant"",""content"":""I am assistant""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""assistant"",""content"":""I am assistant""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Assert
@@ -477,7 +477,7 @@ public class MockHttpHandlerBuilderTests
         for (int i = 0; i < 4; i++)
         {
             var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-                new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""}]}", 
+                new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""}]}",
                     Encoding.UTF8, "application/json"));
             responses.Add(response);
         }
@@ -520,7 +520,7 @@ public class MockHttpHandlerBuilderTests
 
         // Act 2 - Request mentioning calculator tool
         var calculatorResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Use calculator tool""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Use calculator tool""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Assert
@@ -550,12 +550,12 @@ public class MockHttpHandlerBuilderTests
 
         // Act 1 - Initial user request (should get tool use)
         var initialResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""What's the weather in San Francisco?""}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""What's the weather in San Francisco?""}]}",
                 Encoding.UTF8, "application/json"));
 
         // Act 2 - Follow-up with tool results (should get final response)
         var followupResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Weather""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_1"",""name"":""get_weather"",""input"":{""location"":""San Francisco""}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_1"",""content"":""Sunny, 72°F""}]}]}", 
+            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Weather""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_1"",""name"":""get_weather"",""input"":{""location"":""San Francisco""}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_1"",""content"":""Sunny, 72°F""}]}]}",
                 Encoding.UTF8, "application/json"));
 
         // Assert
@@ -574,4 +574,4 @@ public class MockHttpHandlerBuilderTests
         Assert.Contains("sunny in San Francisco", followupJson);
         Assert.DoesNotContain(@"""type"":""tool_use""", followupJson);
     }
-} 
+}

@@ -16,7 +16,7 @@ public class MemoryTests
         // Arrange
         Debug.WriteLine($"Testing GetSessionContext: {description}");
         Debug.WriteLine($"Input - UserId: {userId}, AgentId: {agentId}, RunId: {runId}");
-        
+
         var memory = MemoryTestDataFactory.CreateTestMemory(
             userId: userId,
             agentId: agentId,
@@ -31,7 +31,7 @@ public class MemoryTests
         Assert.Equal(userId, sessionContext.UserId);
         Assert.Equal(agentId, sessionContext.AgentId);
         Assert.Equal(runId, sessionContext.RunId);
-        
+
         Debug.WriteLine("✅ GetSessionContext test passed");
     }
 
@@ -43,7 +43,7 @@ public class MemoryTests
         // Arrange
         Debug.WriteLine($"Testing WithScore: {description}");
         Debug.WriteLine($"Input score: {score}");
-        
+
         var originalMemory = MemoryTestDataFactory.CreateTestMemory(id: 1, content: "Test content");
         Debug.WriteLine($"Original memory ID: {originalMemory.Id}, Score: {originalMemory.Score}");
 
@@ -61,10 +61,10 @@ public class MemoryTests
         Assert.Equal(originalMemory.CreatedAt, memoryWithScore.CreatedAt);
         Assert.Equal(originalMemory.UpdatedAt, memoryWithScore.UpdatedAt);
         Assert.Equal(originalMemory.Version, memoryWithScore.Version);
-        
+
         // Original memory should be unchanged
         Assert.Null(originalMemory.Score);
-        
+
         Debug.WriteLine("✅ WithScore test passed");
     }
 
@@ -76,9 +76,9 @@ public class MemoryTests
         var originalMemory = MemoryTestDataFactory.CreateTestMemory(id: 1, content: "Test content");
         var originalUpdatedAt = originalMemory.UpdatedAt;
         var originalVersion = originalMemory.Version;
-        
+
         Debug.WriteLine($"Original - UpdatedAt: {originalUpdatedAt}, Version: {originalVersion}");
-        
+
         // Small delay to ensure timestamp difference
         Thread.Sleep(10);
 
@@ -89,7 +89,7 @@ public class MemoryTests
         // Assert
         Assert.True(updatedMemory.UpdatedAt > originalUpdatedAt);
         Assert.Equal(originalVersion + 1, updatedMemory.Version);
-        
+
         // Other properties should be copied correctly
         Assert.Equal(originalMemory.Id, updatedMemory.Id);
         Assert.Equal(originalMemory.Content, updatedMemory.Content);
@@ -97,18 +97,18 @@ public class MemoryTests
         Assert.Equal(originalMemory.AgentId, updatedMemory.AgentId);
         Assert.Equal(originalMemory.RunId, updatedMemory.RunId);
         Assert.Equal(originalMemory.CreatedAt, updatedMemory.CreatedAt);
-        
+
         // Metadata should be deep copied
         if (originalMemory.Metadata != null)
         {
             Assert.NotSame(originalMemory.Metadata, updatedMemory.Metadata);
             Assert.Equal(originalMemory.Metadata.Count, updatedMemory.Metadata?.Count);
         }
-        
+
         // Original memory should be unchanged
         Assert.Equal(originalUpdatedAt, originalMemory.UpdatedAt);
         Assert.Equal(originalVersion, originalMemory.Version);
-        
+
         Debug.WriteLine("✅ WithUpdatedTimestamp test passed");
     }
 
@@ -120,7 +120,7 @@ public class MemoryTests
         // Arrange
         Debug.WriteLine($"Testing WithUpdatedTimestamp with metadata: {description}");
         Debug.WriteLine($"Metadata: {(metadata == null ? "null" : $"{metadata.Count} entries")}");
-        
+
         var originalMemory = MemoryTestDataFactory.CreateTestMemory(metadata: metadata);
 
         // Act
@@ -137,7 +137,7 @@ public class MemoryTests
             Assert.NotNull(updatedMemory.Metadata);
             Assert.NotSame(originalMemory.Metadata, updatedMemory.Metadata);
             Assert.Equal(metadata.Count, updatedMemory.Metadata.Count);
-            
+
             foreach (var kvp in metadata)
             {
                 Assert.True(updatedMemory.Metadata.ContainsKey(kvp.Key));
@@ -145,7 +145,7 @@ public class MemoryTests
             }
             Debug.WriteLine($"Metadata correctly deep copied with {metadata.Count} entries");
         }
-        
+
         Debug.WriteLine("✅ WithUpdatedTimestamp metadata test passed");
     }
 
@@ -157,7 +157,7 @@ public class MemoryTests
         // Arrange
         Debug.WriteLine($"Testing WithScore with embedding: {description}");
         Debug.WriteLine($"Embedding: {(embedding == null ? "null" : $"array of {embedding.Length} elements")}");
-        
+
         var originalMemory = MemoryTestDataFactory.CreateTestMemory();
         originalMemory.Embedding = embedding;
 
@@ -177,7 +177,7 @@ public class MemoryTests
             Assert.Equal(embedding, memoryWithScore.Embedding);
             Debug.WriteLine($"Embedding correctly preserved with {embedding.Length} elements");
         }
-        
+
         Debug.WriteLine("✅ WithScore embedding test passed");
     }
 
@@ -202,9 +202,9 @@ public class MemoryTests
         yield return new object?[] { new float[0], "Empty embedding array" };
         yield return new object?[] { new float[] { 0.1f }, "Single element embedding" };
         yield return new object?[] { new float[] { 0.1f, 0.2f, 0.3f }, "Small embedding" };
-        yield return new object?[] { 
-            Enumerable.Range(0, 100).Select(i => (float)i / 100).ToArray(), 
-            "Large embedding (100 dimensions)" 
+        yield return new object?[] {
+            Enumerable.Range(0, 100).Select(i => (float)i / 100).ToArray(),
+            "Large embedding (100 dimensions)"
         };
     }
-} 
+}

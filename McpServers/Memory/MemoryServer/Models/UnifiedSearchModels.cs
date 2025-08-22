@@ -633,4 +633,4 @@ public class RelatedItem
     /// Explanation of how this item relates to the main result.
     /// </summary>
     public string? RelationshipExplanation { get; set; }
-} 
+}

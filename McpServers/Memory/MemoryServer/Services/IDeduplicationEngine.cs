@@ -28,4 +28,4 @@ public interface IDeduplicationEngine
     /// </summary>
     /// <returns>True if deduplication service is available, false otherwise.</returns>
     bool IsDeduplicationAvailable();
-} 
+}
