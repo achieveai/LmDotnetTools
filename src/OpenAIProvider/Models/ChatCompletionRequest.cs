@@ -109,6 +109,22 @@ public record ChatCompletionRequest
         string? model = null)
     {
         // Translate with reasoning merge logic
+        messages = messages.Select(m => m switch
+        {
+            CompositeMessage cm => cm.Messages.Any(mm => mm is UsageMessage)
+                ? new CompositeMessage
+                {
+                    Role = cm.Role,
+                    Messages = cm.Messages.Where(mm => mm is not UsageMessage).ToImmutableList()
+                }
+                : m,
+            UsageMessage _ => null, // skip usage messages
+            _ => m
+        })
+        .Where(m => m is not null)
+        .Select(m => m!)
+        .ToList();
+
         var chatMessages = MergeReasoningIntoAssistant(messages).ToList();
         if (options != null)
         {
