@@ -65,6 +65,38 @@ public static class FunctionRegistryExtensions
     }
 
     /// <summary>
+    /// Adds functions from multiple MCP clients to the registry with configuration
+    /// </summary>
+    /// <param name="registry">The function registry</param>
+    /// <param name="mcpClients">Dictionary of MCP clients</param>
+    /// <param name="toolFilterConfig">Tool filtering configuration</param>
+    /// <param name="serverConfigs">Per-server configurations</param>
+    /// <param name="providerName">Optional provider name</param>
+    /// <param name="logger">Optional logger instance</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The function registry for chaining</returns>
+    public static async Task<FunctionRegistry> AddMcpClientsAsync(
+      this FunctionRegistry registry,
+      Dictionary<string, IMcpClient> mcpClients,
+      McpToolFilterConfig? toolFilterConfig,
+      Dictionary<string, McpServerFilterConfig>? serverConfigs,
+      string? providerName = null,
+      ILogger<McpClientFunctionProvider>? logger = null,
+      CancellationToken cancellationToken = default)
+    {
+        var provider = await McpClientFunctionProvider.CreateAsync(
+          mcpClients,
+          toolFilterConfig,
+          serverConfigs,
+          providerName,
+          logger,
+          cancellationToken);
+
+        registry.AddProvider(provider);
+        return registry;
+    }
+
+    /// <summary>
     /// Adds functions from an MCP client to the registry (convenience method with automatic client ID)
     /// </summary>
     /// <param name="registry">The function registry</param>

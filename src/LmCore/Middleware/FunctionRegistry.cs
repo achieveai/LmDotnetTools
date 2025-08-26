@@ -1,19 +1,36 @@
+using System.Text;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
-using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
-/// Builder for combining functions from multiple sources with conflict resolution
+/// Builder for combining functions from multiple sources with conflict resolution.
+/// 
+/// IMPORTANT: This class is NOT thread-safe. It is designed to be used in a single-threaded 
+/// context during application initialization. The registry should be built once during startup 
+/// and the resulting function collections should be treated as read-only.
+/// 
+/// Typical usage pattern:
+/// 1. Create a FunctionRegistry instance during initialization
+/// 2. Configure it with providers and settings
+/// 3. Call Build() once to generate the final function collections
+/// 4. Use the built collections (which are immutable) throughout the application lifetime
+/// 
+/// Do not modify the registry after calling Build(), and do not share a FunctionRegistry
+/// instance across multiple threads during configuration.
 /// </summary>
-public class FunctionRegistry
+public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithProviders, IConfiguredFunctionRegistry
 {
     private readonly List<IFunctionProvider> _providers = new();
     private readonly Dictionary<string, FunctionDescriptor> _explicitFunctions = new();
     private ConflictResolution _conflictResolution = ConflictResolution.Throw;
     private Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor>? _conflictHandler;
+    private FunctionFilterConfig? _filterConfig;
+    private ILogger? _logger;
 
     /// <summary>
     /// Add functions from a provider (MCP, Natural, etc.)
@@ -22,6 +39,14 @@ public class FunctionRegistry
     {
         _providers.Add(provider);
         return this;
+    }
+
+    /// <summary>
+    /// Add functions from a provider (MCP, Natural, etc.) - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryWithProviders IFunctionRegistryBuilder.AddProvider(IFunctionProvider provider)
+    {
+        return AddProvider(provider);
     }
 
     /// <summary>
@@ -40,12 +65,28 @@ public class FunctionRegistry
     }
 
     /// <summary>
+    /// Add a single function explicitly - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryBuilder IFunctionRegistryBuilder.AddFunction(FunctionContract contract, Func<string, Task<string>> handler, string? providerName)
+    {
+        return AddFunction(contract, handler, providerName);
+    }
+
+    /// <summary>
     /// Set conflict resolution strategy
     /// </summary>
     public FunctionRegistry WithConflictResolution(ConflictResolution strategy)
     {
         _conflictResolution = strategy;
         return this;
+    }
+
+    /// <summary>
+    /// Set conflict resolution strategy - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictResolution(ConflictResolution strategy)
+    {
+        return WithConflictResolution(strategy);
     }
 
     /// <summary>
@@ -58,48 +99,218 @@ public class FunctionRegistry
     }
 
     /// <summary>
+    /// Set custom conflict resolution handler - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictHandler(Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler)
+    {
+        return WithConflictHandler(handler);
+    }
+
+    /// <summary>
+    /// Configure function filtering for all providers
+    /// </summary>
+    public FunctionRegistry WithFilterConfig(FunctionFilterConfig? filterConfig)
+    {
+        _filterConfig = filterConfig;
+        return this;
+    }
+
+    /// <summary>
+    /// Configure function filtering for all providers - Explicit interface implementation
+    /// </summary>
+    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.WithFilterConfig(FunctionFilterConfig? filterConfig)
+    {
+        return WithFilterConfig(filterConfig);
+    }
+
+    /// <summary>
+    /// Set logger for debugging
+    /// </summary>
+    public FunctionRegistry WithLogger(ILogger? logger)
+    {
+        _logger = logger;
+        return this;
+    }
+
+    /// <summary>
+    /// Set logger for debugging - Explicit interface implementation
+    /// </summary>
+    IFunctionRegistryBuilder IFunctionRegistryBuilder.WithLogger(ILogger? logger)
+    {
+        return WithLogger(logger);
+    }
+
+    /// <summary>
+    /// Get all registered providers (for inspection/debugging)
+    /// </summary>
+    public IReadOnlyList<IFunctionProvider> GetProviders()
+    {
+        return _providers.AsReadOnly();
+    }
+
+    /// <summary>
+    /// Proceeds to build without additional filtering configuration.
+    /// </summary>
+    /// <returns>A configured registry ready for building</returns>
+    public IConfiguredFunctionRegistry Configure()
+    {
+        return this;
+    }
+
+    /// <summary>
+    /// Proceeds to build without additional filtering configuration - Explicit interface implementation
+    /// </summary>
+    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.Configure()
+    {
+        return Configure();
+    }
+
+    /// <summary>
+    /// Validates the current configuration and returns any issues found.
+    /// </summary>
+    /// <returns>A collection of validation issues, empty if configuration is valid</returns>
+    public IEnumerable<string> ValidateConfiguration()
+    {
+        var issues = new List<string>();
+
+        // Validate filter configuration if present
+        if (_filterConfig != null)
+        {
+            if (_filterConfig.ProviderConfigs != null)
+            {
+                foreach (var kvp in _filterConfig.ProviderConfigs)
+                {
+                    var providerName = kvp.Key;
+                    var config = kvp.Value;
+
+                    // Validate custom prefix
+                    if (config.CustomPrefix != null)
+                    {
+                        if (!FunctionNameValidator.IsValidPrefix(config.CustomPrefix))
+                        {
+                            issues.Add($"Provider '{providerName}': {FunctionNameValidator.GetPrefixValidationError(config.CustomPrefix)}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for potential naming conflicts with prefixes
+        if (_filterConfig?.UsePrefixOnlyForCollisions == false)
+        {
+            // When prefixing all functions, validate that provider names are valid prefixes
+            foreach (var provider in _providers)
+            {
+                if (!FunctionNameValidator.IsValidPrefix(provider.ProviderName))
+                {
+                    issues.Add($"Provider name '{provider.ProviderName}' is not a valid prefix: {FunctionNameValidator.GetPrefixValidationError(provider.ProviderName)}");
+                }
+            }
+        }
+
+        return issues;
+    }
+
+    /// <summary>
     /// Build the final function collections for FunctionCallMiddleware
     /// </summary>
     public (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) Build()
     {
-        var allFunctions = new Dictionary<string, List<FunctionDescriptor>>();
+        var logger = _logger ?? NullLogger.Instance;
+        logger.LogDebug("Building function registry with {ProviderCount} providers", _providers.Count);
+
+        // Step 1: Collect all functions from providers
+        var allDescriptors = new List<FunctionDescriptor>();
 
         // Collect functions from all providers (sorted by priority)
         foreach (var provider in _providers.OrderBy(p => p.Priority))
         {
-            foreach (var function in provider.GetFunctions())
-            {
-                if (!allFunctions.ContainsKey(function.Key))
-                    allFunctions[function.Key] = new List<FunctionDescriptor>();
-                allFunctions[function.Key].Add(function);
-            }
+            var providerFunctions = provider.GetFunctions().ToList();
+            logger.LogDebug("Provider {ProviderName} contributed {FunctionCount} functions",
+                provider.ProviderName, providerFunctions.Count);
+            allDescriptors.AddRange(providerFunctions);
         }
 
-        // Add explicit functions (they take precedence)
-        foreach (var kvp in _explicitFunctions)
+        // Add explicit functions
+        allDescriptors.AddRange(_explicitFunctions.Values);
+        logger.LogDebug("Added {ExplicitCount} explicit functions", _explicitFunctions.Count);
+
+        // Step 2: Apply filtering if configured
+        if (_filterConfig?.EnableFiltering == true)
         {
-            allFunctions[kvp.Key] = new List<FunctionDescriptor> { kvp.Value };
+            logger.LogInformation("Applying function filtering with configuration");
+            var filter = new FunctionFilter(_filterConfig, logger);
+            allDescriptors = filter.FilterFunctions(allDescriptors).ToList();
         }
 
-        // Resolve conflicts
-        var resolvedFunctions = new Dictionary<string, FunctionDescriptor>();
-        foreach (var kvp in allFunctions)
+        // Step 3: Group functions by key for conflict resolution
+        var functionsByKey = new Dictionary<string, List<FunctionDescriptor>>();
+        foreach (var descriptor in allDescriptors)
         {
+            if (!functionsByKey.ContainsKey(descriptor.Key))
+                functionsByKey[descriptor.Key] = new List<FunctionDescriptor>();
+            functionsByKey[descriptor.Key].Add(descriptor);
+        }
+
+        // Step 4: Resolve conflicts
+        var resolvedFunctions = new List<FunctionDescriptor>();
+        foreach (var kvp in functionsByKey)
+        {
+            FunctionDescriptor resolved;
             if (kvp.Value.Count == 1)
             {
-                resolvedFunctions[kvp.Key] = kvp.Value.First();
+                resolved = kvp.Value.First();
             }
             else
             {
-                resolvedFunctions[kvp.Key] = ResolveConflict(kvp.Key, kvp.Value);
+                resolved = ResolveConflict(kvp.Key, kvp.Value);
             }
+            resolvedFunctions.Add(resolved);
         }
 
-        // Split into contracts and handlers
-        var contracts = resolvedFunctions.Values.Select(f => f.Contract);
-        var handlers = resolvedFunctions.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Handler);
+        // Step 5: Detect and resolve collisions (after conflict resolution)
+        var collisionDetector = new FunctionCollisionDetector(logger);
+        var namingMap = collisionDetector.DetectAndResolveCollisions(resolvedFunctions, _filterConfig);
 
-        return (contracts, handlers);
+        // Step 6: Build final collections
+        var finalContracts = new List<FunctionContract>();
+        var finalHandlers = new Dictionary<string, Func<string, Task<string>>>();
+
+        foreach (var resolved in resolvedFunctions)
+        {
+            // Get the registered name from naming map
+            var registeredName = namingMap.TryGetValue(resolved.Key, out var name)
+                ? name
+                : resolved.Contract.Name;
+
+            // Create contract with registered name if different
+            if (registeredName != resolved.Contract.Name)
+            {
+                // Create a new contract with the updated name
+                var contract = new FunctionContract
+                {
+                    Name = registeredName,
+                    Description = resolved.Contract.Description,
+                    Namespace = resolved.Contract.Namespace,
+                    ClassName = resolved.Contract.ClassName,
+                    Parameters = resolved.Contract.Parameters,
+                    ReturnType = resolved.Contract.ReturnType,
+                    ReturnDescription = resolved.Contract.ReturnDescription
+                };
+                finalContracts.Add(contract);
+            }
+            else
+            {
+                finalContracts.Add(resolved.Contract);
+            }
+
+            finalHandlers[registeredName] = resolved.Handler;
+        }
+
+        logger.LogInformation("Function registry built: {ContractCount} functions registered",
+            finalContracts.Count);
+
+        return (finalContracts, finalHandlers);
     }
 
     /// <summary>
@@ -121,6 +332,11 @@ public class FunctionRegistry
 
     private FunctionDescriptor ResolveConflict(string key, List<FunctionDescriptor> candidates)
     {
+        // Explicit functions always take precedence over provider functions
+        var explicitFunction = candidates.FirstOrDefault(c => c.ProviderName == "Explicit");
+        if (explicitFunction != null)
+            return explicitFunction;
+
         // Custom handler takes precedence
         if (_conflictHandler != null)
             return _conflictHandler(key, candidates);

@@ -378,17 +378,17 @@ public class FunctionRegistryTests
 
 
 
-    private static IFunctionProvider CreateTestProvider(string name, string[] functionNames, int priority = 100, bool isMcp = false)
+    internal static IFunctionProvider CreateTestProvider(string name, string[] functionNames, int priority = 100, bool isMcp = false)
     {
         return new TestFunctionProvider(name, functionNames, priority, isMcp);
     }
 
-    private static IFunctionProvider CreateTestProviderWithSameKey(string name, string functionName, bool isMcp = false)
+    internal static IFunctionProvider CreateTestProviderWithSameKey(string name, string functionName, bool isMcp = false)
     {
         return new TestFunctionProviderWithSameKey(name, functionName, isMcp);
     }
 
-    private static FunctionContract CreateTestContract(string name, string? className = null, string? description = null)
+    internal static FunctionContract CreateTestContract(string name, string? className = null, string? description = null)
     {
         return new FunctionContract
         {
@@ -399,7 +399,7 @@ public class FunctionRegistryTests
         };
     }
 
-    private static Func<string, Task<string>> CreateTestHandler(string result)
+    internal static Func<string, Task<string>> CreateTestHandler(string result)
     {
         return _ => Task.FromResult(result);
     }
