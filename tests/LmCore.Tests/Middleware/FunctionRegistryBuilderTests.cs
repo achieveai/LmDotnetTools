@@ -352,7 +352,9 @@ public class FunctionRegistryBuilderTests
     }
 
     // Helper methods
+#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type
     private static IFunctionProvider CreateTestProvider(string name, string[] functionNames = null)
+#pragma warning restore CS8625
     {
         return new TestFunctionProvider(name, functionNames ?? Array.Empty<string>());
     }

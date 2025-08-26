@@ -458,7 +458,7 @@ public record ChatCompletionRequest
             if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)
             {
                 // Single plain-text reasoning ⇒ emit "reasoning" field
-                ch.Reasoning = selected[0].Reasoning;
+                ch.Reasoning = selected[0].Reasoning ?? string.Empty;
             }
             else
             {
@@ -470,7 +470,7 @@ public record ChatCompletionRequest
                             p.Visibility == ReasoningVisibility.Encrypted ? "reasoning.encrypted"
                             : p.Visibility == ReasoningVisibility.Summary ? "reasoning.summary"
                             : "reasoning",
-                        Data = p.Reasoning,
+                        Data = p.Reasoning ?? string.Empty,
                     })
                     .ToList();
             }

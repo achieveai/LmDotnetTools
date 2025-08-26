@@ -222,7 +222,7 @@ public class FunctionFilter
                     ? name
                     : descriptor.Contract.Name;
 
-            if (!ShouldFilterFunction(descriptor, registeredName))
+            if (!ShouldFilterFunctionWithReason(descriptor, registeredName).IsFiltered)
             {
                 filtered.Add(descriptor);
             }

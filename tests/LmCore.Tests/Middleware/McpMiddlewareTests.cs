@@ -34,7 +34,9 @@ public class McpMiddlewareTests
     {
         // Arrange & Act
 #pragma warning disable CS0618 // Type or member is obsolete
-        var filter = new McpToolFilter(null, null, _mockLogger.Object);
+        var emptyGlobalConfig = new McpToolFilterConfig();
+        var emptyProviderConfig = new Dictionary<string, McpServerFilterConfig>();
+        var filter = new McpToolFilter(emptyGlobalConfig, emptyProviderConfig, _mockLogger.Object);
 #pragma warning restore CS0618
 
         // Assert

@@ -559,11 +559,9 @@ public class FakeHttpMessageHandler : HttpMessageHandler
 }
 
 /// <summary>
-/// Represents a Server-Sent Event for SSE streaming
+/// Represents a Server-Sent Event for SSE streaming.
+/// Contains Id, Event, and Data properties for SSE event information.
 /// </summary>
-/// <param name="Data">The event data</param>
-/// <param name="Event">Optional event type</param>
-/// <param name="Id">Optional event ID</param>
 public record SseEvent
 {
     public string? Id { get; init; }

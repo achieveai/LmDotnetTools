@@ -170,7 +170,6 @@ public static class McpFunctionCallExtensions
     /// </summary>
     /// <param name="toolMethod">The method to create a function contract for</param>
     /// <param name="toolAttr">The MCP tool attribute on the method</param>
-    /// <param name="toolType">The class type containing the method</param>
     private static FunctionContract CreateFunctionContractFromToolMethod(
         MethodInfo toolMethod,
         McpServerToolAttribute toolAttr

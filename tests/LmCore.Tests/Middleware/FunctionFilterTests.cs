@@ -526,7 +526,7 @@ public class FunctionFilterTests
         {
             Contract = new FunctionContract { Name = "blocked" },
             Handler = _ => Task.FromResult("result"),
-            ProviderName = null,
+            ProviderName = string.Empty,
         };
 
         // Act

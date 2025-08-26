@@ -221,13 +221,13 @@ public record ResponseTimePercentiles
 
     /// <summary>
     /// 95th percentile response time in milliseconds.
-    /// Target: <15 seconds as per Success Metrics.
+    /// Target: &lt;15 seconds as per Success Metrics.
     /// </summary>
     public double P95 { get; init; }
 
     /// <summary>
     /// 99th percentile response time in milliseconds.
-    /// Target: <30 seconds as per Success Metrics.
+    /// Target: &lt;30 seconds as per Success Metrics.
     /// </summary>
     public double P99 { get; init; }
 

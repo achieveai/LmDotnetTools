@@ -5,7 +5,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
 /// Factory for creating test logger instances
-/// Provides consistent ILogger<T> implementations for testing
+/// Provides consistent ILogger&lt;T&gt; implementations for testing
 /// Shared utility for all LmDotnetTools provider testing
 /// </summary>
 public static class TestLoggerFactory
@@ -14,7 +14,7 @@ public static class TestLoggerFactory
     /// Creates a test logger instance that outputs to Debug
     /// </summary>
     /// <typeparam name="T">The type the logger is for</typeparam>
-    /// <returns>An ILogger<T> instance for testing</returns>
+    /// <returns>An ILogger&lt;T&gt; instance for testing</returns>
     public static ILogger<T> CreateLogger<T>()
     {
         return new TestLogger<T>();
@@ -25,7 +25,7 @@ public static class TestLoggerFactory
     /// </summary>
     /// <typeparam name="T">The type the logger is for</typeparam>
     /// <param name="outputAction">Custom action for log output</param>
-    /// <returns>An ILogger<T> instance for testing</returns>
+    /// <returns>An ILogger&lt;T&gt; instance for testing</returns>
     public static ILogger<T> CreateLogger<T>(Action<string> outputAction)
     {
         return new TestLogger<T>(outputAction);

@@ -367,6 +367,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     /// </summary>
     /// <param name="text">The text to write</param>
     /// <param name="color">The color pair to use</param>
+    /// <param name="isLine">Whether to write as a line (with newline) or inline</param>
     private static void WriteColoredText(string text, ConsoleColorPair color, bool isLine = true)
     {
         var oldForeground = Console.ForegroundColor;

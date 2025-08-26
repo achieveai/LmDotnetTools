@@ -543,7 +543,7 @@ public class TestLogger : ILogger
 {
     public List<LogEntry> LogEntries { get; } = new();
 
-    public IDisposable BeginScope<TState>(TState state) => new TestScope();
+    IDisposable ILogger.BeginScope<TState>(TState state) => new TestScope();
 
     public bool IsEnabled(LogLevel logLevel) => true;
 

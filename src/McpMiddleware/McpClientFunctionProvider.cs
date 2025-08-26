@@ -661,9 +661,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <summary>
     /// Extracts function contracts using the naming map from collision detection
     /// </summary>
-    private static async Task<
-        IEnumerable<FunctionContract>
-    > ExtractFunctionContractsWithNamingMapAsync(
+    private static Task<IEnumerable<FunctionContract>> ExtractFunctionContractsWithNamingMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
@@ -734,15 +732,13 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             }
         }
 
-        return functionContracts;
+        return Task.FromResult<IEnumerable<FunctionContract>>(functionContracts);
     }
 
     /// <summary>
     /// Creates function delegates using the naming map from collision detection
     /// </summary>
-    private static async Task<
-        IDictionary<string, Func<string, Task<string>>>
-    > CreateFunctionMapWithNamingMapAsync(
+    private static Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapWithNamingMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
@@ -899,7 +895,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             }
         }
 
-        return functionMap;
+        return Task.FromResult<IDictionary<string, Func<string, Task<string>>>>(functionMap);
     }
 
     [System.Text.RegularExpressions.GeneratedRegex(@"[^a-zA-Z0-9_-]")]

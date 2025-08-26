@@ -105,6 +105,10 @@ public class McpMiddlewareFactory
                 );
 
                 // Create transport from configuration
+                if (clientSettings == null)
+                {
+                    throw new ArgumentNullException(nameof(clientSettings), $"Client settings for '{clientId}' cannot be null");
+                }
                 var transport = CreateTransportFromConfig(clientId, clientSettings);
                 _logger.LogDebug(
                     "Transport created for client: ClientId={ClientId}, TransportType={TransportType}",

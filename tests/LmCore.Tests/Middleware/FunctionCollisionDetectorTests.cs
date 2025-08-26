@@ -218,7 +218,9 @@ public class FunctionCollisionDetectorTests
     public void SanitizeName_WithNull_ReturnsDefault()
     {
         // Arrange & Act
+#pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type
         var result = FunctionCollisionDetector.SanitizeName(null);
+#pragma warning restore CS8625
 
         // Assert
         Assert.Equal("unknown", result);
@@ -348,7 +350,7 @@ public class FunctionCollisionDetectorTests
             {
                 Contract = new FunctionContract { Name = "func1" },
                 Handler = _ => Task.FromResult("result"),
-                ProviderName = null,
+                ProviderName = string.Empty,
             },
         };
 

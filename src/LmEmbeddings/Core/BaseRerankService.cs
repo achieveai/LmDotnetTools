@@ -75,7 +75,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// Implementations should:
     /// </para>
     /// <list type="bullet">
-    /// <item><description>Validate the request using <see cref="ValidationHelper.ValidateRerankRequest(RerankRequest)"/></description></item>
+    /// <item><description>Validate the request using <see cref="ValidationHelper.ValidateRerankRequest(object?)"/></description></item>
     /// <item><description>Make the HTTP request to the provider's API</description></item>
     /// <item><description>Parse the response and return a standardized <see cref="RerankResponse"/></description></item>
     /// <item><description>Handle provider-specific errors appropriately</description></item>

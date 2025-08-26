@@ -7,7 +7,7 @@ namespace AchieveAi.LmDotnetTools.LmConfig.Http;
 /// <summary>
 /// Abstraction for composing a chain of <see cref="HttpMessageHandler"/> instances.
 /// Implementations should return the *outer-most* handler that ultimately delegates
-/// to <paramref name="innerMost"/>.
+/// to the provided inner handler.
 /// </summary>
 public interface IHttpHandlerBuilder
 {
