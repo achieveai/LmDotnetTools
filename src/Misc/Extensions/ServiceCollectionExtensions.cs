@@ -32,8 +32,7 @@ public static class ServiceCollectionExtensions
         if (services.Any(sd => sd.ServiceType == typeof(LlmCacheOptions)))
             return services;
 
-        if (options == null)
-            throw new ArgumentNullException(nameof(options));
+        ArgumentNullException.ThrowIfNull(options);
 
         var validationErrors = options.Validate();
         if (validationErrors.Count > 0)
@@ -111,8 +110,7 @@ public static class ServiceCollectionExtensions
         string configurationSection = "LlmCache"
     )
     {
-        if (configuration == null)
-            throw new ArgumentNullException(nameof(configuration));
+        ArgumentNullException.ThrowIfNull(configuration);
 
         var section = configuration.GetSection(configurationSection);
         var options = new LlmCacheOptions
@@ -229,8 +227,7 @@ public static class ServiceCollectionExtensions
         HttpClient existingClient
     )
     {
-        if (existingClient == null)
-            throw new ArgumentNullException(nameof(existingClient));
+        ArgumentNullException.ThrowIfNull(existingClient);
 
         var sp = services.BuildServiceProvider();
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();

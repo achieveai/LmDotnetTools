@@ -93,9 +93,18 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         return new IMessage[]
         {
-            new TextMessage { Role = Role.User, Text = "Hello", GenerationId = completionId, }, new TextMessage
+            new TextMessage
             {
-                Role = Role.Assistant, Text = "Hi there!", GenerationId = completionId, Metadata = metadata,
+                Role = Role.User,
+                Text = "Hello",
+                GenerationId = completionId,
+            },
+            new TextMessage
+            {
+                Role = Role.Assistant,
+                Text = "Hi there!",
+                GenerationId = completionId,
+                Metadata = metadata,
             },
         };
     }
@@ -163,7 +172,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -217,7 +229,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -275,7 +290,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -314,9 +332,25 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Create multiple messages to test ordering
         var messages = new IMessage[]
         {
-            new TextMessage { Role = Role.User, Text = "Message 1", GenerationId = completionId, },
-            new TextMessage { Role = Role.Assistant, Text = "Message 2", GenerationId = completionId, },
-            new TextMessage { Role = Role.User, Text = "Message 3", GenerationId = completionId, }, new TextMessage
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "Message 1",
+                GenerationId = completionId,
+            },
+            new TextMessage
+            {
+                Role = Role.Assistant,
+                Text = "Message 2",
+                GenerationId = completionId,
+            },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "Message 3",
+                GenerationId = completionId,
+            },
+            new TextMessage
             {
                 Role = Role.Assistant,
                 Text = "Final message",
@@ -343,7 +377,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -417,7 +454,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -472,7 +512,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -541,7 +584,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -591,7 +637,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -635,7 +684,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var originalOptions = new GenerateReplyOptions { ModelId = "gpt-4", Temperature = 0.7f };
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             originalOptions
         );
 
@@ -690,7 +742,8 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         // Create test messages including the existing usage message
         var messages = new List<IMessage>
         {
-            new TextMessage { Role = Role.User, Text = "Hello!" }, existingUsageMessage,
+            new TextMessage { Role = Role.User, Text = "Hello!" },
+            existingUsageMessage,
         };
 
         var fakeAgent = new FakeStreamingAgent(messages);
@@ -702,7 +755,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 
@@ -781,7 +837,8 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         var messages = new List<IMessage>
         {
-            new TextMessage { Role = Role.User, Text = "Hello!" }, existingUsageMessage,
+            new TextMessage { Role = Role.User, Text = "Hello!" },
+            existingUsageMessage,
         };
 
         var fakeAgent = new FakeStreamingAgent(messages);
@@ -793,7 +850,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Role = Role.User, Text = "Hello" }, },
+            new[]
+            {
+                new TextMessage { Role = Role.User, Text = "Hello" },
+            },
             new GenerateReplyOptions()
         );
 

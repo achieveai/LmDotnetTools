@@ -45,7 +45,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                     .ToList();
 
                 // Removing following check ` || functionMap.Count != functions.Count()`
-                if (missingFunctions.Any())
+                if (missingFunctions.Count != 0)
                 {
                     throw new ArgumentException(
                         $"The following functions do not have corresponding entries in the function map: {string.Join(", ", missingFunctions)}",
@@ -175,11 +175,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             var responseToolCall = reply as ToolsCallMessage;
             var responseToolCalls = responseToolCall?.ToolCalls;
 
-            if (responseToolCalls != null && responseToolCalls.Any())
+            if (responseToolCalls != null && !responseToolCalls.IsEmpty)
             {
                 _logger.LogDebug(
                     "Tool call aggregation: Processing {ToolCallCount} tool calls",
-                    responseToolCalls.Count()
+                    responseToolCalls.Count
                 );
 
                 // Process the tool calls for this message
@@ -326,17 +326,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             return null;
         }
 
-        if (_functions == null)
-        {
-            return optionFunctions;
-        }
-
-        if (optionFunctions == null)
-        {
-            return _functions;
-        }
-
-        return _functions.Concat(optionFunctions);
+        return _functions == null ? optionFunctions : optionFunctions == null ? _functions : _functions.Concat(optionFunctions);
     }
 
     /// <summary>
@@ -685,11 +675,11 @@ public class FunctionCallMiddleware : IStreamingMiddleware
             else if (message is ToolsCallMessage toolsCallMessage)
             {
                 // If it has tool calls, execute them directly
-                if (toolsCallMessage.ToolCalls != null && toolsCallMessage.ToolCalls.Any())
+                if (toolsCallMessage.ToolCalls != null && !toolsCallMessage.ToolCalls.IsEmpty)
                 {
                     _logger.LogDebug(
                         "Streaming message processing: Processing complete tool call message with {ToolCallCount} calls",
-                        toolsCallMessage.ToolCalls.Count()
+                        toolsCallMessage.ToolCalls.Count
                     );
 
                     yield return await ProcessCompleteToolCallMessage(toolsCallMessage);
@@ -730,7 +720,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
     }
 
-    private Task<IMessage> CompletePendingBuilder(ToolsCallMessageBuilder builder)
+    private static Task<IMessage> CompletePendingBuilder(ToolsCallMessageBuilder builder)
     {
         var builtMessage = builder.Build();
         return Task.FromResult<IMessage>(builtMessage);
@@ -796,7 +786,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     {
         // Process the tool calls if needed
         var toolCalls = toolCallMessage.ToolCalls;
-        if (toolCalls != null && toolCalls.Any() && _functionMap != null)
+        if (toolCalls != null && !toolCalls.IsEmpty && _functionMap != null)
         {
             var toolCallResults = new List<ToolCallResult>();
             var pendingToolCallTasks = new List<Task<ToolCallResult>>();
@@ -832,7 +822,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 _logger.LogError(
                     ex,
                     "Tool call processing error in complete message processing: ToolCallCount={ToolCallCount}",
-                    toolCalls.Count()
+                    toolCalls.Count
                 );
 
                 // Handle individual task failures
@@ -872,7 +862,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 }
             }
 
-            if (toolCallResults.Any())
+            if (toolCallResults.Count != 0)
             {
                 return new ToolsCallAggregateMessage(
                     toolCallMessage,

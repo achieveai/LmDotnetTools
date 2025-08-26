@@ -98,7 +98,7 @@ public record PerformanceProfile
     {
         var metricsList = metrics.ToList();
 
-        if (!metricsList.Any())
+        if (metricsList.Count == 0)
         {
             return new PerformanceProfile
             {
@@ -141,15 +141,15 @@ public record PerformanceProfile
             SuccessfulRequests = successfulRequests.Count,
             FailedRequests = failedRequests.Count,
             RetriedRequests = retriedRequests.Count,
-            AverageRequestDuration = durations.Any()
+            AverageRequestDuration = durations.Count != 0
                 ? TimeSpan.FromTicks((long)durations.Average(d => d.Ticks))
                 : TimeSpan.Zero,
-            MinRequestDuration = durations.Any() ? durations.Min() : TimeSpan.Zero,
-            MaxRequestDuration = durations.Any() ? durations.Max() : TimeSpan.Zero,
-            P95RequestDuration = durations.Any()
+            MinRequestDuration = durations.Count != 0 ? durations.Min() : TimeSpan.Zero,
+            MaxRequestDuration = durations.Count != 0 ? durations.Max() : TimeSpan.Zero,
+            P95RequestDuration = durations.Count != 0
                 ? durations[(int)(durations.Count * 0.95)]
                 : TimeSpan.Zero,
-            P99RequestDuration = durations.Any()
+            P99RequestDuration = durations.Count != 0
                 ? durations[(int)(durations.Count * 0.99)]
                 : TimeSpan.Zero,
             TotalTokens = totalTokens,

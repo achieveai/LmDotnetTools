@@ -87,10 +87,10 @@ public record ToolsCallAggregateMessage : IMessage
 
     // IMessage implementation
 
-    public string? GetText()
+    public static string? GetText()
     {
         // Use text from the result if available
-        var resultText = ToolsCallResult.GetText();
+        var resultText = ToolsCallResultMessage.GetText();
         if (resultText != null)
         {
             return resultText;
@@ -100,10 +100,10 @@ public record ToolsCallAggregateMessage : IMessage
         return null;
     }
 
-    public BinaryData? GetBinary()
+    public static BinaryData? GetBinary()
     {
         // Use binary from the result if available
-        var resultBinary = ToolsCallResult.GetBinary();
+        var resultBinary = ToolsCallResultMessage.GetBinary();
         if (resultBinary != null)
         {
             return resultBinary;

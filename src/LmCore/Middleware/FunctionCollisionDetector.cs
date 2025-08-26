@@ -11,17 +11,11 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// <summary>
 /// Handles collision detection and name resolution for functions across all providers
 /// </summary>
-public class FunctionCollisionDetector
+public partial class FunctionCollisionDetector
 {
     private readonly ILogger _logger;
-    private static readonly Regex InvalidCharPattern = new Regex(
-        @"[^a-zA-Z0-9_-]",
-        RegexOptions.Compiled
-    );
-    private static readonly Regex MultipleUnderscorePattern = new Regex(
-        @"_{2,}",
-        RegexOptions.Compiled
-    );
+    private static readonly Regex InvalidCharPattern = MyRegex();
+    private static readonly Regex MultipleUnderscorePattern = MyRegex1();
 
     /// <summary>
     /// Initializes a new instance of the FunctionCollisionDetector class
@@ -56,11 +50,13 @@ public class FunctionCollisionDetector
         foreach (var function in functions)
         {
             var baseName = function.Contract.Name;
-            if (!functionGroups.ContainsKey(baseName))
+            if (!functionGroups.TryGetValue(baseName, out List<FunctionDescriptor>? value))
             {
-                functionGroups[baseName] = new List<FunctionDescriptor>();
+                value = new List<FunctionDescriptor>();
+                functionGroups[baseName] = value;
             }
-            functionGroups[baseName].Add(function);
+
+            value.Add(function);
         }
 
         _logger.LogDebug(
@@ -89,7 +85,7 @@ public class FunctionCollisionDetector
 
             foreach (var descriptor in descriptors)
             {
-                var registeredName = DetermineRegisteredName(
+                var registeredName = FunctionCollisionDetector.DetermineRegisteredName(
                     descriptor,
                     hasCollision,
                     usePrefixOnlyForCollisions,
@@ -120,7 +116,7 @@ public class FunctionCollisionDetector
     /// <summary>
     /// Determines the registered name for a function based on collision and configuration
     /// </summary>
-    private string DetermineRegisteredName(
+    private static string DetermineRegisteredName(
         FunctionDescriptor descriptor,
         bool hasCollision,
         bool usePrefixOnlyForCollisions,
@@ -192,7 +188,7 @@ public class FunctionCollisionDetector
     /// </summary>
     /// <param name="functions">Collection of function descriptors</param>
     /// <returns>Analysis report of collisions</returns>
-    public CollisionAnalysisReport AnalyzeCollisions(IEnumerable<FunctionDescriptor> functions)
+    public static CollisionAnalysisReport AnalyzeCollisions(IEnumerable<FunctionDescriptor> functions)
     {
         var report = new CollisionAnalysisReport();
         var functionGroups = new Dictionary<string, List<FunctionDescriptor>>();
@@ -201,11 +197,13 @@ public class FunctionCollisionDetector
         foreach (var function in functions)
         {
             var baseName = function.Contract.Name;
-            if (!functionGroups.ContainsKey(baseName))
+            if (!functionGroups.TryGetValue(baseName, out List<FunctionDescriptor>? value))
             {
-                functionGroups[baseName] = new List<FunctionDescriptor>();
+                value = new List<FunctionDescriptor>();
+                functionGroups[baseName] = value;
             }
-            functionGroups[baseName].Add(function);
+
+            value.Add(function);
             report.TotalFunctions++;
         }
 
@@ -229,6 +227,11 @@ public class FunctionCollisionDetector
 
         return report;
     }
+
+    [GeneratedRegex(@"[^a-zA-Z0-9_-]", RegexOptions.Compiled)]
+    private static partial Regex MyRegex();
+    [GeneratedRegex(@"_{2,}", RegexOptions.Compiled)]
+    private static partial Regex MyRegex1();
 }
 
 /// <summary>

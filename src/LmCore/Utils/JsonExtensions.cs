@@ -7,10 +7,6 @@ public static class JsonExtensions
 {
     public static string ToJsonString(this JsonNode? node)
     {
-        if (node == null)
-        {
-            return string.Empty;
-        }
-        return node.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
+        return node == null ? string.Empty : node.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
     }
 }

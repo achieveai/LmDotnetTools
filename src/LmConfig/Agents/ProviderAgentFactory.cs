@@ -61,8 +61,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     public IAgent CreateAgent(ProviderResolution resolution)
     {
-        if (resolution == null)
-            throw new ArgumentNullException(nameof(resolution));
+        ArgumentNullException.ThrowIfNull(resolution);
 
         var compatibilityType = GetCompatibilityType(resolution);
 
@@ -92,10 +91,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
     {
         var agent = CreateAgent(resolution);
 
-        if (agent is IStreamingAgent streamingAgent)
-            return streamingAgent;
-
-        throw new NotSupportedException(
+        return agent is IStreamingAgent streamingAgent
+            ? streamingAgent
+            : throw new NotSupportedException(
             $"Provider '{resolution.EffectiveProviderName}' does not support streaming agents"
         );
     }
@@ -124,17 +122,16 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     public ProviderCapabilityInfo? GetProviderCapabilities(string providerName)
     {
-        if (!ProviderCompatibility.TryGetValue(providerName, out var compatibility))
-            return null;
-
-        return new ProviderCapabilityInfo
-        {
-            Name = providerName,
-            SupportsBasicAgent = compatibility != "Replicate",
-            SupportsStreamingAgent = compatibility != "Replicate",
-            CompatibilityType = compatibility,
-            Notes = compatibility == "Replicate" ? "Not yet supported" : null,
-        };
+        return !ProviderCompatibility.TryGetValue(providerName, out var compatibility)
+            ? null
+            : new ProviderCapabilityInfo
+            {
+                Name = providerName,
+                SupportsBasicAgent = compatibility != "Replicate",
+                SupportsStreamingAgent = compatibility != "Replicate",
+                CompatibilityType = compatibility,
+                Notes = compatibility == "Replicate" ? "Not yet supported" : null,
+            };
     }
 
     private string GetCompatibilityType(ProviderResolution resolution)
@@ -364,12 +361,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
             _logger.LogDebug("Injecting OpenRouter usage middleware for agent");
 
             // Wrap the agent with middleware using the extension method
-            if (agent is IStreamingAgent streamingAgent)
-            {
-                return streamingAgent.WithMiddleware(usageMiddleware);
-            }
-
-            throw new InvalidOperationException(
+            return agent is IStreamingAgent streamingAgent
+                ? (IAgent)streamingAgent.WithMiddleware(usageMiddleware)
+                : throw new InvalidOperationException(
                 "OpenRouter usage middleware requires a streaming agent"
             );
         }

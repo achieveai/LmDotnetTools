@@ -84,7 +84,7 @@ public class ModelResolver : IModelResolver
         foreach (var provider in model.Providers)
         {
             // Check if provider should be excluded
-            if (ShouldExcludeProvider(provider, criteria))
+            if (ModelResolver.ShouldExcludeProvider(provider, criteria))
                 continue;
 
             // Check if provider is available
@@ -116,7 +116,7 @@ public class ModelResolver : IModelResolver
             {
                 foreach (var subProvider in provider.SubProviders)
                 {
-                    if (ShouldExcludeSubProvider(subProvider, criteria))
+                    if (ModelResolver.ShouldExcludeSubProvider(subProvider, criteria))
                         continue;
 
                     // Check if sub-provider is available (use main provider's connection)
@@ -137,7 +137,7 @@ public class ModelResolver : IModelResolver
         }
 
         // Sort by preference based on criteria
-        return SortProvidersByPreference(resolutions, criteria);
+        return ModelResolver.SortProvidersByPreference(resolutions, criteria);
     }
 
     public Task<bool> IsProviderAvailableAsync(
@@ -291,14 +291,14 @@ public class ModelResolver : IModelResolver
         return Task.FromResult(
             new ValidationResult
             {
-                IsValid = !errors.Any(),
+                IsValid = errors.Count == 0,
                 Errors = errors,
                 Warnings = warnings,
             }
         );
     }
 
-    private bool ShouldExcludeProvider(ProviderConfig provider, ProviderSelectionCriteria criteria)
+    private static bool ShouldExcludeProvider(ProviderConfig provider, ProviderSelectionCriteria criteria)
     {
         // Check excluded providers
         if (criteria.ExcludeProviders?.Contains(provider.Name) == true)
@@ -316,23 +316,15 @@ public class ModelResolver : IModelResolver
             return true;
 
         // Check cost limits
-        if (
-            criteria.MaxPromptCostPerMillion.HasValue
+        return criteria.MaxPromptCostPerMillion.HasValue
             && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-        )
-            return true;
-
-        if (
-            criteria.MaxCompletionCostPerMillion.HasValue
+            ? true
+            : criteria.MaxCompletionCostPerMillion.HasValue
             && provider.Pricing.CompletionPerMillion
-                > (double)criteria.MaxCompletionCostPerMillion.Value
-        )
-            return true;
-
-        return false;
+                > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 
-    private bool ShouldExcludeSubProvider(
+    private static bool ShouldExcludeSubProvider(
         SubProviderConfig subProvider,
         ProviderSelectionCriteria criteria
     )
@@ -349,31 +341,23 @@ public class ModelResolver : IModelResolver
             return true;
 
         // Check cost limits
-        if (
-            criteria.MaxPromptCostPerMillion.HasValue
+        return criteria.MaxPromptCostPerMillion.HasValue
             && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-        )
-            return true;
-
-        if (
-            criteria.MaxCompletionCostPerMillion.HasValue
+            ? true
+            : criteria.MaxCompletionCostPerMillion.HasValue
             && subProvider.Pricing.CompletionPerMillion
-                > (double)criteria.MaxCompletionCostPerMillion.Value
-        )
-            return true;
-
-        return false;
+                > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 
-    private IReadOnlyList<ProviderResolution> SortProvidersByPreference(
+    private static IReadOnlyList<ProviderResolution> SortProvidersByPreference(
         List<ProviderResolution> resolutions,
         ProviderSelectionCriteria criteria
     )
     {
-        return resolutions.OrderByDescending(r => CalculateProviderScore(r, criteria)).ToList();
+        return resolutions.OrderByDescending(r => ModelResolver.CalculateProviderScore(r, criteria)).ToList();
     }
 
-    private double CalculateProviderScore(
+    private static double CalculateProviderScore(
         ProviderResolution resolution,
         ProviderSelectionCriteria criteria
     )

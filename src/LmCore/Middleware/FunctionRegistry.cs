@@ -374,27 +374,26 @@ public class FunctionRegistry
             return explicitFunction;
 
         // Custom handler takes precedence
-        if (_conflictHandler != null)
-            return _conflictHandler(key, candidates);
-
-        return _conflictResolution switch
-        {
-            ConflictResolution.TakeFirst => candidates.First(),
-            ConflictResolution.TakeLast => candidates.Last(),
-            ConflictResolution.PreferMcp => candidates.FirstOrDefault(c => IsMcpProvider(c))
-                ?? candidates.First(),
-            ConflictResolution.PreferNatural => candidates.FirstOrDefault(c => IsNaturalProvider(c))
-                ?? candidates.First(),
-            ConflictResolution.RequireExplicit => throw new InvalidOperationException(
-                $"Function '{key}' has conflicts from multiple providers. "
-                    + $"Providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}. "
-                    + $"Use WithConflictHandler() to resolve explicitly."
-            ),
-            ConflictResolution.Throw => throw new InvalidOperationException(
-                $"Function '{key}' is defined by multiple providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}"
-            ),
-            _ => throw new ArgumentOutOfRangeException(),
-        };
+        return _conflictHandler != null
+            ? _conflictHandler(key, candidates)
+            : _conflictResolution switch
+            {
+                ConflictResolution.TakeFirst => candidates.First(),
+                ConflictResolution.TakeLast => candidates.Last(),
+                ConflictResolution.PreferMcp => candidates.FirstOrDefault(c => IsMcpProvider(c))
+                    ?? candidates.First(),
+                ConflictResolution.PreferNatural => candidates.FirstOrDefault(c => IsNaturalProvider(c))
+                    ?? candidates.First(),
+                ConflictResolution.RequireExplicit => throw new InvalidOperationException(
+                    $"Function '{key}' has conflicts from multiple providers. "
+                        + $"Providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}. "
+                        + $"Use WithConflictHandler() to resolve explicitly."
+                ),
+                ConflictResolution.Throw => throw new InvalidOperationException(
+                    $"Function '{key}' is defined by multiple providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}"
+                ),
+                _ => throw new ArgumentOutOfRangeException(),
+            };
     }
 
     private static bool IsMcpProvider(FunctionDescriptor descriptor) =>
@@ -456,7 +455,7 @@ public class FunctionRegistry
         GenerateProvidersSection(sb, resolvedFunctions);
 
         // Functions section
-        GenerateFunctionsSection(sb, resolvedFunctions);
+        FunctionRegistry.GenerateFunctionsSection(sb, resolvedFunctions);
 
         return sb.ToString();
     }
@@ -507,7 +506,7 @@ public class FunctionRegistry
         sb.AppendLine();
     }
 
-    private void GenerateFunctionsSection(
+    private static void GenerateFunctionsSection(
         StringBuilder sb,
         Dictionary<string, FunctionDescriptor> resolvedFunctions
     )
@@ -600,15 +599,9 @@ public class FunctionRegistry
     private static string FormatParameterType(object parameterType)
     {
         // Handle JsonSchemaObject formatting
-        if (parameterType == null)
-            return "unknown";
-
-        if (parameterType is JsonSchemaObject schema)
-        {
-            return FormatJsonSchemaType(schema);
-        }
-
-        return $"`{parameterType.GetType().Name}`";
+        return parameterType == null
+            ? "unknown"
+            : parameterType is JsonSchemaObject schema ? FormatJsonSchemaType(schema) : $"`{parameterType.GetType().Name}`";
     }
 
     private static string FormatJsonSchemaType(JsonSchemaObject schema)
@@ -644,7 +637,7 @@ public class FunctionRegistry
             if (schema.MinItems.HasValue)
                 constraints.Add($"minItems: {schema.MinItems}");
 
-            var constraintText = constraints.Any() ? $" ({string.Join(", ", constraints)})" : "";
+            var constraintText = constraints.Count != 0 ? $" ({string.Join(", ", constraints)})" : "";
             return $"`{baseType}`{constraintText}";
         }
 

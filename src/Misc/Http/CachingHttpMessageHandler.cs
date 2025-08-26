@@ -69,7 +69,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
         try
         {
             // Generate cache key from URL and POST body
-            var cacheKey = await GenerateCacheKeyAsync(request, cancellationToken);
+            var cacheKey = await CachingHttpMessageHandler.GenerateCacheKeyAsync(request, cancellationToken);
 
             // Try to get from cache first
             var cachedResponse = await GetFromCacheAsync(cacheKey, cancellationToken);
@@ -102,7 +102,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
     /// <summary>
     /// Generates a cache key from the HTTP request URL and POST body.
     /// </summary>
-    private async Task<string> GenerateCacheKeyAsync(
+    private static async Task<string> GenerateCacheKeyAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken
     )
@@ -129,8 +129,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
         var keyString = keyBuilder.ToString();
 
         // Generate SHA256 hash
-        using var sha256 = SHA256.Create();
-        var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(keyString));
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(keyString));
         return Convert.ToHexString(hashBytes);
     }
 
@@ -387,7 +386,7 @@ public class CachingStream : Stream
         CancellationToken cancellationToken
     )
     {
-        var bytesRead = await _originalStream.ReadAsync(buffer, offset, count, cancellationToken);
+        var bytesRead = await _originalStream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
 
         if (bytesRead > 0)
         {

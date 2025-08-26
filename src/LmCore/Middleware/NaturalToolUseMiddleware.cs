@@ -12,7 +12,6 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
 {
     private readonly NaturalToolUseParserMiddleware _parserMiddleware;
     private readonly FunctionCallMiddleware _functionCallMiddleware;
-    private readonly string? _name;
 
     /// <summary>
     /// Creates a new instance of NaturalToolUseMiddleware.
@@ -30,34 +29,32 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
         IJsonSchemaValidator? schemaValidator = null
     )
     {
-        if (functions == null)
-            throw new ArgumentNullException(nameof(functions));
+        ArgumentNullException.ThrowIfNull(functions);
 
-        if (functionMap == null)
-            throw new ArgumentNullException(nameof(functionMap));
+        ArgumentNullException.ThrowIfNull(functionMap);
 
-        _name = name ?? nameof(NaturalToolUseMiddleware);
+        Name = name ?? nameof(NaturalToolUseMiddleware);
 
         // Create the parser middleware
         _parserMiddleware = new NaturalToolUseParserMiddleware(
             functions,
             schemaValidator,
             fallbackParser,
-            $"{_name}.Parser"
+            $"{Name}.Parser"
         );
 
         // Create the function call middleware
         _functionCallMiddleware = new FunctionCallMiddleware(
             functions,
             functionMap,
-            $"{_name}.FunctionCall"
+            $"{Name}.FunctionCall"
         );
     }
 
     /// <summary>
     /// Gets the name of the middleware.
     /// </summary>
-    public string? Name => _name;
+    public string? Name { get; }
 
     /// <summary>
     /// Invokes the middleware to process a request and generate a response.

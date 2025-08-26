@@ -89,12 +89,7 @@ public class OpenClient : BaseHttpService, IOpenClient
             return "Fireworks";
         else if (baseUrl.Contains("groq.com"))
             return "Groq";
-        else if (baseUrl.Contains("cerebras.ai"))
-            return "Cerebras";
-        else if (baseUrl.Contains("api.anthropic.com"))
-            return "Anthropic";
-        else
-            return "Unknown";
+        else return baseUrl.Contains("cerebras.ai") ? "Cerebras" : baseUrl.Contains("api.anthropic.com") ? "Anthropic" : "Unknown";
     }
 
     public async Task<ChatCompletionResponse> CreateChatCompletionsAsync(

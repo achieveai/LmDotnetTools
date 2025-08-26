@@ -26,11 +26,11 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
 
     public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
 
-    public string? GetText() => null;
+    public static string? GetText() => null;
 
-    public BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary() => null;
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages() => null;
 }
 
 public class ToolsCallMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallMessage>
@@ -84,28 +84,20 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public Action<ToolCall> OnToolCall { get; init; } = _ => { };
 
-    private ImmutableList<ToolCall> _completedToolCalls = ImmutableList<ToolCall>.Empty;
-
-    // Current partial tool call we're building
-    private string? _currentFunctionName = null;
-    private string _accumulatedArgs = "";
-    private string? _currentToolCallId = null;
-    private int? _currentIndex = null;
-
     IMessage IMessageBuilder.Build()
     {
         return this.Build();
     }
 
-    public string? CurrentFunctionName => _currentFunctionName;
+    public string? CurrentFunctionName { get; private set; } = null;
 
-    public string AccumulatedArgs => _accumulatedArgs;
+    public string AccumulatedArgs { get; private set; } = "";
 
-    public string? CurrentToolCallId => _currentToolCallId;
+    public string? CurrentToolCallId { get; private set; } = null;
 
-    public int? CurrentIndex => _currentIndex;
+    public int? CurrentIndex { get; private set; } = null;
 
-    public ImmutableList<ToolCall> CompletedToolCalls => _completedToolCalls;
+    public ImmutableList<ToolCall> CompletedToolCalls { get; private set; } = ImmutableList<ToolCall>.Empty;
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
@@ -123,45 +115,45 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
             // Rule 0: If we have both IDs (non-null) and they're different, it's a new tool call
             if (
-                _currentToolCallId != null
+                CurrentToolCallId != null
                 && update.ToolCallId != null
-                && _currentToolCallId != update.ToolCallId
+                && CurrentToolCallId != update.ToolCallId
             )
             {
                 CompleteCurrentToolCall();
                 isNewToolCall = true;
             }
             // Rule 1: If we have both Indexes (non-null) and they're different, it's a new tool call
-            else if (_currentIndex != null && update.Index != null && _currentIndex != update.Index)
+            else if (CurrentIndex != null && update.Index != null && CurrentIndex != update.Index)
             {
                 CompleteCurrentToolCall();
                 isNewToolCall = true;
             }
 
             // If update contains a function name, it's the start of a new tool call
-            if (isNewToolCall || (update.FunctionName != null && _currentFunctionName == null))
+            if (isNewToolCall || (update.FunctionName != null && CurrentFunctionName == null))
             {
                 // Start a new tool call
-                _currentFunctionName = update.FunctionName;
-                _accumulatedArgs = update.FunctionArgs ?? "";
-                _currentToolCallId = update.ToolCallId;
-                _currentIndex = update.Index;
+                CurrentFunctionName = update.FunctionName;
+                AccumulatedArgs = update.FunctionArgs ?? "";
+                CurrentToolCallId = update.ToolCallId;
+                CurrentIndex = update.Index;
             }
             // Otherwise, it's an update to the current partial tool call
-            else if (_currentFunctionName != null && update.FunctionArgs != null)
+            else if (CurrentFunctionName != null && update.FunctionArgs != null)
             {
-                _accumulatedArgs += update.FunctionArgs;
+                AccumulatedArgs += update.FunctionArgs;
 
                 // Update tool call ID if it's now provided
-                if (_currentToolCallId == null && update.ToolCallId != null)
+                if (CurrentToolCallId == null && update.ToolCallId != null)
                 {
-                    _currentToolCallId = update.ToolCallId;
+                    CurrentToolCallId = update.ToolCallId;
                 }
 
                 // Update index if it's now provided
-                if (_currentIndex == null && update.Index != null)
+                if (CurrentIndex == null && update.Index != null)
                 {
-                    _currentIndex = update.Index;
+                    CurrentIndex = update.Index;
                 }
             }
         }
@@ -186,27 +178,27 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     private void CompleteCurrentToolCall()
     {
-        if (_currentFunctionName != null)
+        if (CurrentFunctionName != null)
         {
             var toolCall = new ToolCall
             {
-                FunctionName = _currentFunctionName,
-                FunctionArgs = _accumulatedArgs,
-                ToolCallId = _currentToolCallId,
-                Index = _currentIndex,
+                FunctionName = CurrentFunctionName,
+                FunctionArgs = AccumulatedArgs,
+                ToolCallId = CurrentToolCallId,
+                Index = CurrentIndex,
             };
 
             // Add to completed tool calls
-            _completedToolCalls = _completedToolCalls.Add(toolCall);
+            CompletedToolCalls = CompletedToolCalls.Add(toolCall);
 
             // Invoke callback for completed tool call
             OnToolCall(toolCall);
 
             // Reset the current tool call state
-            _currentFunctionName = null;
-            _accumulatedArgs = "";
-            _currentToolCallId = null;
-            _currentIndex = null;
+            CurrentFunctionName = null;
+            AccumulatedArgs = "";
+            CurrentToolCallId = null;
+            CurrentIndex = null;
         }
     }
 
@@ -214,8 +206,8 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     {
         // Rule 2: When build is called, complete any final partial update
         CompleteCurrentToolCall();
-        var toolCalls = _completedToolCalls;
-        _completedToolCalls = [];
+        var toolCalls = CompletedToolCalls;
+        CompletedToolCalls = [];
 
         return new ToolsCallMessage
         {

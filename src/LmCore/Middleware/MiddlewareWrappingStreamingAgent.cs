@@ -48,12 +48,9 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         CancellationToken cancellationToken = default
     )
     {
-        if (_middleware is null)
-        {
-            return _agent.GenerateReplyAsync(messages, options, cancellationToken);
-        }
-
-        return _middleware(new MiddlewareContext(messages, options), _agent, cancellationToken);
+        return _middleware is null
+            ? _agent.GenerateReplyAsync(messages, options, cancellationToken)
+            : _middleware(new MiddlewareContext(messages, options), _agent, cancellationToken);
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(

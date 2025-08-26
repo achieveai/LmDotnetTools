@@ -10,7 +10,6 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 public class JsonFragmentToStructuredUpdateGenerator
 {
     private readonly StringBuilder _buffer = new();
-    private readonly string _toolName;
     private readonly Stack<Frame> _contextStack = new();
     private readonly List<char> _charBuffer = new();
     private ValueBuffer _currentValue = new();
@@ -65,7 +64,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     /// <param name="toolName">The name of the tool generating the fragments</param>
     public JsonFragmentToStructuredUpdateGenerator(string toolName)
     {
-        _toolName = toolName;
+        ToolName = toolName;
         // Initialize with a root frame
         _contextStack.Push(new Frame(ContainerType.Root));
     }
@@ -73,7 +72,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     /// <summary>
     /// Gets the name of the tool associated with this accumulator
     /// </summary>
-    public string ToolName => _toolName;
+    public string ToolName { get; }
 
     /// <summary>
     /// Gets the current accumulated JSON buffer as a string
@@ -286,7 +285,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         }
 
         // Handle primitive characters
-        if (IsPrimitiveChar(c))
+        if (JsonFragmentToStructuredUpdateGenerator.IsPrimitiveChar(c))
         {
             foreach (var update in HandlePrimitiveChar(c))
             {
@@ -317,7 +316,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         };
     }
 
-    private bool IsPrimitiveChar(char c)
+    private static bool IsPrimitiveChar(char c)
     {
         return char.IsDigit(c) || c == '-' || char.IsLetter(c) || c == '.';
     }
@@ -325,7 +324,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     private IEnumerable<JsonFragmentUpdate> CheckAndEmitPendingToken(char c)
     {
         // If the character can't be part of the current token, emit it
-        if (_currentTokenType == TokenType.Number && !IsValidNumberChar(c))
+        if (_currentTokenType == TokenType.Number && !JsonFragmentToStructuredUpdateGenerator.IsValidNumberChar(c))
         {
             foreach (var update in EmitCurrentToken())
             {
@@ -341,7 +340,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         }
     }
 
-    private bool IsValidNumberChar(char c)
+    private static bool IsValidNumberChar(char c)
     {
         return char.IsDigit(c) || c == '.' || c == '-' || c == 'e' || c == 'E' || c == '+';
     }
@@ -771,7 +770,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         // For key updates, always return parent path
         if (_expectingPropertyName && !_afterColon)
         {
-            return GetParentPath(frames);
+            return JsonFragmentToStructuredUpdateGenerator.GetParentPath(frames);
         }
 
         // Build the full path from all frames
@@ -790,7 +789,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         return pathBuilder.ToString();
     }
 
-    private string GetParentPath(Frame[] frames)
+    private static string GetParentPath(Frame[] frames)
     {
         var pathBuilder = new StringBuilder("root");
         if (frames.Length >= 1)

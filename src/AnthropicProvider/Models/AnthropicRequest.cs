@@ -398,9 +398,6 @@ public record AnthropicRequest
 
     private static string GetJsonType(JsonSchemaObject schemaObject)
     {
-        if (schemaObject == null)
-            return "string";
-
-        return schemaObject.Type.GetTypeString();
+        return schemaObject == null ? "string" : schemaObject.Type.GetTypeString();
     }
 }

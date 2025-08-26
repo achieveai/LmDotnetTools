@@ -150,11 +150,11 @@ public class TypeFunctionProvider : IFunctionProvider
             Name = parameter.Name!,
             Description = description,
             ParameterType = SchemaHelper.CreateJsonSchemaFromType(parameter.ParameterType),
-            IsRequired = !parameter.HasDefaultValue && !IsNullable(parameter),
+            IsRequired = !parameter.HasDefaultValue && !TypeFunctionProvider.IsNullable(parameter),
         };
     }
 
-    private bool IsNullable(ParameterInfo parameter)
+    private static bool IsNullable(ParameterInfo parameter)
     {
         var paramType = parameter.ParameterType;
 
@@ -260,7 +260,7 @@ public class TypeFunctionProvider : IFunctionProvider
                 // Invoke the method
                 object? result;
 
-                if (IsAsyncMethod(method))
+                if (TypeFunctionProvider.IsAsyncMethod(method))
                 {
                     // Handle async methods
                     var task = method.Invoke(target, paramValues);
@@ -294,19 +294,16 @@ public class TypeFunctionProvider : IFunctionProvider
                 }
 
                 // Serialize the result
-                if (result != null && method.ReturnType != typeof(void))
-                {
-                    return JsonSerializer.Serialize(
+                return result != null && method.ReturnType != typeof(void)
+                    ? JsonSerializer.Serialize(
                         result,
                         new JsonSerializerOptions
                         {
                             WriteIndented = false,
                             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
                         }
-                    );
-                }
-
-                return "{}";
+                    )
+                    : "{}";
             }
             catch (TargetInvocationException tie)
             {
@@ -325,7 +322,7 @@ public class TypeFunctionProvider : IFunctionProvider
         };
     }
 
-    private bool IsAsyncMethod(MethodInfo method)
+    private static bool IsAsyncMethod(MethodInfo method)
     {
         return method.ReturnType == typeof(Task)
             || (

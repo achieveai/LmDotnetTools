@@ -11,7 +11,6 @@ namespace AchieveAi.LmDotnetTools.Misc.Storage;
 /// </summary>
 public class FileKvStore : IKvStore, IDisposable
 {
-    private readonly string _cacheDirectory;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly SemaphoreSlim _semaphore;
     private bool _disposed = false;
@@ -31,7 +30,7 @@ public class FileKvStore : IKvStore, IDisposable
             );
         }
 
-        _cacheDirectory = Path.GetFullPath(cacheDirectory);
+        CacheDirectory = Path.GetFullPath(cacheDirectory);
         _jsonOptions =
             jsonOptions
             ?? new JsonSerializerOptions
@@ -42,13 +41,13 @@ public class FileKvStore : IKvStore, IDisposable
         _semaphore = new SemaphoreSlim(1, 1);
 
         // Ensure the cache directory exists
-        Directory.CreateDirectory(_cacheDirectory);
+        Directory.CreateDirectory(CacheDirectory);
     }
 
     /// <summary>
     /// Gets the cache directory path
     /// </summary>
-    public string CacheDirectory => _cacheDirectory;
+    public string CacheDirectory { get; }
 
     /// <inheritdoc/>
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default)
@@ -71,12 +70,7 @@ public class FileKvStore : IKvStore, IDisposable
 
             var json = await File.ReadAllTextAsync(filePath, Encoding.UTF8, cancellationToken);
 
-            if (string.IsNullOrEmpty(json))
-            {
-                return default;
-            }
-
-            return JsonSerializer.Deserialize<T>(json, _jsonOptions);
+            return string.IsNullOrEmpty(json) ? default : JsonSerializer.Deserialize<T>(json, _jsonOptions);
         }
         catch (JsonException)
         {
@@ -117,7 +111,7 @@ public class FileKvStore : IKvStore, IDisposable
         try
         {
             // Ensure directory exists (in case it was deleted)
-            Directory.CreateDirectory(_cacheDirectory);
+            Directory.CreateDirectory(CacheDirectory);
 
             // Write to temporary file first, then move to final location
             // This ensures atomic writes and prevents corruption
@@ -149,13 +143,13 @@ public class FileKvStore : IKvStore, IDisposable
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
-            if (!Directory.Exists(_cacheDirectory))
+            if (!Directory.Exists(CacheDirectory))
             {
                 yield break;
             }
 
             var files = Directory.EnumerateFiles(
-                _cacheDirectory,
+                CacheDirectory,
                 "*.json",
                 SearchOption.TopDirectoryOnly
             );
@@ -187,13 +181,13 @@ public class FileKvStore : IKvStore, IDisposable
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
-            if (!Directory.Exists(_cacheDirectory))
+            if (!Directory.Exists(CacheDirectory))
             {
                 return;
             }
 
             var files = Directory.GetFiles(
-                _cacheDirectory,
+                CacheDirectory,
                 "*.json",
                 SearchOption.TopDirectoryOnly
             );
@@ -228,13 +222,10 @@ public class FileKvStore : IKvStore, IDisposable
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
-            if (!Directory.Exists(_cacheDirectory))
-            {
-                return 0;
-            }
-
-            return Directory
-                .GetFiles(_cacheDirectory, "*.json", SearchOption.TopDirectoryOnly)
+            return !Directory.Exists(CacheDirectory)
+                ? 0
+                : Directory
+                .GetFiles(CacheDirectory, "*.json", SearchOption.TopDirectoryOnly)
                 .Length;
         }
         finally
@@ -248,10 +239,9 @@ public class FileKvStore : IKvStore, IDisposable
     /// </summary>
     private string GetFilePath(string key)
     {
-        using var sha256 = SHA256.Create();
-        var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(key));
+        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(key));
         var hashString = Convert.ToHexString(hashBytes).ToLowerInvariant();
-        return Path.Combine(_cacheDirectory, $"{hashString}.json");
+        return Path.Combine(CacheDirectory, $"{hashString}.json");
     }
 
     /// <summary>

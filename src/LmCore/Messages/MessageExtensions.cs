@@ -115,8 +115,7 @@ public static class MessageExtensions
     /// <returns>A TextMessage with natural tool use format, or the original message if transformation is not applicable</returns>
     public static IMessage ToNaturalToolUse(this IMessage message)
     {
-        if (message == null)
-            throw new ArgumentNullException(nameof(message));
+        ArgumentNullException.ThrowIfNull(message);
 
         try
         {
@@ -192,10 +191,7 @@ public static class MessageExtensions
     /// <returns>True if the sequence contains transformable ToolsCallAggregateMessage instances</returns>
     public static bool ContainsTransformableToolCalls(this IEnumerable<IMessage> messages)
     {
-        if (messages == null)
-            return false;
-
-        return messages.Any(m => m is ToolsCallAggregateMessage);
+        return messages == null ? false : messages.Any(m => m is ToolsCallAggregateMessage);
     }
 
     /// <summary>

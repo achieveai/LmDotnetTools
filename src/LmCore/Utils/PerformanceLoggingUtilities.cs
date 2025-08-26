@@ -207,9 +207,7 @@ public static class PerformanceLoggingUtilities
     /// <returns>The calculated tokens per second rate.</returns>
     public static double CalculateTokensPerSecond(int totalTokens, long durationMs)
     {
-        if (durationMs <= 0)
-            return 0;
-        return (totalTokens * 1000.0) / durationMs;
+        return durationMs <= 0 ? 0 : (totalTokens * 1000.0) / durationMs;
     }
 
     /// <summary>

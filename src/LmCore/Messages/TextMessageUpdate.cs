@@ -62,17 +62,17 @@ public record TextUpdateMessage : IMessage, ICanGetText
     /// <summary>
     /// Not supported for text updates.
     /// </summary>
-    public BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary() => null;
 
     /// <summary>
     /// Not supported for text updates.
     /// </summary>
-    public ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls() => null;
 
     /// <summary>
     /// Not supported for text updates.
     /// </summary>
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages() => null;
 
     /// <summary>
     /// Converts this update to a complete TextMessage.

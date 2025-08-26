@@ -40,11 +40,11 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
 
-    public BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary() => null;
 
-    public ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls() => null;
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages() => null;
 }
 
 /// <summary>
@@ -76,11 +76,11 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonPropertyName("visibility")]
     public ReasoningVisibility? Visibility { get; init; }
 
-    public BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary() => null;
 
-    public ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls() => null;
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages() => null;
 }
 
 /// <summary>

@@ -17,7 +17,7 @@ public class ToolCallParsingComponentsTests
         var text = "Hello world, this is just regular text.";
 
         // Act
-        var result = parser.Parse(text);
+        var result = ToolCallTextParser.Parse(text);
 
         // Assert
         Assert.Single(result);
@@ -34,7 +34,7 @@ public class ToolCallParsingComponentsTests
             "<tool_call name=\"GetWeather\">\n```json\n{\"location\": \"San Francisco\"}\n```\n</tool_call>";
 
         // Act
-        var result = parser.Parse(text);
+        var result = ToolCallTextParser.Parse(text);
 
         // Assert
         Assert.Single(result);
@@ -53,7 +53,7 @@ public class ToolCallParsingComponentsTests
             "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\"location\": \"San Francisco\"}\n```\n</tool_call> Hope that helps!";
 
         // Act
-        var result = parser.Parse(text);
+        var result = ToolCallTextParser.Parse(text);
 
         // Assert
         Assert.Equal(3, result.Count);
@@ -76,7 +76,7 @@ public class ToolCallParsingComponentsTests
         var text = "Hello world, complete sentence.";
 
         // Act
-        var result = detector.DetectPartialStart(text);
+        var result = PartialToolCallDetector.DetectPartialStart(text);
 
         // Assert
         Assert.False(result.IsMatch);
@@ -105,7 +105,7 @@ public class ToolCallParsingComponentsTests
         var detector = new PartialToolCallDetector();
 
         // Act
-        var result = detector.DetectPartialStart(text);
+        var result = PartialToolCallDetector.DetectPartialStart(text);
 
         // Assert
         Assert.True(result.IsMatch);
@@ -122,7 +122,7 @@ public class ToolCallParsingComponentsTests
         var text = "Hello world, complete text.";
 
         // Act
-        var result = extractor.ExtractSafeText(text);
+        var result = SafeTextExtractor.ExtractSafeText(text);
 
         // Assert
         Assert.Equal(text, result.SafeText);
@@ -138,7 +138,7 @@ public class ToolCallParsingComponentsTests
         var text = "Hello world, then partial <tool_ca";
 
         // Act
-        var result = extractor.ExtractSafeText(text);
+        var result = SafeTextExtractor.ExtractSafeText(text);
 
         // Assert
         Assert.Equal("Hello world, then partial ", result.SafeText);
@@ -154,7 +154,7 @@ public class ToolCallParsingComponentsTests
         var text = "<tool_call";
 
         // Act
-        var result = extractor.ExtractSafeText(text);
+        var result = SafeTextExtractor.ExtractSafeText(text);
 
         // Assert
         Assert.Equal(string.Empty, result.SafeText);
@@ -218,7 +218,7 @@ public class ToolCallParsingComponentsTests
         var extractor = new SafeTextExtractor(detector);
 
         // Act
-        var result = extractor.ExtractSafeText(input);
+        var result = SafeTextExtractor.ExtractSafeText(input);
 
         // Assert
         Assert.Equal(expectedSafe, result.SafeText);
@@ -263,7 +263,7 @@ public class ToolCallParsingComponentsTests
         var parser = new ToolCallTextParser();
 
         // Act
-        var result = parser.Parse(input);
+        var result = ToolCallTextParser.Parse(input);
 
         // Assert
         Assert.Equal(expectedCount, result.Count);
@@ -301,7 +301,7 @@ public class ToolCallParsingComponentsTests
         var parser = new ToolCallTextParser();
 
         // Act
-        var result = parser.Parse(input);
+        var result = ToolCallTextParser.Parse(input);
 
         // Assert
         var toolCall = result.OfType<ToolCallChunk>().First();
@@ -331,7 +331,7 @@ public class ToolCallParsingComponentsTests
         var detector = new PartialToolCallDetector();
 
         // Act
-        var result = detector.DetectPartialStart(input);
+        var result = PartialToolCallDetector.DetectPartialStart(input);
 
         // Assert
         Assert.Equal(shouldMatch, result.IsMatch);
@@ -358,9 +358,9 @@ public class ToolCallParsingComponentsTests
         var extractor = new SafeTextExtractor(detector);
 
         // Act & Assert - Should not throw exceptions
-        var parseResult = parser.Parse(input);
-        var detectResult = detector.DetectPartialStart(input);
-        var extractResult = extractor.ExtractSafeText(input);
+        var parseResult = ToolCallTextParser.Parse(input);
+        var detectResult = PartialToolCallDetector.DetectPartialStart(input);
+        var extractResult = SafeTextExtractor.ExtractSafeText(input);
 
         // Basic validation
         Assert.NotNull(parseResult);
@@ -385,9 +385,9 @@ public class ToolCallParsingComponentsTests
         string? nullInput = null;
 
         // Act & Assert - Should not throw exceptions
-        var parseResult = parser.Parse(nullInput!);
-        var detectResult = detector.DetectPartialStart(nullInput!);
-        var extractResult = extractor.ExtractSafeText(nullInput!);
+        var parseResult = ToolCallTextParser.Parse(nullInput!);
+        var detectResult = PartialToolCallDetector.DetectPartialStart(nullInput!);
+        var extractResult = SafeTextExtractor.ExtractSafeText(nullInput!);
 
         // Basic validation for null input
         Assert.NotNull(parseResult);
@@ -426,12 +426,12 @@ public class ToolCallParsingComponentsTests
             buffer.Append(chunk);
             var currentText = buffer.ToString();
 
-            var safeResult = extractor.ExtractSafeText(currentText);
+            var safeResult = SafeTextExtractor.ExtractSafeText(currentText);
 
             if (!string.IsNullOrEmpty(safeResult.SafeText))
             {
                 // Parse the safe text for tool calls
-                var parsedChunks = parser.Parse(safeResult.SafeText);
+                var parsedChunks = ToolCallTextParser.Parse(safeResult.SafeText);
 
                 foreach (var parsedChunk in parsedChunks)
                 {
@@ -454,7 +454,7 @@ public class ToolCallParsingComponentsTests
         // Final flush
         if (buffer.Length > 0)
         {
-            var parsedChunks = parser.Parse(buffer.ToString());
+            var parsedChunks = ToolCallTextParser.Parse(buffer.ToString());
             foreach (var parsedChunk in parsedChunks)
             {
                 if (parsedChunk is TextChunk textChunk)
@@ -480,3 +480,5 @@ public class ToolCallParsingComponentsTests
         Assert.Equal("Here's the weather: ", allEmittedText);
     }
 }
+
+

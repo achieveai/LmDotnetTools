@@ -64,10 +64,10 @@ public static class AnthropicExtensions
             AnthropicMessageDeltaEvent messageDeltaEvent
                 when messageDeltaEvent.Delta?.StopReason != null
                     && messageDeltaEvent.Usage != null => new TextUpdateMessage
-            {
-                Text = string.Empty,
-                Role = Role.Assistant,
-                Metadata = ImmutableDictionary<string, object>.Empty.Add(
+                    {
+                        Text = string.Empty,
+                        Role = Role.Assistant,
+                        Metadata = ImmutableDictionary<string, object>.Empty.Add(
                     "usage",
                     new
                     {
@@ -77,7 +77,7 @@ public static class AnthropicExtensions
                             + messageDeltaEvent.Usage.OutputTokens,
                     }
                 ),
-            },
+                    },
 
             // Handle content block delta event for text content
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
@@ -103,9 +103,9 @@ public static class AnthropicExtensions
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
                 when contentBlockDeltaEvent.Delta is AnthropicToolCallsDelta toolCallsDelta
                     && toolCallsDelta.ToolCalls.Count > 0 => new ToolsCallUpdateMessage
-            {
-                Role = Role.Assistant,
-                ToolCallUpdates = ImmutableList.Create(
+                    {
+                        Role = Role.Assistant,
+                        ToolCallUpdates = ImmutableList.Create(
                     new ToolCallUpdate
                     {
                         ToolCallId = toolCallsDelta.ToolCalls[0].Id,
@@ -114,7 +114,7 @@ public static class AnthropicExtensions
                         Index = toolCallsDelta.ToolCalls[0].Index,
                     }
                 ),
-            },
+                    },
 
             // Default empty update message for unhandled event types
             _ => new TextUpdateMessage { Text = string.Empty, Role = Role.Assistant },

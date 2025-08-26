@@ -64,7 +64,7 @@ public class AnthropicStreamParser
                 case "message_delta":
                     return HandleMessageDelta(json);
                 case "message_stop":
-                    return HandleMessageStop(json);
+                    return AnthropicStreamParser.HandleMessageStop(json);
                 case "ping":
                     return new List<IMessage>(); // Ignore ping events
                 default:
@@ -103,9 +103,9 @@ public class AnthropicStreamParser
             AnthropicMessageDeltaEvent messageDeltaEvent => HandleTypedMessageDelta(
                 messageDeltaEvent
             ),
-            AnthropicMessageStopEvent => HandleTypedMessageStop(),
+            AnthropicMessageStopEvent => AnthropicStreamParser.HandleTypedMessageStop(),
             AnthropicPingEvent => new List<IMessage>(), // Ignore ping events
-            AnthropicErrorEvent errorEvent => HandleTypedError(errorEvent),
+            AnthropicErrorEvent errorEvent => AnthropicStreamParser.HandleTypedError(errorEvent),
             _ => new List<IMessage>(), // Unknown event type
         };
     }
@@ -204,48 +204,48 @@ public class AnthropicStreamParser
         switch (deltaType)
         {
             case "text_delta":
-            {
-                var text = delta["text"]?.GetValue<string>() ?? string.Empty;
-                block.Text += text;
-
-                // Return a TextUpdateMessage for the delta
-                var textUpdate = new TextUpdateMessage
                 {
-                    Text = text,
-                    Role = ParseRole(_role),
-                    FromAgent = _messageId,
-                    GenerationId = _messageId,
-                    IsThinking = false,
-                };
+                    var text = delta["text"]?.GetValue<string>() ?? string.Empty;
+                    block.Text += text;
 
-                return new List<IMessage> { textUpdate };
-            }
+                    // Return a TextUpdateMessage for the delta
+                    var textUpdate = new TextUpdateMessage
+                    {
+                        Text = text,
+                        Role = ParseRole(_role),
+                        FromAgent = _messageId,
+                        GenerationId = _messageId,
+                        IsThinking = false,
+                    };
+
+                    return new List<IMessage> { textUpdate };
+                }
 
             case "thinking_delta":
-            {
-                var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
-                block.Text = thinkingText; // Replace with latest thinking
-
-                // Return a TextUpdateMessage for the thinking update
-                var thinkingUpdate = new TextUpdateMessage
                 {
-                    Text = thinkingText,
-                    Role = ParseRole(_role),
-                    FromAgent = _messageId,
-                    GenerationId = _messageId,
-                    IsThinking = true,
-                };
+                    var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
+                    block.Text = thinkingText; // Replace with latest thinking
 
-                return new List<IMessage> { thinkingUpdate };
-            }
+                    // Return a TextUpdateMessage for the thinking update
+                    var thinkingUpdate = new TextUpdateMessage
+                    {
+                        Text = thinkingText,
+                        Role = ParseRole(_role),
+                        FromAgent = _messageId,
+                        GenerationId = _messageId,
+                        IsThinking = true,
+                    };
+
+                    return new List<IMessage> { thinkingUpdate };
+                }
 
             case "input_json_delta":
-            {
-                return HandleJsonDelta(
-                    block,
-                    delta["partial_json"]?.GetValue<string>() ?? string.Empty
-                );
-            }
+                {
+                    return HandleJsonDelta(
+                        block,
+                        delta["partial_json"]?.GetValue<string>() ?? string.Empty
+                    );
+                }
         }
 
         return new List<IMessage>();
@@ -344,7 +344,7 @@ public class AnthropicStreamParser
         return new List<IMessage>();
     }
 
-    private List<IMessage> HandleMessageStop(JsonNode json)
+    private static List<IMessage> HandleMessageStop(JsonNode json)
     {
         // We've already handled everything in other events
         return new List<IMessage>();
@@ -377,10 +377,9 @@ public class AnthropicStreamParser
     /// </summary>
     private ImmutableDictionary<string, object> CreateUsageMetadata()
     {
-        if (_usage == null)
-            return ImmutableDictionary<string, object>.Empty;
-
-        return ImmutableDictionary<string, object>.Empty.Add(
+        return _usage == null
+            ? ImmutableDictionary<string, object>.Empty
+            : ImmutableDictionary<string, object>.Empty.Add(
             "usage",
             new
             {
@@ -396,21 +395,20 @@ public class AnthropicStreamParser
     /// </summary>
     private UsageMessage CreateUsageMessage(string? generationId = null)
     {
-        if (_usage == null)
-            throw new InvalidOperationException("Cannot create usage message without usage data");
-
-        return new UsageMessage
-        {
-            Usage = new Usage
+        return _usage == null
+            ? throw new InvalidOperationException("Cannot create usage message without usage data")
+            : new UsageMessage
             {
-                PromptTokens = _usage.InputTokens,
-                CompletionTokens = _usage.OutputTokens,
-                TotalTokens = _usage.InputTokens + _usage.OutputTokens,
-            },
-            Role = ParseRole(_role),
-            FromAgent = _messageId,
-            GenerationId = generationId ?? _messageId,
-        };
+                Usage = new Usage
+                {
+                    PromptTokens = _usage.InputTokens,
+                    CompletionTokens = _usage.OutputTokens,
+                    TotalTokens = _usage.InputTokens + _usage.OutputTokens,
+                },
+                Role = ParseRole(_role),
+                FromAgent = _messageId,
+                GenerationId = generationId ?? _messageId,
+            };
     }
 
     /// <summary>
@@ -683,7 +681,7 @@ public class AnthropicStreamParser
             AnthropicTextDelta textDelta => HandleTextDelta(block, textDelta),
             AnthropicThinkingDelta thinkingDelta => HandleThinkingDelta(block, thinkingDelta),
             AnthropicInputJsonDelta inputJsonDelta => HandleInputJsonDelta(block, inputJsonDelta),
-            AnthropicSignatureDelta signatureDelta => HandleSignatureDelta(block, signatureDelta),
+            AnthropicSignatureDelta signatureDelta => AnthropicStreamParser.HandleSignatureDelta(block, signatureDelta),
             AnthropicToolCallsDelta toolCallsDelta => HandleToolCallsDelta(toolCallsDelta),
             _ => new List<IMessage>(),
         };
@@ -737,7 +735,7 @@ public class AnthropicStreamParser
         return HandleJsonDelta(block, inputJsonDelta.PartialJson);
     }
 
-    private List<IMessage> HandleSignatureDelta(
+    private static List<IMessage> HandleSignatureDelta(
         StreamingContentBlock block,
         AnthropicSignatureDelta signatureDelta
     )
@@ -842,13 +840,13 @@ public class AnthropicStreamParser
         return new List<IMessage>();
     }
 
-    private List<IMessage> HandleTypedMessageStop()
+    private static List<IMessage> HandleTypedMessageStop()
     {
         // Nothing special to do for message_stop
         return new List<IMessage>();
     }
 
-    private List<IMessage> HandleTypedError(AnthropicErrorEvent errorEvent)
+    private static List<IMessage> HandleTypedError(AnthropicErrorEvent errorEvent)
     {
         // Log error and return empty list
         if (errorEvent.Error != null)

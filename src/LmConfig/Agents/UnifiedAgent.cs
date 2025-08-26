@@ -183,7 +183,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
 
         var resolution = await ResolveProviderAsync(options, cancellationToken);
         var agent = await ResolveAgentAsync(options, cancellationToken);
-        var updatedOptions = CreateUpdatedOptions(options, resolution);
+        var updatedOptions = UnifiedAgent.CreateUpdatedOptions(options, resolution);
 
         return (messageList, resolution, agent, updatedOptions);
     }
@@ -200,7 +200,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         }
 
         var messageList = messages.ToList();
-        if (!messageList.Any())
+        if (messageList.Count == 0)
         {
             _logger.LogError("Message validation failed: Messages collection is empty");
             throw new ArgumentException("Messages cannot be empty", nameof(messages));
@@ -255,7 +255,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         where T : IAgent
     {
         var resolution = await ResolveProviderAsync(options, cancellationToken);
-        var cacheKey = isStreaming ? GetStreamingCacheKey(resolution) : GetCacheKey(resolution);
+        var cacheKey = isStreaming ? UnifiedAgent.GetStreamingCacheKey(resolution) : UnifiedAgent.GetCacheKey(resolution);
 
         if (!_agentCache.TryGetValue(cacheKey, out var agent))
         {
@@ -456,7 +456,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         GenerateReplyOptions? options
     )
     {
-        if (options?.ExtraProperties == null || !options.ExtraProperties.Any())
+        if (options?.ExtraProperties == null || options.ExtraProperties.IsEmpty)
         {
             _logger.LogDebug(
                 "Configuration resolution: No extra properties found, using default criteria"
@@ -524,12 +524,12 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         return criteria;
     }
 
-    private string GetCacheKey(ProviderResolution resolution)
+    private static string GetCacheKey(ProviderResolution resolution)
     {
         return $"agent_{resolution.EffectiveProviderName}_{resolution.EffectiveModelName}";
     }
 
-    private string GetStreamingCacheKey(ProviderResolution resolution)
+    private static string GetStreamingCacheKey(ProviderResolution resolution)
     {
         return $"streaming_agent_{resolution.EffectiveProviderName}_{resolution.EffectiveModelName}";
     }
@@ -540,7 +540,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     /// <param name="originalOptions">The original options from the user.</param>
     /// <param name="resolution">The provider resolution containing the effective model name.</param>
     /// <returns>Updated options with the correct ModelId for the provider.</returns>
-    private GenerateReplyOptions CreateUpdatedOptions(
+    private static GenerateReplyOptions CreateUpdatedOptions(
         GenerateReplyOptions? originalOptions,
         ProviderResolution resolution
     )

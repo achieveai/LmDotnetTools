@@ -142,9 +142,16 @@ public record ChatMessage
                         ? ReasoningVisibility.Summary
                     : ReasoningVisibility.Plain;
 
-                if (isStreaming && visibility != ReasoningVisibility.Encrypted)
-                {
-                    yield return new ReasoningUpdateMessage
+                yield return isStreaming && visibility != ReasoningVisibility.Encrypted
+                    ? new ReasoningUpdateMessage
+                    {
+                        Role = ToRole(role!.Value),
+                        Reasoning = detailText!,
+                        FromAgent = name,
+                        GenerationId = Id,
+                        Visibility = visibility,
+                    }
+                    : new ReasoningMessage
                     {
                         Role = ToRole(role!.Value),
                         Reasoning = detailText!,
@@ -152,18 +159,6 @@ public record ChatMessage
                         GenerationId = Id,
                         Visibility = visibility,
                     };
-                }
-                else
-                {
-                    yield return new ReasoningMessage
-                    {
-                        Role = ToRole(role!.Value),
-                        Reasoning = detailText!,
-                        FromAgent = name,
-                        GenerationId = Id,
-                        Visibility = visibility,
-                    };
-                }
 
                 processedReasoningTexts.Add(detailText);
             }
@@ -343,7 +338,8 @@ public record FunctionContent(
 public record FunctionCall(
     [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("arguments")] string? Arguments
-) { }
+)
+{ }
 
 [JsonConverter(typeof(JsonPropertyNameEnumConverter<RoleEnum>))]
 public enum RoleEnum

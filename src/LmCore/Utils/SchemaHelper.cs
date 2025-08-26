@@ -154,11 +154,7 @@ public static class SchemaHelper
         {
             var stringValue = unionType.Get<string>();
             // If it's a nullable type like "null", convert to a reasonable default
-            if (stringValue == "null")
-            {
-                return JsonSchemaTypeHelper.ToType("string");
-            }
-            return unionType;
+            return stringValue == "null" ? JsonSchemaTypeHelper.ToType("string") : unionType;
         }
 
         // If it's a list, check if we can simplify it

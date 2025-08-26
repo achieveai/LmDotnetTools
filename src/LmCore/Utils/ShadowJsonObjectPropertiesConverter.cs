@@ -107,8 +107,7 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
 
     public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
-        if (value == null)
-            throw new ArgumentNullException(nameof(value));
+        ArgumentNullException.ThrowIfNull(value);
 
         writer.WriteStartObject();
 
@@ -163,11 +162,7 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
     /// </summary>
     protected virtual JsonObject? GetMetadata(T value)
     {
-        if (_metadataProperty != null)
-        {
-            return (JsonObject?)_metadataProperty.GetValue(value);
-        }
-        return null;
+        return _metadataProperty != null ? (JsonObject?)_metadataProperty.GetValue(value) : null;
     }
 
     /// <summary>
@@ -206,5 +201,6 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
         Utf8JsonWriter writer,
         T value,
         JsonSerializerOptions options
-    ) { }
+    )
+    { }
 }

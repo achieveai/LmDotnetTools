@@ -13,7 +13,7 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware;
 /// <summary>
 /// Middleware for handling function calls using MCP (Model Context Protocol) clients
 /// </summary>
-public class McpMiddleware : IStreamingMiddleware
+public partial class McpMiddleware : IStreamingMiddleware
 {
     private readonly Dictionary<string, IMcpClient> _mcpClients;
     private readonly IEnumerable<FunctionContract>? _functions;
@@ -140,7 +140,7 @@ public class McpMiddleware : IStreamingMiddleware
             try
             {
                 // Get available tools from this client asynchronously
-                var tools = await client.ListToolsAsync();
+                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
 
                 logger.LogInformation(
                     "MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}",
@@ -300,7 +300,7 @@ public class McpMiddleware : IStreamingMiddleware
         {
             try
             {
-                var tools = await kvp.Value.ListToolsAsync();
+                var tools = await kvp.Value.ListToolsAsync(cancellationToken: cancellationToken);
 
                 foreach (var tool in tools)
                 {
@@ -354,11 +354,8 @@ public class McpMiddleware : IStreamingMiddleware
             return "unknown_tool";
 
         // Replace invalid characters with underscores
-        var sanitized = System.Text.RegularExpressions.Regex.Replace(
-            toolName,
-            @"[^a-zA-Z0-9_-]",
-            "_"
-        );
+        var sanitized = MyRegex().Replace(toolName, "_"
+);
 
         // Ensure it doesn't start with a number (optional, but good practice)
         if (char.IsDigit(sanitized[0]))
@@ -568,4 +565,7 @@ public class McpMiddleware : IStreamingMiddleware
         // Delegate to the FunctionCallMiddleware
         return _functionCallMiddleware.InvokeStreamingAsync(context, agent, cancellationToken);
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"[^a-zA-Z0-9_-]")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

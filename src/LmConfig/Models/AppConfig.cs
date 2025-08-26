@@ -193,7 +193,7 @@ public record ProviderConnectionInfo
 
         return new ValidationResult
         {
-            IsValid = !errors.Any(),
+            IsValid = errors.Count == 0,
             Errors = errors,
             Warnings = warnings,
         };

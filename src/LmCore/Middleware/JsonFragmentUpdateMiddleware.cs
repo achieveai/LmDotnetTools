@@ -25,14 +25,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     {
         await foreach (var message in messageStream)
         {
-            if (message is ToolsCallUpdateMessage toolsCallUpdateMessage)
-            {
-                yield return ProcessToolsCallUpdateMessage(toolsCallUpdateMessage);
-            }
-            else
-            {
-                yield return message;
-            }
+            yield return message is ToolsCallUpdateMessage toolsCallUpdateMessage ? ProcessToolsCallUpdateMessage(toolsCallUpdateMessage) : message;
         }
     }
 
@@ -110,17 +103,9 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     private static string GetGeneratorKey(ToolCallUpdate toolCallUpdate)
     {
         // Prefer ToolCallId if available, otherwise use Index, otherwise use FunctionName
-        if (!string.IsNullOrEmpty(toolCallUpdate.ToolCallId))
-        {
-            return $"id:{toolCallUpdate.ToolCallId}";
-        }
-
-        if (toolCallUpdate.Index.HasValue)
-        {
-            return $"index:{toolCallUpdate.Index.Value}";
-        }
-
-        return $"name:{toolCallUpdate.FunctionName ?? "unknown"}";
+        return !string.IsNullOrEmpty(toolCallUpdate.ToolCallId)
+            ? $"id:{toolCallUpdate.ToolCallId}"
+            : toolCallUpdate.Index.HasValue ? $"index:{toolCallUpdate.Index.Value}" : $"name:{toolCallUpdate.FunctionName ?? "unknown"}";
     }
 
     /// <summary>

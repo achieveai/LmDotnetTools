@@ -49,20 +49,19 @@ public class JsonToolFormatter
     )
     {
         // Initialize tracking for this tool if needed
-        if (!_indentLevels.ContainsKey(toolCallName))
+        if (!_indentLevels.TryGetValue(toolCallName, out int indentLevel))
         {
-            _indentLevels[toolCallName] = 0;
+            indentLevel = 0;
+            _indentLevels[toolCallName] = indentLevel;
         }
-        if (!_processedStringsByTool.ContainsKey(toolCallName))
+        if (!_processedStringsByTool.TryGetValue(toolCallName, out HashSet<string>? processedStrings))
         {
-            _processedStringsByTool[toolCallName] = new HashSet<string>();
+            processedStrings = new HashSet<string>();
+            _processedStringsByTool[toolCallName] = processedStrings;
         }
-
-        var processedStrings = _processedStringsByTool[toolCallName];
 
         foreach (var update in fragmentUpdates)
         {
-            var indentLevel = _indentLevels[toolCallName];
 
             // Handle indentation before tokens
             if (ShouldIndent(update.Kind))
@@ -81,21 +80,21 @@ public class JsonToolFormatter
             {
                 case JsonFragmentKind.StartObject:
                     yield return (OperatorColor, "{");
-                    _indentLevels[toolCallName]++;
+                    _indentLevels[toolCallName] = ++indentLevel;
                     break;
 
                 case JsonFragmentKind.EndObject:
-                    _indentLevels[toolCallName]--;
+                    _indentLevels[toolCallName] = --indentLevel;
                     yield return (OperatorColor, "}");
                     break;
 
                 case JsonFragmentKind.StartArray:
                     yield return (OperatorColor, "[");
-                    _indentLevels[toolCallName]++;
+                    _indentLevels[toolCallName] = ++indentLevel;
                     break;
 
                 case JsonFragmentKind.EndArray:
-                    _indentLevels[toolCallName]--;
+                    _indentLevels[toolCallName] = --indentLevel;
                     yield return (OperatorColor, "]");
                     break;
 

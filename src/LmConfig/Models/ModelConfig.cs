@@ -68,10 +68,9 @@ public record ModelConfig
     public IReadOnlyList<ProviderConfig> GetProvidersWithTags(IEnumerable<string> requiredTags)
     {
         var tags = requiredTags.ToList();
-        if (!tags.Any())
-            return Providers;
-
-        return Providers
+        return tags.Count == 0
+            ? Providers
+            : Providers
             .Where(p => tags.All(tag => p.Tags?.Contains(tag) == true))
             .OrderByDescending(p => p.Priority)
             .ToList();

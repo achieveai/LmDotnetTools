@@ -251,7 +251,7 @@ public class FunctionCollisionDetectorTests
         };
 
         // Act
-        var report = detector.AnalyzeCollisions(functions);
+        var report = FunctionCollisionDetector.AnalyzeCollisions(functions);
 
         // Assert
         Assert.Equal(3, report.TotalFunctions);
@@ -268,7 +268,7 @@ public class FunctionCollisionDetectorTests
         var functions = CreateDescriptorsWithCollisions();
 
         // Act
-        var report = detector.AnalyzeCollisions(functions);
+        var report = FunctionCollisionDetector.AnalyzeCollisions(functions);
 
         // Assert
         Assert.Equal(5, report.TotalFunctions);
@@ -306,7 +306,7 @@ public class FunctionCollisionDetectorTests
         };
 
         // Act
-        var report = detector.AnalyzeCollisions(functions);
+        var report = FunctionCollisionDetector.AnalyzeCollisions(functions);
 
         // Assert
         Assert.Equal(3, report.TotalFunctions);

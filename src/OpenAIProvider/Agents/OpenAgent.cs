@@ -94,13 +94,13 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
             if (
                 coreUsage.ExtraProperties != null
-                && coreUsage.ExtraProperties.ContainsKey("estimated_cost")
+                && coreUsage.ExtraProperties.TryGetValue("estimated_cost", out object? value)
             )
             {
-                totalCost = coreUsage.ExtraProperties["estimated_cost"] switch
+                totalCost = value switch
                 {
                     JsonElement element => element.GetDouble(),
-                    double value => value,
+                    double d => d,
                     _ => null,
                 };
 

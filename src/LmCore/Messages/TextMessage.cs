@@ -28,11 +28,11 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("isThinking")]
     public bool IsThinking { get; init; }
 
-    public BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary() => null;
 
-    public ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls() => null;
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages() => null;
 }
 
 public class TextMessageJsonConverter : ShadowPropertiesJsonConverter<TextMessage>

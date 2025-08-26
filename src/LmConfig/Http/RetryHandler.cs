@@ -14,8 +14,7 @@ public sealed class RetryHandler : DelegatingHandler
 
     public RetryHandler(int maxAttempts = 3, TimeSpan? delay = null)
     {
-        if (maxAttempts < 1)
-            throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
         _maxAttempts = maxAttempts;
         _delay = delay ?? TimeSpan.FromMilliseconds(200);
     }

@@ -12,7 +12,7 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware;
 /// <summary>
 /// Function provider that provides functions from MCP clients
 /// </summary>
-public class McpClientFunctionProvider : IFunctionProvider
+public partial class McpClientFunctionProvider : IFunctionProvider
 {
     private readonly Dictionary<string, IMcpClient> _mcpClients;
     private readonly List<FunctionDescriptor> _functions;
@@ -150,7 +150,7 @@ public class McpClientFunctionProvider : IFunctionProvider
         {
             try
             {
-                var tools = await client.ListToolsAsync();
+                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
                 toolsByServer[serverId] = tools.ToList();
                 logger.LogDebug(
                     "Retrieved tools for server {ServerId}: ToolCount={ToolCount}",
@@ -260,7 +260,7 @@ public class McpClientFunctionProvider : IFunctionProvider
         {
             try
             {
-                var tools = await kvp.Value.ListToolsAsync();
+                var tools = await kvp.Value.ListToolsAsync(cancellationToken: cancellationToken);
 
                 foreach (var tool in tools)
                 {
@@ -332,7 +332,7 @@ public class McpClientFunctionProvider : IFunctionProvider
             try
             {
                 // Get available tools from this client asynchronously
-                var tools = await client.ListToolsAsync();
+                var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
 
                 logger.LogDebug(
                     "MCP tool discovery completed: ClientId={ClientId}, ToolCount={ToolCount}, ToolNames={ToolNames}",
@@ -483,11 +483,8 @@ public class McpClientFunctionProvider : IFunctionProvider
             return "unknown_tool";
 
         // Replace invalid characters with underscores
-        var sanitized = System.Text.RegularExpressions.Regex.Replace(
-            toolName,
-            @"[^a-zA-Z0-9_-]",
-            "_"
-        );
+        var sanitized = MyRegex().Replace(toolName, "_"
+);
 
         // Ensure it doesn't start with a number (optional, but good practice)
         if (char.IsDigit(sanitized[0]))
@@ -904,4 +901,7 @@ public class McpClientFunctionProvider : IFunctionProvider
 
         return functionMap;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"[^a-zA-Z0-9_-]")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

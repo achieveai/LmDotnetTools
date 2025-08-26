@@ -125,19 +125,12 @@ public static class ChatCompletionRequestFactory
         }
 
         // Check if ExtraProperties contains OpenRouter specific keys
-        if (
-            options?.ExtraProperties != null
+        return options?.ExtraProperties != null
             && (
                 options.ExtraProperties.ContainsKey("route")
                 || options.ExtraProperties.ContainsKey("models")
                 || options.ExtraProperties.ContainsKey("transforms")
-            )
-        )
-        {
-            return true;
-        }
-
-        return false;
+            );
     }
 
     private static List<ChatMessage> ConvertMessagesToChat(IEnumerable<IMessage> messages)

@@ -9,7 +9,6 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 /// </summary>
 public class UsageAccumulator
 {
-    private Usage? _accumulatedUsage;
     private string? _fromAgent;
     private string? _generationId;
     private Role _role = Role.Assistant;
@@ -19,12 +18,12 @@ public class UsageAccumulator
     /// <summary>
     /// Current accumulated usage data.
     /// </summary>
-    public Usage? CurrentUsage => _accumulatedUsage;
+    public Usage? CurrentUsage { get; private set; }
 
     /// <summary>
     /// Indicates if any usage data has been accumulated.
     /// </summary>
-    public bool HasUsage => _accumulatedUsage != null;
+    public bool HasUsage => CurrentUsage != null;
 
     /// <summary>
     /// Add usage data from a message's metadata.
@@ -34,10 +33,8 @@ public class UsageAccumulator
     /// <exception cref="InvalidOperationException">Thrown if input tokens change between usage updates.</exception>
     public bool AddUsageFromMessageMetadata(IMessage message)
     {
-        if (message.Metadata == null || !message.Metadata.ContainsKey("usage"))
+        if (message.Metadata == null || !message.Metadata.TryGetValue("usage", out object? usage))
             return false;
-
-        var usage = message.Metadata["usage"];
 
         // Store context for the usage message
         _fromAgent = message.FromAgent;
@@ -91,17 +88,16 @@ public class UsageAccumulator
     /// <returns>A new UsageMessage, or null if no usage data has been accumulated.</returns>
     public UsageMessage? CreateUsageMessage()
     {
-        if (_accumulatedUsage == null)
-            return null;
-
-        return new UsageMessage
-        {
-            Usage = _accumulatedUsage,
-            FromAgent = _fromAgent,
-            GenerationId = _generationId,
-            Role = _role,
-            Metadata = _extraMetadata,
-        };
+        return CurrentUsage == null
+            ? null
+            : new UsageMessage
+            {
+                Usage = CurrentUsage,
+                FromAgent = _fromAgent,
+                GenerationId = _generationId,
+                Role = _role,
+                Metadata = _extraMetadata,
+            };
     }
 
     private bool AddUsageData(object usageData)
@@ -109,22 +105,22 @@ public class UsageAccumulator
         if (usageData is Usage coreUsage)
         {
             // First usage data
-            if (_accumulatedUsage == null)
+            if (CurrentUsage == null)
             {
-                _accumulatedUsage = coreUsage;
+                CurrentUsage = coreUsage;
                 return true;
             }
 
             // Validate input tokens don't change
             if (
-                _accumulatedUsage.PromptTokens != 0
+                CurrentUsage.PromptTokens != 0
                 && coreUsage.PromptTokens != 0
-                && _accumulatedUsage.PromptTokens != coreUsage.PromptTokens
+                && CurrentUsage.PromptTokens != coreUsage.PromptTokens
             )
             {
                 throw new InvalidOperationException(
                     $"Input tokens changed between usage updates. "
-                        + $"Previous: {_accumulatedUsage.PromptTokens}, Current: {coreUsage.PromptTokens}"
+                        + $"Previous: {CurrentUsage.PromptTokens}, Current: {coreUsage.PromptTokens}"
                 );
             }
 
@@ -134,30 +130,30 @@ public class UsageAccumulator
 
             // Get the max completion tokens or preserve existing if new value is 0
             var completionTokens =
-                coreUsage.CompletionTokens == 0 ? _accumulatedUsage.CompletionTokens
-                : _accumulatedUsage.CompletionTokens == 0 ? coreUsage.CompletionTokens
-                : Math.Max(_accumulatedUsage.CompletionTokens, coreUsage.CompletionTokens);
+                coreUsage.CompletionTokens == 0 ? CurrentUsage.CompletionTokens
+                : CurrentUsage.CompletionTokens == 0 ? coreUsage.CompletionTokens
+                : Math.Max(CurrentUsage.CompletionTokens, coreUsage.CompletionTokens);
 
             // Accumulate usage data
-            _accumulatedUsage = new Usage
+            CurrentUsage = new Usage
             {
                 // Take the max of prompt tokens (they should be the same)
-                PromptTokens = Math.Max(_accumulatedUsage.PromptTokens, coreUsage.PromptTokens),
+                PromptTokens = Math.Max(CurrentUsage.PromptTokens, coreUsage.PromptTokens),
                 // Use our calculated completion tokens
                 CompletionTokens = completionTokens,
                 // Recalculate total based on prompt and completion
                 TotalTokens =
-                    Math.Max(_accumulatedUsage.PromptTokens, coreUsage.PromptTokens)
+                    Math.Max(CurrentUsage.PromptTokens, coreUsage.PromptTokens)
                     + completionTokens,
                 // Keep input and output token details if available
                 InputTokenDetails =
-                    coreUsage.InputTokenDetails ?? _accumulatedUsage.InputTokenDetails,
+                    coreUsage.InputTokenDetails ?? CurrentUsage.InputTokenDetails,
                 OutputTokenDetails =
-                    coreUsage.OutputTokenDetails ?? _accumulatedUsage.OutputTokenDetails,
-                TotalCost = coreUsage.TotalCost ?? _accumulatedUsage.TotalCost,
+                    coreUsage.OutputTokenDetails ?? CurrentUsage.OutputTokenDetails,
+                TotalCost = coreUsage.TotalCost ?? CurrentUsage.TotalCost,
                 // Merge extra properties
-                ExtraProperties = MergeExtraProperties(
-                    _accumulatedUsage.ExtraProperties,
+                ExtraProperties = UsageAccumulator.MergeExtraProperties(
+                    CurrentUsage.ExtraProperties,
                     coreUsage.ExtraProperties
                 ),
             };
@@ -166,22 +162,22 @@ public class UsageAccumulator
         else
         {
             // Raw usage that's not a Usage object
-            if (_accumulatedUsage == null)
+            if (CurrentUsage == null)
             {
-                _accumulatedUsage = new Usage();
+                CurrentUsage = new Usage();
             }
 
             // Only add raw_usage if we haven't added it before
             if (!_hasRawUsage)
             {
-                _accumulatedUsage = _accumulatedUsage.SetExtraProperty("raw_usage", usageData);
+                CurrentUsage = CurrentUsage.SetExtraProperty("raw_usage", usageData);
                 _hasRawUsage = true;
             }
             return true;
         }
     }
 
-    private ImmutableDictionary<string, object?> MergeExtraProperties(
+    private static ImmutableDictionary<string, object?> MergeExtraProperties(
         ImmutableDictionary<string, object?>? first,
         ImmutableDictionary<string, object?>? second
     )

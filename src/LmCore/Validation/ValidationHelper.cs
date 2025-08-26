@@ -207,7 +207,7 @@ public static class ValidationHelper
     )
         where TEnum : struct, Enum
     {
-        if (!Enum.IsDefined(typeof(TEnum), value))
+        if (!Enum.IsDefined(value))
         {
             throw new ArgumentException(
                 $"Invalid {typeof(TEnum).Name} value: {value}",

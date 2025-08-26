@@ -149,12 +149,7 @@ public record Union<T1, T2, T3> : Union<T1, T2>
 
     public override T Get<T>()
     {
-        if (typeof(T).IsAssignableFrom(typeof(T3)))
-        {
-            return (T)(object)_v3!;
-        }
-
-        return base.Get<T>();
+        return typeof(T).IsAssignableFrom(typeof(T3)) ? (T)(object)_v3! : base.Get<T>();
     }
 
     public static implicit operator T1(Union<T1, T2, T3> union) => union.Get<T1>();
@@ -243,12 +238,7 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
 
     public override T Get<T>()
     {
-        if (typeof(T).IsAssignableFrom(typeof(T4)))
-        {
-            return (T)(object)_v4!;
-        }
-
-        return base.Get<T>();
+        return typeof(T).IsAssignableFrom(typeof(T4)) ? (T)(object)_v4! : base.Get<T>();
     }
 
     public static implicit operator T1(Union<T1, T2, T3, T4> union) => union.Get<T1>();

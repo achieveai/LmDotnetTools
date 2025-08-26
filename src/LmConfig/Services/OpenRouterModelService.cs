@@ -138,17 +138,9 @@ public class OpenRouterModelService
         if (string.IsNullOrWhiteSpace(dateTimeString))
             return null;
 
-        if (DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime))
-        {
-            return dateTime.ToUniversalTime();
-        }
-
-        if (DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset))
-        {
-            return dateTimeOffset.UtcDateTime;
-        }
-
-        return null;
+        return DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime)
+            ? dateTime.ToUniversalTime()
+            : DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset) ? dateTimeOffset.UtcDateTime : null;
     }
 
     /// <summary>
@@ -1239,10 +1231,10 @@ public class OpenRouterModelService
         var createdDate = TryParseDateTime(createdAtString);
 
         // Check if model is reasoning-capable
-        var isReasoning = CheckIfReasoningModel(primaryModelNode);
+        var isReasoning = OpenRouterModelService.CheckIfReasoningModel(primaryModelNode);
 
         // Create capabilities
-        var capabilities = CreateModelCapabilities(
+        var capabilities = OpenRouterModelService.CreateModelCapabilities(
             primaryModelNode,
             inputModalities,
             outputModalities,
@@ -1351,7 +1343,7 @@ public class OpenRouterModelService
             Name = "OpenRouter",
             ModelName = modelSlug,
             Priority = 1000, // Highest priority for OpenRouter
-            Pricing = GetBestPricingFromSubProviders(openRouterSubProviders),
+            Pricing = OpenRouterModelService.GetBestPricingFromSubProviders(openRouterSubProviders),
             SubProviders = openRouterSubProviders,
             Tags = new[] { "openrouter", "aggregator" },
         };
@@ -1362,7 +1354,7 @@ public class OpenRouterModelService
         // If no providers were created, create a basic OpenRouter provider
         if (providers.Count == 0)
         {
-            providers.Add(CreateFallbackProvider(modelSlug));
+            providers.Add(OpenRouterModelService.CreateFallbackProvider(modelSlug));
         }
 
         return new ModelConfig
@@ -1407,14 +1399,14 @@ public class OpenRouterModelService
                 return Task.FromResult<ProviderConfig?>(null);
 
             // Get pricing information
-            var pricing = CreatePricingConfig(endpoint);
+            var pricing = OpenRouterModelService.CreatePricingConfig(endpoint);
 
             // Create provider tags
-            var tags = CreateProviderTags(endpoint, isFree, quantization, variant);
+            var tags = OpenRouterModelService.CreateProviderTags(endpoint, isFree, quantization, variant);
 
             // Get provider info for additional metadata
             var providerInfo = endpoint["provider_info"];
-            var subProviders = CreateSubProviders(providerInfo);
+            var subProviders = OpenRouterModelService.CreateSubProviders(providerInfo);
 
             return Task.FromResult<ProviderConfig?>(
                 new ProviderConfig
@@ -1438,7 +1430,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Creates pricing configuration from endpoint data.
     /// </summary>
-    private PricingConfig CreatePricingConfig(JsonNode endpoint)
+    private static PricingConfig CreatePricingConfig(JsonNode endpoint)
     {
         var pricing = endpoint["pricing"];
         if (pricing == null)
@@ -1473,7 +1465,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Creates provider tags based on endpoint characteristics.
     /// </summary>
-    private IReadOnlyList<string> CreateProviderTags(
+    private static IReadOnlyList<string> CreateProviderTags(
         JsonNode endpoint,
         bool isFree,
         string? quantization,
@@ -1531,7 +1523,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Creates sub-providers from provider info (for aggregators like OpenRouter).
     /// </summary>
-    private IReadOnlyList<SubProviderConfig>? CreateSubProviders(JsonNode? providerInfo)
+    private static IReadOnlyList<SubProviderConfig>? CreateSubProviders(JsonNode? providerInfo)
     {
         // For OpenRouter, we don't typically have sub-providers since OpenRouter itself is the aggregator
         // This could be extended in the future if needed
@@ -1564,7 +1556,7 @@ public class OpenRouterModelService
                 return null;
 
             // Get pricing information
-            var pricing = CreatePricingConfig(endpoint);
+            var pricing = OpenRouterModelService.CreatePricingConfig(endpoint);
 
             return new SubProviderConfig
             {
@@ -1584,7 +1576,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Gets the best pricing from a list of sub-providers (typically the cheapest).
     /// </summary>
-    private PricingConfig GetBestPricingFromSubProviders(
+    private static PricingConfig GetBestPricingFromSubProviders(
         IReadOnlyList<SubProviderConfig> subProviders
     )
     {
@@ -1607,7 +1599,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Creates model capabilities from OpenRouter model data.
     /// </summary>
-    private ModelCapabilities CreateModelCapabilities(
+    private static ModelCapabilities CreateModelCapabilities(
         JsonNode modelNode,
         string[] inputModalities,
         string[] outputModalities,
@@ -1651,11 +1643,11 @@ public class OpenRouterModelService
         // Create thinking capabilities
         ThinkingCapability? thinking = null;
         var reasoningConfig = modelNode["reasoning_config"];
-        if (reasoningConfig != null || CheckIfReasoningModel(modelNode))
+        if (reasoningConfig != null || OpenRouterModelService.CheckIfReasoningModel(modelNode))
         {
             thinking = new ThinkingCapability
             {
-                Type = DetermineThinkingType(modelNode),
+                Type = OpenRouterModelService.DetermineThinkingType(modelNode),
                 IsBuiltIn = true, // Most OpenRouter reasoning models have built-in thinking
                 IsExposed = true,
             };
@@ -1775,7 +1767,7 @@ public class OpenRouterModelService
             SupportsStreaming = true, // Most OpenRouter models support streaming
             SupportedFeatures = supportedFeatures,
             IsPreview =
-                GetStringValue(modelNode, "name")?.ToLowerInvariant().Contains("preview") ?? false,
+                GetStringValue(modelNode, "name")?.ToLowerInvariant().Contains("preview", StringComparison.InvariantCultureIgnoreCase) ?? false,
             IsDeprecated = !string.IsNullOrEmpty(GetStringValue(modelNode, "warning_message")),
         };
     }
@@ -1783,7 +1775,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Checks if a model has reasoning capabilities.
     /// </summary>
-    private bool CheckIfReasoningModel(JsonNode modelNode)
+    private static bool CheckIfReasoningModel(JsonNode modelNode)
     {
         var name = GetStringValue(modelNode, "name")?.ToLowerInvariant() ?? "";
         var slug = GetStringValue(modelNode, "slug")?.ToLowerInvariant() ?? "";
@@ -1803,7 +1795,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Determines the thinking type based on model characteristics.
     /// </summary>
-    private ThinkingType DetermineThinkingType(JsonNode modelNode)
+    private static ThinkingType DetermineThinkingType(JsonNode modelNode)
     {
         var name = GetStringValue(modelNode, "name")?.ToLowerInvariant() ?? "";
         var slug = GetStringValue(modelNode, "slug")?.ToLowerInvariant() ?? "";
@@ -1812,19 +1804,15 @@ public class OpenRouterModelService
         if (name.Contains("o1") || slug.Contains("o1") || author.Contains("openai"))
             return ThinkingType.OpenAI;
 
-        if (name.Contains("deepseek") || slug.Contains("deepseek") || author.Contains("deepseek"))
-            return ThinkingType.DeepSeek;
-
-        if (author.Contains("anthropic"))
-            return ThinkingType.Anthropic;
-
-        return ThinkingType.Custom;
+        return name.Contains("deepseek") || slug.Contains("deepseek") || author.Contains("deepseek")
+            ? ThinkingType.DeepSeek
+            : author.Contains("anthropic") ? ThinkingType.Anthropic : ThinkingType.Custom;
     }
 
     /// <summary>
     /// Creates a fallback provider when no endpoints are available.
     /// </summary>
-    private ProviderConfig CreateFallbackProvider(string modelSlug)
+    private static ProviderConfig CreateFallbackProvider(string modelSlug)
     {
         return new ProviderConfig
         {

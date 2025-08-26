@@ -79,6 +79,8 @@ public record ModelCapabilities
     [JsonPropertyName("custom_capabilities")]
     public IDictionary<string, object>? CustomCapabilities { get; init; }
 
+    private static readonly char[] separator = new[] { ',', ';' };
+
     /// <summary>
     /// Checks if the model has a specific capability or multiple capabilities.
     /// </summary>
@@ -91,7 +93,7 @@ public record ModelCapabilities
 
         // Split by comma or semicolon and check all capabilities
         var capabilities = capability
-            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Split(separator, StringSplitOptions.RemoveEmptyEntries)
             .Select(c => c.Trim())
             .Where(c => !string.IsNullOrWhiteSpace(c));
 

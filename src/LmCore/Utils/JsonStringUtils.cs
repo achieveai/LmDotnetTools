@@ -15,10 +15,9 @@ public static class JsonStringUtils
     /// <returns>The unescaped string</returns>
     public static string UnescapeJsonString(string jsonString)
     {
-        if (string.IsNullOrEmpty(jsonString))
-            return jsonString;
-
-        return jsonString
+        return string.IsNullOrEmpty(jsonString)
+            ? jsonString
+            : jsonString
             .Replace("\\n", "\n")
             .Replace("\\\"", "\"")
             .Replace("\\\\", "\\")

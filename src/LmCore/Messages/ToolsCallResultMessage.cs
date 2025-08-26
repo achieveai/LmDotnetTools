@@ -25,13 +25,13 @@ public record ToolsCallResultMessage : IMessage
     public ImmutableList<ToolCallResult> ToolCallResults { get; init; } =
         ImmutableList<ToolCallResult>.Empty;
 
-    public string? GetText() => null;
+    public static string? GetText() => null;
 
-    public BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary() => null;
 
-    public ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls() => null;
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages() => null;
 
     // Factory method for creating a ToolsCallResultMessage with a single result
     public static ToolsCallResultMessage Create(

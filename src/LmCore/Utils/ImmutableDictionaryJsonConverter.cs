@@ -143,7 +143,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue>
                 }
                 else if (typeof(TValue) == typeof(object))
                 {
-                    WriteObjectValue(writer, kvp.Value, options);
+                    ImmutableDictionaryJsonConverter<TKey, TValue>.WriteObjectValue(writer, kvp.Value, options);
                 }
                 else
                 {
@@ -155,7 +155,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue>
         writer.WriteEndObject();
     }
 
-    private void WriteObjectValue(
+    private static void WriteObjectValue(
         Utf8JsonWriter writer,
         object value,
         JsonSerializerOptions options

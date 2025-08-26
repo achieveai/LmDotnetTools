@@ -165,9 +165,7 @@ public static class TokenMetrics
     /// <returns>Tokens per second</returns>
     public static double CalculateTokensPerSecond(int tokenCount, long durationMs)
     {
-        if (durationMs <= 0)
-            return 0;
-        return (double)tokenCount / (durationMs / 1000.0);
+        return durationMs <= 0 ? 0 : (double)tokenCount / (durationMs / 1000.0);
     }
 
     /// <summary>
@@ -205,7 +203,6 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     private readonly ILogger _logger;
     private readonly Stopwatch _stopwatch;
     private readonly string? _completionId;
-    private bool _firstTokenReceived;
     private bool _disposed;
 
     /// <summary>
@@ -225,10 +222,10 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     /// </summary>
     public void RecordFirstToken()
     {
-        if (_firstTokenReceived)
+        if (FirstTokenReceived)
             return;
 
-        _firstTokenReceived = true;
+        FirstTokenReceived = true;
         var timeToFirstToken = _stopwatch.ElapsedMilliseconds;
 
         _logger.LogDebug(
@@ -247,7 +244,7 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     /// <summary>
     /// Gets whether the first token has been received.
     /// </summary>
-    public bool FirstTokenReceived => _firstTokenReceived;
+    public bool FirstTokenReceived { get; private set; }
 
     public void Dispose()
     {

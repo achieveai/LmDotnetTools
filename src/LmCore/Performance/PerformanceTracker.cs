@@ -183,7 +183,7 @@ public class PerformanceTracker : IPerformanceTracker
         {
             var allProviders = _providerStats.Values.ToList();
 
-            if (!allProviders.Any())
+            if (allProviders.Count == 0)
             {
                 return new OverallStatistics
                 {

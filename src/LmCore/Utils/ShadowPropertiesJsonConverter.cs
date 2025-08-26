@@ -113,8 +113,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
 
     public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
-        if (value == null)
-            throw new ArgumentNullException(nameof(value));
+        ArgumentNullException.ThrowIfNull(value);
 
         writer.WriteStartObject();
 
@@ -169,12 +168,10 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     /// </summary>
     protected virtual ImmutableDictionary<string, object?> GetExtraProperties(T value)
     {
-        if (_extraPropertiesProperty != null)
-        {
-            return (ImmutableDictionary<string, object?>?)_extraPropertiesProperty.GetValue(value)
-                ?? ImmutableDictionary<string, object?>.Empty;
-        }
-        return ImmutableDictionary<string, object?>.Empty;
+        return _extraPropertiesProperty != null
+            ? (ImmutableDictionary<string, object?>?)_extraPropertiesProperty.GetValue(value)
+                ?? ImmutableDictionary<string, object?>.Empty
+            : ImmutableDictionary<string, object?>.Empty;
     }
 
     /// <summary>
@@ -216,7 +213,8 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
         Utf8JsonWriter writer,
         T value,
         JsonSerializerOptions options
-    ) { }
+    )
+    { }
 
     private static object? ReadValue(ref Utf8JsonReader reader, JsonSerializerOptions options)
     {

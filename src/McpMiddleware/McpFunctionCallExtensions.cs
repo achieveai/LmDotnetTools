@@ -150,11 +150,7 @@ public static class McpFunctionCallExtensions
                         {
                             // Handle synchronous methods
                             result = toolMethod.Invoke(instance, paramValues);
-                            if (result != null && toolMethod.ReturnType != typeof(void))
-                            {
-                                return JsonSerializer.Serialize(result);
-                            }
-                            return "{}";
+                            return result != null && toolMethod.ReturnType != typeof(void) ? JsonSerializer.Serialize(result) : "{}";
                         }
                     }
                     catch (Exception ex)

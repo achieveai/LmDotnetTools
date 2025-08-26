@@ -23,8 +23,7 @@ public static class ToolsCallAggregateTransformer
     /// <returns>A TextMessage with embedded XML tool calls and responses</returns>
     public static TextMessage TransformToNaturalFormat(ToolsCallAggregateMessage aggregateMessage)
     {
-        if (aggregateMessage == null)
-            throw new ArgumentNullException(nameof(aggregateMessage));
+        ArgumentNullException.ThrowIfNull(aggregateMessage);
 
         var contentBuilder = new StringBuilder();
         var toolCalls = aggregateMessage.ToolsCallMessage.ToolCalls;
@@ -90,8 +89,7 @@ public static class ToolsCallAggregateTransformer
     /// <returns>A single TextMessage containing all content</returns>
     public static TextMessage CombineMessageSequence(IEnumerable<IMessage> messageSequence)
     {
-        if (messageSequence == null)
-            throw new ArgumentNullException(nameof(messageSequence));
+        ArgumentNullException.ThrowIfNull(messageSequence);
 
         var messages = messageSequence.ToList();
         if (messages.Count == 0)
@@ -181,12 +179,7 @@ public static class ToolsCallAggregateTransformer
     /// <returns>Formatted arguments string</returns>
     private static string FormatToolArguments(string? functionArgs)
     {
-        if (string.IsNullOrWhiteSpace(functionArgs))
-        {
-            return "{}";
-        }
-
-        return TryFormatAsJson(functionArgs) ?? functionArgs;
+        return string.IsNullOrWhiteSpace(functionArgs) ? "{}" : TryFormatAsJson(functionArgs) ?? functionArgs;
     }
 
     /// <summary>

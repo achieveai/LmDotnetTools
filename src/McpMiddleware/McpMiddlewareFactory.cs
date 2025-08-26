@@ -112,7 +112,7 @@ public class McpMiddlewareFactory
                     transport.GetType().Name
                 );
 
-                var client = await McpClientFactory.CreateAsync(transport);
+                var client = await McpClientFactory.CreateAsync(transport, cancellationToken: cancellationToken);
                 mcpClients[clientId] = client;
 
                 _logger.LogInformation("Successfully created MCP client: {ClientId}", clientId);
@@ -163,7 +163,7 @@ public class McpMiddlewareFactory
     /// <param name="clientId">The client ID</param>
     /// <param name="clientSettings">The client configuration settings</param>
     /// <returns>The created transport</returns>
-    private IClientTransport CreateTransportFromConfig(string clientId, object clientSettings)
+    private static IClientTransport CreateTransportFromConfig(string clientId, object clientSettings)
     {
         // Handle JsonElement case (when deserialized from JSON)
         if (clientSettings is JsonElement jsonElement)
@@ -172,12 +172,9 @@ public class McpMiddlewareFactory
         }
 
         // Handle direct object case - try to extract command and arguments
-        if (clientSettings is Dictionary<string, object> configDict)
-        {
-            return CreateTransportFromDictionary(clientId, configDict);
-        }
-
-        throw new InvalidOperationException(
+        return clientSettings is Dictionary<string, object> configDict
+            ? CreateTransportFromDictionary(clientId, configDict)
+            : throw new InvalidOperationException(
             $"Unsupported client configuration type for client '{clientId}': {clientSettings.GetType()}"
         );
     }
@@ -188,7 +185,7 @@ public class McpMiddlewareFactory
     /// <param name="clientId">The client ID</param>
     /// <param name="jsonElement">The JSON configuration</param>
     /// <returns>The created transport</returns>
-    private IClientTransport CreateTransportFromJsonElement(
+    private static IClientTransport CreateTransportFromJsonElement(
         string clientId,
         JsonElement jsonElement
     )
@@ -261,14 +258,11 @@ public class McpMiddlewareFactory
             }
         }
 
-        if (string.IsNullOrEmpty(command))
-        {
-            throw new InvalidOperationException(
+        return string.IsNullOrEmpty(command)
+            ? throw new InvalidOperationException(
                 $"No command found in configuration for client '{clientId}'"
-            );
-        }
-
-        return new StdioClientTransport(
+            )
+            : (IClientTransport)new StdioClientTransport(
             new StdioClientTransportOptions
             {
                 Name = clientId,
@@ -284,7 +278,7 @@ public class McpMiddlewareFactory
     /// <param name="clientId">The client ID</param>
     /// <param name="configDict">The configuration dictionary</param>
     /// <returns>The created transport</returns>
-    private IClientTransport CreateTransportFromDictionary(
+    private static IClientTransport CreateTransportFromDictionary(
         string clientId,
         Dictionary<string, object> configDict
     )
@@ -320,14 +314,11 @@ public class McpMiddlewareFactory
             arguments = ExtractArgumentsFromObject(argsObj);
         }
 
-        if (string.IsNullOrEmpty(command))
-        {
-            throw new InvalidOperationException(
+        return string.IsNullOrEmpty(command)
+            ? throw new InvalidOperationException(
                 $"No command found in configuration for client '{clientId}'"
-            );
-        }
-
-        return new StdioClientTransport(
+            )
+            : (IClientTransport)new StdioClientTransport(
             new StdioClientTransportOptions
             {
                 Name = clientId,
@@ -342,7 +333,7 @@ public class McpMiddlewareFactory
     /// </summary>
     /// <param name="argsObj">The arguments object</param>
     /// <returns>Array of argument strings</returns>
-    private string[] ExtractArgumentsFromObject(object argsObj)
+    private static string[] ExtractArgumentsFromObject(object argsObj)
     {
         return argsObj switch
         {

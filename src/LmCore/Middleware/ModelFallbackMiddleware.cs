@@ -287,16 +287,15 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     /// </summary>
     private class SingleItemAsyncEnumerator<T> : IAsyncEnumerator<T>
     {
-        private readonly T _item;
         private bool _moved;
 
         public SingleItemAsyncEnumerator(T item)
         {
-            _item = item;
+            Current = item;
             _moved = false;
         }
 
-        public T Current => _item;
+        public T Current { get; }
 
         public ValueTask DisposeAsync()
         {

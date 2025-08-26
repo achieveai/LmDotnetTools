@@ -9,15 +9,14 @@ namespace AchieveAi.LmDotnetTools.McpMiddleware;
 public class McpFunctionProvider : IFunctionProvider
 {
     private readonly Assembly _assembly;
-    private readonly string _name;
 
     public McpFunctionProvider(Assembly? assembly = null, string? name = null)
     {
         _assembly = assembly ?? Assembly.GetCallingAssembly();
-        _name = name ?? $"MCP-{_assembly.GetName().Name}";
+        ProviderName = name ?? $"MCP-{_assembly.GetName().Name}";
     }
 
-    public string ProviderName => _name;
+    public string ProviderName { get; }
 
     /// <summary>
     /// MCP functions have medium priority (100)

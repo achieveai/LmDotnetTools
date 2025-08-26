@@ -134,9 +134,8 @@ public record ChatCompletionRequest
             .ToList();
 
         var chatMessages = MergeReasoningIntoAssistant(messages).ToList();
-        if (options != null)
-        {
-            return new ChatCompletionRequest(
+        return options != null
+            ? new ChatCompletionRequest(
                 options.ModelId,
                 chatMessages,
                 options.Temperature ?? 0.0,
@@ -162,10 +161,8 @@ public record ChatCompletionRequest
                 Tools = options
                     .Functions?.Select(fc => new FunctionTool(fc.ToOpenFunctionDefinition()))
                     .ToList(),
-            };
-        }
-
-        return new ChatCompletionRequest(
+            }
+            : new ChatCompletionRequest(
             model ?? "",
             chatMessages,
             temperature: 0.7f,
@@ -291,37 +288,37 @@ public record ChatCompletionRequest
                 return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
-            {
-                var cm = new ChatMessage
                 {
-                    Role = ChatMessage.ToRoleEnum(textMessage.Role),
-                    Content =
-                        textMessage.GetText() != null
-                            ? new Union<string, Union<TextContent, ImageContent>[]>(
-                                textMessage.GetText()!
-                            )
-                            : null,
-                };
+                    var cm = new ChatMessage
+                    {
+                        Role = ChatMessage.ToRoleEnum(textMessage.Role),
+                        Content =
+                            textMessage.GetText() != null
+                                ? new Union<string, Union<TextContent, ImageContent>[]>(
+                                    textMessage.GetText()!
+                                )
+                                : null,
+                    };
 
-                if (
-                    textMessage.Metadata != null
-                    && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
-                    && rVal is string rStr
-                )
-                {
-                    cm.Reasoning = rStr;
-                }
-                else if (
-                    textMessage.Metadata != null
-                    && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
-                    && dVal is List<ChatMessage.ReasoningDetail> details
-                )
-                {
-                    cm.ReasoningDetails = details;
-                }
+                    if (
+                        textMessage.Metadata != null
+                        && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
+                        && rVal is string rStr
+                    )
+                    {
+                        cm.Reasoning = rStr;
+                    }
+                    else if (
+                        textMessage.Metadata != null
+                        && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
+                        && dVal is List<ChatMessage.ReasoningDetail> details
+                    )
+                    {
+                        cm.ReasoningDetails = details;
+                    }
 
-                return [cm];
-            }
+                    return [cm];
+                }
             case ICanGetToolCalls toolCallMessage:
                 var toolChat = new ChatMessage
                 {
@@ -394,15 +391,15 @@ public record ChatCompletionRequest
                 case TextMessage txt:
                 case ToolsCallMessage tc:
                 case ToolsCallAggregateMessage agg:
-                {
-                    var produced = FromMessage(m).ToList();
-                    foreach (var ch in produced)
                     {
-                        MergeReasoning(reasoningBuffer, ch);
-                        yield return ch;
+                        var produced = FromMessage(m).ToList();
+                        foreach (var ch in produced)
+                        {
+                            MergeReasoning(reasoningBuffer, ch);
+                            yield return ch;
+                        }
+                        break;
                     }
-                    break;
-                }
 
                 default:
                     // For other message types (system/user/tool etc.) just forward conversion without merging

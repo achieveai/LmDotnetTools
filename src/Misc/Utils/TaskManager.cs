@@ -44,7 +44,7 @@ public class TaskManager
         NotStarted,
         InProgress,
         Completed,
-        Removed,
+        Removed
     }
 
     public class BulkTaskItem
@@ -54,10 +54,11 @@ public class TaskManager
         public List<string> Notes { get; set; } = new();
     }
 
+
     public record TaskItem
     {
         [JsonPropertyName("id")]
-        public required string Id { get; init; } // Changed to string for hierarchical IDs like "1", "1.1", "1.2.1"
+        public required string Id { get; init; }  // Changed to string for hierarchical IDs like "1", "1.1", "1.2.1"
 
         [JsonPropertyName("status")]
         public required TaskStatus Status { get; init; } = TaskStatus.NotStarted;
@@ -71,6 +72,7 @@ public class TaskManager
         [JsonPropertyName("notes")]
         public required IList<string> Notes { get; init; } = ImmutableList<string>.Empty;
     }
+
 
     private sealed record PrivateTaskItem
     {
@@ -102,11 +104,11 @@ public class TaskManager
         {
             return new TaskItem
             {
-                Id = string.IsNullOrEmpty(DisplayId) ? Id.ToString() : DisplayId, // Use DisplayId for hierarchical IDs
+                Id = string.IsNullOrEmpty(DisplayId) ? Id.ToString() : DisplayId,  // Use DisplayId for hierarchical IDs
                 Title = Title,
                 Status = Status,
                 Notes = Notes.ToList(),
-                SubTasks = SubTasks.Select(st => st.ToPublic()).ToImmutableList(),
+                SubTasks = SubTasks.Select(st => st.ToPublic()).ToImmutableList()
             };
         }
     }
@@ -124,16 +126,16 @@ public class TaskManager
 
     // Thread-safe collections
     public TaskManager()
-        : this(new ManagerState()) { }
+    : this(new ManagerState())
+    {
+    }
 
     private TaskManager(ManagerState state)
     {
         _state = state;
     }
 
-    [Function(
-        "add-task",
-        @"Add tasks dynamically as understanding evolves - adapt your plan based on learnings.
+    [Function("add-task", @"Add tasks dynamically as understanding evolves - adapt your plan based on learnings.
 
 Task breakdown philosophy:
 • Keep 4-7 tasks at each level (cognitive load management)
@@ -144,7 +146,7 @@ Task breakdown philosophy:
 
 Hierarchy guidelines:
 • Level 1: Major phases or components
-• Level 2: Concrete deliverables or milestones  
+• Level 2: Concrete deliverables or milestones
 • Level 3+: Specific implementation steps
 • Deeper nesting for complex subtasks that need isolation
 
@@ -152,13 +154,10 @@ Examples:
 - Main phase: {""title"": ""Design API""}
 - Breakdown: {""title"": ""Define endpoints"", ""parentId"": ""1""}
 - Discovered task: {""title"": ""Add rate limiting"", ""parentId"": ""1""}  // Added after learning
-- Deep detail: {""title"": ""Validate JWT tokens"", ""parentId"": ""1.2.3""}"
-    )]
+- Deep detail: {""title"": ""Validate JWT tokens"", ""parentId"": ""1.2.3""}")]
     public string AddTask(
         [Description("Task title/description")] string title,
-        [Description("Parent task ID for nesting (e.g., '1', '1.2', '1.2.3'). Omit for main task")]
-            string? parentId = null
-    )
+        [Description("Parent task ID for nesting (e.g., '1', '1.2', '1.2.3'). Omit for main task")] string? parentId = null)
     {
         if (string.IsNullOrWhiteSpace(title))
         {
@@ -198,16 +197,14 @@ Examples:
             DisplayId = $"{parentTask.DisplayId}.{subtaskId}",
             Title = title.Trim(),
             Status = TaskStatus.NotStarted,
-            ParentId = parentTask.Id,
+            ParentId = parentTask.Id
         };
 
         parentTask.SubTasks.Add(task);
         return $"Added task {task.DisplayId}: {task.Title}";
     }
 
-    [Function(
-        "bulk-initialize",
-        @"Efficiently set up initial task structure - then adapt it as you learn.
+    [Function("bulk-initialize", @"Efficiently set up initial task structure - then adapt it as you learn.
 
 This is your starting point - use for:
 • Initial problem decomposition based on requirements
@@ -229,12 +226,10 @@ After initialization:
 
 Examples:
 - Project start: {""tasks"": [{""task"": ""Research"", ""subTasks"": [""Review docs"", ""Analyze codebase""], ""notes"": [""2-day timebox""]}], ""clearExisting"": true}
-- Add phase: {""tasks"": [{""task"": ""Testing"", ""subTasks"": [""Unit tests"", ""Integration tests""]}], ""clearExisting"": false}"
-    )]
+- Add phase: {""tasks"": [{""task"": ""Testing"", ""subTasks"": [""Unit tests"", ""Integration tests""]}], ""clearExisting"": false}")]
     public string BulkInitialize(
         [Description("List of tasks with their subtasks and notes")] List<BulkTaskItem> tasks,
-        [Description("Clear all existing tasks before adding new ones")] bool clearExisting = false
-    )
+        [Description("Clear all existing tasks before adding new ones")] bool clearExisting = false)
     {
         if (tasks == null || tasks.Count == 0)
         {
@@ -266,7 +261,7 @@ Examples:
                 Id = mainTaskId,
                 DisplayId = mainTaskId.ToString(),
                 Title = bulkItem.Task.Trim(),
-                Status = TaskStatus.NotStarted,
+                Status = TaskStatus.NotStarted
             };
 
             _state.RootTasks.Add(mainTask);
@@ -302,7 +297,7 @@ Examples:
                         DisplayId = $"{mainTask.DisplayId}.{subTaskId}",
                         Title = subTaskTitle.Trim(),
                         Status = TaskStatus.NotStarted,
-                        ParentId = mainTask.Id,
+                        ParentId = mainTask.Id
                     };
 
                     mainTask.SubTasks.Add(subTask);
@@ -338,9 +333,7 @@ Examples:
         return result.ToString().TrimEnd();
     }
 
-    [Function(
-        "update-task",
-        @"Mark progress to maintain momentum and focus on active work.
+    [Function("update-task", @"Mark progress to maintain momentum and focus on active work.
 
 Status progression philosophy:
 • 'not started' → 'in progress': Commitment to focus
@@ -366,13 +359,10 @@ Status meanings:
 Examples:
 - Start work: {""taskId"": ""1"", ""status"": ""in progress""}
 - Finish task: {""taskId"": ""1.3"", ""status"": ""completed""}
-- Abandon approach: {""taskId"": ""2.1"", ""status"": ""removed""}"
-    )]
+- Abandon approach: {""taskId"": ""2.1"", ""status"": ""removed""}")]
     public string UpdateTask(
         [Description("Task ID (e.g., '1', '1.2', '1.2.3')")] string taskId,
-        [Description("New status: not started|in progress|completed|removed")]
-            string status = "not started"
-    )
+        [Description("New status: not started|in progress|completed|removed")] string status = "not started")
     {
         // Find target task using string ID
         var (targetTask, error) = FindTaskByStringId(taskId);
@@ -388,9 +378,7 @@ Examples:
         return $"Updated task {targetTask.DisplayId} status to '{NormalizeStatusText(newStatus)}'.";
     }
 
-    [Function(
-        "delete-task",
-        @"Remove tasks that no longer serve the goal - adaptation is strength, not failure.
+    [Function("delete-task", @"Remove tasks that no longer serve the goal - adaptation is strength, not failure.
 
 When to delete tasks:
 • Requirement changed or was misunderstood
@@ -413,12 +401,10 @@ Before deleting:
 Examples:
 - Obsolete approach: {""taskId"": ""2.3""}  // After finding better solution
 - Scope change: {""taskId"": ""4""}  // Entire feature removed
-- Already done: {""taskId"": ""1.5""}  // Discovered existing implementation"
-    )]
+- Already done: {""taskId"": ""1.5""}  // Discovered existing implementation")]
     public string DeleteTask(
         [Description("Task ID")] int taskId,
-        [Description("Subtask ID to delete specific subtask")] int? subtaskId = null
-    )
+        [Description("Subtask ID to delete specific subtask")] int? subtaskId = null)
     {
         var task = _state.RootTasks.FirstOrDefault(t => t.Id == taskId);
         if (subtaskId.HasValue)
@@ -455,30 +441,24 @@ Examples:
         }
     }
 
-    [Function(
-        "get-task",
-        @"Retrieve details to verify prerequisites or next steps.
+    [Function("get-task", @"Retrieve details to verify prerequisites or next steps.
 Use before acting, to confirm status/notes/subtasks.
 
 Examples:
 - Task: {""taskId"": 1}
-- Subtask: {""taskId"": 1, ""subtaskId"": 3}"
-    )]
+- Subtask: {""taskId"": 1, ""subtaskId"": 3}")]
     public string GetTask(
         [Description("Task ID")] int taskId,
-        [Description("Subtask ID for specific subtask")] int? subtaskId = null
-    )
+        [Description("Subtask ID for specific subtask")] int? subtaskId = null)
     {
         var (task, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
         if (task == null)
             return error!;
 
-        return FormatTaskDetails(task, taskRef);
+        return TaskManager.FormatTaskDetails(task, taskRef);
     }
 
-    [Function(
-        "add-note",
-        @"Capture learnings, insights, and context that will inform future decisions.
+    [Function("add-note", @"Capture learnings, insights, and context that will inform future decisions.
 
 Notes are your memory across tasks - use them to:
 • Record WHY decisions were made (not just what)
@@ -496,13 +476,11 @@ Best practices:
 Examples:
 - Learning: {""taskId"": ""1"", ""noteText"": ""Database locks occur when batch size > 1000""}
 - Constraint: {""taskId"": ""1.2"", ""noteText"": ""Must complete before 3pm due to maintenance window""}
-- Insight: {""taskId"": ""2.1"", ""noteText"": ""Similar pattern worked in auth module - see commit abc123""}"
-    )]
+- Insight: {""taskId"": ""2.1"", ""noteText"": ""Similar pattern worked in auth module - see commit abc123""}")]
     public string AddNote(
         [Description("Main task ID (1, 2, 3...)")] int taskId,
         [Description("Subtask ID if adding note to subtask (optional)")] int? subtaskId = null,
-        [Description("Note text to add")] string noteText = ""
-    )
+        [Description("Note text to add")] string noteText = "")
     {
         if (string.IsNullOrWhiteSpace(noteText))
             return "Error: Note text cannot be empty.";
@@ -518,22 +496,17 @@ Examples:
         return $"Added note to {taskRef}.";
     }
 
-    [Function(
-        "edit-note",
-        @"Edit an existing note to update information.
+    [Function("edit-note", @"Edit an existing note to update information.
 Use when you need to correct or update previously added context.
 
 Examples:
 - Edit note #2 on task 1: {""taskId"": 1, ""noteIndex"": 2, ""noteText"": ""Updated requirement""}
-- Edit note #1 on subtask: {""taskId"": 1, ""subtaskId"": 3, ""noteIndex"": 1, ""noteText"": ""Changed approach""}"
-    )]
+- Edit note #1 on subtask: {""taskId"": 1, ""subtaskId"": 3, ""noteIndex"": 1, ""noteText"": ""Changed approach""}")]
     public string EditNote(
         [Description("Main task ID (1, 2, 3...)")] int taskId,
         [Description("Subtask ID if editing subtask note (optional)")] int? subtaskId = null,
-        [Description("Note index to edit (1-based: 1 for first note, 2 for second, etc.)")]
-            int noteIndex = 1,
-        [Description("New text to replace the existing note")] string noteText = ""
-    )
+        [Description("Note index to edit (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1,
+        [Description("New text to replace the existing note")] string noteText = "")
     {
         if (string.IsNullOrWhiteSpace(noteText))
             return "Error: Note text cannot be empty.";
@@ -551,21 +524,16 @@ Examples:
         return $"Updated note #{noteIndex} on {taskRef}.";
     }
 
-    [Function(
-        "delete-note",
-        @"Delete a note that is no longer relevant.
+    [Function("delete-note", @"Delete a note that is no longer relevant.
 Use to remove outdated or incorrect information.
 
 Examples:
 - Delete note #1 from task 2: {""taskId"": 2, ""noteIndex"": 1}
-- Delete note #3 from subtask: {""taskId"": 1, ""subtaskId"": 2, ""noteIndex"": 3}"
-    )]
+- Delete note #3 from subtask: {""taskId"": 1, ""subtaskId"": 2, ""noteIndex"": 3}")]
     public string DeleteNote(
         [Description("Main task ID (1, 2, 3...)")] int taskId,
         [Description("Subtask ID if deleting subtask note (optional)")] int? subtaskId = null,
-        [Description("Note index to delete (1-based: 1 for first note, 2 for second, etc.)")]
-            int noteIndex = 1
-    )
+        [Description("Note index to delete (1-based: 1 for first note, 2 for second, etc.)")] int noteIndex = 1)
     {
         var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
         if (targetTask == null)
@@ -581,18 +549,14 @@ Examples:
         }
     }
 
-    [Function(
-        "list-notes",
-        @"List all notes to recall context for the next step.
+    [Function("list-notes", @"List all notes to recall context for the next step.
 
 Examples:
 - Task notes: {""taskId"": 1}
-- Subtask notes: {""taskId"": 1, ""subtaskId"": 3}"
-    )]
+- Subtask notes: {""taskId"": 1, ""subtaskId"": 3}")]
     public string ListNotes(
         [Description("Task ID")] int taskId,
-        [Description("Subtask ID for subtask notes")] int? subtaskId = null
-    )
+        [Description("Subtask ID for subtask notes")] int? subtaskId = null)
     {
         // Find target task using helper method
         var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
@@ -616,9 +580,7 @@ Examples:
         return sb.ToString().TrimEnd();
     }
 
-    [Function(
-        "list-tasks",
-        @"Review your evolving plan to maintain focus and choose next actions wisely.
+    [Function("list-tasks", @"Review your evolving plan to maintain focus and choose next actions wisely.
 
 Use regularly to:
 • Maintain situational awareness of overall progress
@@ -642,13 +604,10 @@ Healthy patterns:
 Examples:
 - Next action: {""status"": ""not started"", ""mainOnly"": false}
 - WIP check: {""status"": ""in progress""}
-- Overview: {""mainOnly"": true}"
-    )]
+- Overview: {""mainOnly"": true}")]
     public string ListTasks(
-        [Description("Filter by status: not started|in progress|completed|removed")]
-            string? status = null,
-        [Description("Show only main tasks (exclude subtasks)")] bool mainOnly = false
-    )
+        [Description("Filter by status: not started|in progress|completed|removed")] string? status = null,
+        [Description("Show only main tasks (exclude subtasks)")] bool mainOnly = false)
     {
         List<PrivateTaskItem> rootTasksCopy;
         if (_state.RootTasks.Count == 0)
@@ -665,10 +624,11 @@ Examples:
 
         var sb = new StringBuilder();
 
-        // Count only first-level tasks for summary
-        var notStartedCount = rootTasksCopy.Count(t => t.Status == TaskStatus.NotStarted);
-        var inProgressCount = rootTasksCopy.Count(t => t.Status == TaskStatus.InProgress);
-        var completedCount = rootTasksCopy.Count(t => t.Status == TaskStatus.Completed);
+        // Count tasks by status for summary
+        var allTasks = TaskManager.GetAllTasksFlat(rootTasksCopy);
+        var notStartedCount = allTasks.Count(t => t.Status == TaskStatus.NotStarted);
+        var inProgressCount = allTasks.Count(t => t.Status == TaskStatus.InProgress);
+        var completedCount = allTasks.Count(t => t.Status == TaskStatus.Completed);
         var totalActive = notStartedCount + inProgressCount;
 
         // Beautiful header with task summary
@@ -676,16 +636,14 @@ Examples:
         if (filterStatus == null && !mainOnly)
         {
             sb.AppendLine();
-            sb.AppendLine(
-                $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed"
-            );
+            sb.AppendLine($"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed");
             sb.AppendLine($"**Total**: {totalActive} active tasks");
         }
         sb.AppendLine();
 
         foreach (var task in rootTasksCopy)
         {
-            AppendTaskMarkdown(sb, task, level: 0, filterStatus, mainOnly);
+            TaskManager.AppendTaskMarkdown(sb, task, level: 0, filterStatus, mainOnly);
         }
 
         var result = sb.ToString().TrimEnd();
@@ -697,19 +655,15 @@ Examples:
         return _state.RootTasks.Select(t => t.ToPublic()).ToImmutableList();
     }
 
-    [Function(
-        "search-tasks",
-        @"Search by title or get plan statistics to validate completion criteria.
+    [Function("search-tasks", @"Search by title or get plan statistics to validate completion criteria.
 
 Examples:
 - Find 'plan' tasks: {""searchTerm"": ""plan""}
 - Completed count: {""countType"": ""completed""}
-- Pending count: {""countType"": ""pending""}"
-    )]
+- Pending count: {""countType"": ""pending""}")]
     public string SearchTasks(
         [Description("Search term for title")] string? searchTerm = null,
-        [Description("Get counts: total|completed|pending|removed")] string? countType = null
-    )
+        [Description("Get counts: total|completed|pending|removed")] string? countType = null)
     {
         if (!string.IsNullOrEmpty(countType))
         {
@@ -726,7 +680,7 @@ Examples:
 
         foreach (var task in rootTasksCopy)
         {
-            SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
+            TaskManager.SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
         }
 
         if (matches.Count == 0)
@@ -753,10 +707,7 @@ Examples:
     /// Finds a task by ID and optional subtask ID, returning the task, a reference string, and any error.
     /// This consolidates the repeated task lookup pattern.
     /// </summary>
-    private (PrivateTaskItem? task, string taskRef, string? error) FindTaskWithReference(
-        int taskId,
-        int? subtaskId
-    )
+    private (PrivateTaskItem? task, string taskRef, string? error) FindTaskWithReference(int taskId, int? subtaskId)
     {
         var task = _state.RootTasks.FirstOrDefault(t => t.Id == taskId);
 
@@ -765,6 +716,7 @@ Examples:
 
         if (subtaskId.HasValue)
         {
+
             PrivateTaskItem? subtask;
             lock (task.SubTasks)
             {
@@ -772,11 +724,7 @@ Examples:
             }
 
             if (subtask == null)
-                return (
-                    null,
-                    string.Empty,
-                    $"Error: Subtask {subtaskId.Value} not found under task {taskId}."
-                );
+                return (null, string.Empty, $"Error: Subtask {subtaskId.Value} not found under task {taskId}.");
 
             return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
         }
@@ -831,7 +779,7 @@ Examples:
         _state.RootTasks.Remove(task);
     }
 
-    private List<PrivateTaskItem> GetAllTasksFlat(List<PrivateTaskItem> rootTasks)
+    private static List<PrivateTaskItem> GetAllTasksFlat(List<PrivateTaskItem> rootTasks)
     {
         var allTasks = new List<PrivateTaskItem>();
 
@@ -852,10 +800,10 @@ Examples:
         return allTasks;
     }
 
-    private string FormatTaskDetails(PrivateTaskItem task, string header)
+    private static string FormatTaskDetails(PrivateTaskItem task, string header)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"{header.Substring(0, 1).ToUpper() + header.Substring(1)}: {task.Title}");
+        sb.AppendLine($"{string.Concat(header.Substring(0, 1).ToUpper(), header.AsSpan(1))}: {task.Title}");
         sb.AppendLine($"Status: {NormalizeStatusText(task.Status)}");
 
         List<string> notesCopy;
@@ -892,13 +840,7 @@ Examples:
         return sb.ToString().TrimEnd();
     }
 
-    private void AppendTaskMarkdown(
-        StringBuilder sb,
-        PrivateTaskItem task,
-        int level,
-        TaskStatus? filterStatus = null,
-        bool mainOnly = false
-    )
+    private static void AppendTaskMarkdown(StringBuilder sb, PrivateTaskItem task, int level, TaskStatus? filterStatus = null, bool mainOnly = false)
     {
         if (filterStatus.HasValue && task.Status != filterStatus.Value)
             return;
@@ -908,9 +850,7 @@ Examples:
 
         // Use hierarchical numbering with proper formatting
         var taskNumber = string.IsNullOrEmpty(task.DisplayId) ? task.Id.ToString() : task.DisplayId;
-        sb.AppendLine(
-            $"{indent}{statusSymbol} {taskNumber}. {task.Title}{(task.Status == TaskStatus.Removed ? " (removed)" : string.Empty)}"
-        );
+        sb.AppendLine($"{indent}{statusSymbol} {taskNumber}. {task.Title}{(task.Status == TaskStatus.Removed ? " (removed)" : string.Empty)}");
 
         var notesCopy = new List<string>(task.Notes);
 
@@ -933,17 +873,12 @@ Examples:
 
             foreach (var sub in subtasksCopy)
             {
-                AppendTaskMarkdown(sb, sub, level + 1, filterStatus, mainOnly);
+                TaskManager.AppendTaskMarkdown(sb, sub, level + 1, filterStatus, mainOnly);
             }
         }
     }
 
-    private void SearchTaskRecursive(
-        PrivateTaskItem task,
-        string searchTerm,
-        string path,
-        List<(PrivateTaskItem, string)> matches
-    )
+    private static void SearchTaskRecursive(PrivateTaskItem task, string searchTerm, string path, List<(PrivateTaskItem, string)> matches)
     {
         if (task.Title.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
         {
@@ -959,32 +894,30 @@ Examples:
         for (int i = 0; i < subtasksCopy.Count; i++)
         {
             var subtask = subtasksCopy[i];
-            SearchTaskRecursive(subtask, searchTerm, $"{path}.{subtask.Id}", matches);
+            TaskManager.SearchTaskRecursive(subtask, searchTerm, $"{path}.{subtask.Id}", matches);
         }
     }
 
     public string JsonSerializeTasks()
     {
         return System.Text.Json.JsonSerializer.Serialize(
-            _state,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                WriteIndented = false,
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-            }
-        );
+          _state,
+          new System.Text.Json.JsonSerializerOptions
+          {
+              WriteIndented = false,
+              PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+          });
     }
 
     public JsonElement JsonSerializeTasksToJsonElements()
     {
         return JsonSerializer.SerializeToElement(
-            _state,
-            new JsonSerializerOptions
-            {
-                WriteIndented = false,
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-            }
-        );
+          _state,
+          new JsonSerializerOptions
+          {
+              WriteIndented = false,
+              PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+          });
     }
 
     public static TaskManager DeserializeTasks(JsonElement json)
@@ -1014,9 +947,7 @@ Examples:
         var allTasks = _state.RootTasks.SelectMany(t => t.SubTasks).ToList();
         var total = allTasks.Count;
         var completed = allTasks.Count(t => t.Status == TaskStatus.Completed);
-        var pending = allTasks.Count(t =>
-            t.Status == TaskStatus.NotStarted || t.Status == TaskStatus.InProgress
-        );
+        var pending = allTasks.Count(t => t.Status == TaskStatus.NotStarted || t.Status == TaskStatus.InProgress);
         var removed = allTasks.Count(t => t.Status == TaskStatus.Removed);
 
         return countType switch
@@ -1025,20 +956,18 @@ Examples:
             "completed" => $"Completed tasks: {completed}",
             "pending" => $"Pending tasks: {pending}",
             "removed" => $"Removed tasks: {removed}",
-            _ =>
-                $"Task counts - Total: {total}, Completed: {completed}, Pending: {pending}, Removed: {removed}",
+            _ => $"Task counts - Total: {total}, Completed: {completed}, Pending: {pending}, Removed: {removed}"
         };
     }
 
-    private static string GetStatusSymbol(TaskStatus status) =>
-        status switch
-        {
-            TaskStatus.NotStarted => "[ ]",
-            TaskStatus.InProgress => "[-]",
-            TaskStatus.Completed => "[x]",
-            TaskStatus.Removed => "[d]",
-            _ => "[ ]",
-        };
+    private static string GetStatusSymbol(TaskStatus status) => status switch
+    {
+        TaskStatus.NotStarted => "[ ]",
+        TaskStatus.InProgress => "[-]",
+        TaskStatus.Completed => "[x]",
+        TaskStatus.Removed => "[d]",
+        _ => "[ ]"
+    };
 
     private static bool TryParseStatus(string input, out TaskStatus status)
     {
@@ -1051,38 +980,32 @@ Examples:
             case "todo":
             case "to do":
             case "pending":
-                status = TaskStatus.NotStarted;
-                return true;
+                status = TaskStatus.NotStarted; return true;
             case "in progress":
             case "in_progress":
             case "inprogress":
             case "doing":
-                status = TaskStatus.InProgress;
-                return true;
+                status = TaskStatus.InProgress; return true;
             case "completed":
             case "done":
             case "complete":
-                status = TaskStatus.Completed;
-                return true;
+                status = TaskStatus.Completed; return true;
             case "removed":
             case "deleted":
             case "remove":
             case "delete":
-                status = TaskStatus.Removed;
-                return true;
+                status = TaskStatus.Removed; return true;
             default:
-                status = TaskStatus.NotStarted;
-                return false;
+                status = TaskStatus.NotStarted; return false;
         }
     }
 
-    private static string NormalizeStatusText(TaskStatus status) =>
-        status switch
-        {
-            TaskStatus.NotStarted => "not started",
-            TaskStatus.InProgress => "in progress",
-            TaskStatus.Completed => "completed",
-            TaskStatus.Removed => "removed",
-            _ => "not started",
-        };
+    private static string NormalizeStatusText(TaskStatus status) => status switch
+    {
+        TaskStatus.NotStarted => "not started",
+        TaskStatus.InProgress => "in progress",
+        TaskStatus.Completed => "completed",
+        TaskStatus.Removed => "removed",
+        _ => "not started"
+    };
 }

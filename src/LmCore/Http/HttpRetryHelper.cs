@@ -184,8 +184,7 @@ public static class HttpRetryHelper
 
         // Check for HTTP 5xx status codes in the exception message
         // EnsureSuccessStatusCode() creates messages like "Response status code does not indicate success: 500 (Internal Server Error)"
-        if (
-            message.Contains("500", StringComparison.OrdinalIgnoreCase)
+        return message.Contains("500", StringComparison.OrdinalIgnoreCase)
             || message.Contains("501", StringComparison.OrdinalIgnoreCase)
             || message.Contains("502", StringComparison.OrdinalIgnoreCase)
             || message.Contains("503", StringComparison.OrdinalIgnoreCase)
@@ -193,13 +192,7 @@ public static class HttpRetryHelper
             || message.Contains("Internal Server Error", StringComparison.OrdinalIgnoreCase)
             || message.Contains("Bad Gateway", StringComparison.OrdinalIgnoreCase)
             || message.Contains("Service Unavailable", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("Gateway Timeout", StringComparison.OrdinalIgnoreCase)
-        )
-        {
-            return true;
-        }
-
-        return false;
+            || message.Contains("Gateway Timeout", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

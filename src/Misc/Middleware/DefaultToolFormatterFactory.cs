@@ -50,7 +50,7 @@ public class DefaultToolFormatterFactory : IToolFormatterFactory
 
             // Check if we have any fragment updates
             var updates = fragmentUpdates.ToList();
-            if (!updates.Any())
+            if (updates.Count == 0)
             {
                 // For empty updates, just show the function name
                 results.Add((_functionNameColor, name + " "));

@@ -92,7 +92,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     )
     {
         // Inject usage tracking into options
-        var modifiedOptions = InjectUsageTracking(context.Options);
+        var modifiedOptions = OpenRouterUsageMiddleware.InjectUsageTracking(context.Options);
         var modifiedContext = new MiddlewareContext(context.Messages, modifiedOptions);
 
         // Generate reply with usage tracking enabled
@@ -115,7 +115,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     )
     {
         // Inject usage tracking into options
-        var modifiedOptions = InjectUsageTracking(context.Options);
+        var modifiedOptions = OpenRouterUsageMiddleware.InjectUsageTracking(context.Options);
         var modifiedContext = new MiddlewareContext(context.Messages, modifiedOptions);
 
         // Generate streaming reply with usage tracking enabled
@@ -131,7 +131,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     /// <summary>
     /// Injects usage tracking configuration into the request options.
     /// </summary>
-    private GenerateReplyOptions InjectUsageTracking(GenerateReplyOptions? options)
+    private static GenerateReplyOptions InjectUsageTracking(GenerateReplyOptions? options)
     {
         var baseOptions = options ?? new GenerateReplyOptions();
 
@@ -157,7 +157,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     )
     {
         var messageList = messages.ToList();
-        if (!messageList.Any())
+        if (messageList.Count == 0)
             return messageList;
 
         // Separate UsageMessage objects from other messages
@@ -178,7 +178,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         // Create the final enhanced UsageMessage
         UsageMessage? finalUsageMessage = null;
 
-        if (usageMessages.Any())
+        if (usageMessages.Count != 0)
         {
             // We have UsageMessage(s) from the response - enhance the last one
             var lastUsageMessage = usageMessages.Last();
@@ -194,7 +194,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                 cancellationToken
             );
         }
-        else if (nonUsageMessages.Any())
+        else if (nonUsageMessages.Count != 0)
         {
             // No UsageMessage in response - try to create one from the last non-usage message
             var lastMessage = nonUsageMessages.Last();
@@ -598,25 +598,22 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
 
     private static int GetIntValue(Dictionary<string, object?> dict, string key)
     {
-        if (dict.TryGetValue(key, out var value))
-        {
-            return value switch
+        return dict.TryGetValue(key, out var value)
+            ? value switch
             {
                 int intVal => intVal,
                 long longVal => (int)longVal,
                 double doubleVal => (int)doubleVal,
                 string strVal when int.TryParse(strVal, out var parsed) => parsed,
                 _ => 0,
-            };
-        }
-        return 0;
+            }
+            : 0;
     }
 
     private static double? GetDoubleValue(Dictionary<string, object?> dict, string key)
     {
-        if (dict.TryGetValue(key, out var value))
-        {
-            return value switch
+        return dict.TryGetValue(key, out var value)
+            ? value switch
             {
                 double doubleVal => doubleVal,
                 float floatVal => floatVal,
@@ -624,9 +621,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                 long longVal => longVal,
                 string strVal when double.TryParse(strVal, out var parsed) => parsed,
                 _ => null,
-            };
-        }
-        return null;
+            }
+            : null;
     }
 
     /// <summary>

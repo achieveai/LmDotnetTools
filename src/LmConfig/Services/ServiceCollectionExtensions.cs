@@ -322,12 +322,11 @@ public static class ServiceCollectionExtensions
 
             var config = JsonSerializer.Deserialize<AppConfig>(stream, options);
 
-            if (config?.Models == null || !config.Models.Any())
-                throw new InvalidOperationException(
+            return config?.Models == null || !config.Models.Any()
+                ? throw new InvalidOperationException(
                     "Configuration must contain at least one model"
-                );
-
-            return config;
+                )
+                : config;
         }
         catch (JsonException ex)
         {
@@ -420,15 +419,12 @@ public static class ServiceCollectionExtensions
 
             var config = JsonSerializer.Deserialize<AppConfig>(json, options);
 
-            if (config?.Models?.Any() != true)
-            {
-                throw new InvalidOperationException(
+            return config?.Models?.Any() != true
+                ? throw new InvalidOperationException(
                     $"Invalid or empty LmConfig resource '{foundResourceName}'. "
                         + "The configuration must contain at least one model."
-                );
-            }
-
-            return config;
+                )
+                : config;
         }
         catch (JsonException ex)
         {
@@ -461,14 +457,11 @@ public static class ServiceCollectionExtensions
 
             var config = JsonSerializer.Deserialize<AppConfig>(json, options);
 
-            if (config?.Models?.Any() != true)
-            {
-                throw new InvalidOperationException(
+            return config?.Models?.Any() != true
+                ? throw new InvalidOperationException(
                     "Invalid or empty LmConfig stream. The configuration must contain at least one model."
-                );
-            }
-
-            return config;
+                )
+                : config;
         }
         catch (JsonException ex)
         {

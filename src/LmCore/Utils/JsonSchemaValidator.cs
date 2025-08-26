@@ -61,7 +61,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
                 Models.JsonSchemaObject schemaObj => Json.Schema.JsonSchema.FromText(
                     JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)
                 ),
-                FunctionContract funcContract => BuildSchemaFromFunctionContract(funcContract),
+                FunctionContract funcContract => JsonSchemaValidator.BuildSchemaFromFunctionContract(funcContract),
                 _ => throw new InvalidOperationException(
                     $"Unsupported schema type: {schema.GetType().Name}"
                 ),
@@ -103,7 +103,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
     }
 
-    private Json.Schema.JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
+    private static Json.Schema.JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
     {
         var root = new JsonObject { ["type"] = "object" };
 

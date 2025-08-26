@@ -95,7 +95,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
                 LogEventIds.MessageTransformation,
                 "Messages transformed: Agent={AgentName}, ResponseMessageCount={MessageCount}, ResponseId={ResponseId}",
                 Name,
-                resultMessages.Count(),
+                resultMessages.Count,
                 response.Id
             );
 

@@ -93,8 +93,7 @@ public abstract class BaseHttpService : IDisposable
     /// <exception cref="ObjectDisposedException">Thrown when the service has been disposed</exception>
     protected void ThrowIfDisposed()
     {
-        if (_disposed)
-            throw new ObjectDisposedException(GetType().Name);
+        ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
     /// <summary>

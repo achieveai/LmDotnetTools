@@ -29,9 +29,9 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
 
     public BinaryData? GetBinary() => ImageData;
 
-    public ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls() => null;
 
-    public IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages() => null;
 }
 
 public class ImageMessageJsonConverter : ShadowPropertiesJsonConverter<ImageMessage>
@@ -104,12 +104,9 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
     }
 }
 
-public static class ImageMessageExtensions
+public static partial class ImageMessageExtensions
 {
-    private static readonly Regex DataUriPattern = new Regex(
-        @"^data:(?<mimeType>[a-zA-Z0-9/]+);base64,(?<data>.+)$",
-        RegexOptions.Compiled
-    );
+    private static readonly Regex DataUriPattern = MyRegex();
 
     // Parse base64 data URI and convert to BinaryData with mime type
     public static BinaryData? ToBinaryDataWithMimeType(this string? dataUrl)
@@ -151,4 +148,7 @@ public static class ImageMessageExtensions
         var base64Data = Convert.ToBase64String(data.ToArray());
         return $"data:{actualMimeType};base64,{base64Data}";
     }
+
+    [GeneratedRegex(@"^data:(?<mimeType>[a-zA-Z0-9/]+);base64,(?<data>.+)$", RegexOptions.Compiled)]
+    private static partial Regex MyRegex();
 }

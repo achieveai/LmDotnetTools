@@ -52,10 +52,10 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             context.Options,
             cancellationToken
         );
-        return TransformStreamWithBuilder(sourceStream, cancellationToken);
+        return MessageUpdateJoinerMiddleware.TransformStreamWithBuilder(sourceStream, cancellationToken);
     }
 
-    private async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
+    private static async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
         IAsyncEnumerable<IMessage> sourceStream,
         [EnumeratorCancellation] CancellationToken cancellationToken = default
     )
@@ -101,7 +101,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             lastMessageType = message.GetType();
 
             // Process the current message
-            var processedMessage = ProcessStreamingMessage(
+            var processedMessage = MessageUpdateJoinerMiddleware.ProcessStreamingMessage(
                 message,
                 ref activeBuilder,
                 ref activeBuilderType
@@ -139,7 +139,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         }
     }
 
-    private IMessage ProcessStreamingMessage(
+    private static IMessage ProcessStreamingMessage(
         IMessage message,
         ref IMessageBuilder? activeBuilder,
         ref Type? activeBuilderType
@@ -148,7 +148,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // Handle tool call updates (ToolsCallUpdateMessage)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
         {
-            return ProcessToolCallUpdate(toolCallUpdate, ref activeBuilder, ref activeBuilderType);
+            return MessageUpdateJoinerMiddleware.ProcessToolCallUpdate(toolCallUpdate, ref activeBuilder, ref activeBuilderType);
         }
         // For text update messages
         else if (message is TextUpdateMessage textUpdate)
@@ -158,7 +158,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // For rqwen/qwen3-235b-a22b-thinking-2507easoning update messages
         else if (message is ReasoningUpdateMessage reasoningUpdate)
         {
-            return ProcessReasoningUpdate(
+            return MessageUpdateJoinerMiddleware.ProcessReasoningUpdate(
                 reasoningUpdate,
                 ref activeBuilder,
                 ref activeBuilderType
@@ -168,7 +168,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         return message;
     }
 
-    private IMessage ProcessToolCallUpdate(
+    private static IMessage ProcessToolCallUpdate(
         ToolsCallUpdateMessage toolCallUpdate,
         ref IMessageBuilder? activeBuilder,
         ref Type? activeBuilderType
@@ -238,7 +238,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         }
     }
 
-    private IMessage ProcessReasoningUpdate(
+    private static IMessage ProcessReasoningUpdate(
         ReasoningUpdateMessage reasoningUpdate,
         ref IMessageBuilder? activeBuilder,
         ref Type? activeBuilderType

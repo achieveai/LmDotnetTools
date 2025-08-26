@@ -17,10 +17,7 @@ public static class FunctionContractMarkdownExtensions
     /// <returns>A string containing the markdown representation of the function contract.</returns>
     public static string ToMarkdown(this FunctionContract function)
     {
-        if (function == null)
-        {
-            throw new ArgumentNullException(nameof(function));
-        }
+        ArgumentNullException.ThrowIfNull(function);
 
         var markdown = new StringBuilder();
 
@@ -231,10 +228,7 @@ public static class FunctionContractMarkdownExtensions
     /// <returns>A sample value for the parameter.</returns>
     private static object CreateExampleValue(FunctionParameterContract parameter)
     {
-        if (parameter == null || parameter.ParameterType == null)
-            return "value";
-
-        return CreateExampleValueFromSchema(parameter.ParameterType);
+        return parameter == null || parameter.ParameterType == null ? "value" : CreateExampleValueFromSchema(parameter.ParameterType);
     }
 
     /// <summary>
@@ -282,7 +276,7 @@ public static class FunctionContractMarkdownExtensions
                     }
                     return items.ToArray();
                 }
-                return new object[] { };
+                return Array.Empty<object>();
             case "object":
                 // Create an object with sample properties
                 var result = new Dictionary<string, object>();
@@ -346,7 +340,7 @@ public static class FunctionContractMarkdownExtensions
                     }
                     return items.ToArray();
                 }
-                return new object[] { };
+                return Array.Empty<object>();
             default:
                 return "value";
         }

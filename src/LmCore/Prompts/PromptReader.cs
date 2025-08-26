@@ -22,7 +22,7 @@ public class PromptReader : IPromptReader
         }
 
         string fullPath = Path.GetFullPath(filePath);
-        _prompts = ParseYamlFile(File.ReadAllText(fullPath));
+        _prompts = PromptReader.ParseYamlFile(File.ReadAllText(fullPath));
     }
 
     /// <summary>
@@ -32,7 +32,7 @@ public class PromptReader : IPromptReader
     public PromptReader(Stream stream)
     {
         using var reader = new StreamReader(stream);
-        _prompts = ParseYamlFile(reader.ReadToEnd());
+        _prompts = PromptReader.ParseYamlFile(reader.ReadToEnd());
     }
 
     /// <summary>
@@ -49,7 +49,7 @@ public class PromptReader : IPromptReader
             );
 
         using var reader = new StreamReader(stream);
-        _prompts = ParseYamlFile(reader.ReadToEnd());
+        _prompts = PromptReader.ParseYamlFile(reader.ReadToEnd());
     }
 
     /// <summary>
@@ -57,7 +57,7 @@ public class PromptReader : IPromptReader
     /// </summary>
     /// <param name="yamlContent">The YAML content to parse.</param>
     /// <returns>A dictionary of prompts with their versions.</returns>
-    private Dictionary<string, Dictionary<string, object>> ParseYamlFile(string yamlContent)
+    private static Dictionary<string, Dictionary<string, object>> ParseYamlFile(string yamlContent)
     {
         var deserializer = new DeserializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
@@ -70,7 +70,7 @@ public class PromptReader : IPromptReader
         foreach (var promptName in result.Keys)
         {
             var versions = result[promptName];
-            var latestVersion = FindLatestVersion(versions.Keys);
+            var latestVersion = PromptReader.FindLatestVersion(versions.Keys);
             versions["latest"] = versions[latestVersion];
         }
 
@@ -82,7 +82,7 @@ public class PromptReader : IPromptReader
     /// </summary>
     /// <param name="versions">The collection of version strings.</param>
     /// <returns>The latest version string.</returns>
-    private string FindLatestVersion(IEnumerable<string> versions)
+    private static string FindLatestVersion(IEnumerable<string> versions)
     {
         Version latest = new Version(0, 0);
         string latestString = "";
@@ -107,7 +107,7 @@ public class PromptReader : IPromptReader
     /// </summary>
     /// <param name="chainData">The list of dictionaries representing the chain data.</param>
     /// <returns>A list of Message objects.</returns>
-    private List<IMessage> ParsePromptChain(List<Dictionary<string, string>> chainData)
+    private static List<IMessage> ParsePromptChain(List<Dictionary<string, string>> chainData)
     {
         var allowedRoles = new HashSet<string> { "system", "user", "assistant" };
 
@@ -117,14 +117,11 @@ public class PromptReader : IPromptReader
                 var role = m.Keys.First().ToLower();
                 var content = m.Values.First();
 
-                if (!allowedRoles.Contains(role))
-                {
-                    throw new ArgumentException(
+                return !allowedRoles.Contains(role)
+                    ? throw new ArgumentException(
                         $"Invalid role '{role}' in prompt chain. Allowed roles are: {string.Join(", ", allowedRoles)}"
-                    );
-                }
-
-                return new TextMessage
+                    )
+                    : new TextMessage
                     {
                         Role = role! switch
                         {
@@ -147,18 +144,12 @@ public class PromptReader : IPromptReader
     /// <returns>A Prompt object.</returns>
     public Prompt GetPrompt(string promptName, string version = "latest")
     {
-        if (!_prompts.ContainsKey(promptName))
+        if (!_prompts.TryGetValue(promptName, out Dictionary<string, object>? promptVersions))
             throw new KeyNotFoundException($"Prompt '{promptName}' not found.");
-
-        var promptVersions = _prompts[promptName];
-
-        if (!promptVersions.ContainsKey(version))
+        if (!promptVersions.TryGetValue(version, out object? promptContent))
             throw new KeyNotFoundException(
                 $"Version '{version}' not found for prompt '{promptName}'."
             );
-
-        var promptContent = promptVersions[version];
-
         if (promptContent is string)
         {
             return new Prompt(promptName, version, (string)promptContent);
@@ -176,7 +167,7 @@ public class PromptReader : IPromptReader
                 .ToList();
             try
             {
-                var messages = ParsePromptChain(rv);
+                var messages = PromptReader.ParsePromptChain(rv);
                 return new PromptChain(promptName, version, messages);
             }
             catch (ArgumentException ex)
@@ -203,11 +194,9 @@ public class PromptReader : IPromptReader
     public PromptChain GetPromptChain(string promptName, string version = "latest")
     {
         var prompt = GetPrompt(promptName, version);
-        if (prompt is PromptChain promptChain)
-        {
-            return promptChain;
-        }
-        throw new InvalidOperationException(
+        return prompt is PromptChain promptChain
+            ? promptChain
+            : throw new InvalidOperationException(
             $"Prompt '{promptName}' version '{version}' is not a PromptChain."
         );
     }
@@ -258,16 +247,13 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages)
     /// <returns>A list of messages with variables applied if provided, otherwise the original messages.</returns>
     public List<IMessage> PromptMessages(Dictionary<string, object>? variables = null)
     {
-        if (variables == null)
-        {
-            return Messages;
-        }
-
-        return Messages
+        return variables == null
+            ? Messages
+            : Messages
             .Select<IMessage, IMessage>(m => new TextMessage
             {
                 Role = m.Role,
-                Text = ApplyVariables(((ICanGetText)m).GetText()!, variables),
+                Text = PromptChain.ApplyVariables(((ICanGetText)m).GetText()!, variables),
             })
             .ToList();
     }
@@ -278,7 +264,7 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages)
     /// <param name="content">The content to apply variables to.</param>
     /// <param name="variables">The dictionary of variables to apply.</param>
     /// <returns>The content with variables applied.</returns>
-    private string ApplyVariables(string content, Dictionary<string, object> variables)
+    private static string ApplyVariables(string content, Dictionary<string, object> variables)
     {
         var template = Template.Parse(content);
         return template.Render(variables);
