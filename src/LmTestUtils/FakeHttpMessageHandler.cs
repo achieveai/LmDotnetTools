@@ -11,17 +11,23 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils;
 /// </summary>
 public class FakeHttpMessageHandler : HttpMessageHandler
 {
-    private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handlerFunc;
+    private readonly Func<
+        HttpRequestMessage,
+        CancellationToken,
+        Task<HttpResponseMessage>
+    > _handlerFunc;
 
     public FakeHttpMessageHandler(
-        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handlerFunc)
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handlerFunc
+    )
     {
         _handlerFunc = handlerFunc ?? throw new ArgumentNullException(nameof(handlerFunc));
     }
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         return _handlerFunc(request, cancellationToken);
     }
@@ -32,12 +38,15 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <param name="responseFunc">Function to generate responses</param>
     /// <returns>A configured fake handler</returns>
     public static FakeHttpMessageHandler CreateSimpleHandler(
-        Func<HttpRequestMessage, HttpResponseMessage> responseFunc)
+        Func<HttpRequestMessage, HttpResponseMessage> responseFunc
+    )
     {
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            return Task.FromResult(responseFunc(request));
-        });
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
+            {
+                return Task.FromResult(responseFunc(request));
+            }
+        );
     }
 
     /// <summary>
@@ -48,16 +57,19 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <returns>A configured fake handler</returns>
     public static FakeHttpMessageHandler CreateSimpleJsonHandler(
         string jsonResponse,
-        HttpStatusCode statusCode = HttpStatusCode.OK)
+        HttpStatusCode statusCode = HttpStatusCode.OK
+    )
     {
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            var response = new HttpResponseMessage(statusCode)
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
             {
-                Content = new StringContent(jsonResponse, Encoding.UTF8, "application/json")
-            };
-            return Task.FromResult(response);
-        });
+                var response = new HttpResponseMessage(statusCode)
+                {
+                    Content = new StringContent(jsonResponse, Encoding.UTF8, "application/json"),
+                };
+                return Task.FromResult(response);
+            }
+        );
     }
 
     /// <summary>
@@ -66,27 +78,36 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <param name="responses">Dictionary mapping request patterns to responses</param>
     /// <returns>A configured fake handler</returns>
     public static FakeHttpMessageHandler CreateMultiResponseHandler(
-        Dictionary<string, (string json, HttpStatusCode status)> responses)
+        Dictionary<string, (string json, HttpStatusCode status)> responses
+    )
     {
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            var key = $"{request.Method} {request.RequestUri?.PathAndQuery}";
-
-            if (responses.TryGetValue(key, out var response))
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
             {
-                var httpResponse = new HttpResponseMessage(response.status)
+                var key = $"{request.Method} {request.RequestUri?.PathAndQuery}";
+
+                if (responses.TryGetValue(key, out var response))
                 {
-                    Content = new StringContent(response.json, Encoding.UTF8, "application/json")
-                };
-                return Task.FromResult(httpResponse);
-            }
+                    var httpResponse = new HttpResponseMessage(response.status)
+                    {
+                        Content = new StringContent(
+                            response.json,
+                            Encoding.UTF8,
+                            "application/json"
+                        ),
+                    };
+                    return Task.FromResult(httpResponse);
+                }
 
-            // Default: return 404
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
-            {
-                Content = new StringContent("Not Found", Encoding.UTF8, "text/plain")
-            });
-        });
+                // Default: return 404
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.NotFound)
+                    {
+                        Content = new StringContent("Not Found", Encoding.UTF8, "text/plain"),
+                    }
+                );
+            }
+        );
     }
 
     /// <summary>
@@ -96,10 +117,12 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <returns>A configured fake handler that throws exceptions</returns>
     public static FakeHttpMessageHandler CreateErrorHandler(Exception exception)
     {
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            throw exception;
-        });
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
+            {
+                throw exception;
+            }
+        );
     }
 
     /// <summary>
@@ -112,27 +135,42 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     public static FakeHttpMessageHandler CreateRetryHandler(
         int failureCount,
         string successResponse,
-        HttpStatusCode failureStatus = HttpStatusCode.InternalServerError)
+        HttpStatusCode failureStatus = HttpStatusCode.InternalServerError
+    )
     {
         var attemptCount = 0;
 
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            attemptCount++;
-
-            if (attemptCount <= failureCount)
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
             {
-                return Task.FromResult(new HttpResponseMessage(failureStatus)
+                attemptCount++;
+
+                if (attemptCount <= failureCount)
                 {
-                    Content = new StringContent($"Failure attempt {attemptCount}", Encoding.UTF8, "text/plain")
-                });
-            }
+                    return Task.FromResult(
+                        new HttpResponseMessage(failureStatus)
+                        {
+                            Content = new StringContent(
+                                $"Failure attempt {attemptCount}",
+                                Encoding.UTF8,
+                                "text/plain"
+                            ),
+                        }
+                    );
+                }
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(successResponse, Encoding.UTF8, "application/json")
-            });
-        });
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            successResponse,
+                            Encoding.UTF8,
+                            "application/json"
+                        ),
+                    }
+                );
+            }
+        );
     }
 
     /// <summary>
@@ -143,37 +181,58 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <returns>A configured fake handler for status code sequence testing</returns>
     public static FakeHttpMessageHandler CreateStatusCodeSequenceHandler(
         HttpStatusCode[] statusCodes,
-        string successResponse)
+        string successResponse
+    )
     {
         var attemptCount = 0;
 
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            if (attemptCount < statusCodes.Length)
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
             {
-                var statusCode = statusCodes[attemptCount];
-                attemptCount++;
-
-                if (statusCode == HttpStatusCode.OK)
+                if (attemptCount < statusCodes.Length)
                 {
-                    return Task.FromResult(new HttpResponseMessage(statusCode)
+                    var statusCode = statusCodes[attemptCount];
+                    attemptCount++;
+
+                    if (statusCode == HttpStatusCode.OK)
                     {
-                        Content = new StringContent(successResponse, Encoding.UTF8, "application/json")
-                    });
+                        return Task.FromResult(
+                            new HttpResponseMessage(statusCode)
+                            {
+                                Content = new StringContent(
+                                    successResponse,
+                                    Encoding.UTF8,
+                                    "application/json"
+                                ),
+                            }
+                        );
+                    }
+
+                    return Task.FromResult(
+                        new HttpResponseMessage(statusCode)
+                        {
+                            Content = new StringContent(
+                                $"Error {(int)statusCode}",
+                                Encoding.UTF8,
+                                "text/plain"
+                            ),
+                        }
+                    );
                 }
 
-                return Task.FromResult(new HttpResponseMessage(statusCode)
-                {
-                    Content = new StringContent($"Error {(int)statusCode}", Encoding.UTF8, "text/plain")
-                });
+                // If we've exhausted the sequence, return success
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            successResponse,
+                            Encoding.UTF8,
+                            "application/json"
+                        ),
+                    }
+                );
             }
-
-            // If we've exhausted the sequence, return success
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(successResponse, Encoding.UTF8, "application/json")
-            });
-        });
+        );
     }
 
     /// <summary>
@@ -187,23 +246,27 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     public static FakeHttpMessageHandler CreateRequestCaptureHandler(
         string responseJson,
         out CapturedRequestContainer capturedRequest,
-        HttpStatusCode statusCode = HttpStatusCode.OK)
+        HttpStatusCode statusCode = HttpStatusCode.OK
+    )
     {
         var container = new CapturedRequestContainer();
         capturedRequest = container;
 
-        return new FakeHttpMessageHandler(async (request, cancellationToken) =>
-        {
-            container.Request = request;
-            container.RequestBody = request.Content != null
-                ? await request.Content.ReadAsStringAsync(cancellationToken)
-                : string.Empty;
-
-            return new HttpResponseMessage(statusCode)
+        return new FakeHttpMessageHandler(
+            async (request, cancellationToken) =>
             {
-                Content = new StringContent(responseJson, Encoding.UTF8, "application/json")
-            };
-        });
+                container.Request = request;
+                container.RequestBody =
+                    request.Content != null
+                        ? await request.Content.ReadAsStringAsync(cancellationToken)
+                        : string.Empty;
+
+                return new HttpResponseMessage(statusCode)
+                {
+                    Content = new StringContent(responseJson, Encoding.UTF8, "application/json"),
+                };
+            }
+        );
     }
 
     /// <summary>
@@ -218,7 +281,8 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         string content = "Hello! How can I help you today?",
         string model = "gpt-4",
         int promptTokens = 10,
-        int completionTokens = 20)
+        int completionTokens = 20
+    )
     {
         var response = new
         {
@@ -231,20 +295,16 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 new
                 {
                     index = 0,
-                    message = new
-                    {
-                        role = "assistant",
-                        content = content
-                    },
-                    finish_reason = "stop"
-                }
+                    message = new { role = "assistant", content = content },
+                    finish_reason = "stop",
+                },
             },
             usage = new
             {
                 prompt_tokens = promptTokens,
                 completion_tokens = completionTokens,
-                total_tokens = promptTokens + completionTokens
-            }
+                total_tokens = promptTokens + completionTokens,
+            },
         };
 
         var jsonResponse = JsonSerializer.Serialize(response);
@@ -263,29 +323,26 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         string content = "Hello! How can I help you today?",
         string model = "claude-3-sonnet-20240229",
         int inputTokens = 10,
-        int outputTokens = 20)
+        int outputTokens = 20
+    )
     {
         var response = new
         {
-            type = "message",  // Must be first property for polymorphic deserialization
+            type = "message", // Must be first property for polymorphic deserialization
             id = "msg_test123",
             role = "assistant",
             content = new[]
             {
                 new
                 {
-                    type = "text",  // Must be first property for polymorphic deserialization
-                    text = content
-                }
+                    type = "text", // Must be first property for polymorphic deserialization
+                    text = content,
+                },
             },
             model = model,
             stop_reason = "end_turn",
             stop_sequence = (string?)null,
-            usage = new
-            {
-                input_tokens = inputTokens,
-                output_tokens = outputTokens
-            }
+            usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
         };
 
         var jsonResponse = JsonSerializer.Serialize(response);
@@ -300,76 +357,100 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <returns>A configured fake handler for OpenAI streaming responses</returns>
     public static FakeHttpMessageHandler CreateOpenAIStreamingHandler(
         string content = "Hello world",
-        string model = "gpt-4")
+        string model = "gpt-4"
+    )
     {
         var streamData = new StringBuilder();
 
         // Stream start
-        streamData.AppendLine("data: " + JsonSerializer.Serialize(new
-        {
-            id = "chatcmpl-test123",
-            @object = "chat.completion.chunk",
-            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            model = model,
-            choices = new[]
-            {
-                new
-                {
-                    index = 0,
-                    delta = new { role = "assistant" },
-                    finish_reason = (string?)null
-                }
-            }
-        }));
+        streamData.AppendLine(
+            "data: "
+                + JsonSerializer.Serialize(
+                    new
+                    {
+                        id = "chatcmpl-test123",
+                        @object = "chat.completion.chunk",
+                        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                        model = model,
+                        choices = new[]
+                        {
+                            new
+                            {
+                                index = 0,
+                                delta = new { role = "assistant" },
+                                finish_reason = (string?)null,
+                            },
+                        },
+                    }
+                )
+        );
 
         // Content chunks
         foreach (char c in content)
         {
-            streamData.AppendLine("data: " + JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test123",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = model,
-                choices = new[]
-                {
-                    new
-                    {
-                        index = 0,
-                        delta = new { content = c.ToString() },
-                        finish_reason = (string?)null
-                    }
-                }
-            }));
+            streamData.AppendLine(
+                "data: "
+                    + JsonSerializer.Serialize(
+                        new
+                        {
+                            id = "chatcmpl-test123",
+                            @object = "chat.completion.chunk",
+                            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                            model = model,
+                            choices = new[]
+                            {
+                                new
+                                {
+                                    index = 0,
+                                    delta = new { content = c.ToString() },
+                                    finish_reason = (string?)null,
+                                },
+                            },
+                        }
+                    )
+            );
         }
 
         // Stream end
-        streamData.AppendLine("data: " + JsonSerializer.Serialize(new
-        {
-            id = "chatcmpl-test123",
-            @object = "chat.completion.chunk",
-            created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            model = model,
-            choices = new[]
-            {
-                new
-                {
-                    index = 0,
-                    delta = new { },
-                    finish_reason = "stop"
-                }
-            }
-        }));
+        streamData.AppendLine(
+            "data: "
+                + JsonSerializer.Serialize(
+                    new
+                    {
+                        id = "chatcmpl-test123",
+                        @object = "chat.completion.chunk",
+                        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                        model = model,
+                        choices = new[]
+                        {
+                            new
+                            {
+                                index = 0,
+                                delta = new { },
+                                finish_reason = "stop",
+                            },
+                        },
+                    }
+                )
+        );
 
         streamData.AppendLine("data: [DONE]");
 
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
             {
-                Content = new StringContent(streamData.ToString(), Encoding.UTF8, "text/plain")
-            });
-        });
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            streamData.ToString(),
+                            Encoding.UTF8,
+                            "text/plain"
+                        ),
+                    }
+                );
+            }
+        );
     }
 
     /// <summary>
@@ -407,19 +488,25 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             streamData.AppendLine();
         }
 
-        return new FakeHttpMessageHandler((request, cancellationToken) =>
-        {
-            var response = new HttpResponseMessage(HttpStatusCode.OK)
+        return new FakeHttpMessageHandler(
+            (request, cancellationToken) =>
             {
-                Content = new StringContent(streamData.ToString(), Encoding.UTF8, "text/event-stream")
-            };
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        streamData.ToString(),
+                        Encoding.UTF8,
+                        "text/event-stream"
+                    ),
+                };
 
-            // Set SSE-specific headers
-            response.Headers.Add("Cache-Control", "no-cache");
-            response.Headers.Add("Connection", "keep-alive");
+                // Set SSE-specific headers
+                response.Headers.Add("Cache-Control", "no-cache");
+                response.Headers.Add("Connection", "keep-alive");
 
-            return Task.FromResult(response);
-        });
+                return Task.FromResult(response);
+            }
+        );
     }
 
     /// <summary>
@@ -430,14 +517,18 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <returns>A configured fake handler for simple SSE streaming</returns>
     public static FakeHttpMessageHandler CreateSimpleSseStreamHandler(
         IEnumerable<string> messages,
-        string? eventType = null)
+        string? eventType = null
+    )
     {
-        var events = messages.Select((message, index) => new SseEvent
-        {
-            Id = (index + 1).ToString(),
-            Event = eventType,
-            Data = message
-        });
+        var events = messages.Select(
+            (message, index) =>
+                new SseEvent
+                {
+                    Id = (index + 1).ToString(),
+                    Event = eventType,
+                    Data = message,
+                }
+        );
 
         return CreateSseStreamHandler(events);
     }
@@ -450,14 +541,18 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// <returns>A configured fake handler for JSON SSE streaming</returns>
     public static FakeHttpMessageHandler CreateJsonSseStreamHandler<T>(
         IEnumerable<T> jsonObjects,
-        string? eventType = null)
+        string? eventType = null
+    )
     {
-        var events = jsonObjects.Select((obj, index) => new SseEvent
-        {
-            Id = (index + 1).ToString(),
-            Event = eventType,
-            Data = JsonSerializer.Serialize(obj)
-        });
+        var events = jsonObjects.Select(
+            (obj, index) =>
+                new SseEvent
+                {
+                    Id = (index + 1).ToString(),
+                    Event = eventType,
+                    Data = JsonSerializer.Serialize(obj),
+                }
+        );
 
         return CreateSseStreamHandler(events);
     }

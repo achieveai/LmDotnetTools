@@ -1,5 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -8,9 +7,8 @@
     <IsTestProject>true</IsTestProject>
     <VSTestLogger>trx</VSTestLogger>
     <VSTestResultsDirectory>$(MSBuildProjectDirectory)/TestResults</VSTestResultsDirectory>
-      <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4">
       <PrivateAssets>all</PrivateAssets>
@@ -31,34 +29,38 @@
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.5" />
     <PackageReference Include="dotenv.net" Version="3.2.1" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\..\McpServers\Memory\MemoryServer\MemoryServer.csproj" />
     <ProjectReference Include="..\..\src\LmTestUtils\LmTestUtils.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
     <ProjectReference Include="..\..\src\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <Using Include="Xunit" />
     <Using Include="System.Diagnostics" />
   </ItemGroup>
-
   <!-- Copy MemoryServer.exe to test output for integration tests -->
   <Target Name="CopyMemoryServer" AfterTargets="Build">
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.exe" 
-          DestinationFolder="$(OutputPath)" 
-          SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.dll" 
-          DestinationFolder="$(OutputPath)" 
-          SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.runtimeconfig.json" 
-          DestinationFolder="$(OutputPath)" 
-          SkipUnchangedFiles="true" />
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.exe"
+      DestinationFolder="$(OutputPath)"
+      SkipUnchangedFiles="true"
+    />
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.dll"
+      DestinationFolder="$(OutputPath)"
+      SkipUnchangedFiles="true"
+    />
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.runtimeconfig.json"
+      DestinationFolder="$(OutputPath)"
+      SkipUnchangedFiles="true"
+    />
     <!-- Copy prompt files needed for LLM services -->
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\Prompts\graph-extraction.yaml" 
-          DestinationFolder="$(OutputPath)\Prompts" 
-          SkipUnchangedFiles="true" />
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\Prompts\graph-extraction.yaml"
+      DestinationFolder="$(OutputPath)\Prompts"
+      SkipUnchangedFiles="true"
+    />
   </Target>
-
 </Project>

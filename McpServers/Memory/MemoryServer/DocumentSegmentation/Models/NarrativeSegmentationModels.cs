@@ -153,7 +153,7 @@ public enum NarrativeTransitionType
     /// <summary>
     /// Sequential transition - step-by-step progression.
     /// </summary>
-    Sequential
+    Sequential,
 }
 
 /// <summary>
@@ -209,7 +209,7 @@ public enum NarrativeFunction
     /// <summary>
     /// Summary or synthesis.
     /// </summary>
-    Summary
+    Summary,
 }
 
 /// <summary>
@@ -260,7 +260,7 @@ public enum LogicalRelationship
     /// <summary>
     /// No clear relationship.
     /// </summary>
-    Independent
+    Independent,
 }
 
 /// <summary>
@@ -296,7 +296,7 @@ public enum TemporalRelationship
     /// <summary>
     /// Overlapping - time periods that overlap.
     /// </summary>
-    Overlapping
+    Overlapping,
 }
 
 /// <summary>
@@ -322,7 +322,8 @@ public class NarrativeFlowAnalysis
     /// <summary>
     /// Narrative elements identified in the document.
     /// </summary>
-    public Dictionary<NarrativeFunction, List<int>> NarrativeElements { get; set; } = new Dictionary<NarrativeFunction, List<int>>();
+    public Dictionary<NarrativeFunction, List<int>> NarrativeElements { get; set; } =
+        new Dictionary<NarrativeFunction, List<int>>();
 
     /// <summary>
     /// Overall flow coherence score (0.0 to 1.0).
@@ -352,7 +353,8 @@ public class NarrativeFlowAnalysis
     /// <summary>
     /// Transition quality scores for each detected boundary.
     /// </summary>
-    public Dictionary<int, double> TransitionQualities { get; set; } = new Dictionary<int, double>();
+    public Dictionary<int, double> TransitionQualities { get; set; } =
+        new Dictionary<int, double>();
 }
 
 /// <summary>
@@ -403,7 +405,7 @@ public enum NarrativeType
     /// <summary>
     /// Mixed or complex narrative structure.
     /// </summary>
-    Mixed
+    Mixed,
 }
 
 /// <summary>
@@ -439,7 +441,7 @@ public enum TemporalProgression
     /// <summary>
     /// Mixed temporal patterns.
     /// </summary>
-    Mixed
+    Mixed,
 }
 
 /// <summary>
@@ -506,7 +508,7 @@ public enum CausalType
     /// <summary>
     /// Contributing factor.
     /// </summary>
-    Contributing
+    Contributing,
 }
 
 /// <summary>
@@ -547,7 +549,8 @@ public class NarrativeSegmentationValidation
     /// <summary>
     /// Individual segment validation results.
     /// </summary>
-    public List<NarrativeSegmentValidationResult> SegmentResults { get; set; } = new List<NarrativeSegmentValidationResult>();
+    public List<NarrativeSegmentValidationResult> SegmentResults { get; set; } =
+        new List<NarrativeSegmentValidationResult>();
 
     /// <summary>
     /// Issues found during narrative validation.

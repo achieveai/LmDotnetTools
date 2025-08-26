@@ -27,21 +27,22 @@ public record RerankingOptions
     /// </summary>
     public string DefaultModel { get; init; } = "jina-reranker-m0";
 
-    public Dictionary<string, RerankingModelConfig> AvailableModels { get; init; } = new()
-    {
-        ["jina-reranker-m0"] = new()
+    public Dictionary<string, RerankingModelConfig> AvailableModels { get; init; } =
+        new()
         {
-            Model = "jina-reranker-m0",
-            ChunkSize = 10240,
-            IsMultiModal = true
-        },
-        ["jina-reranker-v2-base-multilingual"] = new()
-        {
-            Model = "jina-reranker-v2-base-multilingual",
-            ChunkSize = 8192,
-            IsMultiModal = false
-        }
-    };
+            ["jina-reranker-m0"] = new()
+            {
+                Model = "jina-reranker-m0",
+                ChunkSize = 10240,
+                IsMultiModal = true,
+            },
+            ["jina-reranker-v2-base-multilingual"] = new()
+            {
+                Model = "jina-reranker-v2-base-multilingual",
+                ChunkSize = 8192,
+                IsMultiModal = false,
+            },
+        };
 
     /// <summary>
     /// Maximum number of retries for failed requests

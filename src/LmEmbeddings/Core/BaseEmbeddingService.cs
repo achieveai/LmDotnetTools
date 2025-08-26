@@ -1,11 +1,11 @@
+using System.Net;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
-using System.Net;
-using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
@@ -42,7 +42,7 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 ///     public override int EmbeddingSize =&gt; 1536;
 ///
 ///     public override async Task&lt;EmbeddingResponse&gt; GenerateEmbeddingsAsync(
-///         EmbeddingRequest request, 
+///         EmbeddingRequest request,
 ///         CancellationToken cancellationToken = default)
 ///     {
 ///         // Implementation specific to your provider
@@ -67,9 +67,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// <param name="httpClient">The HTTP client for making API requests</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="logger"/> or <paramref name="httpClient"/> is null</exception>
     protected BaseEmbeddingService(ILogger logger, HttpClient httpClient)
-        : base(logger, httpClient)
-    {
-    }
+        : base(logger, httpClient) { }
 
     /// <inheritdoc />
     /// <remarks>
@@ -102,7 +100,10 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// Console.WriteLine($"Embedding size: {embedding.Length}");
     /// </code>
     /// </example>
-    public virtual async Task<float[]> GetEmbeddingAsync(string sentence, CancellationToken cancellationToken = default)
+    public virtual async Task<float[]> GetEmbeddingAsync(
+        string sentence,
+        CancellationToken cancellationToken = default
+    )
     {
         ValidationHelper.ValidateNotNullOrWhiteSpace(sentence);
         ThrowIfDisposed();
@@ -138,7 +139,10 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// <item><description>Handle provider-specific errors appropriately</description></item>
     /// </list>
     /// </remarks>
-    public abstract Task<EmbeddingResponse> GenerateEmbeddingsAsync(EmbeddingRequest request, CancellationToken cancellationToken = default);
+    public abstract Task<EmbeddingResponse> GenerateEmbeddingsAsync(
+        EmbeddingRequest request,
+        CancellationToken cancellationToken = default
+    );
 
     /// <inheritdoc />
     /// <remarks>
@@ -157,17 +161,17 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// var embedding = response.Embeddings.First().Vector;
     /// </code>
     /// </example>
-    public virtual async Task<EmbeddingResponse> GenerateEmbeddingAsync(string text, string model, CancellationToken cancellationToken = default)
+    public virtual async Task<EmbeddingResponse> GenerateEmbeddingAsync(
+        string text,
+        string model,
+        CancellationToken cancellationToken = default
+    )
     {
         ValidationHelper.ValidateNotNullOrWhiteSpace(text);
         ValidationHelper.ValidateNotNullOrWhiteSpace(model);
         ThrowIfDisposed();
 
-        var request = new EmbeddingRequest
-        {
-            Inputs = new[] { text },
-            Model = model
-        };
+        var request = new EmbeddingRequest { Inputs = new[] { text }, Model = model };
 
         return await GenerateEmbeddingsAsync(request, cancellationToken);
     }
@@ -184,7 +188,9 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// containing that single model identifier.
     /// </para>
     /// </remarks>
-    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
+    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Formats the request payload based on the API type specified in the request.
@@ -225,7 +231,10 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         {
             EmbeddingApiType.Jina => FormatJinaRequest(request),
             EmbeddingApiType.Default => FormatOpenAIRequest(request),
-            _ => throw new ArgumentException($"Unsupported API type: {request.ApiType}", nameof(request))
+            _ => throw new ArgumentException(
+                $"Unsupported API type: {request.ApiType}",
+                nameof(request)
+            ),
         };
     }
 
@@ -254,7 +263,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         var payload = new Dictionary<string, object>
         {
             ["input"] = request.Inputs.ToArray(),
-            ["model"] = request.Model
+            ["model"] = request.Model,
         };
 
         // Add Jina-specific parameters
@@ -304,7 +313,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         var payload = new Dictionary<string, object>
         {
             ["input"] = request.Inputs.ToArray(),
-            ["model"] = request.Model
+            ["model"] = request.Model,
         };
 
         if (!string.IsNullOrEmpty(request.EncodingFormat))

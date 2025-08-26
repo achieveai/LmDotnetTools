@@ -15,15 +15,21 @@ public interface ISessionContextResolver
         string? explicitUserId = null,
         string? explicitAgentId = null,
         string? explicitRunId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates that a session context is valid and accessible.
     /// </summary>
-    Task<bool> ValidateSessionContextAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<bool> ValidateSessionContextAsync(
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets the default session context based on transport context and system defaults.
     /// </summary>
-    Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default);
+    Task<SessionContext> GetDefaultSessionContextAsync(
+        CancellationToken cancellationToken = default
+    );
 }

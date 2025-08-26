@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using ModelContextProtocol.Client;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -38,11 +38,13 @@ public class McpToolCollisionDetector
     /// <returns>Dictionary mapping (serverId, toolName) tuples to their registered names</returns>
     public Dictionary<(string serverId, string toolName), string> DetectAndResolveCollisions(
         Dictionary<string, List<McpClientTool>> toolsByServer,
-        bool usePrefixOnlyForCollisions)
+        bool usePrefixOnlyForCollisions
+    )
     {
         // Convert MCP tools to function descriptors
         var descriptors = new List<FunctionDescriptor>();
-        var toolToDescriptorMap = new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
+        var toolToDescriptorMap =
+            new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
 
         foreach (var (serverId, tools) in toolsByServer)
         {
@@ -53,10 +55,10 @@ public class McpToolCollisionDetector
                     Contract = new FunctionContract
                     {
                         Name = tool.Name,
-                        Description = tool.Description ?? string.Empty
+                        Description = tool.Description ?? string.Empty,
                     },
                     Handler = _ => System.Threading.Tasks.Task.FromResult(string.Empty), // Dummy handler
-                    ProviderName = serverId
+                    ProviderName = serverId,
                 };
 
                 descriptors.Add(descriptor);
@@ -67,7 +69,7 @@ public class McpToolCollisionDetector
         // Use the generalized collision detector
         var config = new FunctionFilterConfig
         {
-            UsePrefixOnlyForCollisions = usePrefixOnlyForCollisions
+            UsePrefixOnlyForCollisions = usePrefixOnlyForCollisions,
         };
 
         var namingMap = _functionCollisionDetector.DetectAndResolveCollisions(descriptors, config);

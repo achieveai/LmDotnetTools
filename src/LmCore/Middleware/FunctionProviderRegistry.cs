@@ -22,7 +22,8 @@ public class FunctionProviderRegistry : IFunctionProviderRegistry
         _providers.Add(provider);
     }
 
-    public void RegisterProvider<TProvider>() where TProvider : class, IFunctionProvider
+    public void RegisterProvider<TProvider>()
+        where TProvider : class, IFunctionProvider
     {
         _providerTypes.Add(typeof(TProvider));
     }

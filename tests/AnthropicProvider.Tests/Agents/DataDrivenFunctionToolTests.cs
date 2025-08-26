@@ -1,9 +1,9 @@
 using System.Diagnostics;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.TestUtils;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
@@ -11,7 +11,13 @@ namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 public class DataDrivenFunctionToolTests
 {
     private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
-    private static string EnvTestPath => Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
+    private static string EnvTestPath =>
+        Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            ".env.test"
+        );
 
     [Theory]
     [MemberData(nameof(GetFunctionToolTestCases))]
@@ -23,16 +29,24 @@ public class DataDrivenFunctionToolTests
         // Arrange - Load data from test files
         var (messages, options) = _testDataManager.LoadLmCoreRequest(
             testName,
-            ProviderType.Anthropic);
+            ProviderType.Anthropic
+        );
 
-        Debug.WriteLine($"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions");
+        Debug.WriteLine(
+            $"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions"
+        );
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "Anthropic", $"{testName}.json");
+            "tests",
+            "TestData",
+            "Anthropic",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: false)
             .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
             .Build();
@@ -49,10 +63,15 @@ public class DataDrivenFunctionToolTests
         // Assert - Compare with expected response
         var expectedResponses = _testDataManager.LoadFinalResponse(
             testName,
-            ProviderType.Anthropic);
+            ProviderType.Anthropic
+        );
         if (expectedResponses == null)
         {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? new List<IMessage>());
+            _testDataManager.SaveFinalResponse(
+                testName,
+                ProviderType.Anthropic,
+                response ?? new List<IMessage>()
+            );
             return; // Skip comparison if no expected data exists yet
         }
 
@@ -67,7 +86,9 @@ public class DataDrivenFunctionToolTests
         // Check that the remaining messages match what we expected
         Assert.Equal(expectedResponses.Count(), responseWithoutUsage.Count);
 
-        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseWithoutUsage))
+        foreach (
+            var (expectedResponse, responseItem) in expectedResponses.Zip(responseWithoutUsage)
+        )
         {
             if (expectedResponse is TextMessage expectedTextResponse)
             {
@@ -75,17 +96,29 @@ public class DataDrivenFunctionToolTests
                 Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
                 Assert.Equal(expectedTextResponse.Role, responseItem.Role);
             }
-            else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
+            else if (
+                expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage
+            )
             {
                 Assert.IsType<ToolsCallAggregateMessage>(responseItem);
                 var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
-                Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
-                Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
+                Assert.Equal(
+                    expectedToolsCallAggregateMessage.Role,
+                    toolsCallAggregateMessage.Role
+                );
+                Assert.Equal(
+                    expectedToolsCallAggregateMessage.FromAgent,
+                    toolsCallAggregateMessage.FromAgent
+                );
                 Assert.Equal(
                     expectedToolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count(),
-                    toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count());
-                foreach (var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage.ToolsCallMessage!
-                    .GetToolCalls()!.Zip(toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!))
+                    toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count()
+                );
+                foreach (
+                    var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage
+                        .ToolsCallMessage!.GetToolCalls()!
+                        .Zip(toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!)
+                )
                 {
                     Assert.Equal(expectedToolCall.FunctionName, toolCall.FunctionName);
                     Assert.Equal(expectedToolCall.FunctionArgs, toolCall.FunctionArgs);
@@ -102,7 +135,8 @@ public class DataDrivenFunctionToolTests
     public static IEnumerable<object[]> GetFunctionToolTestCases()
     {
         var testDataManager = new ProviderTestDataManager();
-        return testDataManager.GetTestCaseNames(ProviderType.Anthropic)
+        return testDataManager
+            .GetTestCaseNames(ProviderType.Anthropic)
             .Where(name => name.Contains("FunctionTool"))
             .Select(name => new object[] { name });
     }
@@ -115,7 +149,11 @@ public class DataDrivenFunctionToolTests
     {
         // Skip if the test data already exists
         string testName = "WeatherFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.Anthropic, DataType.LmCoreRequest);
+        string testDataPath = _testDataManager.GetTestDataPath(
+            testName,
+            ProviderType.Anthropic,
+            DataType.LmCoreRequest
+        );
 
         if (File.Exists(testDataPath))
         {
@@ -126,7 +164,7 @@ public class DataDrivenFunctionToolTests
         // 1. LmCore request data - messages and options
         var messages = new[]
         {
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
         var weatherFunction = new FunctionContract
@@ -140,15 +178,15 @@ public class DataDrivenFunctionToolTests
                     Name = "location",
                     Description = "City name",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = true
-                }
-            }
+                    IsRequired = true,
+                },
+            },
         };
 
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-3-7-sonnet-20250219",
-            Functions = new[] { weatherFunction }
+            Functions = new[] { weatherFunction },
         };
 
         // Save LmCore request
@@ -156,10 +194,17 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "Anthropic", $"{testName}.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "TestData",
+            "Anthropic",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: true)
             .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
             .Build();
@@ -183,7 +228,11 @@ public class DataDrivenFunctionToolTests
     {
         // Skip if the test data already exists
         string testName = "MultiFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.Anthropic, DataType.LmCoreRequest);
+        string testDataPath = _testDataManager.GetTestDataPath(
+            testName,
+            ProviderType.Anthropic,
+            DataType.LmCoreRequest
+        );
 
         if (File.Exists(testDataPath))
         {
@@ -194,8 +243,16 @@ public class DataDrivenFunctionToolTests
         // 1. LmCore request data - messages and options
         var messages = new[]
         {
-            new TextMessage { Role = Role.System, Text = "You are a helpful assistant that can use tools to help users." },
-            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." }
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You are a helpful assistant that can use tools to help users.",
+            },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "List files in root and \"code\" directories.",
+            },
         };
 
         // Create multiple function definitions
@@ -210,9 +267,9 @@ public class DataDrivenFunctionToolTests
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = false
-                }
-            }
+                    IsRequired = false,
+                },
+            },
         };
 
         var getDirTreeFunction = new FunctionContract
@@ -226,9 +283,9 @@ public class DataDrivenFunctionToolTests
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = false
-                }
-            }
+                    IsRequired = false,
+                },
+            },
         };
 
         var options = new GenerateReplyOptions
@@ -236,7 +293,7 @@ public class DataDrivenFunctionToolTests
             ModelId = "claude-3-7-sonnet-20250219",
             MaxToken = 2000,
             Temperature = 0.7f,
-            Functions = new[] { listDirectoryFunction, getDirTreeFunction }
+            Functions = new[] { listDirectoryFunction, getDirTreeFunction },
         };
 
         // Save LmCore request
@@ -244,10 +301,17 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "Anthropic", $"{testName}.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "TestData",
+            "Anthropic",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: true)
             .ForwardToApi("https://api.anthropic.com/v1", GetApiKeyFromEnv())
             .Build();

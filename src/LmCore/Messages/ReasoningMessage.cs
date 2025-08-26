@@ -41,7 +41,9 @@ public record ReasoningMessage : IMessage, ICanGetText
     public string? GenerationId { get; init; }
 
     public BinaryData? GetBinary() => null;
+
     public ToolCall? GetToolCalls() => null;
+
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
@@ -75,7 +77,9 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     public ReasoningVisibility? Visibility { get; init; }
 
     public BinaryData? GetBinary() => null;
+
     public ToolCall? GetToolCalls() => null;
+
     public IEnumerable<IMessage>? GetMessages() => null;
 }
 
@@ -103,7 +107,8 @@ public class ReasoningMessageJsonConverter : ShadowPropertiesJsonConverter<Reaso
     }
 }
 
-public class ReasoningUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ReasoningUpdateMessage>
+public class ReasoningUpdateMessageJsonConverter
+    : ShadowPropertiesJsonConverter<ReasoningUpdateMessage>
 {
     protected override ReasoningUpdateMessage CreateInstance()
     {

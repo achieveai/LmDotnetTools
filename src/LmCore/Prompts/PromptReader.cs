@@ -44,7 +44,9 @@ public class PromptReader : IPromptReader
     {
         using var stream = assembly.GetManifestResourceStream(resourceName);
         if (stream == null)
-            throw new FileNotFoundException($"Resource '{resourceName}' not found in assembly '{assembly.FullName}'.");
+            throw new FileNotFoundException(
+                $"Resource '{resourceName}' not found in assembly '{assembly.FullName}'."
+            );
 
         using var reader = new StreamReader(stream);
         _prompts = ParseYamlFile(reader.ReadToEnd());
@@ -61,7 +63,9 @@ public class PromptReader : IPromptReader
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
             .Build();
 
-        var result = deserializer.Deserialize<Dictionary<string, Dictionary<string, object>>>(yamlContent);
+        var result = deserializer.Deserialize<Dictionary<string, Dictionary<string, object>>>(
+            yamlContent
+        );
 
         foreach (var promptName in result.Keys)
         {
@@ -107,28 +111,32 @@ public class PromptReader : IPromptReader
     {
         var allowedRoles = new HashSet<string> { "system", "user", "assistant" };
 
-        return chainData.Select(m =>
-        {
-            var role = m.Keys.First().ToLower();
-            var content = m.Values.First();
-
-            if (!allowedRoles.Contains(role))
+        return chainData
+            .Select(m =>
             {
-                throw new ArgumentException($"Invalid role '{role}' in prompt chain. Allowed roles are: {string.Join(", ", allowedRoles)}");
-            }
+                var role = m.Keys.First().ToLower();
+                var content = m.Values.First();
 
-            return new TextMessage
-            {
-                Role = role! switch
+                if (!allowedRoles.Contains(role))
                 {
-                    "system" => Role.System,
-                    "user" => Role.User,
-                    "assistant" => Role.Assistant,
-                    _ => throw new NotImplementedException()
-                },
-                Text = content
-            } as IMessage;
-        }).ToList();
+                    throw new ArgumentException(
+                        $"Invalid role '{role}' in prompt chain. Allowed roles are: {string.Join(", ", allowedRoles)}"
+                    );
+                }
+
+                return new TextMessage
+                    {
+                        Role = role! switch
+                        {
+                            "system" => Role.System,
+                            "user" => Role.User,
+                            "assistant" => Role.Assistant,
+                            _ => throw new NotImplementedException(),
+                        },
+                        Text = content,
+                    } as IMessage;
+            })
+            .ToList();
     }
 
     /// <summary>
@@ -145,7 +153,9 @@ public class PromptReader : IPromptReader
         var promptVersions = _prompts[promptName];
 
         if (!promptVersions.ContainsKey(version))
-            throw new KeyNotFoundException($"Version '{version}' not found for prompt '{promptName}'.");
+            throw new KeyNotFoundException(
+                $"Version '{version}' not found for prompt '{promptName}'."
+            );
 
         var promptContent = promptVersions[version];
 
@@ -155,10 +165,14 @@ public class PromptReader : IPromptReader
         }
         else if (promptContent is List<object> chainData)
         {
-            var rv = chainData.Where(val => val is Dictionary<object, object>)
+            var rv = chainData
+                .Where(val => val is Dictionary<object, object>)
                 .Select(val => (Dictionary<object, object>)val)
                 .Where(d => d.Count == 1 && d.Keys.First() is string && d.Values.First() is string)
-                .Select(d => new Dictionary<string, string> { { d.Keys.First()!.ToString()!, d.Values.First()!.ToString()! } })
+                .Select(d => new Dictionary<string, string>
+                {
+                    { d.Keys.First()!.ToString()!, d.Values.First()!.ToString()! },
+                })
                 .ToList();
             try
             {
@@ -167,12 +181,16 @@ public class PromptReader : IPromptReader
             }
             catch (ArgumentException ex)
             {
-                throw new InvalidOperationException($"Error parsing prompt chain '{promptName}' version '{version}': {ex.Message}");
+                throw new InvalidOperationException(
+                    $"Error parsing prompt chain '{promptName}' version '{version}': {ex.Message}"
+                );
             }
         }
         else
         {
-            throw new InvalidOperationException($"Invalid prompt content for '{promptName}' version '{version}'.");
+            throw new InvalidOperationException(
+                $"Invalid prompt content for '{promptName}' version '{version}'."
+            );
         }
     }
 
@@ -189,7 +207,9 @@ public class PromptReader : IPromptReader
         {
             return promptChain;
         }
-        throw new InvalidOperationException($"Prompt '{promptName}' version '{version}' is not a PromptChain.");
+        throw new InvalidOperationException(
+            $"Prompt '{promptName}' version '{version}' is not a PromptChain."
+        );
     }
 }
 
@@ -218,14 +238,17 @@ public record Prompt(string Name, string Version, string Value)
 /// <summary>
 /// Represents a chain of prompts with a name, version, and a list of messages.
 /// </summary>
-public record PromptChain(string Name, string Version, List<IMessage> Messages) : Prompt(Name, Version, string.Empty)
+public record PromptChain(string Name, string Version, List<IMessage> Messages)
+    : Prompt(Name, Version, string.Empty)
 {
     /// <summary>
     /// Overrides the PromptText method to throw an exception, as it's not applicable for PromptChain.
     /// </summary>
     public override string PromptText(Dictionary<string, object>? variables = null)
     {
-        throw new NotSupportedException("PromptChain does not support PromptText method. Use PromptMessages method instead.");
+        throw new NotSupportedException(
+            "PromptChain does not support PromptText method. Use PromptMessages method instead."
+        );
     }
 
     /// <summary>
@@ -240,12 +263,13 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages) 
             return Messages;
         }
 
-        return Messages.Select<IMessage, IMessage>(
-            m => new TextMessage
+        return Messages
+            .Select<IMessage, IMessage>(m => new TextMessage
             {
                 Role = m.Role,
-                Text = ApplyVariables(((ICanGetText)m).GetText()!, variables)
-            }).ToList();
+                Text = ApplyVariables(((ICanGetText)m).GetText()!, variables),
+            })
+            .ToList();
     }
 
     /// <summary>

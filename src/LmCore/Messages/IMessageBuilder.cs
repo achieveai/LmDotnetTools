@@ -5,7 +5,9 @@ public interface IMessageBuilder
     public IMessage Build();
 }
 
-public interface IMessageBuilder<T, U> : IMessageBuilder where T : IMessage where U : IMessage
+public interface IMessageBuilder<T, U> : IMessageBuilder
+    where T : IMessage
+    where U : IMessage
 {
     public string? FromAgent { get; }
 
@@ -13,5 +15,5 @@ public interface IMessageBuilder<T, U> : IMessageBuilder where T : IMessage wher
 
     public void Add(U streamingMessageUpdate);
 
-    new public T Build();
+    public new T Build();
 }

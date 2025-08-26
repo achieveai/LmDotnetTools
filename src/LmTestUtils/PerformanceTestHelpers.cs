@@ -1,6 +1,6 @@
-using Microsoft.Extensions.Logging;
-using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Performance;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
@@ -29,7 +29,8 @@ public static class PerformanceTestHelpers
     public static RequestMetrics CreateTestRequestMetrics(
         string providerName = "TestProvider",
         string model = "test-model",
-        string operation = "TestOperation")
+        string operation = "TestOperation"
+    )
     {
         return RequestMetrics.StartNew(providerName, model, operation);
     }
@@ -50,7 +51,8 @@ public static class PerformanceTestHelpers
         string operation = "TestOperation",
         int statusCode = 200,
         int promptTokens = 10,
-        int completionTokens = 20)
+        int completionTokens = 20
+    )
     {
         var metrics = CreateTestRequestMetrics(providerName, model, operation);
 
@@ -58,7 +60,7 @@ public static class PerformanceTestHelpers
         {
             PromptTokens = promptTokens,
             CompletionTokens = completionTokens,
-            TotalTokens = promptTokens + completionTokens
+            TotalTokens = promptTokens + completionTokens,
         };
 
         return metrics.Complete(statusCode: statusCode, usage: usage);
@@ -80,10 +82,15 @@ public static class PerformanceTestHelpers
         string operation = "TestOperation",
         int statusCode = 500,
         string errorMessage = "Test error",
-        string exceptionType = "TestException")
+        string exceptionType = "TestException"
+    )
     {
         var metrics = CreateTestRequestMetrics(providerName, model, operation);
-        return metrics.Complete(statusCode: statusCode, errorMessage: errorMessage, exceptionType: exceptionType);
+        return metrics.Complete(
+            statusCode: statusCode,
+            errorMessage: errorMessage,
+            exceptionType: exceptionType
+        );
     }
 
     /// <summary>
@@ -102,7 +109,8 @@ public static class PerformanceTestHelpers
         string expectedModel,
         string expectedOperation,
         int? expectedStatusCode = null,
-        bool? expectedSuccess = null)
+        bool? expectedSuccess = null
+    )
     {
         if (metrics.Provider != expectedProvider)
             return false;
@@ -144,14 +152,15 @@ public static class PerformanceTestHelpers
         Usage? usage,
         int expectedPromptTokens,
         int expectedCompletionTokens,
-        int expectedTotalTokens)
+        int expectedTotalTokens
+    )
     {
         if (usage == null)
             return false;
 
-        return usage.PromptTokens == expectedPromptTokens &&
-               usage.CompletionTokens == expectedCompletionTokens &&
-               usage.TotalTokens == expectedTotalTokens;
+        return usage.PromptTokens == expectedPromptTokens
+            && usage.CompletionTokens == expectedCompletionTokens
+            && usage.TotalTokens == expectedTotalTokens;
     }
 
     /// <summary>
@@ -162,11 +171,61 @@ public static class PerformanceTestHelpers
     {
         return new List<object[]>
         {
-            new object[] { "OpenAI", "gpt-4", "ChatCompletion", 200, 10, 20, true, "Successful OpenAI request" },
-            new object[] { "Anthropic", "claude-3-sonnet", "ChatCompletion", 200, 15, 25, true, "Successful Anthropic request" },
-            new object[] { "OpenAI", "gpt-4", "StreamingChatCompletion", 200, 5, 15, true, "Successful streaming request" },
-            new object[] { "Anthropic", "claude-3-sonnet", "ChatCompletion", 400, 0, 0, false, "Failed request with bad request" },
-            new object[] { "OpenAI", "gpt-4", "ChatCompletion", 500, 0, 0, false, "Failed request with server error" }
+            new object[]
+            {
+                "OpenAI",
+                "gpt-4",
+                "ChatCompletion",
+                200,
+                10,
+                20,
+                true,
+                "Successful OpenAI request",
+            },
+            new object[]
+            {
+                "Anthropic",
+                "claude-3-sonnet",
+                "ChatCompletion",
+                200,
+                15,
+                25,
+                true,
+                "Successful Anthropic request",
+            },
+            new object[]
+            {
+                "OpenAI",
+                "gpt-4",
+                "StreamingChatCompletion",
+                200,
+                5,
+                15,
+                true,
+                "Successful streaming request",
+            },
+            new object[]
+            {
+                "Anthropic",
+                "claude-3-sonnet",
+                "ChatCompletion",
+                400,
+                0,
+                0,
+                false,
+                "Failed request with bad request",
+            },
+            new object[]
+            {
+                "OpenAI",
+                "gpt-4",
+                "ChatCompletion",
+                500,
+                0,
+                0,
+                false,
+                "Failed request with server error",
+            },
         };
     }
 
@@ -181,7 +240,7 @@ public static class PerformanceTestHelpers
             new object[] { 0, TimeSpan.FromMilliseconds(100), "No retries - fast response" },
             new object[] { 1, TimeSpan.FromMilliseconds(300), "1 retry - medium response time" },
             new object[] { 2, TimeSpan.FromMilliseconds(700), "2 retries - slower response time" },
-            new object[] { 3, TimeSpan.FromSeconds(1.5), "3 retries - slow response time" }
+            new object[] { 3, TimeSpan.FromSeconds(1.5), "3 retries - slow response time" },
         };
     }
 
@@ -200,7 +259,9 @@ public static class PerformanceTestHelpers
     /// </summary>
     /// <param name="operation">Operation to measure</param>
     /// <returns>Tuple containing the result and execution time</returns>
-    public static async Task<(T result, TimeSpan duration)> MeasureExecutionTime<T>(Func<Task<T>> operation)
+    public static async Task<(T result, TimeSpan duration)> MeasureExecutionTime<T>(
+        Func<Task<T>> operation
+    )
     {
         var startTime = DateTime.UtcNow;
         var result = await operation();
@@ -220,7 +281,8 @@ public static class PerformanceTestHelpers
     public static bool ValidateDuration(
         TimeSpan actualDuration,
         TimeSpan expectedDuration,
-        TimeSpan tolerance)
+        TimeSpan tolerance
+    )
     {
         var minDuration = expectedDuration - tolerance;
         var maxDuration = expectedDuration + tolerance;

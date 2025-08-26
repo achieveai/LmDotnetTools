@@ -6,11 +6,14 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 public class MiddlewareWrappingAgent : IAgent
 {
     private readonly IAgent _agent;
-    private readonly Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>> _middleware;
+    private readonly Func<
+        MiddlewareContext,
+        IAgent,
+        CancellationToken,
+        Task<IEnumerable<IMessage>>
+    > _middleware;
 
-    public MiddlewareWrappingAgent(
-        IAgent agent,
-        IMiddleware middleware)
+    public MiddlewareWrappingAgent(IAgent agent, IMiddleware middleware)
     {
         _agent = agent;
         _middleware = middleware.InvokeAsync;
@@ -18,7 +21,8 @@ public class MiddlewareWrappingAgent : IAgent
 
     public MiddlewareWrappingAgent(
         IAgent agent,
-        Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>> middleware)
+        Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>> middleware
+    )
     {
         _agent = agent;
         _middleware = middleware;
@@ -27,11 +31,9 @@ public class MiddlewareWrappingAgent : IAgent
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        return _middleware(
-            new MiddlewareContext(messages, options),
-            _agent,
-            cancellationToken);
+        return _middleware(new MiddlewareContext(messages, options), _agent, cancellationToken);
     }
 }

@@ -21,7 +21,8 @@ public interface IStructureBasedSegmentationService
         string content,
         DocumentType documentType = DocumentType.Generic,
         StructureSegmentationOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Detects structural boundaries within the document content.
@@ -33,7 +34,8 @@ public interface IStructureBasedSegmentationService
     Task<List<StructureBoundary>> DetectStructuralBoundariesAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Analyzes the hierarchical structure of a document.
@@ -43,7 +45,8 @@ public interface IStructureBasedSegmentationService
     /// <returns>Hierarchical structure analysis results</returns>
     Task<HierarchicalStructureAnalysis> AnalyzeHierarchicalStructureAsync(
         string content,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates structure-based segments for quality and organization.
@@ -55,5 +58,6 @@ public interface IStructureBasedSegmentationService
     Task<StructureSegmentationValidation> ValidateStructureSegmentsAsync(
         List<DocumentSegment> segments,
         string originalContent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

@@ -29,7 +29,12 @@ public class FilterResult
     /// <summary>
     /// Private constructor to enforce factory method usage.
     /// </summary>
-    private FilterResult(bool isFiltered, string reason, FilterRuleType ruleType, string? matchedPattern = null)
+    private FilterResult(
+        bool isFiltered,
+        string reason,
+        FilterRuleType ruleType,
+        string? matchedPattern = null
+    )
     {
         IsFiltered = isFiltered;
         Reason = reason;
@@ -57,7 +62,8 @@ public class FilterResult
         return new FilterResult(
             true,
             $"Provider '{providerName}' is disabled",
-            FilterRuleType.ProviderDisabled);
+            FilterRuleType.ProviderDisabled
+        );
     }
 
     /// <summary>
@@ -72,7 +78,8 @@ public class FilterResult
             true,
             $"Function blocked by provider '{providerName}' deny list pattern: {pattern}",
             FilterRuleType.ProviderBlockList,
-            pattern);
+            pattern
+        );
     }
 
     /// <summary>
@@ -85,7 +92,8 @@ public class FilterResult
         return new FilterResult(
             true,
             $"Function not in provider '{providerName}' allow list",
-            FilterRuleType.ProviderAllowList);
+            FilterRuleType.ProviderAllowList
+        );
     }
 
     /// <summary>
@@ -99,7 +107,8 @@ public class FilterResult
             true,
             $"Function blocked by global deny list pattern: {pattern}",
             FilterRuleType.GlobalBlockList,
-            pattern);
+            pattern
+        );
     }
 
     /// <summary>
@@ -111,7 +120,8 @@ public class FilterResult
         return new FilterResult(
             true,
             "Function not in global allow list",
-            FilterRuleType.GlobalAllowList);
+            FilterRuleType.GlobalAllowList
+        );
     }
 
     /// <summary>
@@ -120,10 +130,7 @@ public class FilterResult
     /// <returns>A FilterResult indicating inclusion due to disabled filtering</returns>
     public static FilterResult FilteringDisabled()
     {
-        return new FilterResult(
-            false,
-            "Function filtering is disabled",
-            FilterRuleType.None);
+        return new FilterResult(false, "Function filtering is disabled", FilterRuleType.None);
     }
 
     /// <summary>
@@ -171,5 +178,5 @@ public enum FilterRuleType
     /// <summary>
     /// Filtered by global allow list.
     /// </summary>
-    GlobalAllowList
+    GlobalAllowList,
 }

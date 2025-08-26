@@ -1,19 +1,19 @@
-using MemoryServer.Configuration;
-using MemoryServer.Models;
-using MemoryServer.Tools;
-using MemoryServer.Infrastructure;
-using MemoryServer.Services;
-using MemoryServer.Utils;
-using Microsoft.Extensions.Options;
-using AchieveAi.LmDotnetTools.LmCore.Prompts;
+using System.CommandLine;
+using System.Text;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using System.CommandLine;
+using MemoryServer.Configuration;
+using MemoryServer.Infrastructure;
+using MemoryServer.Models;
+using MemoryServer.Services;
+using MemoryServer.Tools;
+using MemoryServer.Utils;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
-using System.Text;
 
 // Load environment variables from .env file early in startup
 EnvironmentHelper.LoadEnvIfNeeded();
@@ -41,7 +41,10 @@ if (commandLineArgs.Contains("--stdio"))
 var configuration = new ConfigurationBuilder()
     .SetBasePath(Directory.GetCurrentDirectory())
     .AddJsonFile("appsettings.json", optional: true)
-    .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
+    .AddJsonFile(
+        $"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json",
+        optional: true
+    )
     .AddEnvironmentVariables()
     .Build();
 
@@ -62,7 +65,11 @@ else
 
 return 0;
 
-static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, IConfiguration configuration)
+static async Task RunSseServerAsync(
+    string[] args,
+    MemoryServerOptions options,
+    IConfiguration configuration
+)
 {
     var builder = WebApplication.CreateBuilder(args);
 
@@ -87,19 +94,22 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
 
     if (jwtOptions.IsValid())
     {
-        builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        builder
+            .Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
             {
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Secret)),
+                    IssuerSigningKey = new SymmetricSecurityKey(
+                        Encoding.UTF8.GetBytes(jwtOptions.Secret)
+                    ),
                     ValidateIssuer = true,
                     ValidIssuer = jwtOptions.Issuer,
                     ValidateAudience = true,
                     ValidAudience = jwtOptions.Audience,
                     ValidateLifetime = true,
-                    ClockSkew = TimeSpan.Zero
+                    ClockSkew = TimeSpan.Zero,
                 };
             });
 
@@ -114,9 +124,7 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
     {
         corsOptions.AddDefaultPolicy(policy =>
         {
-            policy.AllowAnyOrigin()
-                  .AllowAnyMethod()
-                  .AllowAnyHeader();
+            policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
         });
     });
 
@@ -143,38 +151,52 @@ static async Task ConfigureSseApplication(WebApplication app)
     app.UseAuthorization();
 
     // Add middleware to extract URL parameters and headers for session context
-    app.Use(async (context, next) =>
-    {
-        try
+    app.Use(
+        async (context, next) =>
         {
-            // Extract URL parameters
-            var queryParameters = context.Request.Query
-                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
-
-            // Extract HTTP headers
-            var headers = context.Request.Headers
-                .Where(h => h.Key.StartsWith("X-Memory-"))
-                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
-
-            // Initialize SSE session context if we have relevant parameters or headers
-            if (queryParameters.Any(kvp => kvp.Key.EndsWith("_id")) || headers.Any())
+            try
             {
-                var sessionInitializer = context.RequestServices.GetRequiredService<TransportSessionInitializer>();
-                var sessionDefaults = await sessionInitializer.InitializeSseSessionAsync(queryParameters, headers);
+                // Extract URL parameters
+                var queryParameters = context.Request.Query.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value.ToString()
+                );
 
-                if (sessionDefaults != null && sessionInitializer.ValidateSessionContext(sessionDefaults))
+                // Extract HTTP headers
+                var headers = context
+                    .Request.Headers.Where(h => h.Key.StartsWith("X-Memory-"))
+                    .ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
+
+                // Initialize SSE session context if we have relevant parameters or headers
+                if (queryParameters.Any(kvp => kvp.Key.EndsWith("_id")) || headers.Any())
                 {
-                    appLogger.LogInformation("SSE session context initialized: {SessionDefaults}", sessionDefaults);
+                    var sessionInitializer =
+                        context.RequestServices.GetRequiredService<TransportSessionInitializer>();
+                    var sessionDefaults = await sessionInitializer.InitializeSseSessionAsync(
+                        queryParameters,
+                        headers
+                    );
+
+                    if (
+                        sessionDefaults != null
+                        && sessionInitializer.ValidateSessionContext(sessionDefaults)
+                    )
+                    {
+                        appLogger.LogInformation(
+                            "SSE session context initialized: {SessionDefaults}",
+                            sessionDefaults
+                        );
+                    }
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            appLogger.LogWarning(ex, "Failed to initialize SSE session context from request");
-        }
+            catch (Exception ex)
+            {
+                appLogger.LogWarning(ex, "Failed to initialize SSE session context from request");
+            }
 
-        await next();
-    });
+            await next();
+        }
+    );
 
     // Add basic health check endpoint for testing
     app.MapGet("/health", () => "OK");
@@ -185,7 +207,11 @@ static async Task ConfigureSseApplication(WebApplication app)
     appLogger.LogInformation("🌐 Memory MCP Server configured for SSE transport");
 }
 
-static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options, IConfiguration configuration)
+static async Task RunStdioServerAsync(
+    string[] args,
+    MemoryServerOptions options,
+    IConfiguration configuration
+)
 {
     var builder = Host.CreateApplicationBuilder(args);
 
@@ -242,19 +268,22 @@ public class Startup
     {
         // Create a minimal configuration for testing
         var builder = new ConfigurationBuilder();
-        builder.AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["MemoryServer:Database:ConnectionString"] = "Data Source=:memory:",
-            ["MemoryServer:Database:EnableWAL"] = "false",
-            ["MemoryServer:Transport:Mode"] = "SSE",
-            ["MemoryServer:Transport:Port"] = "0",
-            ["MemoryServer:Transport:Host"] = "localhost",
-            ["MemoryServer:Transport:EnableCors"] = "true",
-            ["Jwt:Secret"] = "test-secret-key-that-is-at-least-256-bits-long-for-hmac-sha256-algorithm-testing",
-            ["Jwt:Issuer"] = "MemoryServer",
-            ["Jwt:Audience"] = "MemoryServer",
-            ["Jwt:ExpirationMinutes"] = "60"
-        });
+        builder.AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["MemoryServer:Database:ConnectionString"] = "Data Source=:memory:",
+                ["MemoryServer:Database:EnableWAL"] = "false",
+                ["MemoryServer:Transport:Mode"] = "SSE",
+                ["MemoryServer:Transport:Port"] = "0",
+                ["MemoryServer:Transport:Host"] = "localhost",
+                ["MemoryServer:Transport:EnableCors"] = "true",
+                ["Jwt:Secret"] =
+                    "test-secret-key-that-is-at-least-256-bits-long-for-hmac-sha256-algorithm-testing",
+                ["Jwt:Issuer"] = "MemoryServer",
+                ["Jwt:Audience"] = "MemoryServer",
+                ["Jwt:ExpirationMinutes"] = "60",
+            }
+        );
         _configuration = builder.Build();
     }
 
@@ -284,9 +313,7 @@ public class Startup
         {
             corsOptions.AddDefaultPolicy(policy =>
             {
-                policy.AllowAnyOrigin()
-                      .AllowAnyMethod()
-                      .AllowAnyHeader();
+                policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
             });
         });
     }

@@ -16,8 +16,9 @@ public interface IDocumentAnalysisService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Detected document type with confidence</returns>
     Task<DocumentTypeDetection> DetectDocumentTypeAsync(
-      string content,
-      CancellationToken cancellationToken = default);
+        string content,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Analyzes document structure and content to recommend optimal segmentation strategy.
@@ -27,9 +28,10 @@ public interface IDocumentAnalysisService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Strategy recommendation with confidence and reasoning</returns>
     Task<StrategyRecommendation> AnalyzeOptimalStrategyAsync(
-      string content,
-      DocumentType? documentType = null,
-      CancellationToken cancellationToken = default);
+        string content,
+        DocumentType? documentType = null,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Analyzes document complexity to help determine processing approach.
@@ -38,8 +40,9 @@ public interface IDocumentAnalysisService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Document complexity analysis</returns>
     Task<DocumentComplexityAnalysis> AnalyzeComplexityAsync(
-      string content,
-      CancellationToken cancellationToken = default);
+        string content,
+        CancellationToken cancellationToken = default
+    );
 }
 
 /// <summary>

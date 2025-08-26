@@ -7,11 +7,11 @@ namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 public record struct ToolCall(
     [property: JsonPropertyName("function_name")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? FunctionName,
-
+        string? FunctionName,
     [property: JsonPropertyName("function_args")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? FunctionArgs)
+        string? FunctionArgs
+)
 {
     [JsonPropertyName("index")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -25,9 +25,9 @@ public record struct ToolCall(
 public record struct ToolCallResult(
     [property: JsonPropertyName("tool_call_id")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? ToolCallId,
-    [property: JsonPropertyName("result")]
-    string Result);
+        string? ToolCallId,
+    [property: JsonPropertyName("result")] string Result
+);
 
 public record ToolCallUpdate
 {

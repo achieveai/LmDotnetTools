@@ -130,14 +130,32 @@ public static class ProviderTags
     {
         return new[]
         {
-      // Performance characteristics
-      Economic, Fast, Reliable, HighQuality, Premium, UltraFast,
-      // Capability tags  
-      Reasoning, Chat, Coding, Creative, Multimodal, Thinking, ComplexTasks,
-      // Provider characteristics
-      OpenSource, Enterprise, Experimental, Fallback, Aggregator,
-      HighPerformance, OpenAiCompatible, MultiVendor, CostEffective
-    };
+            // Performance characteristics
+            Economic,
+            Fast,
+            Reliable,
+            HighQuality,
+            Premium,
+            UltraFast,
+            // Capability tags
+            Reasoning,
+            Chat,
+            Coding,
+            Creative,
+            Multimodal,
+            Thinking,
+            ComplexTasks,
+            // Provider characteristics
+            OpenSource,
+            Enterprise,
+            Experimental,
+            Fallback,
+            Aggregator,
+            HighPerformance,
+            OpenAiCompatible,
+            MultiVendor,
+            CostEffective,
+        };
     }
 
     /// <summary>
@@ -147,7 +165,8 @@ public static class ProviderTags
     /// <returns>True if all tags are valid, false otherwise.</returns>
     public static bool AreValidTags(IEnumerable<string> tags)
     {
-        if (tags == null) return true;
+        if (tags == null)
+            return true;
         var validTags = GetAllTags();
         return tags.All(tag => validTags.Contains(tag));
     }
@@ -159,7 +178,8 @@ public static class ProviderTags
     /// <returns>A list of invalid tags, empty if all tags are valid.</returns>
     public static IReadOnlyList<string> GetInvalidTags(IEnumerable<string> tags)
     {
-        if (tags == null) return Array.Empty<string>();
+        if (tags == null)
+            return Array.Empty<string>();
         var validTags = GetAllTags();
         return tags.Where(tag => !validTags.Contains(tag)).ToList();
     }
@@ -173,9 +193,28 @@ public static class ProviderTags
         return new Dictionary<string, IReadOnlyList<string>>
         {
             ["Performance"] = new[] { Economic, Fast, Reliable, HighQuality, Premium, UltraFast },
-            ["Capabilities"] = new[] { Reasoning, Chat, Coding, Creative, Multimodal, Thinking, ComplexTasks },
-            ["Characteristics"] = new[] { OpenSource, Enterprise, Experimental, Fallback, Aggregator,
-                                   HighPerformance, OpenAiCompatible, MultiVendor, CostEffective }
+            ["Capabilities"] = new[]
+            {
+                Reasoning,
+                Chat,
+                Coding,
+                Creative,
+                Multimodal,
+                Thinking,
+                ComplexTasks,
+            },
+            ["Characteristics"] = new[]
+            {
+                OpenSource,
+                Enterprise,
+                Experimental,
+                Fallback,
+                Aggregator,
+                HighPerformance,
+                OpenAiCompatible,
+                MultiVendor,
+                CostEffective,
+            },
         };
     }
 }

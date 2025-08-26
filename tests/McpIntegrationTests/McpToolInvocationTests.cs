@@ -7,10 +7,15 @@ namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 public class McpToolInvocationTests
 {
     // Helpers to set up the test environment
-    private static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) SetupToolsForTesting()
+    private static (
+        IEnumerable<FunctionContract>,
+        IDictionary<string, Func<string, Task<string>>>
+    ) SetupToolsForTesting()
     {
         var greetingToolType = typeof(GreetingTool);
-        var calculatorToolType = greetingToolType.Assembly.GetType("AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool");
+        var calculatorToolType = greetingToolType.Assembly.GetType(
+            "AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool"
+        );
         var toolTypes = new[] { greetingToolType, calculatorToolType! };
         return McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
     }
@@ -32,7 +37,8 @@ public class McpToolInvocationTests
         Assert.Contains("John", regularTrimmedResult);
 
         // Test with special characters
-        var specialCharsResult = await functionMap["GreetingTool-SayHello"]("{\"name\":\"Maria O'Connor-Smith\"}");
+        var specialCharsResult = await functionMap["GreetingTool-SayHello"]
+            ("{\"name\":\"Maria O'Connor-Smith\"}");
         var trimmedResult = specialCharsResult.Trim('\"');
         // Output the actual result for debugging
         Console.WriteLine($"Special chars test - Actual result: {trimmedResult}");
@@ -50,7 +56,8 @@ public class McpToolInvocationTests
 
         // Test with a long name
         var longName = "Very" + new string('y', 50) + " Long Name";
-        var longNameResult = await functionMap["GreetingTool-SayHello"]($"{{\"name\":\"{longName}\"}}");
+        var longNameResult = await functionMap["GreetingTool-SayHello"]
+            ($"{{\"name\":\"{longName}\"}}");
         Assert.Contains($"Hello, {longName}", longNameResult.Trim('\"'));
     }
 

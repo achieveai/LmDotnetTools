@@ -1,13 +1,13 @@
+using System.Collections.Concurrent;
+using System.Collections.Immutable;
+using System.Net;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
-using System.Collections.Concurrent;
-using System.Net;
-using System.Text.Json;
-using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
@@ -124,9 +124,13 @@ public class ServerEmbeddings : BaseEmbeddingService
         int maxBatchSize = 100,
         EmbeddingApiType apiType = EmbeddingApiType.Default,
         ILogger<ServerEmbeddings>? logger = null,
-        HttpClient? httpClient = null)
-        : base(logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ServerEmbeddings>.Instance,
-               httpClient ?? new HttpClient())
+        HttpClient? httpClient = null
+    )
+        : base(
+            logger
+                ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ServerEmbeddings>.Instance,
+            httpClient ?? new HttpClient()
+        )
     {
         ValidationHelper.ValidateNotNull(endpoint);
         ValidationHelper.ValidateNotNull(model);
@@ -147,7 +151,8 @@ public class ServerEmbeddings : BaseEmbeddingService
 
         // Configure HttpClient
         HttpClient.BaseAddress = new Uri(_endpoint);
-        HttpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+        HttpClient.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
     }
 
     /// <inheritdoc />
@@ -176,7 +181,10 @@ public class ServerEmbeddings : BaseEmbeddingService
     /// <see cref="GenerateEmbeddingsAsync(EmbeddingRequest, CancellationToken)"/> directly for better performance.
     /// </para>
     /// </remarks>
-    public override async Task<float[]> GetEmbeddingAsync(string sentence, CancellationToken cancellationToken = default)
+    public override async Task<float[]> GetEmbeddingAsync(
+        string sentence,
+        CancellationToken cancellationToken = default
+    )
     {
         ValidationHelper.ValidateNotNullOrWhiteSpace(sentence);
 
@@ -186,7 +194,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         {
             Text = sentence,
             TaskCompletionSource = tcs,
-            CancellationToken = cancellationToken
+            CancellationToken = cancellationToken,
         };
 
         _batchQueue.Enqueue(batchRequest);
@@ -217,7 +225,10 @@ public class ServerEmbeddings : BaseEmbeddingService
     /// and formats the request payload according to the specified API type (OpenAI or Jina).
     /// </para>
     /// </remarks>
-    public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(EmbeddingRequest request, CancellationToken cancellationToken = default)
+    public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
+        EmbeddingRequest request,
+        CancellationToken cancellationToken = default
+    )
     {
         ValidateRequest(request);
 
@@ -233,7 +244,7 @@ public class ServerEmbeddings : BaseEmbeddingService
             Dimensions = request.Dimensions,
             User = request.User,
             Normalized = request.Normalized,
-            AdditionalOptions = request.AdditionalOptions
+            AdditionalOptions = request.AdditionalOptions,
         };
 
         return await ExecuteHttpWithRetryAsyncLinear(
@@ -241,7 +252,11 @@ public class ServerEmbeddings : BaseEmbeddingService
             {
                 var requestPayload = FormatRequestPayload(chunkedRequest);
                 var json = JsonSerializer.Serialize(requestPayload);
-                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                var content = new StringContent(
+                    json,
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
 
                 return await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
             },
@@ -255,7 +270,8 @@ public class ServerEmbeddings : BaseEmbeddingService
 
                 return embeddingResponse;
             },
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken
+        );
     }
 
     /// <inheritdoc />
@@ -263,7 +279,9 @@ public class ServerEmbeddings : BaseEmbeddingService
     /// For ServerEmbeddings, this method returns the single model configured during initialization.
     /// The service is designed to work with a specific model, so only that model is reported as available.
     /// </remarks>
-    public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
+    public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         // For ServerEmbeddings, we return the configured model
         return Task.FromResult<IReadOnlyList<string>>(new[] { _model });
@@ -282,7 +300,8 @@ public class ServerEmbeddings : BaseEmbeddingService
         Func<Task<HttpResponseMessage>> httpOperation,
         Func<HttpResponseMessage, Task<T>> responseProcessor,
         int maxRetries = 3,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         var attempt = 0;
         Exception? lastException = null;
@@ -303,7 +322,9 @@ public class ServerEmbeddings : BaseEmbeddingService
                     response.EnsureSuccessStatusCode(); // This will throw
                 }
 
-                lastException = new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
+                lastException = new HttpRequestException(
+                    $"HTTP {(int)response.StatusCode} {response.StatusCode}"
+                );
             }
             catch (HttpRequestException ex) when (HttpRetryHelper.IsRetryableError(ex))
             {
@@ -319,14 +340,20 @@ public class ServerEmbeddings : BaseEmbeddingService
             {
                 // Linear backoff: 1s × retryCount
                 var delay = TimeSpan.FromSeconds(attempt);
-                Logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms. Error: {Error}",
-                    attempt, maxRetries + 1, delay.TotalMilliseconds, lastException?.Message);
+                Logger.LogWarning(
+                    "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms. Error: {Error}",
+                    attempt,
+                    maxRetries + 1,
+                    delay.TotalMilliseconds,
+                    lastException?.Message
+                );
 
                 await Task.Delay(delay, cancellationToken);
             }
         }
 
-        throw lastException ?? new InvalidOperationException("Operation failed after all retry attempts");
+        throw lastException
+            ?? new InvalidOperationException("Operation failed after all retry attempts");
     }
 
     /// <summary>
@@ -374,7 +401,11 @@ public class ServerEmbeddings : BaseEmbeddingService
             // Try to break at word boundaries if possible
             if (chunkLength < remainingLength)
             {
-                var lastSpaceIndex = text.LastIndexOf(' ', currentIndex + chunkLength - 1, chunkLength);
+                var lastSpaceIndex = text.LastIndexOf(
+                    ' ',
+                    currentIndex + chunkLength - 1,
+                    chunkLength
+                );
                 if (lastSpaceIndex > currentIndex)
                 {
                     chunkLength = lastSpaceIndex - currentIndex + 1;
@@ -420,7 +451,7 @@ public class ServerEmbeddings : BaseEmbeddingService
                     {
                         Inputs = inputs,
                         Model = _model,
-                        ApiType = _apiType
+                        ApiType = _apiType,
                     };
 
                     var response = await GenerateEmbeddingsAsync(request);
@@ -428,7 +459,10 @@ public class ServerEmbeddings : BaseEmbeddingService
                     // Complete each task with its corresponding embedding
                     for (int i = 0; i < batch.Count && i < response.Embeddings.Count; i++)
                     {
-                        batch[i].TaskCompletionSource.SetResult(response.Embeddings.ElementAt(i).Vector);
+                        batch[i]
+                            .TaskCompletionSource.SetResult(
+                                response.Embeddings.ElementAt(i).Vector
+                            );
                     }
                 }
                 catch (Exception ex)

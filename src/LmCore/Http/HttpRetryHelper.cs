@@ -1,5 +1,5 @@
-using Microsoft.Extensions.Logging;
 using System.Net;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Http;
 
@@ -24,7 +24,8 @@ public static class HttpRetryHelper
         ILogger logger,
         int maxRetries = 3,
         CancellationToken cancellationToken = default,
-        Func<bool>? checkDisposed = null)
+        Func<bool>? checkDisposed = null
+    )
     {
         if (checkDisposed?.Invoke() == true)
             throw new ObjectDisposedException("Service has been disposed");
@@ -40,8 +41,13 @@ public static class HttpRetryHelper
             {
                 attempt++;
                 var delay = CalculateDelay(attempt);
-                logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt, maxRetries + 1, delay.TotalMilliseconds, ex.Message);
+                logger.LogWarning(
+                    "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
+                    attempt,
+                    maxRetries + 1,
+                    delay.TotalMilliseconds,
+                    ex.Message
+                );
 
                 await Task.Delay(delay, cancellationToken);
             }
@@ -66,7 +72,8 @@ public static class HttpRetryHelper
         ILogger logger,
         int maxRetries = 3,
         CancellationToken cancellationToken = default,
-        Func<bool>? checkDisposed = null)
+        Func<bool>? checkDisposed = null
+    )
     {
         if (checkDisposed?.Invoke() == true)
             throw new ObjectDisposedException("Service has been disposed");
@@ -88,8 +95,13 @@ public static class HttpRetryHelper
                 {
                     attempt++;
                     var delay = CalculateDelay(attempt);
-                    logger.LogWarning("HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                        response.StatusCode, attempt, maxRetries + 1, delay.TotalMilliseconds);
+                    logger.LogWarning(
+                        "HTTP request failed with status {StatusCode} (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
+                        response.StatusCode,
+                        attempt,
+                        maxRetries + 1,
+                        delay.TotalMilliseconds
+                    );
 
                     response.Dispose(); // Clean up the failed response
                     await Task.Delay(delay, cancellationToken);
@@ -103,16 +115,14 @@ public static class HttpRetryHelper
                     {
                         // Try to read the response body for better error information
                         var responseBody = await response.Content.ReadAsStringAsync();
-                        var errorMessage = $"HTTP request failed with status {response.StatusCode} ({response.ReasonPhrase})";
+                        var errorMessage =
+                            $"HTTP request failed with status {response.StatusCode} ({response.ReasonPhrase})";
                         if (!string.IsNullOrWhiteSpace(responseBody))
                         {
                             errorMessage += $". Response body: {responseBody}";
                         }
 
-                        throw new HttpRequestException(
-                            errorMessage,
-                            null,
-                            response.StatusCode);
+                        throw new HttpRequestException(errorMessage, null, response.StatusCode);
                     }
                 }
                 catch (Exception ex) when (!(ex is HttpRequestException))
@@ -127,8 +137,13 @@ public static class HttpRetryHelper
             {
                 attempt++;
                 var delay = CalculateDelay(attempt);
-                logger.LogWarning("Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
-                    attempt, maxRetries + 1, delay.TotalMilliseconds, ex.Message);
+                logger.LogWarning(
+                    "Request failed (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms: {Error}",
+                    attempt,
+                    maxRetries + 1,
+                    delay.TotalMilliseconds,
+                    ex.Message
+                );
 
                 await Task.Delay(delay, cancellationToken);
             }
@@ -143,8 +158,8 @@ public static class HttpRetryHelper
     public static bool IsRetryableStatusCode(HttpStatusCode statusCode)
     {
         // Retry on server errors (5xx) and rate limiting (429)
-        return statusCode == HttpStatusCode.TooManyRequests ||
-               ((int)statusCode >= 500 && (int)statusCode < 600);
+        return statusCode == HttpStatusCode.TooManyRequests
+            || ((int)statusCode >= 500 && (int)statusCode < 600);
     }
 
     /// <summary>
@@ -159,23 +174,27 @@ public static class HttpRetryHelper
         var message = exception.Message;
 
         // Check for network/timeout errors
-        if (message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("network", StringComparison.OrdinalIgnoreCase))
+        if (
+            message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("network", StringComparison.OrdinalIgnoreCase)
+        )
         {
             return true;
         }
 
         // Check for HTTP 5xx status codes in the exception message
         // EnsureSuccessStatusCode() creates messages like "Response status code does not indicate success: 500 (Internal Server Error)"
-        if (message.Contains("500", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("501", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("502", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("503", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("504", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Internal Server Error", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Bad Gateway", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Service Unavailable", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Gateway Timeout", StringComparison.OrdinalIgnoreCase))
+        if (
+            message.Contains("500", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("501", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("502", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("503", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("504", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Internal Server Error", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Bad Gateway", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Service Unavailable", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("Gateway Timeout", StringComparison.OrdinalIgnoreCase)
+        )
         {
             return true;
         }

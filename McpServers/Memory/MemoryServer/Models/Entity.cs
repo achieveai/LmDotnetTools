@@ -85,7 +85,7 @@ public class Entity
         {
             UserId = UserId,
             AgentId = string.IsNullOrEmpty(AgentId) ? null : AgentId,
-            RunId = string.IsNullOrEmpty(RunId) ? null : RunId
+            RunId = string.IsNullOrEmpty(RunId) ? null : RunId,
         };
     }
 }

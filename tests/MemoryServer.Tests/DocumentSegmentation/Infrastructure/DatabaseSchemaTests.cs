@@ -1,9 +1,9 @@
+using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
-using FluentAssertions;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Infrastructure;
 
@@ -28,7 +28,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Assert - Check that document_segments table exists
         var segmentsTableExists = await session.ExecuteAsync(async connection =>
         {
-            const string sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='document_segments'";
+            const string sql =
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='document_segments'";
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             var result = await command.ExecuteScalarAsync();
@@ -40,7 +41,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Assert - Check that segment_relationships table exists
         var relationshipsTableExists = await session.ExecuteAsync(async connection =>
         {
-            const string sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='segment_relationships'";
+            const string sql =
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='segment_relationships'";
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             var result = await command.ExecuteScalarAsync();
@@ -74,16 +76,32 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Assert - Check required columns exist
         var expectedColumns = new[]
         {
-      "id", "parent_document_id", "segment_id", "sequence_number", "content",
-      "title", "summary", "coherence_score", "independence_score",
-      "topic_consistency_score", "user_id", "agent_id", "run_id",
-      "created_at", "updated_at", "metadata"
-    };
+            "id",
+            "parent_document_id",
+            "segment_id",
+            "sequence_number",
+            "content",
+            "title",
+            "summary",
+            "coherence_score",
+            "independence_score",
+            "topic_consistency_score",
+            "user_id",
+            "agent_id",
+            "run_id",
+            "created_at",
+            "updated_at",
+            "metadata",
+        };
 
         foreach (var expectedColumn in expectedColumns)
         {
-            columns.Should().Contain(expectedColumn,
-              $"document_segments table should have {expectedColumn} column");
+            columns
+                .Should()
+                .Contain(
+                    expectedColumn,
+                    $"document_segments table should have {expectedColumn} column"
+                );
         }
     }
 
@@ -111,15 +129,27 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Assert - Check required columns exist
         var expectedColumns = new[]
         {
-      "id", "source_segment_id", "target_segment_id", "relationship_type",
-      "strength", "user_id", "agent_id", "run_id", "created_at",
-      "updated_at", "metadata"
-    };
+            "id",
+            "source_segment_id",
+            "target_segment_id",
+            "relationship_type",
+            "strength",
+            "user_id",
+            "agent_id",
+            "run_id",
+            "created_at",
+            "updated_at",
+            "metadata",
+        };
 
         foreach (var expectedColumn in expectedColumns)
         {
-            columns.Should().Contain(expectedColumn,
-              $"segment_relationships table should have {expectedColumn} column");
+            columns
+                .Should()
+                .Contain(
+                    expectedColumn,
+                    $"segment_relationships table should have {expectedColumn} column"
+                );
         }
     }
 
@@ -131,7 +161,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         var indexes = await session.ExecuteAsync(async connection =>
         {
-            const string sql = "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='document_segments'";
+            const string sql =
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='document_segments'";
             using var command = connection.CreateCommand();
             command.CommandText = sql;
 
@@ -149,8 +180,12 @@ public class DatabaseSchemaTests : IAsyncDisposable
         });
 
         // Assert - Check that performance indexes exist (for test schema, we have basic indexes)
-        indexes.Should().Contain(i => i.Contains("document_segments"),
-          "Performance indexes should be created for document_segments table");
+        indexes
+            .Should()
+            .Contain(
+                i => i.Contains("document_segments"),
+                "Performance indexes should be created for document_segments table"
+            );
     }
 
     [Fact]
@@ -163,7 +198,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
         await session.ExecuteAsync(async connection =>
         {
             // Test coherence_score constraint (should be 0.0-1.0) - in test schema, constraints might be relaxed
-            const string insertSql = @"
+            const string insertSql =
+                @"
         INSERT INTO document_segments 
         (parent_document_id, segment_id, sequence_number, content, user_id, coherence_score) 
         VALUES (1, 'test-seg', 1, 'test content', 'test-user', 1.5)";
@@ -194,7 +230,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Act - Insert data for different sessions
         await session.ExecuteAsync(async connection =>
         {
-            const string insertSql = @"
+            const string insertSql =
+                @"
         INSERT INTO document_segments 
         (parent_document_id, segment_id, sequence_number, content, user_id, agent_id, run_id) 
         VALUES 
@@ -209,7 +246,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Assert - Verify session isolation query patterns work
         var user1Count = await session.ExecuteAsync(async connection =>
         {
-            const string countSql = @"
+            const string countSql =
+                @"
         SELECT COUNT(*) FROM document_segments 
         WHERE user_id = 'user1' AND agent_id = 'agent1' AND run_id = 'run1'";
 
@@ -221,7 +259,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         var user2Count = await session.ExecuteAsync(async connection =>
         {
-            const string countSql = @"
+            const string countSql =
+                @"
         SELECT COUNT(*) FROM document_segments 
         WHERE user_id = 'user2' AND agent_id = 'agent2' AND run_id = 'run2'";
 

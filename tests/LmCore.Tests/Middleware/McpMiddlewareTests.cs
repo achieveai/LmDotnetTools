@@ -2,13 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Xunit;
-using Microsoft.Extensions.Logging;
-using Moq;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
+using Moq;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -46,7 +46,7 @@ public class McpMiddlewareTests
         var globalConfig = new McpToolFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "dangerous_function" }
+            GlobalBlockedFunctions = new List<string> { "dangerous_function" },
         };
         var serverConfigs = new Dictionary<string, McpServerFilterConfig>();
 
@@ -54,7 +54,11 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Act
-        var shouldFilter = filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function");
+        var shouldFilter = filter.ShouldFilterTool(
+            "testServer",
+            "dangerous_function",
+            "dangerous_function"
+        );
 
         // Assert
         shouldFilter.Should().BeTrue();
@@ -65,16 +69,10 @@ public class McpMiddlewareTests
     {
         // Arrange
 #pragma warning disable CS0618 // Type or member is obsolete
-        var globalConfig = new McpToolFilterConfig
-        {
-            EnableFiltering = true
-        };
+        var globalConfig = new McpToolFilterConfig { EnableFiltering = true };
         var serverConfigs = new Dictionary<string, McpServerFilterConfig>
         {
-            ["blockedServer"] = new McpServerFilterConfig
-            {
-                Enabled = false
-            }
+            ["blockedServer"] = new McpServerFilterConfig { Enabled = false },
         };
 
         var filter = new McpToolFilter(globalConfig, serverConfigs, _mockLogger.Object);
@@ -97,29 +95,38 @@ public class McpMiddlewareTests
         {
             EnableFiltering = true,
             GlobalAllowedFunctions = new List<string> { "allowed_*" },
-            GlobalBlockedFunctions = new List<string> { "blocked_*" }
+            GlobalBlockedFunctions = new List<string> { "blocked_*" },
         };
 
         var serverConfig = new McpServerFilterConfig
         {
             Enabled = true,
             AllowedFunctions = new List<string> { "server_allowed" },
-            BlockedFunctions = new List<string> { "server_blocked" }
+            BlockedFunctions = new List<string> { "server_blocked" },
         };
 
         var serverConfigs = new Dictionary<string, McpServerFilterConfig>
         {
-            ["testServer"] = serverConfig
+            ["testServer"] = serverConfig,
         };
 
         var filter = new McpToolFilter(config, serverConfigs, _mockLogger.Object);
 #pragma warning restore CS0618
 
         // Act & Assert - Test various scenarios
-        filter.ShouldFilterTool("testServer", "allowed_function", "allowed_function").Should().BeFalse();
-        filter.ShouldFilterTool("testServer", "blocked_function", "blocked_function").Should().BeTrue();
+        filter
+            .ShouldFilterTool("testServer", "allowed_function", "allowed_function")
+            .Should()
+            .BeFalse();
+        filter
+            .ShouldFilterTool("testServer", "blocked_function", "blocked_function")
+            .Should()
+            .BeTrue();
         filter.ShouldFilterTool("testServer", "server_blocked", "server_blocked").Should().BeTrue();
-        filter.ShouldFilterTool("testServer", "random_function", "random_function").Should().BeTrue(); // Not in allow list
+        filter
+            .ShouldFilterTool("testServer", "random_function", "random_function")
+            .Should()
+            .BeTrue(); // Not in allow list
     }
 
     [Fact]
@@ -131,7 +138,7 @@ public class McpMiddlewareTests
         {
             EnableFiltering = true,
             UsePrefixOnlyForCollisions = false,
-            GlobalAllowedFunctions = new List<string> { "test" }
+            GlobalAllowedFunctions = new List<string> { "test" },
         };
 #pragma warning restore CS0618
 
@@ -151,7 +158,7 @@ public class McpMiddlewareTests
         {
             Enabled = true,
             CustomPrefix = "mcp",
-            AllowedFunctions = new List<string> { "func1" }
+            AllowedFunctions = new List<string> { "func1" },
         };
 #pragma warning restore CS0618
 
@@ -207,13 +214,13 @@ public class McpMiddlewareTests
             ["server1"] = new List<McpClientTool>
             {
                 new McpClientTool { Name = "tool1", Description = "Tool 1" },
-                new McpClientTool { Name = "tool2", Description = "Tool 2" }
+                new McpClientTool { Name = "tool2", Description = "Tool 2" },
             },
             ["server2"] = new List<McpClientTool>
             {
                 new McpClientTool { Name = "tool3", Description = "Tool 3" },
-                new McpClientTool { Name = "tool4", Description = "Tool 4" }
-            }
+                new McpClientTool { Name = "tool4", Description = "Tool 4" },
+            },
         };
 
         // Act
@@ -240,13 +247,13 @@ public class McpMiddlewareTests
             ["server1"] = new List<McpClientTool>
             {
                 new McpClientTool { Name = "search", Description = "Search in server1" },
-                new McpClientTool { Name = "unique1", Description = "Unique to server1" }
+                new McpClientTool { Name = "unique1", Description = "Unique to server1" },
             },
             ["server2"] = new List<McpClientTool>
             {
                 new McpClientTool { Name = "search", Description = "Search in server2" },
-                new McpClientTool { Name = "unique2", Description = "Unique to server2" }
-            }
+                new McpClientTool { Name = "unique2", Description = "Unique to server2" },
+            },
         };
 
         // Act
@@ -276,12 +283,12 @@ public class McpMiddlewareTests
         {
             ["server1"] = new List<McpClientTool>
             {
-                new McpClientTool { Name = "tool1", Description = "Tool 1" }
+                new McpClientTool { Name = "tool1", Description = "Tool 1" },
             },
             ["server2"] = new List<McpClientTool>
             {
-                new McpClientTool { Name = "tool2", Description = "Tool 2" }
-            }
+                new McpClientTool { Name = "tool2", Description = "Tool 2" },
+            },
         };
 
         // Act - usePrefixOnlyForCollisions = false means prefix all
@@ -306,21 +313,25 @@ public class McpMiddlewareTests
         {
             ["github"] = new List<McpClientTool>
             {
-                new McpClientTool { Name = "search_repos", Description = "Search GitHub repositories" },
+                new McpClientTool
+                {
+                    Name = "search_repos",
+                    Description = "Search GitHub repositories",
+                },
                 new McpClientTool { Name = "create_issue", Description = "Create a GitHub issue" },
-                new McpClientTool { Name = "list", Description = "List GitHub items" }
+                new McpClientTool { Name = "list", Description = "List GitHub items" },
             },
             ["filesystem"] = new List<McpClientTool>
             {
                 new McpClientTool { Name = "read_file", Description = "Read a file" },
                 new McpClientTool { Name = "write_file", Description = "Write a file" },
-                new McpClientTool { Name = "list", Description = "List files" }
+                new McpClientTool { Name = "list", Description = "List files" },
             },
             ["database"] = new List<McpClientTool>
             {
                 new McpClientTool { Name = "execute_query", Description = "Execute SQL query" },
-                new McpClientTool { Name = "list", Description = "List database objects" }
-            }
+                new McpClientTool { Name = "list", Description = "List database objects" },
+            },
         };
 
         // Act
@@ -359,17 +370,25 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Assert
-        mcpToolFilterType.GetCustomAttributes(typeof(ObsoleteAttribute), false)
-            .Should().HaveCount(1, "McpToolFilter should be marked as obsolete");
+        mcpToolFilterType
+            .GetCustomAttributes(typeof(ObsoleteAttribute), false)
+            .Should()
+            .HaveCount(1, "McpToolFilter should be marked as obsolete");
 
-        mcpToolFilterConfigType.GetCustomAttributes(typeof(ObsoleteAttribute), false)
-            .Should().HaveCount(1, "McpToolFilterConfig should be marked as obsolete");
+        mcpToolFilterConfigType
+            .GetCustomAttributes(typeof(ObsoleteAttribute), false)
+            .Should()
+            .HaveCount(1, "McpToolFilterConfig should be marked as obsolete");
 
-        mcpServerFilterConfigType.GetCustomAttributes(typeof(ObsoleteAttribute), false)
-            .Should().HaveCount(1, "McpServerFilterConfig should be marked as obsolete");
+        mcpServerFilterConfigType
+            .GetCustomAttributes(typeof(ObsoleteAttribute), false)
+            .Should()
+            .HaveCount(1, "McpServerFilterConfig should be marked as obsolete");
 
-        mcpToolCollisionDetectorType.GetCustomAttributes(typeof(ObsoleteAttribute), false)
-            .Should().HaveCount(1, "McpToolCollisionDetector should be marked as obsolete");
+        mcpToolCollisionDetectorType
+            .GetCustomAttributes(typeof(ObsoleteAttribute), false)
+            .Should()
+            .HaveCount(1, "McpToolCollisionDetector should be marked as obsolete");
     }
 
     [Fact]
@@ -378,13 +397,15 @@ public class McpMiddlewareTests
         // Verify the obsolete messages point to the new classes
 
 #pragma warning disable CS0618 // Type or member is obsolete
-        var mcpToolFilterAttr = typeof(McpToolFilter)
-            .GetCustomAttributes(typeof(ObsoleteAttribute), false)
-            .FirstOrDefault() as ObsoleteAttribute;
+        var mcpToolFilterAttr =
+            typeof(McpToolFilter)
+                .GetCustomAttributes(typeof(ObsoleteAttribute), false)
+                .FirstOrDefault() as ObsoleteAttribute;
 
-        var mcpToolFilterConfigAttr = typeof(McpToolFilterConfig)
-            .GetCustomAttributes(typeof(ObsoleteAttribute), false)
-            .FirstOrDefault() as ObsoleteAttribute;
+        var mcpToolFilterConfigAttr =
+            typeof(McpToolFilterConfig)
+                .GetCustomAttributes(typeof(ObsoleteAttribute), false)
+                .FirstOrDefault() as ObsoleteAttribute;
 #pragma warning restore CS0618
 
         // Assert
@@ -410,12 +431,8 @@ public class McpMiddlewareTests
             GlobalBlockedFunctions = new List<string> { "dangerous_*" },
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["testServer"] = new McpServerFilterConfig
-                {
-                    Enabled = true,
-                    CustomPrefix = "ts"
-                }
-            }
+                ["testServer"] = new McpServerFilterConfig { Enabled = true, CustomPrefix = "ts" },
+            },
         };
 
         var serverConfigs = new Dictionary<string, McpServerFilterConfig>
@@ -423,16 +440,22 @@ public class McpMiddlewareTests
             ["testServer"] = new McpServerFilterConfig
             {
                 Enabled = true,
-                BlockedFunctions = new List<string> { "specific_blocked" }
-            }
+                BlockedFunctions = new List<string> { "specific_blocked" },
+            },
         };
 
         var filter = new McpToolFilter(mcpConfig, serverConfigs, _mockLogger.Object);
 #pragma warning restore CS0618
 
         // Act & Assert
-        filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function").Should().BeTrue();
-        filter.ShouldFilterTool("testServer", "specific_blocked", "specific_blocked").Should().BeTrue();
+        filter
+            .ShouldFilterTool("testServer", "dangerous_function", "dangerous_function")
+            .Should()
+            .BeTrue();
+        filter
+            .ShouldFilterTool("testServer", "specific_blocked", "specific_blocked")
+            .Should()
+            .BeTrue();
         filter.ShouldFilterTool("testServer", "safe_function", "safe_function").Should().BeFalse();
         filter.ShouldFilterTool("unknownServer", "any_function", "any_function").Should().BeFalse();
     }

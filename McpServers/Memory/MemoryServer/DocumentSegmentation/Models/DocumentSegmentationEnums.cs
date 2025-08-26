@@ -53,7 +53,7 @@ public enum DocumentType
     /// <summary>
     /// Technical specification or code documentation
     /// </summary>
-    Technical
+    Technical,
 }
 
 /// <summary>
@@ -84,7 +84,7 @@ public enum SegmentationStrategy
     /// <summary>
     /// Custom strategy for specific use cases
     /// </summary>
-    Custom
+    Custom,
 }
 
 /// <summary>
@@ -110,5 +110,5 @@ public enum SegmentRelationshipType
     /// <summary>
     /// Topical relationship (shared topics or themes)
     /// </summary>
-    Topical
+    Topical,
 }

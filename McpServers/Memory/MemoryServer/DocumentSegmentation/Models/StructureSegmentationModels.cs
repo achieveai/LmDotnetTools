@@ -157,7 +157,7 @@ public enum StructuralElementType
     /// <summary>
     /// Other structural element.
     /// </summary>
-    Other
+    Other,
 }
 
 /// <summary>
@@ -403,5 +403,5 @@ public enum StructureValidationIssueType
     /// <summary>
     /// Structural elements spanning multiple segments inappropriately.
     /// </summary>
-    BrokenStructuralElements
+    BrokenStructuralElements,
 }

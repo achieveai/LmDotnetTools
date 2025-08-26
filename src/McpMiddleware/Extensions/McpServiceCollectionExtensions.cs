@@ -14,8 +14,11 @@ public static class McpServiceCollectionExtensions
     /// <summary>
     /// Register MCP function provider for specific assembly
     /// </summary>
-    public static IServiceCollection AddMcpFunctions(this IServiceCollection services,
-        Assembly? assembly = null, string? name = null)
+    public static IServiceCollection AddMcpFunctions(
+        this IServiceCollection services,
+        Assembly? assembly = null,
+        string? name = null
+    )
     {
         return services.AddFunctionProvider(sp => new McpFunctionProvider(assembly, name));
     }
@@ -23,8 +26,10 @@ public static class McpServiceCollectionExtensions
     /// <summary>
     /// Register MCP function provider with automatic discovery using assembly marker type
     /// </summary>
-    public static IServiceCollection AddMcpFunctions<TAssemblyMarker>(this IServiceCollection services,
-        string? name = null)
+    public static IServiceCollection AddMcpFunctions<TAssemblyMarker>(
+        this IServiceCollection services,
+        string? name = null
+    )
     {
         return services.AddMcpFunctions(typeof(TAssemblyMarker).Assembly, name);
     }
@@ -32,11 +37,11 @@ public static class McpServiceCollectionExtensions
     /// <summary>
     /// Auto-discover and register all MCP assemblies from loaded assemblies
     /// </summary>
-    public static IServiceCollection AddMcpFunctionsFromLoadedAssemblies(this IServiceCollection services)
+    public static IServiceCollection AddMcpFunctionsFromLoadedAssemblies(
+        this IServiceCollection services
+    )
     {
-        var assemblies = AppDomain.CurrentDomain.GetAssemblies()
-            .Where(HasMcpTools)
-            .ToList();
+        var assemblies = AppDomain.CurrentDomain.GetAssemblies().Where(HasMcpTools).ToList();
 
         foreach (var assembly in assemblies)
         {
@@ -53,7 +58,8 @@ public static class McpServiceCollectionExtensions
     {
         try
         {
-            return assembly.GetTypes()
+            return assembly
+                .GetTypes()
                 .Any(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() != null);
         }
         catch

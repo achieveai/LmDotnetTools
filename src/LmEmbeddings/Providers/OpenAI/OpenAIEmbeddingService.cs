@@ -1,8 +1,8 @@
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
-using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
 
@@ -36,9 +36,9 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
 ///     ApiKey = Environment.GetEnvironmentVariable("EMBEDDING_API_KEY"),
 ///     DefaultModel = Environment.GetEnvironmentVariable("EMBEDDING_MODEL") ?? "text-embedding-3-small"
 /// };
-/// 
+///
 /// var service = new OpenAIEmbeddingService(logger, httpClient, options);
-/// 
+///
 /// // Generate embeddings
 /// var request = new EmbeddingRequest
 /// {
@@ -46,7 +46,7 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
 ///     Model = "text-embedding-3-small",
 ///     EncodingFormat = "base64"
 /// };
-/// 
+///
 /// var response = await service.GenerateEmbeddingsAsync(request);
 /// foreach (var embedding in response.Embeddings)
 /// {
@@ -91,17 +91,21 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     ///     MaxRetries = 3,
     ///     TimeoutSeconds = 30
     /// };
-    /// 
+    ///
     /// var service = new OpenAIEmbeddingService(logger, httpClient, options);
     /// </code>
     /// </example>
     public OpenAIEmbeddingService(
         ILogger<OpenAIEmbeddingService> logger,
         HttpClient httpClient,
-        EmbeddingOptions options) : base(logger, httpClient)
+        EmbeddingOptions options
+    )
+        : base(logger, httpClient)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _jsonOptions = JsonSerializerOptionsFactory.CreateBase(namingPolicy: JsonNamingPolicy.SnakeCaseLower);
+        _jsonOptions = JsonSerializerOptionsFactory.CreateBase(
+            namingPolicy: JsonNamingPolicy.SnakeCaseLower
+        );
 
         // Configure HttpClient
         if (!string.IsNullOrEmpty(_options.ApiKey))
@@ -131,7 +135,8 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     /// If an unknown model is specified, the service defaults to 1536 dimensions (text-embedding-3-small size).
     /// </para>
     /// </remarks>
-    public override int EmbeddingSize => _options.AvailableModelsWithDimensions[_options.DefaultModel].Dimensions;
+    public override int EmbeddingSize =>
+        _options.AvailableModelsWithDimensions[_options.DefaultModel].Dimensions;
 
     /// <summary>
     /// Gets the embedding size for a specific OpenAI model.
@@ -191,54 +196,83 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     ///     EncodingFormat = "base64",
     ///     Dimensions = 1024 // Optional dimension reduction
     /// };
-    /// 
+    ///
     /// var response = await service.GenerateEmbeddingsAsync(request);
     /// Console.WriteLine($"Generated {response.Embeddings.Count} embeddings");
     /// Console.WriteLine($"Used {response.Usage?.TotalTokens} tokens");
     /// </code>
     /// </example>
-    public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(EmbeddingRequest request, CancellationToken cancellationToken = default)
+    public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
+        EmbeddingRequest request,
+        CancellationToken cancellationToken = default
+    )
     {
         ValidateRequest(request);
 
-        return await ExecuteWithRetryAsync(async () =>
-        {
-            // Use the base class method to format the request based on API type
-            var requestPayload = FormatRequestPayload(request);
-
-            var json = JsonSerializer.Serialize(requestPayload, _jsonOptions);
-            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-            Logger.LogDebug("Sending embedding request to OpenAI for {InputCount} inputs using model {Model} with API type {ApiType}",
-                request.Inputs.Count, request.Model, request.ApiType);
-
-            var response = await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
-            response.EnsureSuccessStatusCode();
-
-            var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-            var openAIResponse = JsonSerializer.Deserialize<OpenAIEmbeddingResponse>(responseJson, _jsonOptions);
-
-            if (openAIResponse?.Data == null)
-                throw new InvalidOperationException("Invalid response from OpenAI API");
-
-            var embeddings = openAIResponse.Data.Select((item, index) => new EmbeddingItem
+        return await ExecuteWithRetryAsync(
+            async () =>
             {
-                Vector = DecodeEmbedding(item.Embedding, null),
-                Index = item.Index,
-                Text = request.Inputs.ElementAtOrDefault(item.Index)
-            }).ToArray();
+                // Use the base class method to format the request based on API type
+                var requestPayload = FormatRequestPayload(request);
 
-            return new EmbeddingResponse
-            {
-                Embeddings = embeddings,
-                Model = openAIResponse.Model,
-                Usage = openAIResponse.Usage != null ? new EmbeddingUsage
+                var json = JsonSerializer.Serialize(requestPayload, _jsonOptions);
+                var content = new StringContent(
+                    json,
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+
+                Logger.LogDebug(
+                    "Sending embedding request to OpenAI for {InputCount} inputs using model {Model} with API type {ApiType}",
+                    request.Inputs.Count,
+                    request.Model,
+                    request.ApiType
+                );
+
+                var response = await HttpClient.PostAsync(
+                    "/v1/embeddings",
+                    content,
+                    cancellationToken
+                );
+                response.EnsureSuccessStatusCode();
+
+                var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
+                var openAIResponse = JsonSerializer.Deserialize<OpenAIEmbeddingResponse>(
+                    responseJson,
+                    _jsonOptions
+                );
+
+                if (openAIResponse?.Data == null)
+                    throw new InvalidOperationException("Invalid response from OpenAI API");
+
+                var embeddings = openAIResponse
+                    .Data.Select(
+                        (item, index) =>
+                            new EmbeddingItem
+                            {
+                                Vector = DecodeEmbedding(item.Embedding, null),
+                                Index = item.Index,
+                                Text = request.Inputs.ElementAtOrDefault(item.Index),
+                            }
+                    )
+                    .ToArray();
+
+                return new EmbeddingResponse
                 {
-                    PromptTokens = openAIResponse.Usage.PromptTokens,
-                    TotalTokens = openAIResponse.Usage.TotalTokens
-                } : null
-            };
-        }, cancellationToken: cancellationToken);
+                    Embeddings = embeddings,
+                    Model = openAIResponse.Model,
+                    Usage =
+                        openAIResponse.Usage != null
+                            ? new EmbeddingUsage
+                            {
+                                PromptTokens = openAIResponse.Usage.PromptTokens,
+                                TotalTokens = openAIResponse.Usage.TotalTokens,
+                            }
+                            : null,
+                };
+            },
+            cancellationToken: cancellationToken
+        );
     }
 
     /// <inheritdoc />
@@ -257,13 +291,12 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     /// Model availability may vary based on your OpenAI account and subscription level.
     /// </para>
     /// </remarks>
-    public override async Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
+    public override async Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         // Return known OpenAI embedding models
-        return await Task.FromResult(new[]
-        {
-            _options.DefaultModel
-        }.AsReadOnly());
+        return await Task.FromResult(new[] { _options.DefaultModel }.AsReadOnly());
     }
 
     /// <summary>
@@ -312,16 +345,19 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         if (detectedFormat != requestedFormat)
         {
             throw new InvalidOperationException(
-                $"Encoding format mismatch: requested '{requestedFormat}' but detected '{detectedFormat}' " +
-                $"based on data type {embedding?.GetType().Name ?? "null"}. " +
-                $"Consider omitting EncodingFormat to enable auto-detection.");
+                $"Encoding format mismatch: requested '{requestedFormat}' but detected '{detectedFormat}' "
+                    + $"based on data type {embedding?.GetType().Name ?? "null"}. "
+                    + $"Consider omitting EncodingFormat to enable auto-detection."
+            );
         }
 
         return requestedFormat switch
         {
             "base64" => DecodeBase64Embedding(embedding.ToString()!),
             "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
-            _ => throw new NotSupportedException($"Encoding format '{requestedFormat}' is not supported")
+            _ => throw new NotSupportedException(
+                $"Encoding format '{requestedFormat}' is not supported"
+            ),
         };
     }
 
@@ -339,8 +375,9 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
             "base64" => DecodeBase64Embedding(embedding.ToString()!),
             "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
             _ => throw new InvalidOperationException(
-                $"Unable to detect embedding format for data type {embedding?.GetType().Name ?? "null"}. " +
-                $"Expected string (base64) or JsonElement array (float), but got {embedding}")
+                $"Unable to detect embedding format for data type {embedding?.GetType().Name ?? "null"}. "
+                    + $"Expected string (base64) or JsonElement array (float), but got {embedding}"
+            ),
         };
     }
 
@@ -356,7 +393,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
             string => "base64",
             JsonElement jsonElement when jsonElement.ValueKind == JsonValueKind.String => "base64",
             JsonElement jsonElement when jsonElement.ValueKind == JsonValueKind.Array => "float",
-            _ => "unknown"
+            _ => "unknown",
         };
     }
 
@@ -370,7 +407,8 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         if (jsonElement.ValueKind != JsonValueKind.Array)
         {
             throw new InvalidOperationException(
-                $"Expected JsonElement with Array ValueKind for float format, but got {jsonElement.ValueKind}");
+                $"Expected JsonElement with Array ValueKind for float format, but got {jsonElement.ValueKind}"
+            );
         }
 
         return jsonElement.EnumerateArray().Select(x => x.GetSingle()).ToArray();

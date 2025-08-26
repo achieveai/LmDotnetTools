@@ -12,19 +12,22 @@ namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 /// </summary>
 public class McpServerTests
 {
-    public readonly static string ServerLocation =
-      Path.Combine(
+    public static readonly string ServerLocation = Path.Combine(
         Path.GetDirectoryName(typeof(McpServerTests).Assembly.Location)!,
-        "AchieveAi.LmDotnetTools.McpSampleServer.exe");
+        "AchieveAi.LmDotnetTools.McpSampleServer.exe"
+    );
+
     [Fact]
     public async Task GreetingTool_SayHello_ReturnsGreeting()
     {
-        var transport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "test-server",
-            Command = ServerLocation,
-            Arguments = Array.Empty<string>()
-        });
+        var transport = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "test-server",
+                Command = ServerLocation,
+                Arguments = Array.Empty<string>(),
+            }
+        );
 
         var client = await McpClientFactory.CreateAsync(transport);
         try
@@ -33,14 +36,17 @@ public class McpServerTests
             var clients = new Dictionary<string, IMcpClient>
             {
                 ["test_client"] = client,
-                ["GreetingTool"] = client
+                ["GreetingTool"] = client,
             };
 
             var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
 
             // Create a test agent and inject a tool call message to be returned
             var agent = new SimpleTestAgent();
-            var toolCall = new LmCore.Messages.ToolCall("GreetingTool.SayHello", JsonSerializer.Serialize(new { name = "User" }));
+            var toolCall = new LmCore.Messages.ToolCall(
+                "GreetingTool.SayHello",
+                JsonSerializer.Serialize(new { name = "User" })
+            );
             agent.InjectMessage(new ToolsCallMessage { ToolCalls = [toolCall] });
 
             // Create a simple text message as the initial message
@@ -93,21 +99,20 @@ public class McpServerTests
     public async Task CalculatorTool_Add_ReturnsCorrectResult()
     {
         // Create a client using the new transport API
-        var transport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "test-server",
-            Command = ServerLocation,
-            Arguments = Array.Empty<string>()
-        });
+        var transport = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "test-server",
+                Command = ServerLocation,
+                Arguments = Array.Empty<string>(),
+            }
+        );
 
         var client = await McpClientFactory.CreateAsync(transport);
         try
         {
             // Prepare arguments for the Add operation
-            var arguments = new Dictionary<string, object?> {
-                { "a", 5.0 },
-                { "b", 3.0 }
-            };
+            var arguments = new Dictionary<string, object?> { { "a", 5.0 }, { "b", 3.0 } };
 
             var tools = await client.ListToolsAsync();
 

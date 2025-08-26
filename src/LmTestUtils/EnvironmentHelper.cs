@@ -25,14 +25,18 @@ public static class EnvironmentHelper
 
             if (envFilePath != null)
             {
-                Console.WriteLine($"Loading environment variables from specified path: {envFilePath}");
+                Console.WriteLine(
+                    $"Loading environment variables from specified path: {envFilePath}"
+                );
                 if (File.Exists(envFilePath))
                 {
                     Console.WriteLine($"File exists at {envFilePath}");
-                    DotEnv.Load(options: new DotEnvOptions(
-                      envFilePaths: new[] { envFilePath },
-                      ignoreExceptions: false
-                    ));
+                    DotEnv.Load(
+                        options: new DotEnvOptions(
+                            envFilePaths: new[] { envFilePath },
+                            ignoreExceptions: false
+                        )
+                    );
                 }
                 else
                 {
@@ -45,14 +49,18 @@ public static class EnvironmentHelper
                 string workspaceRoot = FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
                 string workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
 
-                Console.WriteLine($"Loading environment variables from workspace root: {workspaceEnvPath}");
+                Console.WriteLine(
+                    $"Loading environment variables from workspace root: {workspaceEnvPath}"
+                );
                 if (File.Exists(workspaceEnvPath))
                 {
                     Console.WriteLine($"File exists at {workspaceEnvPath}");
-                    DotEnv.Load(options: new DotEnvOptions(
-                      envFilePaths: new[] { workspaceEnvPath },
-                      ignoreExceptions: false
-                    ));
+                    DotEnv.Load(
+                        options: new DotEnvOptions(
+                            envFilePaths: new[] { workspaceEnvPath },
+                            ignoreExceptions: false
+                        )
+                    );
                 }
                 else
                 {
@@ -71,7 +79,11 @@ public static class EnvironmentHelper
     /// <param name="fallbackKeys">Fallback environment variable names</param>
     /// <param name="defaultValue">Default value if no keys found</param>
     /// <returns>API key value</returns>
-    public static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "test-api-key")
+    public static string GetApiKeyFromEnv(
+        string primaryKey,
+        string[]? fallbackKeys = null,
+        string defaultValue = "test-api-key"
+    )
     {
         LoadEnvIfNeeded();
 
@@ -106,7 +118,8 @@ public static class EnvironmentHelper
     public static string GetApiBaseUrlFromEnv(
         string primaryKey,
         string[]? fallbackKeys = null,
-        string defaultValue = "https://api.openai.com/v1")
+        string defaultValue = "https://api.openai.com/v1"
+    )
     {
         LoadEnvIfNeeded();
 
@@ -154,9 +167,11 @@ public static class EnvironmentHelper
         while (currentDir != null)
         {
             // Look for solution files or other workspace indicators
-            if (currentDir.GetFiles("*.sln").Length > 0 ||
-                currentDir.GetDirectories(".git").Length > 0 ||
-                currentDir.GetFiles(".env.test").Length > 0)
+            if (
+                currentDir.GetFiles("*.sln").Length > 0
+                || currentDir.GetDirectories(".git").Length > 0
+                || currentDir.GetFiles(".env.test").Length > 0
+            )
             {
                 return currentDir.FullName;
             }

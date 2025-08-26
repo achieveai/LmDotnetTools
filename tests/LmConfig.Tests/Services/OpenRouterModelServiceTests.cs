@@ -1,10 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Moq.Protected;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Services;
 
@@ -24,25 +24,31 @@ public class OpenRouterModelServiceTests : IDisposable
     private void SetupHttpMock(object responseData)
     {
         var jsonResponse = JsonSerializer.Serialize(responseData);
-        
+
         _mockHttpHandler.Reset();
-        _mockHttpHandler.Protected()
+        _mockHttpHandler
+            .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("openrouter.ai")),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = System.Net.HttpStatusCode.OK,
-                Content = new StringContent(jsonResponse)
-            });
+                ItExpr.Is<HttpRequestMessage>(req =>
+                    req.RequestUri!.ToString().Contains("openrouter.ai")
+                ),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(
+                new HttpResponseMessage
+                {
+                    StatusCode = System.Net.HttpStatusCode.OK,
+                    Content = new StringContent(jsonResponse),
+                }
+            );
     }
 
     private void ClearCache()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "LmDotnetTools");
         var cacheFilePath = Path.Combine(tempDir, "openrouter-cache.json");
-        
+
         if (File.Exists(cacheFilePath))
         {
             File.Delete(cacheFilePath);
@@ -55,7 +61,7 @@ public class OpenRouterModelServiceTests : IDisposable
         // Arrange
         ClearCache();
         var service = new OpenRouterModelService(_httpClient, _mockLogger.Object);
-        
+
         // Create mock response for OpenRouter API
         var mockResponse = new
         {
@@ -70,9 +76,9 @@ public class OpenRouterModelServiceTests : IDisposable
                     output_modalities = new[] { "text" },
                     has_text_output = true,
                     group = "test",
-                    author = "test-author"
-                }
-            }
+                    author = "test-author",
+                },
+            },
         };
 
         SetupHttpMock(mockResponse);
@@ -82,20 +88,25 @@ public class OpenRouterModelServiceTests : IDisposable
 
         // Assert
         Assert.NotNull(result);
-        
+
         // Verify HTTP call was made
-        _mockHttpHandler.Protected().Verify(
-            "SendAsync",
-            Times.Once(),
-            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("openrouter.ai")),
-            ItExpr.IsAny<CancellationToken>());
-        
+        _mockHttpHandler
+            .Protected()
+            .Verify(
+                "SendAsync",
+                Times.Once(),
+                ItExpr.Is<HttpRequestMessage>(req =>
+                    req.RequestUri!.ToString().Contains("openrouter.ai")
+                ),
+                ItExpr.IsAny<CancellationToken>()
+            );
+
         Assert.Single(result);
-        
+
         var modelConfig = result.First();
         Assert.Equal("test-model-1", modelConfig.Id);
         Assert.Single(modelConfig.Providers);
-        
+
         var provider = modelConfig.Providers.First();
         Assert.Equal("OpenRouter", provider.Name);
         Assert.Equal("test-model-1", provider.ModelName);
@@ -108,12 +119,14 @@ public class OpenRouterModelServiceTests : IDisposable
         // Arrange
         ClearCache();
         var service = new OpenRouterModelService(_httpClient, _mockLogger.Object);
-        
-        _mockHttpHandler.Protected()
+
+        _mockHttpHandler
+            .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
                 ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>())
+                ItExpr.IsAny<CancellationToken>()
+            )
             .ThrowsAsync(new HttpRequestException("Network error"));
 
         // Act
@@ -130,26 +143,19 @@ public class OpenRouterModelServiceTests : IDisposable
         // Arrange
         var mockResponse = new
         {
-            data = new[]
-            {
-                new
-                {
-                    slug = "test-model-1",
-                    name = "Test Model 1"
-                }
-            }
+            data = new[] { new { slug = "test-model-1", name = "Test Model 1" } },
         };
 
         var jsonResponse = JsonSerializer.Serialize(mockResponse);
-        
+
         // Act
         var parsed = JsonNode.Parse(jsonResponse);
         var dataArray = parsed?["data"]?.AsArray();
-        
+
         // Assert
         Assert.NotNull(dataArray);
         Assert.Single(dataArray);
-        
+
         var firstModel = dataArray[0];
         Assert.Equal("test-model-1", firstModel?["slug"]?.GetValue<string>());
         Assert.Equal("Test Model 1", firstModel?["name"]?.GetValue<string>());
@@ -161,7 +167,7 @@ public class OpenRouterModelServiceTests : IDisposable
         // Arrange
         ClearCache();
         var service = new OpenRouterModelService(_httpClient, _mockLogger.Object);
-        
+
         var mockResponse = new { data = Array.Empty<object>() };
         SetupHttpMock(mockResponse);
 
@@ -179,19 +185,24 @@ public class OpenRouterModelServiceTests : IDisposable
         // Arrange
         ClearCache();
         var service = new OpenRouterModelService(_httpClient, _mockLogger.Object);
-        
+
         var mockResponse = new { data = Array.Empty<object>() };
         SetupHttpMock(mockResponse);
 
         // Act & Assert - Should not throw
         await service.RefreshCacheAsync();
-        
+
         // Verify HTTP call was made
-        _mockHttpHandler.Protected().Verify(
-            "SendAsync",
-            Times.Once(),
-            ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("openrouter.ai")),
-            ItExpr.IsAny<CancellationToken>());
+        _mockHttpHandler
+            .Protected()
+            .Verify(
+                "SendAsync",
+                Times.Once(),
+                ItExpr.Is<HttpRequestMessage>(req =>
+                    req.RequestUri!.ToString().Contains("openrouter.ai")
+                ),
+                ItExpr.IsAny<CancellationToken>()
+            );
     }
 
     public void Dispose()

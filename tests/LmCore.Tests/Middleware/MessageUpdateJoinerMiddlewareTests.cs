@@ -18,13 +18,17 @@ public class MessageUpdateJoinerMiddlewareTests
         // Mock the agent to return our test message
         var mockAgent = new Mock<IAgent>();
         mockAgent
-          .Setup(a => a.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
-          .ReturnsAsync(new[] { message });
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(new[] { message });
 
         // Create context with empty messages
-        var context = new MiddlewareContext(
-          new List<IMessage>(),
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent.Object, cancellationToken);
@@ -36,10 +40,15 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Equal(message.Text, ((LmCore.Messages.ICanGetText)firstMessage).GetText());
 
         // Verify the agent was called exactly once
-        mockAgent.Verify(a => a.GenerateReplyAsync(
-          It.IsAny<IEnumerable<IMessage>>(),
-          It.IsAny<GenerateReplyOptions>(),
-          It.IsAny<CancellationToken>()), Times.Once);
+        mockAgent.Verify(
+            a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
     }
 
     [Fact]
@@ -57,19 +66,24 @@ public class MessageUpdateJoinerMiddlewareTests
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         mockStreamingAgent
-          .Setup(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .ReturnsAsync(updateMessages.ToAsyncEnumerable());
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(
-          new List<IMessage>(),
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
-        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
+        var resultStream = await middleware.InvokeStreamingAsync(
+            context,
+            mockStreamingAgent.Object,
+            cancellationToken
+        );
 
         // Manually collect all messages from the stream
         var results = new List<IMessage>();
@@ -85,10 +99,15 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Equal(testString, ((ICanGetText)results[0]).GetText());
 
         // Verify the streaming agent was called exactly once
-        mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(
-          It.IsAny<IEnumerable<IMessage>>(),
-          It.IsAny<GenerateReplyOptions>(),
-          It.IsAny<CancellationToken>()), Times.Once);
+        mockStreamingAgent.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
     }
 
     [Fact]
@@ -116,7 +135,7 @@ public class MessageUpdateJoinerMiddlewareTests
         {
             Usage = usage,
             FromAgent = "test-agent",
-            Role = Role.Assistant
+            Role = Role.Assistant,
         };
 
         var updateMessages = new List<IMessage>(textUpdates);
@@ -125,19 +144,24 @@ public class MessageUpdateJoinerMiddlewareTests
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         mockStreamingAgent
-          .Setup(a => a.GenerateReplyStreamingAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .ReturnsAsync(updateMessages.ToAsyncEnumerable());
+            .Setup(a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(
-          new List<IMessage>(),
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
-        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
+        var resultStream = await middleware.InvokeStreamingAsync(
+            context,
+            mockStreamingAgent.Object,
+            cancellationToken
+        );
 
         // Manually collect all messages from the stream
         var results = new List<IMessage>();
@@ -170,10 +194,15 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Equal(20, typedUsageMessage.Usage.TotalTokens);
 
         // Verify the streaming agent was called exactly once
-        mockStreamingAgent.Verify(a => a.GenerateReplyStreamingAsync(
-          It.IsAny<IEnumerable<IMessage>>(),
-          It.IsAny<GenerateReplyOptions>(),
-          It.IsAny<CancellationToken>()), Times.Once);
+        mockStreamingAgent.Verify(
+            a =>
+                a.GenerateReplyStreamingAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                ),
+            Times.Once
+        );
     }
 
     #region Helper Methods
@@ -203,11 +232,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         foreach (var part in parts)
         {
-            messages.Add(new TextUpdateMessage
-            {
-                Text = part,
-                Role = Role.Assistant
-            });
+            messages.Add(new TextUpdateMessage { Text = part, Role = Role.Assistant });
         }
 
         return messages;

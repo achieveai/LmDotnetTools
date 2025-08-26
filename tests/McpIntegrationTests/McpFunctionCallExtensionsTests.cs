@@ -1,10 +1,10 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpSampleServer;
 using ModelContextProtocol.Server;
-using System.Diagnostics;
-using System.Reflection;
-using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
 
@@ -21,7 +21,9 @@ public class McpFunctionCallExtensionsTests
         Assert.NotNull(attr); // Verify the attribute is present
 
         // Find the CalculatorTool type by name
-        var calculatorToolType = greetingToolType.Assembly.GetType("AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool");
+        var calculatorToolType = greetingToolType.Assembly.GetType(
+            "AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool"
+        );
         Assert.NotNull(calculatorToolType);
 
         // Log the types we've found
@@ -29,7 +31,8 @@ public class McpFunctionCallExtensionsTests
         Debug.WriteLine($"Found CalculatorTool: {calculatorToolType!.FullName}");
 
         // Check that there are methods with McpServerToolAttribute on the GreetingTool
-        var greetingToolMethods = greetingToolType.GetMethods()
+        var greetingToolMethods = greetingToolType
+            .GetMethods()
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null)
             .ToList();
 
@@ -38,7 +41,8 @@ public class McpFunctionCallExtensionsTests
 
         // Act - test with specific tool types rather than scanning whole assembly
         var toolTypes = new[] { greetingToolType, calculatorToolType };
-        var (functionContracts, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
+        var (functionContracts, functionMap) =
+            McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
 
         // Convert to list for easier assertions
         var contractsList = functionContracts.ToList();
@@ -99,12 +103,16 @@ public class McpFunctionCallExtensionsTests
     {
         // Arrange - use direct reflection to find McpServerToolTypeAttribute to avoid assembly resolution issues
         var greetingToolType = typeof(GreetingTool);
-        var calculatorToolType = greetingToolType.Assembly.GetType("AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool");
+        var calculatorToolType = greetingToolType.Assembly.GetType(
+            "AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool"
+        );
         Assert.NotNull(calculatorToolType);
 
         // Act - test with specific tool types rather than scanning whole assembly
         var toolTypes = new[] { greetingToolType, calculatorToolType! };
-        var (_, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
+        var (_, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(
+            toolTypes
+        );
 
         // Act & Assert for SayHello
         var sayHelloResult = await functionMap["GreetingTool-SayHello"]("{\"name\":\"Test User\"}");
@@ -134,13 +142,20 @@ public class McpFunctionCallExtensionsTests
     {
         // Arrange - we'll create the middleware directly with the two specific types rather than scanning the assembly
         var greetingToolType = typeof(GreetingTool);
-        var calculatorToolType = greetingToolType.Assembly.GetType("AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool");
+        var calculatorToolType = greetingToolType.Assembly.GetType(
+            "AchieveAi.LmDotnetTools.McpSampleServer.CalculatorTool"
+        );
         Assert.NotNull(calculatorToolType);
 
         // Create a middleware using a direct approach rather than assembly scanning
         var toolTypes = new[] { greetingToolType, calculatorToolType! };
-        var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
-        var middleware = new FunctionCallMiddleware(functions, functionMap, "FunctionCallMiddleware");
+        var (functions, functionMap) =
+            McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
+        var middleware = new FunctionCallMiddleware(
+            functions,
+            functionMap,
+            "FunctionCallMiddleware"
+        );
 
         // Assert
         Assert.NotNull(middleware);

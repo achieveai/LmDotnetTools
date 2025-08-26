@@ -1,42 +1,42 @@
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.LmConfig.Agents;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Services;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Prompts;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using MemoryServer.DocumentSegmentation.Integration;
+using MemoryServer.DocumentSegmentation.Models;
+using MemoryServer.DocumentSegmentation.Services;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using MemoryServer.Services;
 using MemoryServer.Tools;
 using MemoryServer.Utils;
-using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.DocumentSegmentation.Integration;
 using Microsoft.Extensions.Options;
-using AchieveAi.LmDotnetTools.LmCore.Prompts;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
-using System.Text.Json;
 
 namespace MemoryServer.Configuration;
 
 public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddMemoryServerCore(
-      this IServiceCollection services,
-      IConfiguration configuration,
-      IHostEnvironment? environment = null)
+        this IServiceCollection services,
+        IConfiguration configuration,
+        IHostEnvironment? environment = null
+    )
     {
         // Add memory cache
         services.AddMemoryCache();
 
         // Configure options from appsettings
-        services.Configure<DatabaseOptions>(
-          configuration.GetSection("MemoryServer:Database"));
-        services.Configure<MemoryServerOptions>(
-          configuration.GetSection("MemoryServer"));
+        services.Configure<DatabaseOptions>(configuration.GetSection("MemoryServer:Database"));
+        services.Configure<MemoryServerOptions>(configuration.GetSection("MemoryServer"));
         services.Configure<DocumentSegmentationOptions>(
-          configuration.GetSection("MemoryServer:DocumentSegmentation"));
+            configuration.GetSection("MemoryServer:DocumentSegmentation")
+        );
 
         // Register Database Session Pattern infrastructure
         services.AddDatabaseServices(environment);
@@ -89,7 +89,9 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    public static IServiceCollection AddDocumentSegmentationServices(this IServiceCollection services)
+    public static IServiceCollection AddDocumentSegmentationServices(
+        this IServiceCollection services
+    )
     {
         // Document Segmentation services - Phase 1 implementation
 
@@ -106,9 +108,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILlmProviderIntegrationService, LlmProviderIntegrationService>();
 
         // Quality assessment services
-        services.AddScoped<ISegmentationQualityAssessmentService, SegmentationQualityAssessmentService>();
+        services.AddScoped<
+            ISegmentationQualityAssessmentService,
+            SegmentationQualityAssessmentService
+        >();
 
-        // Prompt management service - implemented in Week 2  
+        // Prompt management service - implemented in Week 2
         services.AddScoped<ISegmentationPromptManager, SegmentationPromptManager>();
 
         // Repository for segment storage - implemented in Week 2
@@ -134,7 +139,7 @@ public static class ServiceCollectionExtensions
             FailureThreshold = 5,
             TimeoutMs = 30000,
             MaxTimeoutMs = 300000,
-            ExponentialFactor = 2.0
+            ExponentialFactor = 2.0,
         });
 
         services.AddSingleton<RetryConfiguration>(_ => new RetryConfiguration
@@ -143,16 +148,18 @@ public static class ServiceCollectionExtensions
             BaseDelayMs = 1000,
             ExponentialFactor = 2.0,
             MaxDelayMs = 30000,
-            JitterPercent = 0.1
+            JitterPercent = 0.1,
         });
 
-        services.AddSingleton<GracefulDegradationConfiguration>(_ => new GracefulDegradationConfiguration
-        {
-            FallbackTimeoutMs = 5000,
-            RuleBasedQualityScore = 0.7,
-            RuleBasedMaxProcessingMs = 10000,
-            MaxPerformanceDegradationPercent = 0.2
-        });
+        services.AddSingleton<GracefulDegradationConfiguration>(
+            _ => new GracefulDegradationConfiguration
+            {
+                FallbackTimeoutMs = 5000,
+                RuleBasedQualityScore = 0.7,
+                RuleBasedMaxProcessingMs = 10000,
+                MaxPerformanceDegradationPercent = 0.2,
+            }
+        );
 
         // Register resilience services
         services.AddSingleton<ICircuitBreakerService, CircuitBreakerService>();
@@ -163,8 +170,9 @@ public static class ServiceCollectionExtensions
     }
 
     public static IServiceCollection AddDatabaseServices(
-      this IServiceCollection services,
-      IHostEnvironment? environment = null)
+        this IServiceCollection services,
+        IHostEnvironment? environment = null
+    )
     {
         // For MCP server, always use production database services
         // Test services should only be used in actual test projects
@@ -188,20 +196,19 @@ public static class ServiceCollectionExtensions
         // Add HTTP client factory for provider connections
         services.AddHttpClient();
 
-        // Note: IAgent is now provided through ILmConfigService.CreateAgentAsync() 
+        // Note: IAgent is now provided through ILmConfigService.CreateAgentAsync()
         // instead of direct dependency injection for better model selection and provider management
 
         return services;
     }
 
-
-
     // Note: Agent creation methods removed as they are now handled by ILmConfigService
     // which provides better model selection, provider management, and configuration
 
     public static IServiceCollection AddMcpServices(
-      this IServiceCollection services,
-      TransportMode transportMode)
+        this IServiceCollection services,
+        TransportMode transportMode
+    )
     {
         var mcpBuilder = services.AddMcpServer();
 

@@ -30,9 +30,9 @@ public class JwtOptions
     /// </summary>
     public bool IsValid()
     {
-        return !string.IsNullOrEmpty(Secret) &&
-               !string.IsNullOrEmpty(Issuer) &&
-               !string.IsNullOrEmpty(Audience) &&
-               ExpirationMinutes > 0;
+        return !string.IsNullOrEmpty(Secret)
+            && !string.IsNullOrEmpty(Issuer)
+            && !string.IsNullOrEmpty(Audience)
+            && ExpirationMinutes > 0;
     }
 }

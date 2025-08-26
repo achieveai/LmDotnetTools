@@ -13,7 +13,8 @@ public interface IFunctionProviderRegistry
     /// <summary>
     /// Register a function provider type to be resolved via DI
     /// </summary>
-    void RegisterProvider<TProvider>() where TProvider : class, IFunctionProvider;
+    void RegisterProvider<TProvider>()
+        where TProvider : class, IFunctionProvider;
 
     /// <summary>
     /// Register a factory for creating function providers

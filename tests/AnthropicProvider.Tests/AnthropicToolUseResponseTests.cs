@@ -6,7 +6,8 @@ public class AnthropicToolUseResponseTests
     public void Deserialize_ToolUseResponse_ShouldPopulateCorrectly()
     {
         // Arrange
-        string json = @"{
+        string json =
+            @"{
             ""id"": ""msg_014fBvULMGnEoN6yXutiqiQx"",
             ""type"": ""message"",
             ""role"": ""assistant"",
@@ -36,10 +37,7 @@ public class AnthropicToolUseResponseTests
         }";
 
         // Act
-        var options = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
+        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         var response = JsonSerializer.Deserialize<AnthropicResponse>(json, options);
 
         // Assert
@@ -60,7 +58,10 @@ public class AnthropicToolUseResponseTests
         Assert.Equal("text", textContent.Type);
         Assert.IsType<AnthropicResponseTextContent>(textContent);
         var typedTextContent = (AnthropicResponseTextContent)textContent;
-        Assert.Equal("I'll help you list the files in the root and \"code\" directories. Let me use the appropriate tool to do that.", typedTextContent.Text);
+        Assert.Equal(
+            "I'll help you list the files in the root and \"code\" directories. Let me use the appropriate tool to do that.",
+            typedTextContent.Text
+        );
 
         // Validate tool_use content
         var toolContent = response.Content[1];

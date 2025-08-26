@@ -65,5 +65,5 @@ public enum GraphDecisionOperation
     /// <summary>
     /// No action needed.
     /// </summary>
-    NONE
+    NONE,
 }

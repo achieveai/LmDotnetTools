@@ -1,4 +1,4 @@
-﻿using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
@@ -19,5 +19,6 @@ public interface IMiddleware
     public Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

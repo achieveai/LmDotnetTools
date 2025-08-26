@@ -11,7 +11,10 @@ public class PromptReaderTests
     {
         // Get the current assembly for embedded resource access
         var assembly = Assembly.GetExecutingAssembly();
-        _promptReader = new PromptReader(assembly, "AchieveAi.LmDotnetTools.LmCore.Tests.Prompts.TestPrompts.yaml");
+        _promptReader = new PromptReader(
+            assembly,
+            "AchieveAi.LmDotnetTools.LmCore.Tests.Prompts.TestPrompts.yaml"
+        );
     }
 
     [Fact]
@@ -79,11 +82,20 @@ public class PromptReaderTests
         Assert.Equal(promptName, promptChain.Name);
         Assert.Equal(3, promptChain.Messages.Count);
         Assert.Equal("system", promptChain.Messages[0].Role.ToString().ToLower());
-        Assert.Equal("You are a helpful assistant.", ((ICanGetText)promptChain.Messages[0]).GetText());
+        Assert.Equal(
+            "You are a helpful assistant.",
+            ((ICanGetText)promptChain.Messages[0]).GetText()
+        );
         Assert.Equal("user", promptChain.Messages[1].Role.ToString().ToLower());
-        Assert.Equal("What can you tell me about programming?", ((ICanGetText)promptChain.Messages[1]).GetText());
+        Assert.Equal(
+            "What can you tell me about programming?",
+            ((ICanGetText)promptChain.Messages[1]).GetText()
+        );
         Assert.Equal("assistant", promptChain.Messages[2].Role.ToString().ToLower());
-        Assert.Equal("Programming is the process of creating a set of instructions for computers.", ((ICanGetText)promptChain.Messages[2]).GetText());
+        Assert.Equal(
+            "Programming is the process of creating a set of instructions for computers.",
+            ((ICanGetText)promptChain.Messages[2]).GetText()
+        );
     }
 
     [Fact]

@@ -21,7 +21,8 @@ public interface IUnifiedSearchEngine
         string query,
         SessionContext sessionContext,
         UnifiedSearchOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Performs unified search with a pre-generated query embedding for vector searches.
@@ -38,5 +39,6 @@ public interface IUnifiedSearchEngine
         float[] queryEmbedding,
         SessionContext sessionContext,
         UnifiedSearchOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

@@ -1,10 +1,10 @@
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Services;
 
@@ -30,21 +30,24 @@ public class OpenRouterModelServiceMappingTests
         var service = new OpenRouterModelService(_mockHttpClient.Object, _mockLogger.Object);
 
         // Use reflection to access the private method for testing
-        var method = typeof(OpenRouterModelService).GetMethod("ConvertToModelConfigsAsync", 
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        
+        var method = typeof(OpenRouterModelService).GetMethod(
+            "ConvertToModelConfigsAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
+
         // Act
-        var result = await (Task<IReadOnlyList<ModelConfig>>)method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+        var result = await (Task<IReadOnlyList<ModelConfig>>)
+            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
 
         // Assert
         Assert.NotNull(result);
         Assert.NotEmpty(result);
-        
+
         var modelConfig = result.First();
         Assert.Equal("test/model", modelConfig.Id);
         Assert.NotNull(modelConfig.Capabilities);
         Assert.NotEmpty(modelConfig.Providers);
-        
+
         // First provider should always be OpenRouter with our new architecture
         var openRouterProvider = modelConfig.Providers.First();
         Assert.Equal("OpenRouter", openRouterProvider.Name);
@@ -61,21 +64,24 @@ public class OpenRouterModelServiceMappingTests
         var service = new OpenRouterModelService(_mockHttpClient.Object, _mockLogger.Object);
 
         // Use reflection to access the private method for testing
-        var method = typeof(OpenRouterModelService).GetMethod("ConvertToModelConfigsAsync", 
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        
+        var method = typeof(OpenRouterModelService).GetMethod(
+            "ConvertToModelConfigsAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
+
         // Act
-        var result = await (Task<IReadOnlyList<ModelConfig>>)method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+        var result = await (Task<IReadOnlyList<ModelConfig>>)
+            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
 
         // Assert
         Assert.NotNull(result);
         Assert.NotEmpty(result);
-        
+
         var modelConfig = result.First();
         Assert.True(modelConfig.IsReasoning);
         Assert.NotNull(modelConfig.Capabilities?.Thinking);
         Assert.Equal(ThinkingType.OpenAI, modelConfig.Capabilities.Thinking.Type);
-        
+
         // Should have both OpenRouter (primary) and OpenAI (special) providers
         Assert.True(modelConfig.Providers.Count >= 2);
         Assert.Equal("OpenRouter", modelConfig.Providers.First().Name);
@@ -90,16 +96,19 @@ public class OpenRouterModelServiceMappingTests
         var service = new OpenRouterModelService(_mockHttpClient.Object, _mockLogger.Object);
 
         // Use reflection to access the private method for testing
-        var method = typeof(OpenRouterModelService).GetMethod("ConvertToModelConfigsAsync", 
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        
+        var method = typeof(OpenRouterModelService).GetMethod(
+            "ConvertToModelConfigsAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
+
         // Act
-        var result = await (Task<IReadOnlyList<ModelConfig>>)method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
+        var result = await (Task<IReadOnlyList<ModelConfig>>)
+            method!.Invoke(service, new object[] { cache, CancellationToken.None })!;
 
         // Assert
         Assert.NotNull(result);
         Assert.NotEmpty(result);
-        
+
         var modelConfig = result.First();
         Assert.NotNull(modelConfig.Capabilities?.Multimodal);
         Assert.True(modelConfig.Capabilities.Multimodal.SupportsImages);
@@ -108,163 +117,173 @@ public class OpenRouterModelServiceMappingTests
 
     private OpenRouterCache CreateTestCache()
     {
-        var modelsData = JsonNode.Parse("""
-        {
-            "data": [
-                {
-                    "slug": "test/model",
-                    "permaslug": "test/model",
-                    "name": "Test Model",
-                    "context_length": 4096,
-                    "input_modalities": ["text"],
-                    "output_modalities": ["text"],
-                    "has_text_output": true,
-                    "group": "Test",
-                    "author": "test",
-                    "description": "A test model",
-                    "created_at": "2024-01-01T00:00:00+00:00"
-                }
-            ]
-        }
-        """);
-
-        var modelDetails = new Dictionary<string, JsonNode>
-        {
-            ["test/model"] = JsonNode.Parse("""
+        var modelsData = JsonNode.Parse(
+            """
             {
                 "data": [
                     {
-                        "id": "test-endpoint-1",
-                        "provider_name": "TestProvider",
-                        "provider_display_name": "TestProvider",
-                        "provider_model_id": "test-model-id",
-                        "model_variant_slug": "test/model",
-                        "is_free": false,
-                        "is_hidden": false,
-                        "is_disabled": false,
-                        "pricing": {
-                            "prompt": "0.000001",
-                            "completion": "0.000002"
-                        },
-                        "supported_parameters": ["max_tokens", "temperature"],
-                        "supports_tool_parameters": false,
-                        "supports_reasoning": false,
-                        "supports_multipart": false
+                        "slug": "test/model",
+                        "permaslug": "test/model",
+                        "name": "Test Model",
+                        "context_length": 4096,
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                        "has_text_output": true,
+                        "group": "Test",
+                        "author": "test",
+                        "description": "A test model",
+                        "created_at": "2024-01-01T00:00:00+00:00"
                     }
                 ]
             }
-            """)!
+            """
+        );
+
+        var modelDetails = new Dictionary<string, JsonNode>
+        {
+            ["test/model"] = JsonNode.Parse(
+                """
+                {
+                    "data": [
+                        {
+                            "id": "test-endpoint-1",
+                            "provider_name": "TestProvider",
+                            "provider_display_name": "TestProvider",
+                            "provider_model_id": "test-model-id",
+                            "model_variant_slug": "test/model",
+                            "is_free": false,
+                            "is_hidden": false,
+                            "is_disabled": false,
+                            "pricing": {
+                                "prompt": "0.000001",
+                                "completion": "0.000002"
+                            },
+                            "supported_parameters": ["max_tokens", "temperature"],
+                            "supports_tool_parameters": false,
+                            "supports_reasoning": false,
+                            "supports_multipart": false
+                        }
+                    ]
+                }
+                """
+            )!,
         };
 
         return new OpenRouterCache
         {
             CachedAt = DateTime.UtcNow,
             ModelsData = modelsData,
-            ModelDetails = modelDetails
+            ModelDetails = modelDetails,
         };
     }
 
     private OpenRouterCache CreateReasoningModelCache()
     {
-        var modelsData = JsonNode.Parse("""
-        {
-            "data": [
-                {
-                    "slug": "openai/o1-preview",
-                    "permaslug": "openai/o1-preview",
-                    "name": "OpenAI O1 Preview",
-                    "context_length": 128000,
-                    "input_modalities": ["text"],
-                    "output_modalities": ["text"],
-                    "has_text_output": true,
-                    "group": "GPT",
-                    "author": "openai",
-                    "description": "A reasoning model",
-                    "created_at": "2024-01-01T00:00:00+00:00"
-                }
-            ]
-        }
-        """);
-
-        var modelDetails = new Dictionary<string, JsonNode>
-        {
-            ["openai/o1-preview"] = JsonNode.Parse("""
+        var modelsData = JsonNode.Parse(
+            """
             {
                 "data": [
                     {
-                        "id": "reasoning-endpoint-1",
-                        "provider_name": "openai",
-                        "provider_display_name": "OpenAI",
-                        "provider_model_id": "o1-preview",
-                        "model_variant_slug": "openai/o1-preview",
-                        "is_free": false,
-                        "is_hidden": false,
-                        "is_disabled": false,
-                        "pricing": {
-                            "prompt": "0.000015",
-                            "completion": "0.00006"
-                        },
-                        "supported_parameters": ["max_tokens"],
-                        "supports_tool_parameters": false,
-                        "supports_reasoning": true,
-                        "supports_multipart": false
+                        "slug": "openai/o1-preview",
+                        "permaslug": "openai/o1-preview",
+                        "name": "OpenAI O1 Preview",
+                        "context_length": 128000,
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                        "has_text_output": true,
+                        "group": "GPT",
+                        "author": "openai",
+                        "description": "A reasoning model",
+                        "created_at": "2024-01-01T00:00:00+00:00"
                     }
                 ]
             }
-            """)!
+            """
+        );
+
+        var modelDetails = new Dictionary<string, JsonNode>
+        {
+            ["openai/o1-preview"] = JsonNode.Parse(
+                """
+                {
+                    "data": [
+                        {
+                            "id": "reasoning-endpoint-1",
+                            "provider_name": "openai",
+                            "provider_display_name": "OpenAI",
+                            "provider_model_id": "o1-preview",
+                            "model_variant_slug": "openai/o1-preview",
+                            "is_free": false,
+                            "is_hidden": false,
+                            "is_disabled": false,
+                            "pricing": {
+                                "prompt": "0.000015",
+                                "completion": "0.00006"
+                            },
+                            "supported_parameters": ["max_tokens"],
+                            "supports_tool_parameters": false,
+                            "supports_reasoning": true,
+                            "supports_multipart": false
+                        }
+                    ]
+                }
+                """
+            )!,
         };
 
         return new OpenRouterCache
         {
             CachedAt = DateTime.UtcNow,
             ModelsData = modelsData,
-            ModelDetails = modelDetails
+            ModelDetails = modelDetails,
         };
     }
 
     private OpenRouterCache CreateMultimodalModelCache()
     {
-        var modelsData = JsonNode.Parse("""
-        {
-            "data": [
-                {
-                    "slug": "google/gemini-pro-vision",
-                    "name": "Google Gemini Pro Vision",
-                    "context_length": 32768,
-                    "input_modalities": ["text", "image"],
-                    "output_modalities": ["text"],
-                    "has_text_output": true,
-                    "group": "Gemini",
-                    "author": "google",
-                    "description": "A multimodal model",
-                    "endpoint": {
-                        "id": "multimodal-endpoint-1",
-                        "provider_name": "Google",
-                        "provider_display_name": "Google",
-                        "provider_model_id": "gemini-pro-vision",
-                        "model_variant_slug": "google/gemini-pro-vision",
-                        "is_free": false,
-                        "is_hidden": false,
-                        "is_disabled": false,
-                        "pricing": {
-                            "prompt": "0.000001",
-                            "completion": "0.000002"
-                        },
-                        "supported_parameters": ["max_tokens", "temperature"],
-                        "supports_tool_parameters": true,
-                        "supports_reasoning": false,
-                        "supports_multipart": true
+        var modelsData = JsonNode.Parse(
+            """
+            {
+                "data": [
+                    {
+                        "slug": "google/gemini-pro-vision",
+                        "name": "Google Gemini Pro Vision",
+                        "context_length": 32768,
+                        "input_modalities": ["text", "image"],
+                        "output_modalities": ["text"],
+                        "has_text_output": true,
+                        "group": "Gemini",
+                        "author": "google",
+                        "description": "A multimodal model",
+                        "endpoint": {
+                            "id": "multimodal-endpoint-1",
+                            "provider_name": "Google",
+                            "provider_display_name": "Google",
+                            "provider_model_id": "gemini-pro-vision",
+                            "model_variant_slug": "google/gemini-pro-vision",
+                            "is_free": false,
+                            "is_hidden": false,
+                            "is_disabled": false,
+                            "pricing": {
+                                "prompt": "0.000001",
+                                "completion": "0.000002"
+                            },
+                            "supported_parameters": ["max_tokens", "temperature"],
+                            "supports_tool_parameters": true,
+                            "supports_reasoning": false,
+                            "supports_multipart": true
+                        }
                     }
-                }
-            ]
-        }
-        """);
+                ]
+            }
+            """
+        );
 
         return new OpenRouterCache
         {
             CachedAt = DateTime.UtcNow,
             ModelsData = modelsData,
-            ModelDetails = new Dictionary<string, JsonNode>()
+            ModelDetails = new Dictionary<string, JsonNode>(),
         };
     }
 }

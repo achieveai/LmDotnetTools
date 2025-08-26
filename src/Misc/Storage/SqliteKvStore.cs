@@ -58,7 +58,8 @@ public class SqliteKvStore : IKvStore
         }
 
         using var command = _connection.CreateCommand();
-        command.CommandText = @"
+        command.CommandText =
+            @"
       CREATE TABLE IF NOT EXISTS cache (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -93,7 +94,11 @@ public class SqliteKvStore : IKvStore
     }
 
     /// <inheritdoc/>
-    public async Task SetAsync<T>(string key, T value, CancellationToken cancellationToken = default)
+    public async Task SetAsync<T>(
+        string key,
+        T value,
+        CancellationToken cancellationToken = default
+    )
     {
         if (string.IsNullOrEmpty(key))
         {
@@ -110,7 +115,8 @@ public class SqliteKvStore : IKvStore
         var serializedValue = JsonSerializer.Serialize(value, _jsonOptions);
 
         using var command = _connection.CreateCommand();
-        command.CommandText = @"
+        command.CommandText =
+            @"
       INSERT INTO cache (key, value) 
       VALUES (@key, @value)
       ON CONFLICT(key) DO UPDATE SET 
@@ -121,13 +127,17 @@ public class SqliteKvStore : IKvStore
     }
 
     /// <inheritdoc/>
-    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(CancellationToken cancellationToken = default)
+    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         InitializeDatabase();
         return Task.FromResult(GetKeysEnumerable(cancellationToken));
     }
 
-    private async IAsyncEnumerable<string> GetKeysEnumerable([EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<string> GetKeysEnumerable(
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
     {
         using var command = _connection.CreateCommand();
         command.CommandText = "SELECT key FROM cache ORDER BY key";

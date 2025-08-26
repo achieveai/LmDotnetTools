@@ -21,19 +21,25 @@ public static class FunctionCallServiceCollectionExtensions
     /// <summary>
     /// Register a function provider type
     /// </summary>
-    public static IServiceCollection AddFunctionProvider<TProvider>(this IServiceCollection services)
+    public static IServiceCollection AddFunctionProvider<TProvider>(
+        this IServiceCollection services
+    )
         where TProvider : class, IFunctionProvider
     {
         services.AddSingleton<TProvider>();
-        services.AddSingleton<IFunctionProvider, TProvider>(sp => sp.GetRequiredService<TProvider>());
+        services.AddSingleton<IFunctionProvider, TProvider>(sp =>
+            sp.GetRequiredService<TProvider>()
+        );
         return services;
     }
 
     /// <summary>
     /// Register function provider factory
     /// </summary>
-    public static IServiceCollection AddFunctionProvider(this IServiceCollection services,
-        Func<IServiceProvider, IFunctionProvider> factory)
+    public static IServiceCollection AddFunctionProvider(
+        this IServiceCollection services,
+        Func<IServiceProvider, IFunctionProvider> factory
+    )
     {
         services.AddSingleton<IFunctionProvider>(factory);
         return services;
@@ -42,8 +48,10 @@ public static class FunctionCallServiceCollectionExtensions
     /// <summary>
     /// Configure function providers during startup
     /// </summary>
-    public static IServiceCollection ConfigureFunctionProviders(this IServiceCollection services,
-        Action<IFunctionProviderRegistry, IServiceProvider> configure)
+    public static IServiceCollection ConfigureFunctionProviders(
+        this IServiceCollection services,
+        Action<IFunctionProviderRegistry, IServiceProvider> configure
+    )
     {
         services.AddSingleton<Action<IFunctionProviderRegistry, IServiceProvider>>(configure);
         return services;

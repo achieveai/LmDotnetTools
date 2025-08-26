@@ -31,21 +31,25 @@ public class SessionContext
     /// </summary>
     public bool Matches(SessionContext other)
     {
-        if (other == null) return false;
+        if (other == null)
+            return false;
 
         // User ID must always match
-        if (UserId != other.UserId) return false;
+        if (UserId != other.UserId)
+            return false;
 
         // If either has AgentId, they must match
         if (!string.IsNullOrEmpty(AgentId) || !string.IsNullOrEmpty(other.AgentId))
         {
-            if (AgentId != other.AgentId) return false;
+            if (AgentId != other.AgentId)
+                return false;
         }
 
         // If either has RunId, they must match
         if (!string.IsNullOrEmpty(RunId) || !string.IsNullOrEmpty(other.RunId))
         {
-            if (RunId != other.RunId) return false;
+            if (RunId != other.RunId)
+                return false;
         }
 
         return true;
@@ -72,7 +76,12 @@ public class SessionContext
     /// </summary>
     public static SessionContext ForRun(string userId, string agentId, string runId)
     {
-        return new SessionContext { UserId = userId, AgentId = agentId, RunId = runId };
+        return new SessionContext
+        {
+            UserId = userId,
+            AgentId = agentId,
+            RunId = runId,
+        };
     }
 
     /// <summary>
@@ -106,8 +115,10 @@ public class SessionContext
     /// </summary>
     public SessionScope GetScope()
     {
-        if (!string.IsNullOrEmpty(RunId)) return SessionScope.Run;
-        if (!string.IsNullOrEmpty(AgentId)) return SessionScope.Agent;
+        if (!string.IsNullOrEmpty(RunId))
+            return SessionScope.Run;
+        if (!string.IsNullOrEmpty(AgentId))
+            return SessionScope.Agent;
         return SessionScope.User;
     }
 }
@@ -130,5 +141,5 @@ public enum SessionScope
     /// <summary>
     /// Run-level scope (narrowest).
     /// </summary>
-    Run
+    Run,
 }

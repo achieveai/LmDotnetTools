@@ -1,8 +1,8 @@
+using System.Collections.Generic;
 using System.Linq;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using Xunit;
-using System.Collections.Generic;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
 
@@ -16,7 +16,7 @@ public class ReasoningMessageTests
         {
             Role = RoleEnum.Assistant,
             ReasoningContent = "I compare 9.11 and 9.9; 9.9 has a greater tenths digit.",
-            Content = ChatMessage.CreateContent("9.9 is greater than 9.11.")
+            Content = ChatMessage.CreateContent("9.9 is greater than 9.11."),
         };
 
         // Act
@@ -28,7 +28,10 @@ public class ReasoningMessageTests
         Assert.IsType<TextMessage>(coreMessages[1]);
 
         var reasoning = (ReasoningMessage)coreMessages[0];
-        Assert.Equal("I compare 9.11 and 9.9; 9.9 has a greater tenths digit.", reasoning.Reasoning);
+        Assert.Equal(
+            "I compare 9.11 and 9.9; 9.9 has a greater tenths digit.",
+            reasoning.Reasoning
+        );
         Assert.Equal(ReasoningVisibility.Plain, reasoning.Visibility);
 
         var answer = (TextMessage)coreMessages[1];
@@ -44,9 +47,9 @@ public class ReasoningMessageTests
             Role = RoleEnum.Assistant,
             ReasoningDetails = new List<ChatMessage.ReasoningDetail>
             {
-                new() { Type = "reasoning.encrypted", Data = "ciphertext123" }
+                new() { Type = "reasoning.encrypted", Data = "ciphertext123" },
             },
-            Content = ChatMessage.CreateContent("Answer without chain-of-thought")
+            Content = ChatMessage.CreateContent("Answer without chain-of-thought"),
         };
 
         // Act
@@ -66,13 +69,13 @@ public class ReasoningMessageTests
         var builder = new ReasoningMessageBuilder
         {
             FromAgent = "Assistant",
-            GenerationId = "gen-123"
+            GenerationId = "gen-123",
         };
 
         var updates = new[]
         {
             new ReasoningUpdateMessage { Reasoning = "First part ", GenerationId = "gen-123" },
-            new ReasoningUpdateMessage { Reasoning = "second part.", GenerationId = "gen-123" }
+            new ReasoningUpdateMessage { Reasoning = "second part.", GenerationId = "gen-123" },
         };
 
         // Act

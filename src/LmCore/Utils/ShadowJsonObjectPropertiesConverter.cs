@@ -9,7 +9,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 /// A base JsonConverter for types that use shadow properties pattern, where extra properties
 /// are stored in a JsonObject property (like Metadata) but serialized inline with the main properties.
 /// </summary>
-public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> where T : class
+public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
+    where T : class
 {
     private readonly PropertyInfo[]? _jsonProperties;
     private readonly PropertyInfo? _metadataProperty;
@@ -25,16 +26,23 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
         // Find JsonObject property marked as metadata storage
         _metadataProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .FirstOrDefault(p =>
-                p.PropertyType == typeof(JsonObject) &&
-                p.Name == "Metadata" &&
-                p.GetCustomAttribute<JsonIgnoreAttribute>() != null);
+                p.PropertyType == typeof(JsonObject)
+                && p.Name == "Metadata"
+                && p.GetCustomAttribute<JsonIgnoreAttribute>() != null
+            );
     }
 
-    public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    public override T? Read(
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options
+    )
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
-            throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
+            throw new JsonException(
+                $"Expected {JsonTokenType.StartObject} but got {reader.TokenType}"
+            );
         }
 
         var metadata = new JsonObject();
@@ -49,14 +57,21 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
 
             if (reader.TokenType != JsonTokenType.PropertyName)
             {
-                throw new JsonException($"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}");
+                throw new JsonException(
+                    $"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}"
+                );
             }
 
             string propertyName = reader.GetString()!;
             reader.Read();
 
             // Try to handle via the virtual method first
-            var (customHandled, customInstance) = ReadProperty(ref reader, instance, propertyName, options);
+            var (customHandled, customInstance) = ReadProperty(
+                ref reader,
+                instance,
+                propertyName,
+                options
+            );
             if (customHandled)
             {
                 instance = customInstance;
@@ -67,11 +82,16 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
             if (_jsonProperties != null)
             {
                 var property = _jsonProperties.FirstOrDefault(p =>
-                    p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name == propertyName);
+                    p.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name == propertyName
+                );
 
                 if (property != null)
                 {
-                    var value = JsonSerializer.Deserialize(ref reader, property.PropertyType, options);
+                    var value = JsonSerializer.Deserialize(
+                        ref reader,
+                        property.PropertyType,
+                        options
+                    );
                     property.SetValue(instance, value);
                     continue;
                 }
@@ -87,7 +107,8 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
 
     public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
-        if (value == null) throw new ArgumentNullException(nameof(value));
+        if (value == null)
+            throw new ArgumentNullException(nameof(value));
 
         writer.WriteStartObject();
 
@@ -106,7 +127,12 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
                     if (propertyValue != null)
                     {
                         writer.WritePropertyName(attr.Name!);
-                        JsonSerializer.Serialize(writer, propertyValue, property.PropertyType, options);
+                        JsonSerializer.Serialize(
+                            writer,
+                            propertyValue,
+                            property.PropertyType,
+                            options
+                        );
                     }
                 }
             }
@@ -160,10 +186,15 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
     /// <summary>
     /// Reads a known property from the JSON reader. Override this to handle properties that can't be handled via reflection.
     /// </summary>
-    /// <returns>A tuple containing: 
+    /// <returns>A tuple containing:
     /// - bool: True if the property was handled, false if it should be handled by reflection or treated as a metadata property
     /// - T: The potentially updated instance (for record types)</returns>
-    protected virtual (bool handled, T instance) ReadProperty(ref Utf8JsonReader reader, T instance, string propertyName, JsonSerializerOptions options)
+    protected virtual (bool handled, T instance) ReadProperty(
+        ref Utf8JsonReader reader,
+        T instance,
+        string propertyName,
+        JsonSerializerOptions options
+    )
     {
         return (false, instance);
     }
@@ -171,7 +202,9 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T> 
     /// <summary>
     /// Writes the known properties to the JSON writer. Override this to handle properties that can't be handled via reflection.
     /// </summary>
-    protected virtual void WriteProperties(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
-    {
-    }
+    protected virtual void WriteProperties(
+        Utf8JsonWriter writer,
+        T value,
+        JsonSerializerOptions options
+    ) { }
 }

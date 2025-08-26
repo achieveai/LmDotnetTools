@@ -50,9 +50,10 @@ public class UsageAccumulator
             var metadataWithoutUsage = message.Metadata.Remove("usage");
             if (metadataWithoutUsage.Count > 0)
             {
-                _extraMetadata = _extraMetadata == null
-                    ? metadataWithoutUsage
-                    : _extraMetadata.AddRange(metadataWithoutUsage);
+                _extraMetadata =
+                    _extraMetadata == null
+                        ? metadataWithoutUsage
+                        : _extraMetadata.AddRange(metadataWithoutUsage);
             }
         }
 
@@ -75,9 +76,10 @@ public class UsageAccumulator
         // Copy any metadata
         if (usageMessage.Metadata != null && usageMessage.Metadata.Count > 0)
         {
-            _extraMetadata = _extraMetadata == null
-                ? usageMessage.Metadata
-                : _extraMetadata.AddRange(usageMessage.Metadata);
+            _extraMetadata =
+                _extraMetadata == null
+                    ? usageMessage.Metadata
+                    : _extraMetadata.AddRange(usageMessage.Metadata);
         }
 
         return AddUsageData(usageMessage.Usage);
@@ -98,7 +100,7 @@ public class UsageAccumulator
             FromAgent = _fromAgent,
             GenerationId = _generationId,
             Role = _role,
-            Metadata = _extraMetadata
+            Metadata = _extraMetadata,
         };
     }
 
@@ -114,13 +116,16 @@ public class UsageAccumulator
             }
 
             // Validate input tokens don't change
-            if (_accumulatedUsage.PromptTokens != 0 &&
-                coreUsage.PromptTokens != 0 &&
-                _accumulatedUsage.PromptTokens != coreUsage.PromptTokens)
+            if (
+                _accumulatedUsage.PromptTokens != 0
+                && coreUsage.PromptTokens != 0
+                && _accumulatedUsage.PromptTokens != coreUsage.PromptTokens
+            )
             {
                 throw new InvalidOperationException(
-                    $"Input tokens changed between usage updates. " +
-                    $"Previous: {_accumulatedUsage.PromptTokens}, Current: {coreUsage.PromptTokens}");
+                    $"Input tokens changed between usage updates. "
+                        + $"Previous: {_accumulatedUsage.PromptTokens}, Current: {coreUsage.PromptTokens}"
+                );
             }
 
             // To fix the test, we need to determine if this is a duplicate usage report
@@ -128,11 +133,10 @@ public class UsageAccumulator
             // In most middleware scenarios, we should accumulate.
 
             // Get the max completion tokens or preserve existing if new value is 0
-            var completionTokens = coreUsage.CompletionTokens == 0
-                ? _accumulatedUsage.CompletionTokens
-                : _accumulatedUsage.CompletionTokens == 0
-                    ? coreUsage.CompletionTokens
-                    : Math.Max(_accumulatedUsage.CompletionTokens, coreUsage.CompletionTokens);
+            var completionTokens =
+                coreUsage.CompletionTokens == 0 ? _accumulatedUsage.CompletionTokens
+                : _accumulatedUsage.CompletionTokens == 0 ? coreUsage.CompletionTokens
+                : Math.Max(_accumulatedUsage.CompletionTokens, coreUsage.CompletionTokens);
 
             // Accumulate usage data
             _accumulatedUsage = new Usage
@@ -142,13 +146,20 @@ public class UsageAccumulator
                 // Use our calculated completion tokens
                 CompletionTokens = completionTokens,
                 // Recalculate total based on prompt and completion
-                TotalTokens = Math.Max(_accumulatedUsage.PromptTokens, coreUsage.PromptTokens) + completionTokens,
+                TotalTokens =
+                    Math.Max(_accumulatedUsage.PromptTokens, coreUsage.PromptTokens)
+                    + completionTokens,
                 // Keep input and output token details if available
-                InputTokenDetails = coreUsage.InputTokenDetails ?? _accumulatedUsage.InputTokenDetails,
-                OutputTokenDetails = coreUsage.OutputTokenDetails ?? _accumulatedUsage.OutputTokenDetails,
+                InputTokenDetails =
+                    coreUsage.InputTokenDetails ?? _accumulatedUsage.InputTokenDetails,
+                OutputTokenDetails =
+                    coreUsage.OutputTokenDetails ?? _accumulatedUsage.OutputTokenDetails,
                 TotalCost = coreUsage.TotalCost ?? _accumulatedUsage.TotalCost,
                 // Merge extra properties
-                ExtraProperties = MergeExtraProperties(_accumulatedUsage.ExtraProperties, coreUsage.ExtraProperties)
+                ExtraProperties = MergeExtraProperties(
+                    _accumulatedUsage.ExtraProperties,
+                    coreUsage.ExtraProperties
+                ),
             };
             return true;
         }
@@ -172,7 +183,8 @@ public class UsageAccumulator
 
     private ImmutableDictionary<string, object?> MergeExtraProperties(
         ImmutableDictionary<string, object?>? first,
-        ImmutableDictionary<string, object?>? second)
+        ImmutableDictionary<string, object?>? second
+    )
     {
         if (first == null || first.IsEmpty)
             return second ?? ImmutableDictionary<string, object?>.Empty;

@@ -18,7 +18,8 @@ public interface IToolResultCallback
     Task OnToolResultAvailableAsync(
         string toolCallId,
         ToolCallResult result,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Called when a tool call starts execution.
@@ -32,7 +33,8 @@ public interface IToolResultCallback
         string toolCallId,
         string functionName,
         string functionArgs,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Called when a tool call encounters an error.
@@ -46,5 +48,6 @@ public interface IToolResultCallback
         string toolCallId,
         string functionName,
         string error,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

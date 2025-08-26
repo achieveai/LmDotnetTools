@@ -26,7 +26,9 @@ public record AppConfig
     /// <returns>The model configuration if found, null otherwise.</returns>
     public ModelConfig? GetModel(string modelId)
     {
-        System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModel called with modelId: {modelId ?? "NULL"}");
+        System.Diagnostics.Debug.WriteLine(
+            $"DEBUG: AppConfig.GetModel called with modelId: {modelId ?? "NULL"}"
+        );
         System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
         if (Models != null && !string.IsNullOrEmpty(modelId))
         {
@@ -36,7 +38,9 @@ public record AppConfig
             {
                 modelId = modelId.Substring(0, bracketIndex);
             }
-            return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
+            return Models.FirstOrDefault(m =>
+                m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase)
+            );
         }
 
         return null;
@@ -49,17 +53,23 @@ public record AppConfig
     /// <returns>List of models that have the specified capability.</returns>
     public IReadOnlyList<ModelConfig> GetModelsWithCapability(string capability)
     {
-        System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModelsWithCapability called with capability: {capability ?? "NULL"}");
+        System.Diagnostics.Debug.WriteLine(
+            $"DEBUG: AppConfig.GetModelsWithCapability called with capability: {capability ?? "NULL"}"
+        );
         System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
 
         if (Models != null && !string.IsNullOrEmpty(capability))
         {
             System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection count: {Models.Count}");
             var matchingModels = Models.Where(m => m.HasCapability(capability)).ToList();
-            System.Diagnostics.Debug.WriteLine($"DEBUG: Found {matchingModels.Count} models with capability {capability}");
+            System.Diagnostics.Debug.WriteLine(
+                $"DEBUG: Found {matchingModels.Count} models with capability {capability}"
+            );
             foreach (var model in matchingModels)
             {
-                System.Diagnostics.Debug.WriteLine($"DEBUG: Model {model.Id} has capability {capability}");
+                System.Diagnostics.Debug.WriteLine(
+                    $"DEBUG: Model {model.Id} has capability {capability}"
+                );
             }
             return matchingModels;
         }
@@ -74,7 +84,9 @@ public record AppConfig
     /// <returns>The provider connection info if found, null otherwise.</returns>
     public ProviderConnectionInfo? GetProviderConnection(string providerName)
     {
-        return ProviderRegistry?.TryGetValue(providerName, out var provider) == true ? provider : null;
+        return ProviderRegistry?.TryGetValue(providerName, out var provider) == true
+            ? provider
+            : null;
     }
 
     /// <summary>
@@ -183,7 +195,7 @@ public record ProviderConnectionInfo
         {
             IsValid = !errors.Any(),
             Errors = errors,
-            Warnings = warnings
+            Warnings = warnings,
         };
     }
 }

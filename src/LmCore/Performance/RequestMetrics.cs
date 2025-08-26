@@ -49,7 +49,8 @@ public record RequestMetrics
     public string? ExceptionType { get; init; }
 
     /// <summary>Whether the request was successful</summary>
-    public bool IsSuccess => StatusCode >= 200 && StatusCode < 300 && string.IsNullOrEmpty(ErrorMessage);
+    public bool IsSuccess =>
+        StatusCode >= 200 && StatusCode < 300 && string.IsNullOrEmpty(ErrorMessage);
 
     /// <summary>Additional provider-specific properties</summary>
     public Dictionary<string, object> AdditionalProperties { get; init; } = new();
@@ -66,7 +67,7 @@ public record RequestMetrics
             StartTime = DateTimeOffset.UtcNow,
             Provider = provider,
             Model = model,
-            Operation = operation
+            Operation = operation,
         };
     }
 
@@ -88,7 +89,8 @@ public record RequestMetrics
         int retryAttempts = 0,
         string? errorMessage = null,
         string? exceptionType = null,
-        Dictionary<string, object>? additionalProperties = null)
+        Dictionary<string, object>? additionalProperties = null
+    )
     {
         return this with
         {
@@ -100,7 +102,7 @@ public record RequestMetrics
             RetryAttempts = retryAttempts,
             ErrorMessage = errorMessage,
             ExceptionType = exceptionType,
-            AdditionalProperties = additionalProperties ?? AdditionalProperties
+            AdditionalProperties = additionalProperties ?? AdditionalProperties,
         };
     }
 }

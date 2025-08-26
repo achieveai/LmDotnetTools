@@ -22,9 +22,7 @@ public record AnthropicThinking
     /// <summary>
     /// Creates a new instance of the AnthropicThinking record with default values.
     /// </summary>
-    public AnthropicThinking()
-    {
-    }
+    public AnthropicThinking() { }
 
     /// <summary>
     /// Creates a new instance of the AnthropicThinking record with the specified budget tokens.

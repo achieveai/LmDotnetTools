@@ -17,10 +17,11 @@ public interface IDocumentSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Segmentation result with segments and metadata</returns>
     Task<DocumentSegmentationResult> SegmentDocumentAsync(
-      string content,
-      DocumentSegmentationRequest request,
-      SessionContext sessionContext,
-      CancellationToken cancellationToken = default);
+        string content,
+        DocumentSegmentationRequest request,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Determines if a document should be segmented based on size and complexity.
@@ -30,9 +31,10 @@ public interface IDocumentSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if segmentation is recommended</returns>
     Task<bool> ShouldSegmentAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      CancellationToken cancellationToken = default);
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Determines the optimal segmentation strategy for a document.
@@ -42,9 +44,10 @@ public interface IDocumentSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Recommended segmentation strategy</returns>
     Task<SegmentationStrategy> DetermineOptimalStrategyAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      CancellationToken cancellationToken = default);
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates the quality of segmentation results.
@@ -53,6 +56,7 @@ public interface IDocumentSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Quality assessment with scores and feedback</returns>
     Task<SegmentationQualityAssessment> ValidateSegmentationQualityAsync(
-      DocumentSegmentationResult result,
-      CancellationToken cancellationToken = default);
+        DocumentSegmentationResult result,
+        CancellationToken cancellationToken = default
+    );
 }

@@ -23,7 +23,7 @@ public enum AnthropicModelType
     /// <summary>
     /// Claude 3.7 Sonnet model - latest high-performance model with extended thinking capabilities
     /// </summary>
-    Claude37Sonnet
+    Claude37Sonnet,
 }
 
 /// <summary>
@@ -56,12 +56,13 @@ public static class AnthropicModelNames
     /// </summary>
     /// <param name="modelType">The model type to get the name for.</param>
     /// <returns>The model name used in API requests.</returns>
-    public static string GetModelName(AnthropicModelType modelType) => modelType switch
-    {
-        AnthropicModelType.Claude3Opus => Claude3Opus,
-        AnthropicModelType.Claude3Sonnet => Claude3Sonnet,
-        AnthropicModelType.Claude3Haiku => Claude3Haiku,
-        AnthropicModelType.Claude37Sonnet => Claude37Sonnet,
-        _ => Claude3Sonnet // Default to Claude 3 Sonnet
-    };
+    public static string GetModelName(AnthropicModelType modelType) =>
+        modelType switch
+        {
+            AnthropicModelType.Claude3Opus => Claude3Opus,
+            AnthropicModelType.Claude3Sonnet => Claude3Sonnet,
+            AnthropicModelType.Claude3Haiku => Claude3Haiku,
+            AnthropicModelType.Claude37Sonnet => Claude37Sonnet,
+            _ => Claude3Sonnet, // Default to Claude 3 Sonnet
+        };
 }

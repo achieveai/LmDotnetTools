@@ -17,7 +17,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The added entity with generated ID.</returns>
-    Task<Entity> AddEntityAsync(Entity entity, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Entity> AddEntityAsync(
+        Entity entity,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets an entity by its ID within the session context.
@@ -26,7 +30,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The entity if found, null otherwise.</returns>
-    Task<Entity?> GetEntityByIdAsync(int entityId, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Entity?> GetEntityByIdAsync(
+        int entityId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets an entity by its name within the session context.
@@ -35,7 +43,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The entity if found, null otherwise.</returns>
-    Task<Entity?> GetEntityByNameAsync(string name, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Entity?> GetEntityByNameAsync(
+        string name,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets all entities within the session context.
@@ -45,7 +57,12 @@ public interface IGraphRepository
     /// <param name="offset">Number of entities to skip.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of entities.</returns>
-    Task<IEnumerable<Entity>> GetEntitiesAsync(SessionContext sessionContext, int limit = 100, int offset = 0, CancellationToken cancellationToken = default);
+    Task<IEnumerable<Entity>> GetEntitiesAsync(
+        SessionContext sessionContext,
+        int limit = 100,
+        int offset = 0,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Updates an existing entity.
@@ -54,7 +71,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for validation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The updated entity.</returns>
-    Task<Entity> UpdateEntityAsync(Entity entity, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Entity> UpdateEntityAsync(
+        Entity entity,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Deletes an entity by ID.
@@ -63,7 +84,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for validation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>True if deleted, false if not found.</returns>
-    Task<bool> DeleteEntityAsync(int entityId, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<bool> DeleteEntityAsync(
+        int entityId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     // Relationship Operations
 
@@ -74,7 +99,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The added relationship with generated ID.</returns>
-    Task<Relationship> AddRelationshipAsync(Relationship relationship, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Relationship> AddRelationshipAsync(
+        Relationship relationship,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets a relationship by its ID within the session context.
@@ -83,7 +112,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The relationship if found, null otherwise.</returns>
-    Task<Relationship?> GetRelationshipByIdAsync(int relationshipId, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Relationship?> GetRelationshipByIdAsync(
+        int relationshipId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets all relationships within the session context.
@@ -93,7 +126,12 @@ public interface IGraphRepository
     /// <param name="offset">Number of relationships to skip.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of relationships.</returns>
-    Task<IEnumerable<Relationship>> GetRelationshipsAsync(SessionContext sessionContext, int limit = 100, int offset = 0, CancellationToken cancellationToken = default);
+    Task<IEnumerable<Relationship>> GetRelationshipsAsync(
+        SessionContext sessionContext,
+        int limit = 100,
+        int offset = 0,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets relationships for a specific entity (as source or target).
@@ -103,7 +141,12 @@ public interface IGraphRepository
     /// <param name="asSource">If true, get relationships where entity is source; if false, where entity is target; if null, both.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of relationships.</returns>
-    Task<IEnumerable<Relationship>> GetRelationshipsForEntityAsync(string entityName, SessionContext sessionContext, bool? asSource = null, CancellationToken cancellationToken = default);
+    Task<IEnumerable<Relationship>> GetRelationshipsForEntityAsync(
+        string entityName,
+        SessionContext sessionContext,
+        bool? asSource = null,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Updates an existing relationship.
@@ -112,7 +155,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for validation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The updated relationship.</returns>
-    Task<Relationship> UpdateRelationshipAsync(Relationship relationship, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Relationship> UpdateRelationshipAsync(
+        Relationship relationship,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Deletes a relationship by ID.
@@ -121,7 +168,11 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for validation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>True if deleted, false if not found.</returns>
-    Task<bool> DeleteRelationshipAsync(int relationshipId, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<bool> DeleteRelationshipAsync(
+        int relationshipId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     // Graph Traversal Operations
 
@@ -139,7 +190,8 @@ public interface IGraphRepository
         SessionContext sessionContext,
         int maxDepth = 2,
         IEnumerable<string>? relationshipTypes = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Searches for relationships matching a query.
@@ -149,7 +201,12 @@ public interface IGraphRepository
     /// <param name="limit">Maximum number of results.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of matching relationships with relevance scores.</returns>
-    Task<IEnumerable<Relationship>> SearchRelationshipsAsync(string query, SessionContext sessionContext, int limit = 10, CancellationToken cancellationToken = default);
+    Task<IEnumerable<Relationship>> SearchRelationshipsAsync(
+        string query,
+        SessionContext sessionContext,
+        int limit = 10,
+        CancellationToken cancellationToken = default
+    );
 
     // Enhanced Search Operations for Phase 6
 
@@ -161,7 +218,12 @@ public interface IGraphRepository
     /// <param name="limit">Maximum number of results.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>List of matching entities with relevance scores.</returns>
-    Task<IEnumerable<Entity>> SearchEntitiesAsync(string query, SessionContext sessionContext, int limit = 10, CancellationToken cancellationToken = default);
+    Task<IEnumerable<Entity>> SearchEntitiesAsync(
+        string query,
+        SessionContext sessionContext,
+        int limit = 10,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Performs vector similarity search to find entities similar to the query embedding.
@@ -177,7 +239,8 @@ public interface IGraphRepository
         SessionContext sessionContext,
         int limit = 10,
         float threshold = 0.7f,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Performs vector similarity search to find relationships similar to the query embedding.
@@ -193,7 +256,8 @@ public interface IGraphRepository
         SessionContext sessionContext,
         int limit = 10,
         float threshold = 0.7f,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     // Embedding Storage Operations
 
@@ -204,7 +268,12 @@ public interface IGraphRepository
     /// <param name="embedding">The embedding vector.</param>
     /// <param name="modelName">The name of the embedding model used.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    Task StoreEntityEmbeddingAsync(int entityId, float[] embedding, string modelName, CancellationToken cancellationToken = default);
+    Task StoreEntityEmbeddingAsync(
+        int entityId,
+        float[] embedding,
+        string modelName,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Stores an embedding for a relationship.
@@ -213,7 +282,12 @@ public interface IGraphRepository
     /// <param name="embedding">The embedding vector.</param>
     /// <param name="modelName">The name of the embedding model used.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    Task StoreRelationshipEmbeddingAsync(int relationshipId, float[] embedding, string modelName, CancellationToken cancellationToken = default);
+    Task StoreRelationshipEmbeddingAsync(
+        int relationshipId,
+        float[] embedding,
+        string modelName,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets the embedding for a specific entity.
@@ -221,7 +295,10 @@ public interface IGraphRepository
     /// <param name="entityId">The ID of the entity.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The embedding vector or null if not found.</returns>
-    Task<float[]?> GetEntityEmbeddingAsync(int entityId, CancellationToken cancellationToken = default);
+    Task<float[]?> GetEntityEmbeddingAsync(
+        int entityId,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets the embedding for a specific relationship.
@@ -229,7 +306,10 @@ public interface IGraphRepository
     /// <param name="relationshipId">The ID of the relationship.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The embedding vector or null if not found.</returns>
-    Task<float[]?> GetRelationshipEmbeddingAsync(int relationshipId, CancellationToken cancellationToken = default);
+    Task<float[]?> GetRelationshipEmbeddingAsync(
+        int relationshipId,
+        CancellationToken cancellationToken = default
+    );
 
     // Utility Operations
 
@@ -246,7 +326,10 @@ public interface IGraphRepository
     /// <param name="sessionContext">Session context for isolation.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Graph statistics.</returns>
-    Task<GraphStatistics> GetGraphStatisticsAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<GraphStatistics> GetGraphStatisticsAsync(
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 }
 
 /// <summary>

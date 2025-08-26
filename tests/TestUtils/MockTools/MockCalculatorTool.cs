@@ -19,7 +19,8 @@ public static class MockCalculatorTool
             Name = "Add",
             OpenWorld = false,
             ReadOnly = true,
-            Title = "Add numbers"),
+            Title = "Add numbers"
+        ),
         Description("Adds two numbers")
     ]
     public static double Add(double a, double b)

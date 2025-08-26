@@ -13,7 +13,7 @@ public static class ToolsCallAggregateTransformer
 {
     private static readonly JsonSerializerOptions PrettyJsonOptions = new()
     {
-        WriteIndented = true
+        WriteIndented = true,
     };
 
     /// <summary>
@@ -78,7 +78,7 @@ public static class ToolsCallAggregateTransformer
             Role = Role.Assistant, // Tool calls are from assistant
             FromAgent = aggregateMessage.FromAgent,
             GenerationId = aggregateMessage.GenerationId,
-            Metadata = aggregateMessage.Metadata
+            Metadata = aggregateMessage.Metadata,
         };
     }
 
@@ -111,9 +111,11 @@ public static class ToolsCallAggregateTransformer
             string messageText = message switch
             {
                 TextMessage textMsg => textMsg.Text,
-                ToolsCallAggregateMessage aggregateMsg => TransformToNaturalFormat(aggregateMsg).Text,
+                ToolsCallAggregateMessage aggregateMsg => TransformToNaturalFormat(
+                    aggregateMsg
+                ).Text,
                 ICanGetText textInterface => textInterface.GetText() ?? string.Empty,
-                _ => string.Empty
+                _ => string.Empty,
             };
 
             // Append the content
@@ -141,7 +143,7 @@ public static class ToolsCallAggregateTransformer
             Role = lastRole,
             FromAgent = fromAgent,
             GenerationId = generationId,
-            Metadata = combinedMetadata.Count > 0 ? combinedMetadata : null
+            Metadata = combinedMetadata.Count > 0 ? combinedMetadata : null,
         };
     }
 
@@ -216,8 +218,10 @@ public static class ToolsCallAggregateTransformer
         text = text.Trim();
 
         // Quick check if it looks like JSON
-        if (!(text.StartsWith('{') && text.EndsWith('}')) &&
-            !(text.StartsWith('[') && text.EndsWith(']')))
+        if (
+            !(text.StartsWith('{') && text.EndsWith('}'))
+            && !(text.StartsWith('[') && text.EndsWith(']'))
+        )
         {
             return null;
         }
@@ -243,7 +247,8 @@ public static class ToolsCallAggregateTransformer
     /// <returns>Combined metadata dictionary</returns>
     private static ImmutableDictionary<string, object> MergeMetadata(
         ImmutableDictionary<string, object> first,
-        ImmutableDictionary<string, object> second)
+        ImmutableDictionary<string, object> second
+    )
     {
         var result = first;
 

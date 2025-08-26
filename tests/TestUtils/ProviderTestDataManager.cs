@@ -1,9 +1,9 @@
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
+using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 using FinishReasonEnum = AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice.FinishReasonEnum;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
@@ -30,7 +30,8 @@ public class ProviderTestDataManager
         // Start with OpenAI factory but with camelCase naming to match test data
         var options = OpenAIJsonSerializerOptionsFactory.CreateForOpenAI(
             writeIndented: true,
-            namingPolicy: JsonNamingPolicy.CamelCase);
+            namingPolicy: JsonNamingPolicy.CamelCase
+        );
 
         // Add test-specific converters not included in the base factories
         options.Converters.Add(new UnionJsonConverter<int, string>());
@@ -58,14 +59,14 @@ public class ProviderTestDataManager
             ProviderType.OpenAI => OpenAIDirectory,
             ProviderType.Anthropic => AnthropicDirectory,
             ProviderType.Common => CommonDirectory,
-            _ => throw new ArgumentOutOfRangeException(nameof(providerType))
+            _ => throw new ArgumentOutOfRangeException(nameof(providerType)),
         };
 
         string dataTypeStr = dataType switch
         {
             DataType.LmCoreRequest => "LmCoreRequest",
             DataType.FinalResponse => "FinalResponse",
-            _ => throw new ArgumentOutOfRangeException(nameof(dataType))
+            _ => throw new ArgumentOutOfRangeException(nameof(dataType)),
         };
 
         return Path.Combine(_dataDirectory, providerDir, $"{testName}.{dataTypeStr}.json");
@@ -74,13 +75,14 @@ public class ProviderTestDataManager
     /// <summary>
     /// Saves LmCore request data to a file.
     /// </summary>
-    public void SaveLmCoreRequest(string testName, ProviderType providerType, TextMessage[] messages, GenerateReplyOptions options)
+    public void SaveLmCoreRequest(
+        string testName,
+        ProviderType providerType,
+        TextMessage[] messages,
+        GenerateReplyOptions options
+    )
     {
-        var data = new
-        {
-            Messages = messages,
-            Options = options
-        };
+        var data = new { Messages = messages, Options = options };
 
         string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         EnsureDirectoryExists(filePath);
@@ -90,7 +92,10 @@ public class ProviderTestDataManager
     /// <summary>
     /// Loads LmCore request data from a file.
     /// </summary>
-    public (IMessage[] Messages, GenerateReplyOptions Options) LoadLmCoreRequest(string testName, ProviderType providerType)
+    public (IMessage[] Messages, GenerateReplyOptions Options) LoadLmCoreRequest(
+        string testName,
+        ProviderType providerType
+    )
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         if (!File.Exists(filePath))
@@ -101,13 +106,20 @@ public class ProviderTestDataManager
         var json = File.ReadAllText(filePath);
         var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, JsonOptions);
 
-        return (data?.Messages ?? Array.Empty<IMessage>(), data?.Options ?? new GenerateReplyOptions());
+        return (
+            data?.Messages ?? Array.Empty<IMessage>(),
+            data?.Options ?? new GenerateReplyOptions()
+        );
     }
 
     /// <summary>
     /// Saves a final response to a file.
     /// </summary>
-    public void SaveFinalResponse(string testName, ProviderType providerType, IEnumerable<IMessage> response)
+    public void SaveFinalResponse(
+        string testName,
+        ProviderType providerType,
+        IEnumerable<IMessage> response
+    )
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         EnsureDirectoryExists(filePath);
@@ -127,7 +139,9 @@ public class ProviderTestDataManager
 
         var json = File.ReadAllText(filePath);
         return JsonSerializer.Deserialize<List<IMessage>>(json, JsonOptions)
-            ?? throw new InvalidOperationException($"Failed to deserialize final response from {filePath}");
+            ?? throw new InvalidOperationException(
+                $"Failed to deserialize final response from {filePath}"
+            );
     }
 
     /// <summary>
@@ -152,7 +166,7 @@ public class ProviderTestDataManager
             ProviderType.OpenAI => OpenAIDirectory,
             ProviderType.Anthropic => AnthropicDirectory,
             ProviderType.Common => CommonDirectory,
-            _ => throw new ArgumentOutOfRangeException(nameof(providerType))
+            _ => throw new ArgumentOutOfRangeException(nameof(providerType)),
         };
 
         string directoryPath = Path.Combine(_dataDirectory, providerDir);
@@ -161,7 +175,8 @@ public class ProviderTestDataManager
             return Enumerable.Empty<string>();
         }
 
-        return Directory.GetFiles(directoryPath, "*.LmCoreRequest.json")
+        return Directory
+            .GetFiles(directoryPath, "*.LmCoreRequest.json")
             .Select(path => Path.GetFileName(path)!)
             .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))
             .Distinct();
@@ -181,7 +196,7 @@ public enum DataType
     /// <summary>
     /// The final processed response.
     /// </summary>
-    FinalResponse
+    FinalResponse,
 }
 
 /// <summary>
@@ -202,7 +217,7 @@ public enum ProviderType
     /// <summary>
     /// Common data shared between providers.
     /// </summary>
-    Common
+    Common,
 }
 
 /// <summary>

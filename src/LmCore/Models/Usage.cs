@@ -35,15 +35,14 @@ public record Usage
 
     // Unified access properties for convenience
     [JsonIgnore]
-    public int TotalReasoningTokens =>
-        OutputTokenDetails?.ReasoningTokens ?? 0;
+    public int TotalReasoningTokens => OutputTokenDetails?.ReasoningTokens ?? 0;
 
     [JsonIgnore]
-    public int TotalCachedTokens =>
-        InputTokenDetails?.CachedTokens ?? 0;
+    public int TotalCachedTokens => InputTokenDetails?.CachedTokens ?? 0;
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
+    public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
+        ImmutableDictionary<string, object?>.Empty;
 
     public Usage SetExtraProperty<T>(string key, T value)
     {

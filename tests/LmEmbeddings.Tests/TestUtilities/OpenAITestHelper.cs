@@ -13,7 +13,8 @@ public static class OpenAITestHelper
     public static EmbeddingOptions CreateOpenAIOptions(
         string apiKey = "test-api-key",
         string baseUrl = "https://api.openai.com",
-        string defaultModel = "text-embedding-3-small")
+        string defaultModel = "text-embedding-3-small"
+    )
     {
         return new EmbeddingOptions
         {
@@ -22,7 +23,7 @@ public static class OpenAITestHelper
             BaseUrl = baseUrl,
             DefaultModel = defaultModel,
             AvailableModelsWithDimensions = GetOpenAIModels(),
-            DefaultEncodingFormat = "float"
+            DefaultEncodingFormat = "float",
         };
     }
 
@@ -39,7 +40,7 @@ public static class OpenAITestHelper
                 {
                     Model = "text-embedding-3-small",
                     Dimensions = 1536,
-                    IsMultiModal = false
+                    IsMultiModal = false,
                 }
             },
             {
@@ -48,7 +49,7 @@ public static class OpenAITestHelper
                 {
                     Model = "text-embedding-3-large",
                     Dimensions = 3072,
-                    IsMultiModal = false
+                    IsMultiModal = false,
                 }
             },
             {
@@ -57,9 +58,9 @@ public static class OpenAITestHelper
                 {
                     Model = "text-embedding-ada-002",
                     Dimensions = 1536,
-                    IsMultiModal = false
+                    IsMultiModal = false,
                 }
-            }
+            },
         };
     }
 }

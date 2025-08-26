@@ -27,12 +27,38 @@ public record EmbeddingOptions
     /// </summary>
     public string DefaultModel { get; init; } = "jina-clip-v2";
 
-    public Dictionary<string, EmbeddingModelConfig> AvailableModelsWithDimensions { get; init; } = new()
-    {
-        { "jina-clip-v2", new EmbeddingModelConfig { Model = "jina-clip-v2", Dimensions = 1024, IsMultiModal = true } },
-        { "jina-embeddings-v3", new EmbeddingModelConfig { Model = "jina-embeddings-v3", Dimensions = 1024, IsMultiModal = false } },
-        { "jina-embeddings-v4", new EmbeddingModelConfig { Model = "jina-embeddings-v4", Dimensions = 2048, IsMultiModal = true, ChunkSize = 32*1024 } }
-    };
+    public Dictionary<string, EmbeddingModelConfig> AvailableModelsWithDimensions { get; init; } =
+        new()
+        {
+            {
+                "jina-clip-v2",
+                new EmbeddingModelConfig
+                {
+                    Model = "jina-clip-v2",
+                    Dimensions = 1024,
+                    IsMultiModal = true,
+                }
+            },
+            {
+                "jina-embeddings-v3",
+                new EmbeddingModelConfig
+                {
+                    Model = "jina-embeddings-v3",
+                    Dimensions = 1024,
+                    IsMultiModal = false,
+                }
+            },
+            {
+                "jina-embeddings-v4",
+                new EmbeddingModelConfig
+                {
+                    Model = "jina-embeddings-v4",
+                    Dimensions = 2048,
+                    IsMultiModal = true,
+                    ChunkSize = 32 * 1024,
+                }
+            },
+        };
 
     /// <summary>
     /// Default encoding format for embeddings

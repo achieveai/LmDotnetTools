@@ -1,6 +1,6 @@
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Configuration;
 
@@ -43,7 +43,10 @@ public static class EnvironmentVariables
     public static bool GetEnableUsageMiddleware(IConfiguration configuration)
     {
         var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            EnableUsageMiddleware, null, "true");
+            EnableUsageMiddleware,
+            null,
+            "true"
+        );
         return bool.TryParse(value, out var result) ? result : true;
     }
 
@@ -55,7 +58,10 @@ public static class EnvironmentVariables
     public static bool GetEnableInlineUsage(IConfiguration configuration)
     {
         var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            EnableInlineUsage, null, "true");
+            EnableInlineUsage,
+            null,
+            "true"
+        );
         return bool.TryParse(value, out var result) ? result : true;
     }
 
@@ -67,7 +73,10 @@ public static class EnvironmentVariables
     public static int GetUsageCacheTtlSec(IConfiguration configuration)
     {
         var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            UsageCacheTtlSec, null, "300");
+            UsageCacheTtlSec,
+            null,
+            "300"
+        );
         return int.TryParse(value, out var result) && result > 0 ? result : 300;
     }
 
@@ -79,7 +88,10 @@ public static class EnvironmentVariables
     public static string? GetOpenRouterApiKey(IConfiguration configuration)
     {
         return EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            OpenRouterApiKey, null, "");
+            OpenRouterApiKey,
+            null,
+            ""
+        );
     }
 
     #endregion
@@ -106,8 +118,9 @@ public static class EnvironmentVariables
         if (string.IsNullOrWhiteSpace(openRouterApiKey))
         {
             throw new InvalidOperationException(
-                $"OpenRouter usage middleware is enabled but {OpenRouterApiKey} environment variable is missing or empty. " +
-                $"Either set the API key or disable the middleware by setting {EnableUsageMiddleware}=false.");
+                $"OpenRouter usage middleware is enabled but {OpenRouterApiKey} environment variable is missing or empty. "
+                    + $"Either set the API key or disable the middleware by setting {EnableUsageMiddleware}=false."
+            );
         }
     }
 
@@ -123,11 +136,11 @@ public static class EnvironmentVariables
         var cacheTtlSec = GetUsageCacheTtlSec(configuration);
         var apiKeyPresent = !string.IsNullOrWhiteSpace(GetOpenRouterApiKey(configuration));
 
-        return $"OpenRouter Usage Middleware Configuration: " +
-               $"Enabled={enableUsageMiddleware}, " +
-               $"InlineUsage={enableInlineUsage}, " +
-               $"CacheTtl={cacheTtlSec}s, " +
-               $"ApiKeyPresent={apiKeyPresent}";
+        return $"OpenRouter Usage Middleware Configuration: "
+            + $"Enabled={enableUsageMiddleware}, "
+            + $"InlineUsage={enableInlineUsage}, "
+            + $"CacheTtl={cacheTtlSec}s, "
+            + $"ApiKeyPresent={apiKeyPresent}";
     }
 
     #endregion
@@ -147,7 +160,8 @@ public static class EnvironmentVariablesServiceExtensions
     /// <returns>Service collection for chaining</returns>
     public static IServiceCollection ValidateOpenRouterUsageConfiguration(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration
+    )
     {
         EnvironmentVariables.ValidateOpenRouterUsageConfiguration(configuration);
         return services;
@@ -161,11 +175,13 @@ public static class EnvironmentVariablesServiceExtensions
     /// <returns>Service collection for chaining</returns>
     public static IServiceCollection AddOpenRouterUsageConfiguration(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration
+    )
     {
         // Register configuration values as singleton
-        services.AddSingleton<IOpenRouterUsageConfiguration>(provider =>
-            new OpenRouterUsageConfiguration(configuration));
+        services.AddSingleton<IOpenRouterUsageConfiguration>(
+            provider => new OpenRouterUsageConfiguration(configuration)
+        );
 
         return services;
     }

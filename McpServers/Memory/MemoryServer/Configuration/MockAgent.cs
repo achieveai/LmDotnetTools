@@ -14,15 +14,17 @@ public class MockAgent : IAgent
     }
 
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         var response = new TextMessage
         {
-            Text = $"Mock response from {_name}. LLM features are disabled - API key not configured.",
+            Text =
+                $"Mock response from {_name}. LLM features are disabled - API key not configured.",
             Role = Role.Assistant,
-            FromAgent = _name
+            FromAgent = _name,
         };
         return Task.FromResult<IEnumerable<IMessage>>(new[] { response });
     }

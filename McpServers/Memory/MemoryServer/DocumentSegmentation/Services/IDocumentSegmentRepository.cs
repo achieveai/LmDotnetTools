@@ -19,11 +19,12 @@ public interface IDocumentSegmentRepository
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of generated segment IDs</returns>
     Task<List<int>> StoreSegmentsAsync(
-      ISqliteSession session,
-      List<DocumentSegment> segments,
-      int parentDocumentId,
-      SessionContext sessionContext,
-      CancellationToken cancellationToken = default);
+        ISqliteSession session,
+        List<DocumentSegment> segments,
+        int parentDocumentId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Retrieves all segments for a parent document.
@@ -34,10 +35,11 @@ public interface IDocumentSegmentRepository
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of document segments ordered by sequence</returns>
     Task<List<DocumentSegment>> GetDocumentSegmentsAsync(
-      ISqliteSession session,
-      int parentDocumentId,
-      SessionContext sessionContext,
-      CancellationToken cancellationToken = default);
+        ISqliteSession session,
+        int parentDocumentId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Stores segment relationships in the database.
@@ -48,10 +50,11 @@ public interface IDocumentSegmentRepository
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of relationships stored</returns>
     Task<int> StoreSegmentRelationshipsAsync(
-      ISqliteSession session,
-      List<SegmentRelationship> relationships,
-      SessionContext sessionContext,
-      CancellationToken cancellationToken = default);
+        ISqliteSession session,
+        List<SegmentRelationship> relationships,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Retrieves segment relationships for a document.
@@ -62,10 +65,11 @@ public interface IDocumentSegmentRepository
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of segment relationships</returns>
     Task<List<SegmentRelationship>> GetSegmentRelationshipsAsync(
-      ISqliteSession session,
-      int parentDocumentId,
-      SessionContext sessionContext,
-      CancellationToken cancellationToken = default);
+        ISqliteSession session,
+        int parentDocumentId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Deletes all segments and relationships for a parent document.
@@ -76,10 +80,11 @@ public interface IDocumentSegmentRepository
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of segments deleted</returns>
     Task<int> DeleteDocumentSegmentsAsync(
-      ISqliteSession session,
-      int parentDocumentId,
-      SessionContext sessionContext,
-      CancellationToken cancellationToken = default);
+        ISqliteSession session,
+        int parentDocumentId,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Searches segments using full-text search.
@@ -91,9 +96,10 @@ public interface IDocumentSegmentRepository
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of matching segments with relevance scores</returns>
     Task<List<DocumentSegment>> SearchSegmentsAsync(
-      ISqliteSession session,
-      string query,
-      SessionContext sessionContext,
-      int limit = 10,
-      CancellationToken cancellationToken = default);
+        ISqliteSession session,
+        string query,
+        SessionContext sessionContext,
+        int limit = 10,
+        CancellationToken cancellationToken = default
+    );
 }

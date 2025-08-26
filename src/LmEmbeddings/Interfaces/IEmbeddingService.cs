@@ -26,7 +26,10 @@ public interface IEmbeddingService : IDisposable
     /// <param name="request">The embedding request containing texts and configuration</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The embedding response with generated vectors</returns>
-    Task<EmbeddingResponse> GenerateEmbeddingsAsync(EmbeddingRequest request, CancellationToken cancellationToken = default);
+    Task<EmbeddingResponse> GenerateEmbeddingsAsync(
+        EmbeddingRequest request,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Generates embeddings for a single text input (backward compatibility)
@@ -35,12 +38,18 @@ public interface IEmbeddingService : IDisposable
     /// <param name="model">The model to use for embedding</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The embedding response with generated vector</returns>
-    Task<EmbeddingResponse> GenerateEmbeddingAsync(string text, string model, CancellationToken cancellationToken = default);
+    Task<EmbeddingResponse> GenerateEmbeddingAsync(
+        string text,
+        string model,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets the list of available embedding models for this provider
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>List of available model names</returns>
-    Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        CancellationToken cancellationToken = default
+    );
 }

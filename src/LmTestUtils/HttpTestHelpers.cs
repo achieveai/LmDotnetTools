@@ -16,12 +16,12 @@ public static class HttpTestHelpers
     /// <param name="handler">Message handler to use</param>
     /// <param name="baseAddress">Base address for the client</param>
     /// <returns>Configured HttpClient for testing</returns>
-    public static HttpClient CreateTestHttpClient(HttpMessageHandler handler, string baseAddress = "https://api.test.com")
+    public static HttpClient CreateTestHttpClient(
+        HttpMessageHandler handler,
+        string baseAddress = "https://api.test.com"
+    )
     {
-        return new HttpClient(handler)
-        {
-            BaseAddress = new Uri(baseAddress)
-        };
+        return new HttpClient(handler) { BaseAddress = new Uri(baseAddress) };
     }
 
     /// <summary>
@@ -34,7 +34,8 @@ public static class HttpTestHelpers
     public static HttpClient CreateTestHttpClientWithJsonResponse(
         string jsonResponse,
         HttpStatusCode statusCode = HttpStatusCode.OK,
-        string baseAddress = "https://api.test.com")
+        string baseAddress = "https://api.test.com"
+    )
     {
         var handler = FakeHttpMessageHandler.CreateSimpleJsonHandler(jsonResponse, statusCode);
         return CreateTestHttpClient(handler, baseAddress);
@@ -52,9 +53,14 @@ public static class HttpTestHelpers
         int failureCount,
         string successResponse,
         HttpStatusCode failureStatusCode = HttpStatusCode.InternalServerError,
-        string baseAddress = "https://api.test.com")
+        string baseAddress = "https://api.test.com"
+    )
     {
-        var handler = FakeHttpMessageHandler.CreateRetryHandler(failureCount, successResponse, failureStatusCode);
+        var handler = FakeHttpMessageHandler.CreateRetryHandler(
+            failureCount,
+            successResponse,
+            failureStatusCode
+        );
         return CreateTestHttpClient(handler, baseAddress);
     }
 
@@ -66,7 +72,8 @@ public static class HttpTestHelpers
     /// <returns>HttpClient configured with conditional responses</returns>
     public static HttpClient CreateMultiResponseHttpClient(
         Dictionary<string, (string json, HttpStatusCode status)> responses,
-        string baseAddress = "https://api.test.com")
+        string baseAddress = "https://api.test.com"
+    )
     {
         var handler = FakeHttpMessageHandler.CreateMultiResponseHandler(responses);
         return CreateTestHttpClient(handler, baseAddress);
@@ -86,9 +93,15 @@ public static class HttpTestHelpers
         string model = "gpt-4",
         int promptTokens = 10,
         int completionTokens = 20,
-        string baseAddress = "https://api.openai.com/v1")
+        string baseAddress = "https://api.openai.com/v1"
+    )
     {
-        var handler = FakeHttpMessageHandler.CreateOpenAIResponseHandler(content, model, promptTokens, completionTokens);
+        var handler = FakeHttpMessageHandler.CreateOpenAIResponseHandler(
+            content,
+            model,
+            promptTokens,
+            completionTokens
+        );
         return CreateTestHttpClient(handler, baseAddress);
     }
 
@@ -106,9 +119,15 @@ public static class HttpTestHelpers
         string model = "claude-3-sonnet-20240229",
         int inputTokens = 10,
         int outputTokens = 20,
-        string baseAddress = "https://api.anthropic.com/v1")
+        string baseAddress = "https://api.anthropic.com/v1"
+    )
     {
-        var handler = FakeHttpMessageHandler.CreateAnthropicResponseHandler(content, model, inputTokens, outputTokens);
+        var handler = FakeHttpMessageHandler.CreateAnthropicResponseHandler(
+            content,
+            model,
+            inputTokens,
+            outputTokens
+        );
         return CreateTestHttpClient(handler, baseAddress);
     }
 
@@ -124,9 +143,14 @@ public static class HttpTestHelpers
         string responseJson,
         out CapturedRequestContainer capturedRequest,
         HttpStatusCode statusCode = HttpStatusCode.OK,
-        string baseAddress = "https://api.test.com")
+        string baseAddress = "https://api.test.com"
+    )
     {
-        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(responseJson, out capturedRequest, statusCode);
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(
+            responseJson,
+            out capturedRequest,
+            statusCode
+        );
         return CreateTestHttpClient(handler, baseAddress);
     }
 
@@ -163,18 +187,22 @@ public static class HttpTestHelpers
     public static bool ValidateRequestHeaders(
         HttpRequestMessage request,
         Dictionary<string, string> expectedHeaders,
-        bool throwOnMissing = true)
+        bool throwOnMissing = true
+    )
     {
         foreach (var header in expectedHeaders)
         {
-            var found = request.Headers.TryGetValues(header.Key, out var values) &&
-                       values.Contains(header.Value);
+            var found =
+                request.Headers.TryGetValues(header.Key, out var values)
+                && values.Contains(header.Value);
 
             if (!found)
             {
                 if (throwOnMissing)
                 {
-                    throw new AssertionException($"Expected header '{header.Key}: {header.Value}' not found in request");
+                    throw new AssertionException(
+                        $"Expected header '{header.Key}: {header.Value}' not found in request"
+                    );
                 }
                 return false;
             }
@@ -192,7 +220,8 @@ public static class HttpTestHelpers
     public static async Task<bool> ValidateRequestJsonContent(
         HttpRequestMessage request,
         string[] expectedKeys,
-        bool throwOnMissing = true)
+        bool throwOnMissing = true
+    )
     {
         if (request.Content == null)
         {
@@ -213,7 +242,9 @@ public static class HttpTestHelpers
             {
                 if (throwOnMissing)
                 {
-                    throw new AssertionException($"Expected JSON key '{key}' not found in request content");
+                    throw new AssertionException(
+                        $"Expected JSON key '{key}' not found in request content"
+                    );
                 }
                 return false;
             }
@@ -231,7 +262,8 @@ public static class HttpTestHelpers
     public static HttpResponseMessage CreateErrorResponse(
         HttpStatusCode statusCode,
         string errorMessage,
-        string? errorCode = null)
+        string? errorCode = null
+    )
     {
         var errorResponse = new
         {
@@ -239,15 +271,12 @@ public static class HttpTestHelpers
             {
                 message = errorMessage,
                 code = errorCode ?? statusCode.ToString(),
-                type = "error"
-            }
+                type = "error",
+            },
         };
 
         var json = System.Text.Json.JsonSerializer.Serialize(errorResponse);
-        var response = new HttpResponseMessage(statusCode)
-        {
-            Content = CreateJsonContent(json)
-        };
+        var response = new HttpResponseMessage(statusCode) { Content = CreateJsonContent(json) };
 
         return response;
     }
@@ -266,9 +295,24 @@ public static class HttpTestHelpers
             new object[] { HttpStatusCode.Unauthorized, false, "401 Unauthorized should fail" },
             new object[] { HttpStatusCode.Forbidden, false, "403 Forbidden should fail" },
             new object[] { HttpStatusCode.NotFound, false, "404 Not Found should fail" },
-            new object[] { HttpStatusCode.InternalServerError, false, "500 Internal Server Error should fail (but be retryable)" },
-            new object[] { HttpStatusCode.BadGateway, false, "502 Bad Gateway should fail (but be retryable)" },
-            new object[] { HttpStatusCode.ServiceUnavailable, false, "503 Service Unavailable should fail (but be retryable)" }
+            new object[]
+            {
+                HttpStatusCode.InternalServerError,
+                false,
+                "500 Internal Server Error should fail (but be retryable)",
+            },
+            new object[]
+            {
+                HttpStatusCode.BadGateway,
+                false,
+                "502 Bad Gateway should fail (but be retryable)",
+            },
+            new object[]
+            {
+                HttpStatusCode.ServiceUnavailable,
+                false,
+                "503 Service Unavailable should fail (but be retryable)",
+            },
         };
     }
 
@@ -277,7 +321,10 @@ public static class HttpTestHelpers
     /// </summary>
     public class AssertionException : Exception
     {
-        public AssertionException(string message) : base(message) { }
-        public AssertionException(string message, Exception innerException) : base(message, innerException) { }
+        public AssertionException(string message)
+            : base(message) { }
+
+        public AssertionException(string message, Exception innerException)
+            : base(message, innerException) { }
     }
 }

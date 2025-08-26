@@ -22,7 +22,8 @@ public interface INarrativeBasedSegmentationService
         string content,
         DocumentType documentType = DocumentType.Generic,
         NarrativeSegmentationOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Detects narrative transitions and flow boundaries in the document.
@@ -34,7 +35,8 @@ public interface INarrativeBasedSegmentationService
     Task<List<NarrativeBoundary>> DetectNarrativeTransitionsAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Analyzes the logical flow and narrative structure of the document.
@@ -44,7 +46,8 @@ public interface INarrativeBasedSegmentationService
     /// <returns>Narrative flow analysis results</returns>
     Task<NarrativeFlowAnalysis> AnalyzeLogicalFlowAsync(
         string content,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates narrative-based segments for quality and coherence.
@@ -56,7 +59,8 @@ public interface INarrativeBasedSegmentationService
     Task<NarrativeSegmentationValidation> ValidateNarrativeSegmentsAsync(
         List<DocumentSegment> segments,
         string originalContent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Identifies temporal sequences and chronological patterns in the content.
@@ -66,7 +70,8 @@ public interface INarrativeBasedSegmentationService
     /// <returns>Detected temporal sequences with positions and types</returns>
     Task<List<TemporalSequence>> IdentifyTemporalSequencesAsync(
         string content,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Detects causal relationships between different parts of the document.
@@ -76,7 +81,8 @@ public interface INarrativeBasedSegmentationService
     /// <returns>Detected causal relationships</returns>
     Task<List<CausalRelation>> DetectCausalRelationshipsAsync(
         string content,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Identifies narrative arc elements (setup, development, climax, resolution) in the content.
@@ -88,7 +94,8 @@ public interface INarrativeBasedSegmentationService
     Task<Dictionary<NarrativeFunction, List<int>>> IdentifyNarrativeArcElementsAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }
 
 /// <summary>

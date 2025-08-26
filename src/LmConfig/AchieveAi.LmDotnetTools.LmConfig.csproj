@@ -1,29 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.5" />
   </ItemGroup>
-
-    <PropertyGroup>
+  <PropertyGroup>
     <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    
     <!-- NuGet Package Metadata -->
     <PackageId>AchieveAi.LmDotnetTools.LmConfig</PackageId>
     <Description>Configuration management library for language models, providing flexible configuration loading and validation.</Description>
     <PackageTags>$(PackageTags);config;configuration;settings</PackageTags>
-      <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
-
 </Project>
-

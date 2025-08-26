@@ -46,22 +46,27 @@ public record OpenAIProviderUsage
     public int CachedTokens { get; init; }
 
     [JsonExtensionData]
-    public IDictionary<string, object> ExtraProperties { get; init; } = new Dictionary<string, object>();
+    public IDictionary<string, object> ExtraProperties { get; init; } =
+        new Dictionary<string, object>();
 
     // Unified access properties with precedence logic
     [JsonIgnore]
     public int TotalReasoningTokens =>
         // OpenRouter direct field takes precedence
-        ReasoningTokens != 0 ? ReasoningTokens :
-        // Fallback to OpenAI nested structure
-        OutputTokenDetails?.ReasoningTokens ?? 0;
+        ReasoningTokens != 0
+            ? ReasoningTokens
+            :
+            // Fallback to OpenAI nested structure
+            OutputTokenDetails?.ReasoningTokens ?? 0;
 
     [JsonIgnore]
     public int TotalCachedTokens =>
         // OpenRouter direct field takes precedence
-        CachedTokens != 0 ? CachedTokens :
-        // Fallback to OpenAI nested structure
-        InputTokenDetails?.CachedTokens ?? 0;
+        CachedTokens != 0
+            ? CachedTokens
+            :
+            // Fallback to OpenAI nested structure
+            InputTokenDetails?.CachedTokens ?? 0;
 
     /// <summary>
     /// Convert to core Usage model
@@ -74,7 +79,10 @@ public record OpenAIProviderUsage
             CompletionTokens = CompletionTokens,
             TotalTokens = TotalTokens,
             TotalCost = TotalCost,
-            ExtraProperties = ExtraProperties.ToImmutableDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value)
+            ExtraProperties = ExtraProperties.ToImmutableDictionary(
+                kvp => kvp.Key,
+                kvp => (object?)kvp.Value
+            ),
         };
 
         // Convert nested token details if present
@@ -84,8 +92,8 @@ public record OpenAIProviderUsage
             {
                 InputTokenDetails = new InputTokenDetails
                 {
-                    CachedTokens = InputTokenDetails.CachedTokens
-                }
+                    CachedTokens = InputTokenDetails.CachedTokens,
+                },
             };
         }
 
@@ -95,8 +103,8 @@ public record OpenAIProviderUsage
             {
                 OutputTokenDetails = new OutputTokenDetails
                 {
-                    ReasoningTokens = OutputTokenDetails.ReasoningTokens
-                }
+                    ReasoningTokens = OutputTokenDetails.ReasoningTokens,
+                },
             };
         }
 
@@ -114,10 +122,20 @@ public record OpenAIProviderUsage
             CompletionTokens = coreUsage.CompletionTokens,
             TotalTokens = coreUsage.TotalTokens,
             TotalCost = coreUsage.TotalCost,
-            InputTokenDetails = coreUsage.InputTokenDetails != null ?
-                new OpenAIInputTokenDetails { CachedTokens = coreUsage.InputTokenDetails.CachedTokens } : null,
-            OutputTokenDetails = coreUsage.OutputTokenDetails != null ?
-                new OpenAIOutputTokenDetails { ReasoningTokens = coreUsage.OutputTokenDetails.ReasoningTokens } : null,
+            InputTokenDetails =
+                coreUsage.InputTokenDetails != null
+                    ? new OpenAIInputTokenDetails
+                    {
+                        CachedTokens = coreUsage.InputTokenDetails.CachedTokens,
+                    }
+                    : null,
+            OutputTokenDetails =
+                coreUsage.OutputTokenDetails != null
+                    ? new OpenAIOutputTokenDetails
+                    {
+                        ReasoningTokens = coreUsage.OutputTokenDetails.ReasoningTokens,
+                    }
+                    : null,
         };
     }
 }

@@ -29,7 +29,8 @@ public class GraphRepositoryTests : IDisposable
 
         // Create a simple logger factory that returns NullLogger instances
         _mockLoggerFactory = new Mock<ILoggerFactory>();
-        _mockLoggerFactory.Setup(f => f.CreateLogger(It.IsAny<string>()))
+        _mockLoggerFactory
+            .Setup(f => f.CreateLogger(It.IsAny<string>()))
             .Returns(new Mock<ILogger>().Object);
 
         // Create TestSqliteSessionFactory for proper test isolation
@@ -45,7 +46,8 @@ public class GraphRepositoryTests : IDisposable
     [MemberData(nameof(EntityTestCases))]
     public async Task AddEntityAsync_WithValidData_ShouldSucceed(
         Entity entity,
-        SessionContext sessionContext)
+        SessionContext sessionContext
+    )
     {
         // Arrange
         // Act
@@ -63,7 +65,8 @@ public class GraphRepositoryTests : IDisposable
     [MemberData(nameof(EntityTestCases))]
     public async Task GetEntityByIdAsync_WithExistingEntity_ShouldReturnEntity(
         Entity entity,
-        SessionContext sessionContext)
+        SessionContext sessionContext
+    )
     {
         // Arrange
         var addedEntity = await _repository.AddEntityAsync(entity, sessionContext);
@@ -82,7 +85,8 @@ public class GraphRepositoryTests : IDisposable
     [MemberData(nameof(EntityTestCases))]
     public async Task GetEntityByNameAsync_WithExistingEntity_ShouldReturnEntity(
         Entity entity,
-        SessionContext sessionContext)
+        SessionContext sessionContext
+    )
     {
         // Arrange
         await _repository.AddEntityAsync(entity, sessionContext);
@@ -101,7 +105,8 @@ public class GraphRepositoryTests : IDisposable
     public async Task UpdateEntityAsync_WithValidData_ShouldUpdateSuccessfully(
         Entity originalEntity,
         Entity updatedEntity,
-        SessionContext sessionContext)
+        SessionContext sessionContext
+    )
     {
         // Arrange
         var addedEntity = await _repository.AddEntityAsync(originalEntity, sessionContext);
@@ -125,7 +130,8 @@ public class GraphRepositoryTests : IDisposable
     [MemberData(nameof(RelationshipTestCases))]
     public async Task AddRelationshipAsync_WithValidData_ShouldSucceed(
         Relationship relationship,
-        SessionContext sessionContext)
+        SessionContext sessionContext
+    )
     {
         // Arrange
         // Act
@@ -143,13 +149,20 @@ public class GraphRepositoryTests : IDisposable
     [MemberData(nameof(RelationshipTestCases))]
     public async Task GetRelationshipByIdAsync_WithExistingRelationship_ShouldReturnRelationship(
         Relationship relationship,
-        SessionContext sessionContext)
+        SessionContext sessionContext
+    )
     {
         // Arrange
-        var addedRelationship = await _repository.AddRelationshipAsync(relationship, sessionContext);
+        var addedRelationship = await _repository.AddRelationshipAsync(
+            relationship,
+            sessionContext
+        );
 
         // Act
-        var result = await _repository.GetRelationshipByIdAsync(addedRelationship.Id, sessionContext);
+        var result = await _repository.GetRelationshipByIdAsync(
+            addedRelationship.Id,
+            sessionContext
+        );
 
         // Assert
         Assert.NotNull(result);
@@ -168,7 +181,8 @@ public class GraphRepositoryTests : IDisposable
         SessionContext session1,
         SessionContext session2,
         Entity entity1,
-        Entity entity2)
+        Entity entity2
+    )
     {
         // Arrange
         // Act
@@ -198,7 +212,7 @@ public class GraphRepositoryTests : IDisposable
             Name = "TestEntity",
             Type = "test",
             UserId = "deadlock_test_user",
-            Confidence = 0.8f
+            Confidence = 0.8f,
         };
 
         var sessionContext = new SessionContext { UserId = "deadlock_test_user" };
@@ -207,7 +221,8 @@ public class GraphRepositoryTests : IDisposable
         var result = await WithTimeoutAsync(
             _repository.AddEntityAsync(entity, sessionContext),
             8,
-            "Deadlock Detection Entity Addition");
+            "Deadlock Detection Entity Addition"
+        );
 
         Assert.NotNull(result);
         Assert.True(result.Id > 0);
@@ -217,100 +232,172 @@ public class GraphRepositoryTests : IDisposable
 
     #region Test Data
 
-    public static IEnumerable<object[]> EntityTestCases => new List<object[]>
-    {
-        new object[]
+    public static IEnumerable<object[]> EntityTestCases =>
+        new List<object[]>
         {
-            new Entity { Name = "John Doe", Type = "person", UserId = "user123", Confidence = 0.8f },
-            new SessionContext { UserId = "user123" }
-        },
-        new object[]
-        {
-            new Entity
+            new object[]
             {
-                Name = "New York",
-                Type = "city",
-                UserId = "user456",
-                Aliases = new List<string> { "NYC", "Big Apple" },
-                Confidence = 0.9f
+                new Entity
+                {
+                    Name = "John Doe",
+                    Type = "person",
+                    UserId = "user123",
+                    Confidence = 0.8f,
+                },
+                new SessionContext { UserId = "user123" },
             },
-            new SessionContext { UserId = "user456", AgentId = "agent789" }
-        },
-        new object[]
-        {
-            new Entity
+            new object[]
             {
-                Name = "Machine Learning",
-                Type = "concept",
-                UserId = "user789",
-                Metadata = new Dictionary<string, object> { { "domain", "AI" } },
-                Confidence = 0.95f
+                new Entity
+                {
+                    Name = "New York",
+                    Type = "city",
+                    UserId = "user456",
+                    Aliases = new List<string> { "NYC", "Big Apple" },
+                    Confidence = 0.9f,
+                },
+                new SessionContext { UserId = "user456", AgentId = "agent789" },
             },
-            new SessionContext { UserId = "user789", AgentId = "agent123", RunId = "run456" }
-        }
-    };
-
-    public static IEnumerable<object[]> EntityUpdateTestCases => new List<object[]>
-    {
-        new object[]
-        {
-            new Entity { Name = "John", Type = "person", UserId = "user123", Confidence = 0.5f },
-            new Entity { Name = "John", Type = "person", UserId = "user123", Confidence = 0.9f },
-            new SessionContext { UserId = "user123" }
-        },
-        new object[]
-        {
-            new Entity { Name = "Entity", Type = "unknown", UserId = "user456", Confidence = 0.8f },
-            new Entity { Name = "Entity", Type = "person", UserId = "user456", Confidence = 0.8f },
-            new SessionContext { UserId = "user456" }
-        }
-    };
-
-    public static IEnumerable<object[]> RelationshipTestCases => new List<object[]>
-    {
-        new object[]
-        {
-            new Relationship { Source = "John", RelationshipType = "likes", Target = "Pizza", UserId = "user123", Confidence = 0.8f },
-            new SessionContext { UserId = "user123" }
-        },
-        new object[]
-        {
-            new Relationship
+            new object[]
             {
-                Source = "Alice",
-                RelationshipType = "works_at",
-                Target = "Google",
-                UserId = "user456",
-                TemporalContext = "since 2023",
-                Confidence = 0.9f
+                new Entity
+                {
+                    Name = "Machine Learning",
+                    Type = "concept",
+                    UserId = "user789",
+                    Metadata = new Dictionary<string, object> { { "domain", "AI" } },
+                    Confidence = 0.95f,
+                },
+                new SessionContext
+                {
+                    UserId = "user789",
+                    AgentId = "agent123",
+                    RunId = "run456",
+                },
             },
-            new SessionContext { UserId = "user456", AgentId = "agent789" }
-        }
-    };
+        };
 
-    public static IEnumerable<object[]> SessionIsolationTestCases => new List<object[]>
-    {
-        new object[]
+    public static IEnumerable<object[]> EntityUpdateTestCases =>
+        new List<object[]>
         {
-            new SessionContext { UserId = "user1" },
-            new SessionContext { UserId = "user2" },
-            new Entity { Name = "Entity1", UserId = "user1", Confidence = 0.8f },
-            new Entity { Name = "Entity2", UserId = "user2", Confidence = 0.8f }
-        },
-        new object[]
+            new object[]
+            {
+                new Entity
+                {
+                    Name = "John",
+                    Type = "person",
+                    UserId = "user123",
+                    Confidence = 0.5f,
+                },
+                new Entity
+                {
+                    Name = "John",
+                    Type = "person",
+                    UserId = "user123",
+                    Confidence = 0.9f,
+                },
+                new SessionContext { UserId = "user123" },
+            },
+            new object[]
+            {
+                new Entity
+                {
+                    Name = "Entity",
+                    Type = "unknown",
+                    UserId = "user456",
+                    Confidence = 0.8f,
+                },
+                new Entity
+                {
+                    Name = "Entity",
+                    Type = "person",
+                    UserId = "user456",
+                    Confidence = 0.8f,
+                },
+                new SessionContext { UserId = "user456" },
+            },
+        };
+
+    public static IEnumerable<object[]> RelationshipTestCases =>
+        new List<object[]>
         {
-            new SessionContext { UserId = "user1", AgentId = "agent1" },
-            new SessionContext { UserId = "user1", AgentId = "agent2" },
-            new Entity { Name = "Entity1", UserId = "user1", AgentId = "agent1", Confidence = 0.8f },
-            new Entity { Name = "Entity2", UserId = "user1", AgentId = "agent2", Confidence = 0.8f }
-        }
-    };
+            new object[]
+            {
+                new Relationship
+                {
+                    Source = "John",
+                    RelationshipType = "likes",
+                    Target = "Pizza",
+                    UserId = "user123",
+                    Confidence = 0.8f,
+                },
+                new SessionContext { UserId = "user123" },
+            },
+            new object[]
+            {
+                new Relationship
+                {
+                    Source = "Alice",
+                    RelationshipType = "works_at",
+                    Target = "Google",
+                    UserId = "user456",
+                    TemporalContext = "since 2023",
+                    Confidence = 0.9f,
+                },
+                new SessionContext { UserId = "user456", AgentId = "agent789" },
+            },
+        };
+
+    public static IEnumerable<object[]> SessionIsolationTestCases =>
+        new List<object[]>
+        {
+            new object[]
+            {
+                new SessionContext { UserId = "user1" },
+                new SessionContext { UserId = "user2" },
+                new Entity
+                {
+                    Name = "Entity1",
+                    UserId = "user1",
+                    Confidence = 0.8f,
+                },
+                new Entity
+                {
+                    Name = "Entity2",
+                    UserId = "user2",
+                    Confidence = 0.8f,
+                },
+            },
+            new object[]
+            {
+                new SessionContext { UserId = "user1", AgentId = "agent1" },
+                new SessionContext { UserId = "user1", AgentId = "agent2" },
+                new Entity
+                {
+                    Name = "Entity1",
+                    UserId = "user1",
+                    AgentId = "agent1",
+                    Confidence = 0.8f,
+                },
+                new Entity
+                {
+                    Name = "Entity2",
+                    UserId = "user1",
+                    AgentId = "agent2",
+                    Confidence = 0.8f,
+                },
+            },
+        };
 
     #endregion
 
     #region Timeout Helper
 
-    private async Task<T> WithTimeoutAsync<T>(Task<T> task, int timeoutSeconds, string operationName)
+    private async Task<T> WithTimeoutAsync<T>(
+        Task<T> task,
+        int timeoutSeconds,
+        string operationName
+    )
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);

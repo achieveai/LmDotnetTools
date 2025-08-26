@@ -15,9 +15,10 @@ public interface ISegmentationPromptManager
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Prompt template for the strategy</returns>
     Task<PromptTemplate> GetPromptAsync(
-      SegmentationStrategy strategy,
-      string language = "en",
-      CancellationToken cancellationToken = default);
+        SegmentationStrategy strategy,
+        string language = "en",
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets a prompt template for quality validation.
@@ -26,8 +27,9 @@ public interface ISegmentationPromptManager
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Quality validation prompt template</returns>
     Task<PromptTemplate> GetQualityValidationPromptAsync(
-      string language = "en",
-      CancellationToken cancellationToken = default);
+        string language = "en",
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets domain-specific instructions for document types.
@@ -37,9 +39,10 @@ public interface ISegmentationPromptManager
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Domain-specific instructions</returns>
     Task<string> GetDomainInstructionsAsync(
-      DocumentType documentType,
-      string language = "en",
-      CancellationToken cancellationToken = default);
+        DocumentType documentType,
+        string language = "en",
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Reloads all prompts from the YAML configuration file.

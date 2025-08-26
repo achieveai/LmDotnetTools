@@ -16,8 +16,9 @@ public interface IAnthropicClient : IDisposable
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>The response from the API.</returns>
     Task<AnthropicResponse> CreateChatCompletionsAsync(
-      AnthropicRequest request,
-      CancellationToken cancellationToken = default);
+        AnthropicRequest request,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Creates a streaming chat completion using the Anthropic API.
@@ -26,6 +27,7 @@ public interface IAnthropicClient : IDisposable
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>An asynchronous stream of events from the API.</returns>
     Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
-      AnthropicRequest request,
-      CancellationToken cancellationToken = default);
+        AnthropicRequest request,
+        CancellationToken cancellationToken = default
+    );
 }

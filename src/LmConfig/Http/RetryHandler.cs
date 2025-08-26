@@ -14,18 +14,23 @@ public sealed class RetryHandler : DelegatingHandler
 
     public RetryHandler(int maxAttempts = 3, TimeSpan? delay = null)
     {
-        if (maxAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+        if (maxAttempts < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxAttempts));
         _maxAttempts = maxAttempts;
         _delay = delay ?? TimeSpan.FromMilliseconds(200);
     }
 
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken
+    )
     {
         for (var attempt = 1; ; attempt++)
         {
             try
             {
-                var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var response = await base.SendAsync(request, cancellationToken)
+                    .ConfigureAwait(false);
                 if ((int)response.StatusCode < 500 || attempt == _maxAttempts)
                     return response;
             }

@@ -11,7 +11,11 @@ public class MemoryTests
     [Theory]
     [MemberData(nameof(GetSessionContextTestData))]
     public void GetSessionContext_WithVariousSessionData_ReturnsCorrectSessionContext(
-        string userId, string? agentId, string? runId, string description)
+        string userId,
+        string? agentId,
+        string? runId,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing GetSessionContext: {description}");
@@ -38,7 +42,9 @@ public class MemoryTests
     [Theory]
     [MemberData(nameof(GetScoreTestData))]
     public void WithScore_WithVariousScores_ReturnsMemoryWithCorrectScore(
-        float score, string description)
+        float score,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing WithScore: {description}");
@@ -84,7 +90,9 @@ public class MemoryTests
 
         // Act
         var updatedMemory = originalMemory.WithUpdatedTimestamp();
-        Debug.WriteLine($"Updated - UpdatedAt: {updatedMemory.UpdatedAt}, Version: {updatedMemory.Version}");
+        Debug.WriteLine(
+            $"Updated - UpdatedAt: {updatedMemory.UpdatedAt}, Version: {updatedMemory.Version}"
+        );
 
         // Assert
         Assert.True(updatedMemory.UpdatedAt > originalUpdatedAt);
@@ -113,9 +121,14 @@ public class MemoryTests
     }
 
     [Theory]
-    [MemberData(nameof(MemoryTestDataFactory.GetMetadataTestCases), MemberType = typeof(MemoryTestDataFactory))]
+    [MemberData(
+        nameof(MemoryTestDataFactory.GetMetadataTestCases),
+        MemberType = typeof(MemoryTestDataFactory)
+    )]
     public void WithUpdatedTimestamp_WithVariousMetadata_PreservesMetadataCorrectly(
-        Dictionary<string, object>? metadata, string description)
+        Dictionary<string, object>? metadata,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing WithUpdatedTimestamp with metadata: {description}");
@@ -152,11 +165,15 @@ public class MemoryTests
     [Theory]
     [MemberData(nameof(GetEmbeddingTestData))]
     public void WithScore_WithEmbedding_PreservesEmbeddingCorrectly(
-        float[]? embedding, string description)
+        float[]? embedding,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing WithScore with embedding: {description}");
-        Debug.WriteLine($"Embedding: {(embedding == null ? "null" : $"array of {embedding.Length} elements")}");
+        Debug.WriteLine(
+            $"Embedding: {(embedding == null ? "null" : $"array of {embedding.Length} elements")}"
+        );
 
         var originalMemory = MemoryTestDataFactory.CreateTestMemory();
         originalMemory.Embedding = embedding;
@@ -202,9 +219,10 @@ public class MemoryTests
         yield return new object?[] { new float[0], "Empty embedding array" };
         yield return new object?[] { new float[] { 0.1f }, "Single element embedding" };
         yield return new object?[] { new float[] { 0.1f, 0.2f, 0.3f }, "Small embedding" };
-        yield return new object?[] {
+        yield return new object?[]
+        {
             Enumerable.Range(0, 100).Select(i => (float)i / 100).ToArray(),
-            "Large embedding (100 dimensions)"
+            "Large embedding (100 dimensions)",
         };
     }
 }

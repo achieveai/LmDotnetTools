@@ -12,7 +12,8 @@ public static class Extensions
 
     public static IAgent WithMiddleware(
         this IAgent agent,
-        Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>> middleware)
+        Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>> middleware
+    )
     {
         return new MiddlewareWrappingAgent(agent, middleware);
     }
@@ -20,12 +21,21 @@ public static class Extensions
     public static IStreamingAgent WithMiddleware(
         this IStreamingAgent agent,
         Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>> middleware,
-        Func<MiddlewareContext, IStreamingAgent, CancellationToken, Task<IAsyncEnumerable<IMessage>>> streamingMiddleware)
+        Func<
+            MiddlewareContext,
+            IStreamingAgent,
+            CancellationToken,
+            Task<IAsyncEnumerable<IMessage>>
+        > streamingMiddleware
+    )
     {
         return new MiddlewareWrappingStreamingAgent(agent, middleware, streamingMiddleware);
     }
 
-    public static IStreamingAgent WithMiddleware(this IStreamingAgent agent, IStreamingMiddleware middleware)
+    public static IStreamingAgent WithMiddleware(
+        this IStreamingAgent agent,
+        IStreamingMiddleware middleware
+    )
     {
         return new MiddlewareWrappingStreamingAgent(agent, middleware);
     }

@@ -24,7 +24,11 @@ public interface IPerformanceTracker
     /// <param name="model">Optional model filter</param>
     /// <param name="since">Optional time filter (defaults to last 24 hours)</param>
     /// <returns>Performance profile for the specified criteria</returns>
-    PerformanceProfile GetPerformanceProfile(string provider, string model = "", DateTimeOffset? since = null);
+    PerformanceProfile GetPerformanceProfile(
+        string provider,
+        string model = "",
+        DateTimeOffset? since = null
+    );
 
     /// <summary>Gets performance profiles for all providers</summary>
     /// <param name="since">Optional time filter (defaults to last 24 hours)</param>
@@ -44,7 +48,8 @@ public interface IPerformanceTracker
     /// <returns>Top performing models</returns>
     IEnumerable<(string Provider, string Model, ModelStatistics Stats)> GetTopModels(
         int count = 10,
-        string orderBy = "requests");
+        string orderBy = "requests"
+    );
 
     /// <summary>Gets current overall statistics across all providers</summary>
     /// <returns>Aggregated statistics</returns>
@@ -90,7 +95,9 @@ public record OverallStatistics
 
     /// <summary>Average request duration across all providers</summary>
     public TimeSpan AverageRequestDuration =>
-        TotalRequests > 0 ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests) : TimeSpan.Zero;
+        TotalRequests > 0
+            ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests)
+            : TimeSpan.Zero;
 
     /// <summary>Provider performance breakdown</summary>
     public Dictionary<string, ProviderSummary> ProviderSummaries { get; init; } = new();

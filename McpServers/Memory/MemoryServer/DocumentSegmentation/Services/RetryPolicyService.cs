@@ -1,8 +1,8 @@
+using System.Collections.Immutable;
+using System.Net.Sockets;
+using System.Text.Json;
 using MemoryServer.DocumentSegmentation.Models;
 using Microsoft.Extensions.Logging;
-using System.Collections.Immutable;
-using System.Text.Json;
-using System.Net.Sockets;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -16,17 +16,21 @@ public interface IRetryPolicyService
     /// Executes an operation with retry policy.
     /// </summary>
     Task<T> ExecuteAsync<T>(
-      Func<Task<T>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class;
+        Func<Task<T>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class;
 
     /// <summary>
     /// Executes an operation with retry policy, allowing null results.
     /// </summary>
     Task<T?> ExecuteWithNullAsync<T>(
-      Func<Task<T?>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class;
+        Func<Task<T?>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class;
 
     /// <summary>
     /// Determines if an error should be retried.
@@ -48,9 +52,7 @@ public class RetryPolicyService : IRetryPolicyService
     private readonly RetryConfiguration _configuration;
     private readonly ILogger<RetryPolicyService> _logger;
 
-    public RetryPolicyService(
-      RetryConfiguration configuration,
-      ILogger<RetryPolicyService> logger)
+    public RetryPolicyService(RetryConfiguration configuration, ILogger<RetryPolicyService> logger)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -61,9 +63,11 @@ public class RetryPolicyService : IRetryPolicyService
     /// Implements AC-3.1, AC-3.2, AC-3.3, and AC-3.4.
     /// </summary>
     public async Task<T> ExecuteAsync<T>(
-      Func<Task<T>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class
+        Func<Task<T>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class
     {
         var context = new RetryContext
         {
@@ -71,7 +75,7 @@ public class RetryPolicyService : IRetryPolicyService
             MaxAttempts = _configuration.MaxRetries + 1, // +1 for initial attempt
             CorrelationId = Guid.NewGuid().ToString(),
             RequestParameters = ExtractRequestParameters(),
-            TotalElapsed = TimeSpan.Zero
+            TotalElapsed = TimeSpan.Zero,
         };
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -81,23 +85,37 @@ public class RetryPolicyService : IRetryPolicyService
         {
             try
             {
-                _logger.LogDebug("Executing {OperationName}, attempt {Attempt}/{MaxAttempts}. CorrelationId: {CorrelationId}",
-                  operationName, context.AttemptNumber, context.MaxAttempts, context.CorrelationId);
+                _logger.LogDebug(
+                    "Executing {OperationName}, attempt {Attempt}/{MaxAttempts}. CorrelationId: {CorrelationId}",
+                    operationName,
+                    context.AttemptNumber,
+                    context.MaxAttempts,
+                    context.CorrelationId
+                );
 
                 var result = await operation();
 
                 if (context.AttemptNumber > 1)
                 {
-                    _logger.LogInformation("Operation {OperationName} succeeded on attempt {Attempt} after {ElapsedMs}ms. CorrelationId: {CorrelationId}",
-                      operationName, context.AttemptNumber, stopwatch.ElapsedMilliseconds, context.CorrelationId);
+                    _logger.LogInformation(
+                        "Operation {OperationName} succeeded on attempt {Attempt} after {ElapsedMs}ms. CorrelationId: {CorrelationId}",
+                        operationName,
+                        context.AttemptNumber,
+                        stopwatch.ElapsedMilliseconds,
+                        context.CorrelationId
+                    );
                 }
 
                 return result;
             }
             catch (OperationCanceledException)
             {
-                _logger.LogDebug("Operation {OperationName} was cancelled on attempt {Attempt}. CorrelationId: {CorrelationId}",
-                  operationName, context.AttemptNumber, context.CorrelationId);
+                _logger.LogDebug(
+                    "Operation {OperationName} was cancelled on attempt {Attempt}. CorrelationId: {CorrelationId}",
+                    operationName,
+                    context.AttemptNumber,
+                    context.CorrelationId
+                );
                 throw;
             }
             catch (Exception ex)
@@ -109,27 +127,44 @@ public class RetryPolicyService : IRetryPolicyService
                 {
                     LastError = ex,
                     ErrorType = errorType,
-                    TotalElapsed = stopwatch.Elapsed
+                    TotalElapsed = stopwatch.Elapsed,
                 };
 
                 if (!ShouldRetry(ex, context.AttemptNumber))
                 {
-                    _logger.LogError(ex, "Non-retryable error in {OperationName} on attempt {Attempt}. CorrelationId: {CorrelationId}",
-                      operationName, context.AttemptNumber, context.CorrelationId);
+                    _logger.LogError(
+                        ex,
+                        "Non-retryable error in {OperationName} on attempt {Attempt}. CorrelationId: {CorrelationId}",
+                        operationName,
+                        context.AttemptNumber,
+                        context.CorrelationId
+                    );
                     throw;
                 }
 
                 if (context.AttemptNumber >= context.MaxAttempts)
                 {
-                    _logger.LogError(ex, "All {MaxAttempts} retry attempts failed for {OperationName}. Total elapsed: {ElapsedMs}ms. CorrelationId: {CorrelationId}",
-                      context.MaxAttempts, operationName, stopwatch.ElapsedMilliseconds, context.CorrelationId);
+                    _logger.LogError(
+                        ex,
+                        "All {MaxAttempts} retry attempts failed for {OperationName}. Total elapsed: {ElapsedMs}ms. CorrelationId: {CorrelationId}",
+                        context.MaxAttempts,
+                        operationName,
+                        stopwatch.ElapsedMilliseconds,
+                        context.CorrelationId
+                    );
                     throw;
                 }
 
                 var delay = CalculateDelay(context.AttemptNumber, ex);
 
-                _logger.LogWarning(ex, "Attempt {Attempt} failed for {OperationName}. Retrying in {DelayMs}ms. CorrelationId: {CorrelationId}",
-                  context.AttemptNumber, operationName, delay.TotalMilliseconds, context.CorrelationId);
+                _logger.LogWarning(
+                    ex,
+                    "Attempt {Attempt} failed for {OperationName}. Retrying in {DelayMs}ms. CorrelationId: {CorrelationId}",
+                    context.AttemptNumber,
+                    operationName,
+                    delay.TotalMilliseconds,
+                    context.CorrelationId
+                );
 
                 await Task.Delay(delay, cancellationToken);
 
@@ -145,21 +180,30 @@ public class RetryPolicyService : IRetryPolicyService
     /// Executes an operation with retry policy, allowing null results.
     /// </summary>
     public async Task<T?> ExecuteWithNullAsync<T>(
-      Func<Task<T?>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class
+        Func<Task<T?>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class
     {
         try
         {
-            return await ExecuteAsync(async () =>
-            {
-                var result = await operation();
-                return result ?? throw new InvalidOperationException("Operation returned null");
-            }, operationName, cancellationToken);
+            return await ExecuteAsync(
+                async () =>
+                {
+                    var result = await operation();
+                    return result ?? throw new InvalidOperationException("Operation returned null");
+                },
+                operationName,
+                cancellationToken
+            );
         }
         catch (InvalidOperationException ex) when (ex.Message == "Operation returned null")
         {
-            _logger.LogWarning("Operation {OperationName} returned null after all retry attempts", operationName);
+            _logger.LogWarning(
+                "Operation {OperationName} returned null after all retry attempts",
+                operationName
+            );
             return null;
         }
     }
@@ -183,12 +227,20 @@ public class RetryPolicyService : IRetryPolicyService
         // Special handling for rate limiting - should be retried
         if (errorCode == "429")
         {
-            var maxRetries = _configuration.ErrorTypeRetries.GetValueOrDefault("429", _configuration.MaxRetries);
+            var maxRetries = _configuration.ErrorTypeRetries.GetValueOrDefault(
+                "429",
+                _configuration.MaxRetries
+            );
             return attemptNumber < maxRetries + 1;
         }
 
         // Check error-specific retry limits
-        if (_configuration.ErrorTypeRetries.TryGetValue(errorType.ToString().ToLowerInvariant(), out var typeSpecificLimit))
+        if (
+            _configuration.ErrorTypeRetries.TryGetValue(
+                errorType.ToString().ToLowerInvariant(),
+                out var typeSpecificLimit
+            )
+        )
         {
             return attemptNumber < typeSpecificLimit + 1;
         }
@@ -209,14 +261,19 @@ public class RetryPolicyService : IRetryPolicyService
             var retryAfter = ExtractRetryAfterHeader(httpEx);
             if (retryAfter.HasValue)
             {
-                _logger.LogDebug("Using Retry-After header value: {RetryAfterMs}ms", retryAfter.Value.TotalMilliseconds);
+                _logger.LogDebug(
+                    "Using Retry-After header value: {RetryAfterMs}ms",
+                    retryAfter.Value.TotalMilliseconds
+                );
                 return retryAfter.Value;
             }
         }
 
         // Calculate exponential backoff delay
         var delay = TimeSpan.FromMilliseconds(
-          _configuration.BaseDelayMs * Math.Pow(_configuration.ExponentialFactor, attemptNumber - 1));
+            _configuration.BaseDelayMs
+                * Math.Pow(_configuration.ExponentialFactor, attemptNumber - 1)
+        );
 
         // Apply jitter to prevent thundering herd (±10% as per AC-3.3)
         var jitterRange = delay.TotalMilliseconds * _configuration.JitterPercent;
@@ -236,7 +293,11 @@ public class RetryPolicyService : IRetryPolicyService
             delay = TimeSpan.FromMilliseconds(100);
         }
 
-        _logger.LogDebug("Calculated retry delay for attempt {Attempt}: {DelayMs}ms", attemptNumber, delay.TotalMilliseconds);
+        _logger.LogDebug(
+            "Calculated retry delay for attempt {Attempt}: {DelayMs}ms",
+            attemptNumber,
+            delay.TotalMilliseconds
+        );
 
         return delay;
     }
@@ -247,15 +308,18 @@ public class RetryPolicyService : IRetryPolicyService
     {
         return exception switch
         {
-            HttpRequestException httpEx when httpEx.Message.Contains("timeout") => ErrorType.NetworkTimeout,
+            HttpRequestException httpEx when httpEx.Message.Contains("timeout") =>
+                ErrorType.NetworkTimeout,
             HttpRequestException httpEx when httpEx.Message.Contains("429") => ErrorType.RateLimit,
-            HttpRequestException httpEx when httpEx.Message.Contains("401") => ErrorType.Authentication,
-            HttpRequestException httpEx when httpEx.Message.Contains("503") => ErrorType.ServiceUnavailable,
+            HttpRequestException httpEx when httpEx.Message.Contains("401") =>
+                ErrorType.Authentication,
+            HttpRequestException httpEx when httpEx.Message.Contains("503") =>
+                ErrorType.ServiceUnavailable,
             TaskCanceledException => ErrorType.NetworkTimeout,
             ArgumentException => ErrorType.MalformedResponse,
             JsonException => ErrorType.MalformedResponse,
             SocketException => ErrorType.ConnectionFailure,
-            _ => ErrorType.Unknown
+            _ => ErrorType.Unknown,
         };
     }
 
@@ -269,7 +333,7 @@ public class RetryPolicyService : IRetryPolicyService
             HttpRequestException httpEx when httpEx.Message.Contains("429") => "429",
             HttpRequestException httpEx when httpEx.Message.Contains("503") => "503",
             TaskCanceledException => "timeout",
-            _ => "generic"
+            _ => "generic",
         };
     }
 
@@ -301,10 +365,12 @@ public static class RetryPolicyExtensions
     /// Executes an operation with the default retry policy.
     /// </summary>
     public static async Task<T> WithRetryAsync<T>(
-      this IRetryPolicyService retryService,
-      Func<Task<T>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class
+        this IRetryPolicyService retryService,
+        Func<Task<T>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class
     {
         return await retryService.ExecuteAsync(operation, operationName, cancellationToken);
     }
@@ -313,10 +379,12 @@ public static class RetryPolicyExtensions
     /// Executes an operation with retry policy, allowing null results.
     /// </summary>
     public static async Task<T?> WithRetryOrNullAsync<T>(
-      this IRetryPolicyService retryService,
-      Func<Task<T?>> operation,
-      string operationName,
-      CancellationToken cancellationToken = default) where T : class
+        this IRetryPolicyService retryService,
+        Func<Task<T?>> operation,
+        string operationName,
+        CancellationToken cancellationToken = default
+    )
+        where T : class
     {
         return await retryService.ExecuteWithNullAsync(operation, operationName, cancellationToken);
     }

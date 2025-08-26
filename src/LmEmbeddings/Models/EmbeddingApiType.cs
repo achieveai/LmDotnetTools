@@ -16,5 +16,5 @@ public enum EmbeddingApiType
     /// Uses Jina AI specific request/response format with additional parameters
     /// like 'normalized' and 'embedding_type'.
     /// </summary>
-    Jina = 1
+    Jina = 1,
 }

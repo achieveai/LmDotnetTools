@@ -78,7 +78,8 @@ public class ProviderFilterConfig
             {
                 throw new ArgumentException(
                     FunctionNameValidator.GetPrefixValidationError(value),
-                    nameof(CustomPrefix));
+                    nameof(CustomPrefix)
+                );
             }
             _customPrefix = value;
         }
@@ -95,7 +96,8 @@ public class ProviderFilterConfig
         {
             throw new ArgumentException(
                 FunctionNameValidator.GetPrefixValidationError(CustomPrefix),
-                nameof(CustomPrefix));
+                nameof(CustomPrefix)
+            );
         }
     }
 }

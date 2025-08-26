@@ -1,14 +1,14 @@
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
+using System.Linq;
 using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
-using AchieveAi.LmDotnetTools.TestUtils;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+// Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
+using AchieveAi.LmDotnetTools.TestUtils;
 using Xunit;
-using System.Linq;
 
 public class BasicConversationTests
 {
@@ -18,9 +18,14 @@ public class BasicConversationTests
         TestLogger.Log("Starting SimpleConversation_ShouldCreateProperRequest test");
 
         // Arrange - Using MockHttpHandlerBuilder with request capture
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicMessage("This is a mock response for testing.",
-                "claude-3-7-sonnet-20250219", 10, 20)
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .RespondWithAnthropicMessage(
+                "This is a mock response for testing.",
+                "claude-3-7-sonnet-20250219",
+                10,
+                20
+            )
             .CaptureRequests(out var requestCapture)
             .Build();
 
@@ -32,21 +37,24 @@ public class BasicConversationTests
         // Create a simple conversation
         var messages = new[]
         {
-      new TextMessage { Role = Role.System, Text = "You are Claude, a helpful AI assistant." },
-      new TextMessage { Role = Role.User, Text = "Hello Claude!" }
-    };
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You are Claude, a helpful AI assistant.",
+            },
+            new TextMessage { Role = Role.User, Text = "Hello Claude!" },
+        };
 
         // Log the messages for debugging
         TestLogger.Log($"Created messages array with {messages.Length} messages");
         foreach (var msg in messages)
         {
-            TestLogger.Log($"Message - Role: {msg.Role}, Type: {msg.GetType().Name}, Text: {(msg as TextMessage)?.Text ?? "null"}");
+            TestLogger.Log(
+                $"Message - Role: {msg.Role}, Type: {msg.GetType().Name}, Text: {(msg as TextMessage)?.Text ?? "null"}"
+            );
         }
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "claude-3-7-sonnet-20250219"
-        };
+        var options = new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" };
         TestLogger.Log($"Created options with ModelId: {options.ModelId}");
 
         // Act
@@ -76,7 +84,9 @@ public class BasicConversationTests
 
         foreach (var msg in messagesList)
         {
-            TestLogger.Log($"Captured message - Role: {msg.Role}, Content: {msg.Content ?? "null"}");
+            TestLogger.Log(
+                $"Captured message - Role: {msg.Role}, Content: {msg.Content ?? "null"}"
+            );
         }
 
         // Assert with new RequestCapture API
@@ -109,9 +119,14 @@ public class BasicConversationTests
     public async Task ResponseFormat_BasicTextResponse()
     {
         // Arrange - Using MockHttpHandlerBuilder for response testing
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicMessage("Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?",
-                "claude-3-7-sonnet-20250219", 10, 20)
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .RespondWithAnthropicMessage(
+                "Hello! I'm Claude, an AI assistant created by Anthropic. How can I help you today?",
+                "claude-3-7-sonnet-20250219",
+                10,
+                20
+            )
             .Build();
 
         var httpClient = new HttpClient(handler);
@@ -120,13 +135,13 @@ public class BasicConversationTests
 
         var messages = new[]
         {
-      new TextMessage { Role = Role.User, Text = "Hello Claude!" }
-    };
+            new TextMessage { Role = Role.User, Text = "Hello Claude!" },
+        };
 
         // Act
         var responses = await agent.GenerateReplyAsync(
-          messages,
-          new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" }
+            messages,
+            new GenerateReplyOptions { ModelId = "claude-3-7-sonnet-20250219" }
         );
 
         // Assert

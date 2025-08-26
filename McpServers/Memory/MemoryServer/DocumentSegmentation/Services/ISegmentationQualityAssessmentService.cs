@@ -23,7 +23,8 @@ public interface ISegmentationQualityAssessmentService
         string originalContent,
         DocumentType documentType = DocumentType.Generic,
         QualityAssessmentOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates semantic coherence within individual segments.
@@ -35,7 +36,8 @@ public interface ISegmentationQualityAssessmentService
     Task<SemanticCoherenceValidation> ValidateSemanticCoherenceAsync(
         DocumentSegment segment,
         QualityAssessmentOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Calculates independence score for a segment.
@@ -49,7 +51,8 @@ public interface ISegmentationQualityAssessmentService
         DocumentSegment segment,
         List<DocumentSegment> allSegments,
         string originalContent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates topic consistency within and across segments.
@@ -61,7 +64,8 @@ public interface ISegmentationQualityAssessmentService
     Task<TopicConsistencyValidation> ValidateTopicConsistencyAsync(
         List<DocumentSegment> segments,
         string originalContent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Verifies completeness of segmentation coverage.
@@ -73,7 +77,8 @@ public interface ISegmentationQualityAssessmentService
     Task<CompletenessVerification> VerifyCompletenessAsync(
         List<DocumentSegment> segments,
         string originalContent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Identifies and analyzes quality issues across segments.
@@ -87,7 +92,8 @@ public interface ISegmentationQualityAssessmentService
         List<DocumentSegment> segments,
         string originalContent,
         ComprehensiveQualityAssessment? assessmentResults = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Generates improvement recommendations based on quality assessment.
@@ -101,7 +107,8 @@ public interface ISegmentationQualityAssessmentService
         ComprehensiveQualityAssessment assessment,
         DocumentType documentType,
         SegmentationStrategy strategy,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Compares quality across different segmentation approaches.
@@ -113,7 +120,8 @@ public interface ISegmentationQualityAssessmentService
     Task<ComparativeQualityAnalysis> CompareSegmentationQualityAsync(
         Dictionary<SegmentationStrategy, List<DocumentSegment>> segmentationResults,
         string originalContent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates quality against custom criteria.
@@ -125,5 +133,6 @@ public interface ISegmentationQualityAssessmentService
     Task<CustomValidationResults> ValidateCustomCriteriaAsync(
         List<DocumentSegment> segments,
         List<CustomQualityCriterion> customCriteria,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

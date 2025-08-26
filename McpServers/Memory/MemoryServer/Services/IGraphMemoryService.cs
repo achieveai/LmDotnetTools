@@ -18,7 +18,8 @@ public interface IGraphMemoryService
     Task<GraphUpdateSummary> ProcessMemoryAsync(
         Memory memory,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Searches for memories using both traditional search and graph traversal.
@@ -34,7 +35,8 @@ public interface IGraphMemoryService
         SessionContext sessionContext,
         bool useGraphTraversal = true,
         int maxResults = 20,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets entities related to a specific entity through graph traversal.
@@ -50,7 +52,8 @@ public interface IGraphMemoryService
         SessionContext sessionContext,
         int maxDepth = 3,
         IEnumerable<string>? relationshipTypes = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets comprehensive statistics about the knowledge graph.
@@ -60,7 +63,8 @@ public interface IGraphMemoryService
     /// <returns>Graph statistics and insights.</returns>
     Task<GraphStatistics> GetGraphStatisticsAsync(
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Rebuilds the knowledge graph from existing memories.
@@ -70,7 +74,8 @@ public interface IGraphMemoryService
     /// <returns>Summary of the rebuild operation.</returns>
     Task<GraphRebuildSummary> RebuildGraphAsync(
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates the integrity of the knowledge graph.
@@ -80,5 +85,6 @@ public interface IGraphMemoryService
     /// <returns>Graph validation results.</returns>
     Task<GraphValidationResult> ValidateGraphIntegrityAsync(
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

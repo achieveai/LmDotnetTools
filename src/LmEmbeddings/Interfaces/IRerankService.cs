@@ -13,7 +13,10 @@ public interface IRerankService
     /// <param name="request">The rerank request containing query, documents, and configuration</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The rerank response with scored and ordered documents</returns>
-    Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default);
+    Task<RerankResponse> RerankAsync(
+        RerankRequest request,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Reranks documents based on their relevance to the provided query (simplified version)
@@ -24,12 +27,20 @@ public interface IRerankService
     /// <param name="topK">Maximum number of documents to return</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The rerank response with scored and ordered documents</returns>
-    Task<RerankResponse> RerankAsync(string query, IReadOnlyList<string> documents, string model, int? topK = null, CancellationToken cancellationToken = default);
+    Task<RerankResponse> RerankAsync(
+        string query,
+        IReadOnlyList<string> documents,
+        string model,
+        int? topK = null,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets the list of available reranking models for this provider
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>List of available model names</returns>
-    Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        CancellationToken cancellationToken = default
+    );
 }

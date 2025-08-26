@@ -1,12 +1,12 @@
-using MemoryServer.DocumentSegmentation.Utils;
-using MemoryServer.DocumentSegmentation.Services;
+using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Models;
+using MemoryServer.DocumentSegmentation.Services;
+using MemoryServer.DocumentSegmentation.Utils;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
-using FluentAssertions;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Integration;
 
@@ -25,30 +25,34 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 
         // Set up services
         var sizeAnalyzer = new DocumentSizeAnalyzer(
-          loggerFactory.CreateLogger<DocumentSizeAnalyzer>(),
-          Options.Create(CreateTestOptions()));
+            loggerFactory.CreateLogger<DocumentSizeAnalyzer>(),
+            Options.Create(CreateTestOptions())
+        );
 
         var promptManager = new SegmentationPromptManager(
-          loggerFactory.CreateLogger<SegmentationPromptManager>(),
-          Options.Create(CreateTestOptions()));
+            loggerFactory.CreateLogger<SegmentationPromptManager>(),
+            Options.Create(CreateTestOptions())
+        );
 
         var repository = new DocumentSegmentRepository(
-          loggerFactory.CreateLogger<DocumentSegmentRepository>());
+            loggerFactory.CreateLogger<DocumentSegmentRepository>()
+        );
 
         _sessionFactory = new TestSqliteSessionFactory(loggerFactory);
 
         _integration = new DocumentSegmentationSessionIntegration(
-          sizeAnalyzer,
-          promptManager,
-          repository,
-          _sessionFactory,
-          loggerFactory.CreateLogger<DocumentSegmentationSessionIntegration>());
+            sizeAnalyzer,
+            promptManager,
+            repository,
+            _sessionFactory,
+            loggerFactory.CreateLogger<DocumentSegmentationSessionIntegration>()
+        );
 
         _testSessionContext = new SessionContext
         {
             UserId = "integration-test-user",
             AgentId = "integration-test-agent",
-            RunId = "integration-test-run"
+            RunId = "integration-test-run",
         };
     }
 
@@ -61,7 +65,10 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 
         // Act
         var result = await _integration.ProcessDocumentWorkflowAsync(
-          largeContent, parentDocumentId, _testSessionContext);
+            largeContent,
+            parentDocumentId,
+            _testSessionContext
+        );
 
         // Assert
         result.Should().NotBeNull();
@@ -84,7 +91,10 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 
         // Act
         var result = await _integration.ProcessDocumentWorkflowAsync(
-          smallContent, parentDocumentId, _testSessionContext);
+            smallContent,
+            parentDocumentId,
+            _testSessionContext
+        );
 
         // Assert
         result.Should().NotBeNull();
@@ -105,7 +115,11 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 
         // Act - Test with Email document type (lower threshold)
         var emailResult = await _integration.ProcessDocumentWorkflowAsync(
-          content, parentDocumentId, _testSessionContext, DocumentType.Email);
+            content,
+            parentDocumentId,
+            _testSessionContext,
+            DocumentType.Email
+        );
 
         // Assert
         emailResult.Should().NotBeNull();
@@ -124,14 +138,14 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         {
             UserId = "user1",
             AgentId = "agent1",
-            RunId = "run1"
+            RunId = "run1",
         };
 
         var session2Context = new SessionContext
         {
             UserId = "user2",
             AgentId = "agent2",
-            RunId = "run2"
+            RunId = "run2",
         };
 
         // Use different parent document IDs to avoid conflicts
@@ -140,10 +154,16 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 
         // Act
         var result1 = await _integration.ProcessDocumentWorkflowAsync(
-          content, parentDocumentId1, session1Context);
+            content,
+            parentDocumentId1,
+            session1Context
+        );
 
         var result2 = await _integration.ProcessDocumentWorkflowAsync(
-          content, parentDocumentId2, session2Context);
+            content,
+            parentDocumentId2,
+            session2Context
+        );
 
         // Assert
         result1.Should().NotBeNull();
@@ -170,7 +190,10 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 
         // Act
         var result = await _integration.ProcessDocumentWorkflowAsync(
-          content, parentDocumentId, _testSessionContext);
+            content,
+            parentDocumentId,
+            _testSessionContext
+        );
 
         // Assert - Verify all workflow steps completed
         result.DocumentStatistics.Should().NotBeNull();
@@ -198,7 +221,10 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
 
         // Act
         var result = await _integration.ProcessDocumentWorkflowAsync(
-          content, parentDocumentId, _testSessionContext);
+            content,
+            parentDocumentId,
+            _testSessionContext
+        );
 
         // Assert
         result.Segments.Should().NotBeEmpty();
@@ -225,11 +251,34 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
     {
         var words = new[]
         {
-      "document", "analysis", "processing", "artificial", "intelligence", "machine", "learning",
-      "technology", "implementation", "framework", "architecture", "development", "software",
-      "system", "integration", "performance", "optimization", "algorithm", "data", "structure",
-      "methodology", "approach", "solution", "innovation", "research", "academic", "scientific"
-    };
+            "document",
+            "analysis",
+            "processing",
+            "artificial",
+            "intelligence",
+            "machine",
+            "learning",
+            "technology",
+            "implementation",
+            "framework",
+            "architecture",
+            "development",
+            "software",
+            "system",
+            "integration",
+            "performance",
+            "optimization",
+            "algorithm",
+            "data",
+            "structure",
+            "methodology",
+            "approach",
+            "solution",
+            "innovation",
+            "research",
+            "academic",
+            "scientific",
+        };
 
         var random = new Random(42); // Fixed seed for reproducible tests
         var result = new List<string>();
@@ -278,21 +327,21 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
                 MaxDocumentSizeWords = 50000,
                 TargetSegmentSizeWords = 1000,
                 MaxSegmentSizeWords = 2000,
-                MinSegmentSizeWords = 100
+                MinSegmentSizeWords = 100,
             },
             LlmOptions = new LlmSegmentationOptions
             {
                 EnableLlmSegmentation = false, // Disabled for testing
                 MaxRetries = 3,
-                TimeoutSeconds = 30
+                TimeoutSeconds = 30,
             },
             Prompts = new PromptOptions
             {
                 FilePath = "prompts.yml",
                 DefaultLanguage = "en",
                 EnableHotReload = false,
-                CacheExpiration = TimeSpan.FromMinutes(30)
-            }
+                CacheExpiration = TimeSpan.FromMinutes(30),
+            },
         };
     }
 

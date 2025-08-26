@@ -1,10 +1,10 @@
+using AchieveAi.LmDotnetTools.LmConfig.Agents;
+using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
-using AchieveAi.LmDotnetTools.LmConfig.Http;
 using HttpProviderConfig = AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig;
 
 namespace LmConfig.Tests.TestUtilities;
@@ -32,7 +32,8 @@ public class LmConfigTestBuilder
         int priority = 1,
         double promptCost = 1.0,
         double completionCost = 2.0,
-        string[]? tags = null)
+        string[]? tags = null
+    )
     {
         modelName ??= $"{modelId}-v1";
         tags ??= new[] { "test" };
@@ -48,14 +49,14 @@ public class LmConfigTestBuilder
                     Name = providerName,
                     ModelName = modelName,
                     Priority = priority,
-                    Pricing = new PricingConfig 
-                    { 
-                        PromptPerMillion = promptCost, 
-                        CompletionPerMillion = completionCost 
+                    Pricing = new PricingConfig
+                    {
+                        PromptPerMillion = promptCost,
+                        CompletionPerMillion = completionCost,
                     },
-                    Tags = tags
-                }
-            }
+                    Tags = tags,
+                },
+            },
         };
 
         _models.Add(model);
@@ -69,7 +70,8 @@ public class LmConfigTestBuilder
         string providerName,
         string? endpointUrl = null,
         string? apiKeyEnvVar = null,
-        string compatibility = "OpenAI")
+        string compatibility = "OpenAI"
+    )
     {
         endpointUrl ??= $"https://{providerName.ToLowerInvariant()}.example.com";
         apiKeyEnvVar ??= $"{providerName.ToUpperInvariant()}_API_KEY";
@@ -78,7 +80,7 @@ public class LmConfigTestBuilder
         {
             EndpointUrl = endpointUrl,
             ApiKeyEnvironmentVariable = apiKeyEnvVar,
-            Compatibility = compatibility
+            Compatibility = compatibility,
         };
 
         return this;
@@ -91,7 +93,8 @@ public class LmConfigTestBuilder
         string modelId,
         string openRouterModelName,
         double promptCost = 3.0,
-        double completionCost = 15.0)
+        double completionCost = 15.0
+    )
     {
         var model = new ModelConfig
         {
@@ -104,18 +107,18 @@ public class LmConfigTestBuilder
                     Name = "OpenRouter",
                     ModelName = openRouterModelName, // This will be different from modelId
                     Priority = 1,
-                    Pricing = new PricingConfig 
-                    { 
-                        PromptPerMillion = promptCost, 
-                        CompletionPerMillion = completionCost 
+                    Pricing = new PricingConfig
+                    {
+                        PromptPerMillion = promptCost,
+                        CompletionPerMillion = completionCost,
                     },
-                    Tags = new[] { "fallback", "openai-compatible" }
-                }
-            }
+                    Tags = new[] { "fallback", "openai-compatible" },
+                },
+            },
         };
 
         _models.Add(model);
-        
+
         // Add OpenRouter provider if not already added
         if (!_providerRegistry.ContainsKey("OpenRouter"))
         {
@@ -136,11 +139,7 @@ public class LmConfigTestBuilder
             WithProvider("TestProvider");
         }
 
-        return new AppConfig
-        {
-            Models = _models.ToArray(),
-            ProviderRegistry = _providerRegistry
-        };
+        return new AppConfig { Models = _models.ToArray(), ProviderRegistry = _providerRegistry };
     }
 
     /// <summary>
@@ -155,7 +154,7 @@ public class LmConfigTestBuilder
         services.AddSingleton<IHttpHandlerBuilder, HandlerBuilder>();
         services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
         services.AddScoped<UnifiedAgent>();
-        
+
         return services;
     }
 
@@ -170,9 +169,9 @@ public class LmConfigTestBuilder
             {
                 MaxContextTokens = 4000,
                 MaxOutputTokens = 1000,
-                RecommendedMaxPromptTokens = 3000
+                RecommendedMaxPromptTokens = 3000,
             },
-            SupportsStreaming = true
+            SupportsStreaming = true,
         };
     }
 }
@@ -274,4 +273,4 @@ public static class TestData
     /// </summary>
     public static ProviderConnectionInfo CreateTestProvider(string name = "TestProvider") =>
         LmConfigTestBuilder.Create().WithProvider(name).BuildConfig().ProviderRegistry[name];
-} 
+}

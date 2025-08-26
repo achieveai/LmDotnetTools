@@ -1,12 +1,12 @@
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
-using Moq;
-using Xunit;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.ModelConfigGenerator.Configuration;
 using AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.ModelConfigGenerator.Tests;
 
@@ -23,6 +23,7 @@ public class ModelConfigGeneratorServiceTests
         var serviceLogger = new Mock<ILogger<ModelConfigGeneratorService>>().Object;
         return new ModelConfigGeneratorService(openRouterService, serviceLogger);
     }
+
     [Fact]
     public void GetSupportedFamilies_ShouldReturnExpectedFamilies()
     {
@@ -53,7 +54,11 @@ public class ModelConfigGeneratorServiceTests
     [InlineData("meta-llama/llama-3.1-70b", "claude", false)]
     [InlineData("anthropic/claude-3-sonnet", "gpt", false)]
     [InlineData("random/model-name", "nonexistent", false)]
-    public void ModelFamilyMatching_ShouldWorkCorrectly(string modelId, string family, bool shouldMatch)
+    public void ModelFamilyMatching_ShouldWorkCorrectly(
+        string modelId,
+        string family,
+        bool shouldMatch
+    )
     {
         // Arrange
         var model = new ModelConfig
@@ -62,21 +67,30 @@ public class ModelConfigGeneratorServiceTests
             Capabilities = new ModelCapabilities
             {
                 TokenLimits = new TokenLimits { MaxContextTokens = 4096, MaxOutputTokens = 1024 },
-                SupportsStreaming = true
+                SupportsStreaming = true,
             },
-            Providers = [new ProviderConfig
-      {
-        Name = "TestProvider",
-        ModelName = modelId,
-        Priority = 1,
-        Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 }
-      }]
+            Providers =
+            [
+                new ProviderConfig
+                {
+                    Name = "TestProvider",
+                    ModelName = modelId,
+                    Priority = 1,
+                    Pricing = new PricingConfig
+                    {
+                        PromptPerMillion = 1.0,
+                        CompletionPerMillion = 2.0,
+                    },
+                },
+            ],
         };
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var matchesFamilyMethod = reflection.GetMethod("MatchesFamily",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var matchesFamilyMethod = reflection.GetMethod(
+            "MatchesFamily",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
+        );
         var result = (bool)matchesFamilyMethod!.Invoke(null, new object[] { model, family })!;
 
         // Assert
@@ -92,15 +106,22 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
-        Assert.All(result, model => Assert.True(model.IsReasoning || model.HasCapability("thinking")));
+        Assert.All(
+            result,
+            model => Assert.True(model.IsReasoning || model.HasCapability("thinking"))
+        );
     }
 
     [Fact]
@@ -112,12 +133,16 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
         Assert.All(result, model => Assert.True(model.HasCapability("multimodal")));
@@ -132,12 +157,16 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
         Assert.True(result.Count <= 2);
@@ -152,12 +181,16 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
         Assert.All(result, model => Assert.Contains("llama", model.Id.ToLowerInvariant()));
@@ -172,19 +205,26 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
-        Assert.All(result, model =>
-        {
-            Assert.True(model.CreatedDate.HasValue);
-            Assert.True(model.CreatedDate.Value.Date >= new DateTime(2024, 6, 1).Date);
-        });
+        Assert.All(
+            result,
+            model =>
+            {
+                Assert.True(model.CreatedDate.HasValue);
+                Assert.True(model.CreatedDate.Value.Date >= new DateTime(2024, 6, 1).Date);
+            }
+        );
         Assert.Equal(2, result.Count); // Should exclude models created before June 1, 2024
     }
 
@@ -196,25 +236,32 @@ public class ModelConfigGeneratorServiceTests
         var options = new GeneratorOptions
         {
             ModelUpdatedSince = new DateTime(2024, 1, 1),
-            ReasoningOnly = true
+            ReasoningOnly = true,
         };
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
-        Assert.All(result, model =>
-        {
-            Assert.True(model.CreatedDate.HasValue);
-            Assert.True(model.CreatedDate.Value.Date >= new DateTime(2024, 1, 1).Date);
-            Assert.True(model.IsReasoning || model.HasCapability("thinking"));
-        });
+        Assert.All(
+            result,
+            model =>
+            {
+                Assert.True(model.CreatedDate.HasValue);
+                Assert.True(model.CreatedDate.Value.Date >= new DateTime(2024, 1, 1).Date);
+                Assert.True(model.IsReasoning || model.HasCapability("thinking"));
+            }
+        );
         Assert.Single(result); // Should only include reasoning models from 2024 onwards
     }
 
@@ -227,12 +274,16 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
         Assert.All(result, model => Assert.True(model.CreatedDate.HasValue));
@@ -248,12 +299,16 @@ public class ModelConfigGeneratorServiceTests
 
         // Act
         var reflection = typeof(ModelConfigGeneratorService);
-        var applyFiltersMethod = reflection.GetMethod("ApplyFilters",
-          System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var applyFiltersMethod = reflection.GetMethod(
+            "ApplyFilters",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result =
+            (IReadOnlyList<ModelConfig>)
+                applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
 
         // Assert
         Assert.Empty(result);
@@ -262,336 +317,369 @@ public class ModelConfigGeneratorServiceTests
     private static IReadOnlyList<ModelConfig> CreateTestModels()
     {
         return new List<ModelConfig>
-    {
-      new()
-      {
-        Id = "meta-llama/llama-3.1-70b",
-        IsReasoning = false,
-        Capabilities = new ModelCapabilities
         {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 131072,
-            MaxOutputTokens = 4096
-          },
-          SupportsStreaming = true,
-          SupportedFeatures = ["long-context"]
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "OpenRouter",
-          ModelName = "meta-llama/llama-3.1-70b",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 0.5,
-            CompletionPerMillion = 0.75
-          }
-        }]
-      },
-      new()
-      {
-        Id = "anthropic/claude-3-sonnet",
-        IsReasoning = true,
-        Capabilities = new ModelCapabilities
-        {
-          Thinking = new ThinkingCapability
-          {
-            Type = ThinkingType.Anthropic,
-            SupportsBudgetTokens = true,
-            IsBuiltIn = false,
-            IsExposed = true
-          },
-          Multimodal = new MultimodalCapability
-          {
-            SupportsImages = true,
-            SupportedImageFormats = ["jpeg", "png"]
-          },
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 200000,
-            MaxOutputTokens = 8192
-          },
-          SupportsStreaming = true,
-          SupportedFeatures = ["thinking", "multimodal"]
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "Anthropic",
-          ModelName = "claude-3-sonnet-20240229",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 3.0,
-            CompletionPerMillion = 15.0
-          }
-        }]
-      },
-      new()
-      {
-        Id = "openai/gpt-4-turbo",
-        IsReasoning = false,
-        Capabilities = new ModelCapabilities
-        {
-          FunctionCalling = new FunctionCallingCapability
-          {
-            SupportsTools = true,
-            SupportsParallelCalls = true,
-            MaxToolsPerRequest = 128
-          },
-          Multimodal = new MultimodalCapability
-          {
-            SupportsImages = true,
-            SupportedImageFormats = ["jpeg", "png", "webp"]
-          },
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 128000,
-            MaxOutputTokens = 4096
-          },
-          SupportsStreaming = true,
-          SupportedFeatures = ["multimodal", "function-calling"]
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "OpenAI",
-          ModelName = "gpt-4-turbo",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 10.0,
-            CompletionPerMillion = 30.0
-          }
-        }]
-      },
-      new()
-      {
-        Id = "qwen/qwen-2.5-72b",
-        IsReasoning = false,
-        Capabilities = new ModelCapabilities
-        {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 32768,
-            MaxOutputTokens = 8192
-          },
-          SupportsStreaming = true,
-          SupportedFeatures = ["chat"]
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "OpenRouter",
-          ModelName = "qwen/qwen-2.5-72b",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 0.4,
-            CompletionPerMillion = 1.2
-          }
-        }]
-      }
-    };
+            new()
+            {
+                Id = "meta-llama/llama-3.1-70b",
+                IsReasoning = false,
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 131072,
+                        MaxOutputTokens = 4096,
+                    },
+                    SupportsStreaming = true,
+                    SupportedFeatures = ["long-context"],
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "OpenRouter",
+                        ModelName = "meta-llama/llama-3.1-70b",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 0.5,
+                            CompletionPerMillion = 0.75,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "anthropic/claude-3-sonnet",
+                IsReasoning = true,
+                Capabilities = new ModelCapabilities
+                {
+                    Thinking = new ThinkingCapability
+                    {
+                        Type = ThinkingType.Anthropic,
+                        SupportsBudgetTokens = true,
+                        IsBuiltIn = false,
+                        IsExposed = true,
+                    },
+                    Multimodal = new MultimodalCapability
+                    {
+                        SupportsImages = true,
+                        SupportedImageFormats = ["jpeg", "png"],
+                    },
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 200000,
+                        MaxOutputTokens = 8192,
+                    },
+                    SupportsStreaming = true,
+                    SupportedFeatures = ["thinking", "multimodal"],
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "Anthropic",
+                        ModelName = "claude-3-sonnet-20240229",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 3.0,
+                            CompletionPerMillion = 15.0,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "openai/gpt-4-turbo",
+                IsReasoning = false,
+                Capabilities = new ModelCapabilities
+                {
+                    FunctionCalling = new FunctionCallingCapability
+                    {
+                        SupportsTools = true,
+                        SupportsParallelCalls = true,
+                        MaxToolsPerRequest = 128,
+                    },
+                    Multimodal = new MultimodalCapability
+                    {
+                        SupportsImages = true,
+                        SupportedImageFormats = ["jpeg", "png", "webp"],
+                    },
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 128000,
+                        MaxOutputTokens = 4096,
+                    },
+                    SupportsStreaming = true,
+                    SupportedFeatures = ["multimodal", "function-calling"],
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "OpenAI",
+                        ModelName = "gpt-4-turbo",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 10.0,
+                            CompletionPerMillion = 30.0,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "qwen/qwen-2.5-72b",
+                IsReasoning = false,
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 32768,
+                        MaxOutputTokens = 8192,
+                    },
+                    SupportsStreaming = true,
+                    SupportedFeatures = ["chat"],
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "OpenRouter",
+                        ModelName = "qwen/qwen-2.5-72b",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 0.4,
+                            CompletionPerMillion = 1.2,
+                        },
+                    },
+                ],
+            },
+        };
     }
 
     private static IReadOnlyList<ModelConfig> CreateTestModelsWithDates()
     {
         return new List<ModelConfig>
-    {
-      new()
-      {
-        Id = "meta-llama/llama-3.1-70b",
-        IsReasoning = false,
-        CreatedDate = new DateTime(2024, 7, 15), // After June 1
-        Capabilities = new ModelCapabilities
         {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 131072,
-            MaxOutputTokens = 4096
-          },
-          SupportsStreaming = true,
-          SupportedFeatures = ["long-context"]
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "OpenRouter",
-          ModelName = "meta-llama/llama-3.1-70b",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 0.5,
-            CompletionPerMillion = 0.75
-          }
-        }]
-      },
-      new()
-      {
-        Id = "anthropic/claude-3-sonnet",
-        IsReasoning = true,
-        CreatedDate = new DateTime(2024, 8, 20), // After June 1
-        Capabilities = new ModelCapabilities
-        {
-          Thinking = new ThinkingCapability
-          {
-            Type = ThinkingType.Anthropic,
-            SupportsBudgetTokens = true,
-            IsBuiltIn = false,
-            IsExposed = true
-          },
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 200000,
-            MaxOutputTokens = 8192
-          },
-          SupportsStreaming = true,
-          SupportedFeatures = ["thinking"]
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "Anthropic",
-          ModelName = "claude-3-sonnet-20240229",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 3.0,
-            CompletionPerMillion = 15.0
-          }
-        }]
-      },
-      new()
-      {
-        Id = "openai/gpt-4-turbo",
-        IsReasoning = false,
-        CreatedDate = new DateTime(2024, 3, 10), // Before June 1
-        Capabilities = new ModelCapabilities
-        {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 128000,
-            MaxOutputTokens = 4096
-          },
-          SupportsStreaming = true
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "OpenAI",
-          ModelName = "gpt-4-turbo",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 10.0,
-            CompletionPerMillion = 30.0
-          }
-        }]
-      },
-      new()
-      {
-        Id = "qwen/qwen-2.5-72b",
-        IsReasoning = false,
-        CreatedDate = new DateTime(2023, 12, 5), // Before June 1
-        Capabilities = new ModelCapabilities
-        {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 32768,
-            MaxOutputTokens = 8192
-          },
-          SupportsStreaming = true
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "OpenRouter",
-          ModelName = "qwen/qwen-2.5-72b",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 0.4,
-            CompletionPerMillion = 1.2
-          }
-        }]
-      }
-    };
+            new()
+            {
+                Id = "meta-llama/llama-3.1-70b",
+                IsReasoning = false,
+                CreatedDate = new DateTime(2024, 7, 15), // After June 1
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 131072,
+                        MaxOutputTokens = 4096,
+                    },
+                    SupportsStreaming = true,
+                    SupportedFeatures = ["long-context"],
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "OpenRouter",
+                        ModelName = "meta-llama/llama-3.1-70b",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 0.5,
+                            CompletionPerMillion = 0.75,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "anthropic/claude-3-sonnet",
+                IsReasoning = true,
+                CreatedDate = new DateTime(2024, 8, 20), // After June 1
+                Capabilities = new ModelCapabilities
+                {
+                    Thinking = new ThinkingCapability
+                    {
+                        Type = ThinkingType.Anthropic,
+                        SupportsBudgetTokens = true,
+                        IsBuiltIn = false,
+                        IsExposed = true,
+                    },
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 200000,
+                        MaxOutputTokens = 8192,
+                    },
+                    SupportsStreaming = true,
+                    SupportedFeatures = ["thinking"],
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "Anthropic",
+                        ModelName = "claude-3-sonnet-20240229",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 3.0,
+                            CompletionPerMillion = 15.0,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "openai/gpt-4-turbo",
+                IsReasoning = false,
+                CreatedDate = new DateTime(2024, 3, 10), // Before June 1
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 128000,
+                        MaxOutputTokens = 4096,
+                    },
+                    SupportsStreaming = true,
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "OpenAI",
+                        ModelName = "gpt-4-turbo",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 10.0,
+                            CompletionPerMillion = 30.0,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "qwen/qwen-2.5-72b",
+                IsReasoning = false,
+                CreatedDate = new DateTime(2023, 12, 5), // Before June 1
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 32768,
+                        MaxOutputTokens = 8192,
+                    },
+                    SupportsStreaming = true,
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "OpenRouter",
+                        ModelName = "qwen/qwen-2.5-72b",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 0.4,
+                            CompletionPerMillion = 1.2,
+                        },
+                    },
+                ],
+            },
+        };
     }
 
     private static IReadOnlyList<ModelConfig> CreateTestModelsWithMixedDates()
     {
         return new List<ModelConfig>
-    {
-      new()
-      {
-        Id = "model-with-date",
-        IsReasoning = false,
-        CreatedDate = new DateTime(2024, 6, 15), // Has date after 2024
-        Capabilities = new ModelCapabilities
         {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 4096,
-            MaxOutputTokens = 1024
-          }
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "TestProvider",
-          ModelName = "model-with-date",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 1.0,
-            CompletionPerMillion = 2.0
-          }
-        }]
-      },
-      new()
-      {
-        Id = "model-without-date",
-        IsReasoning = false,
-        CreatedDate = null, // No date information
-        Capabilities = new ModelCapabilities
-        {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 4096,
-            MaxOutputTokens = 1024
-          }
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "TestProvider",
-          ModelName = "model-without-date",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 1.0,
-            CompletionPerMillion = 2.0
-          }
-        }]
-      },
-      new()
-      {
-        Id = "old-model-with-date",
-        IsReasoning = false,
-        CreatedDate = new DateTime(2023, 5, 10), // Has date before 2024
-        Capabilities = new ModelCapabilities
-        {
-          TokenLimits = new TokenLimits
-          {
-            MaxContextTokens = 4096,
-            MaxOutputTokens = 1024
-          }
-        },
-        Providers = [new ProviderConfig
-        {
-          Name = "TestProvider",
-          ModelName = "old-model-with-date",
-          Priority = 1,
-          Pricing = new PricingConfig
-          {
-            PromptPerMillion = 1.0,
-            CompletionPerMillion = 2.0
-          }
-        }]
-      }
-    };
+            new()
+            {
+                Id = "model-with-date",
+                IsReasoning = false,
+                CreatedDate = new DateTime(2024, 6, 15), // Has date after 2024
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 4096,
+                        MaxOutputTokens = 1024,
+                    },
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "TestProvider",
+                        ModelName = "model-with-date",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 1.0,
+                            CompletionPerMillion = 2.0,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "model-without-date",
+                IsReasoning = false,
+                CreatedDate = null, // No date information
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 4096,
+                        MaxOutputTokens = 1024,
+                    },
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "TestProvider",
+                        ModelName = "model-without-date",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 1.0,
+                            CompletionPerMillion = 2.0,
+                        },
+                    },
+                ],
+            },
+            new()
+            {
+                Id = "old-model-with-date",
+                IsReasoning = false,
+                CreatedDate = new DateTime(2023, 5, 10), // Has date before 2024
+                Capabilities = new ModelCapabilities
+                {
+                    TokenLimits = new TokenLimits
+                    {
+                        MaxContextTokens = 4096,
+                        MaxOutputTokens = 1024,
+                    },
+                },
+                Providers =
+                [
+                    new ProviderConfig
+                    {
+                        Name = "TestProvider",
+                        ModelName = "old-model-with-date",
+                        Priority = 1,
+                        Pricing = new PricingConfig
+                        {
+                            PromptPerMillion = 1.0,
+                            CompletionPerMillion = 2.0,
+                        },
+                    },
+                ],
+            },
+        };
     }
 }

@@ -18,10 +18,11 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of topic-based segments</returns>
     Task<List<DocumentSegment>> SegmentByTopicsAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      TopicSegmentationOptions? options = null,
-      CancellationToken cancellationToken = default);
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        TopicSegmentationOptions? options = null,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Detects topic boundaries within the document content.
@@ -31,9 +32,10 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of topic boundaries with confidence scores</returns>
     Task<List<TopicBoundary>> DetectTopicBoundariesAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      CancellationToken cancellationToken = default);
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Analyzes thematic coherence of a text segment.
@@ -42,8 +44,9 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Coherence analysis with score and key topics</returns>
     Task<ThematicCoherenceAnalysis> AnalyzeThematicCoherenceAsync(
-      string content,
-      CancellationToken cancellationToken = default);
+        string content,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates topic-based segments for quality and coherence.
@@ -53,9 +56,10 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Validation results with quality metrics</returns>
     Task<TopicSegmentationValidation> ValidateTopicSegmentsAsync(
-      List<DocumentSegment> segments,
-      string originalContent,
-      CancellationToken cancellationToken = default);
+        List<DocumentSegment> segments,
+        string originalContent,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Performs comprehensive topic analysis on a document segment.
@@ -65,9 +69,10 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Detailed topic analysis results</returns>
     Task<TopicAnalysis> AnalyzeTopicsAsync(
-      string content,
-      TopicAnalysisMethod analysisMethod = TopicAnalysisMethod.Hybrid,
-      CancellationToken cancellationToken = default);
+        string content,
+        TopicAnalysisMethod analysisMethod = TopicAnalysisMethod.Hybrid,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Identifies topic transitions and their quality between adjacent segments.
@@ -77,9 +82,10 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Topic transition quality analysis</returns>
     Task<TopicTransitionQuality> AnalyzeTopicTransitionAsync(
-      string previousContent,
-      string currentContent,
-      CancellationToken cancellationToken = default);
+        string previousContent,
+        string currentContent,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Calculates semantic similarity between two text segments for topic analysis.
@@ -89,9 +95,10 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Semantic similarity score (0.0 to 1.0)</returns>
     Task<double> CalculateSemanticSimilarityAsync(
-      string content1,
-      string content2,
-      CancellationToken cancellationToken = default);
+        string content1,
+        string content2,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Extracts key terms and concepts from content for topic analysis.
@@ -101,9 +108,10 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Dictionary of keywords with their importance scores</returns>
     Task<Dictionary<string, double>> ExtractKeywordsAsync(
-      string content,
-      int maxKeywords = 10,
-      CancellationToken cancellationToken = default);
+        string content,
+        int maxKeywords = 10,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Assesses topic coherence within a segment and identifies issues.
@@ -113,7 +121,8 @@ public interface ITopicBasedSegmentationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Topic coherence assessment</returns>
     Task<TopicCoherence> AssessTopicCoherenceAsync(
-      string content,
-      string primaryTopic,
-      CancellationToken cancellationToken = default);
+        string content,
+        string primaryTopic,
+        CancellationToken cancellationToken = default
+    );
 }

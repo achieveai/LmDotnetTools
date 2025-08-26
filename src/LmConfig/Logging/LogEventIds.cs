@@ -18,6 +18,12 @@ public static class LogEventIds
     // Provider Resolution Events (3000-3999)
     public static readonly EventId ProviderResolved = new(3001, "ProviderResolved");
     public static readonly EventId ProviderResolutionFailed = new(3002, "ProviderResolutionFailed");
-    public static readonly EventId ProviderSelectionCriteria = new(3003, "ProviderSelectionCriteria");
-    public static readonly EventId AvailableProvidersEvaluated = new(3004, "AvailableProvidersEvaluated");
+    public static readonly EventId ProviderSelectionCriteria = new(
+        3003,
+        "ProviderSelectionCriteria"
+    );
+    public static readonly EventId AvailableProvidersEvaluated = new(
+        3004,
+        "AvailableProvidersEvaluated"
+    );
 }

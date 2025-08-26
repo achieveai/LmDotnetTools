@@ -14,10 +14,20 @@ public class FakeHttpMessageHandlerSseTests
         // Arrange
         var events = new[]
         {
-      new SseEvent { Id = "1", Event = "message", Data = "Hello" },
-      new SseEvent { Id = "2", Event = "message", Data = "World" },
-      new SseEvent { Data = "No ID or event type" }
-    };
+            new SseEvent
+            {
+                Id = "1",
+                Event = "message",
+                Data = "Hello",
+            },
+            new SseEvent
+            {
+                Id = "2",
+                Event = "message",
+                Data = "World",
+            },
+            new SseEvent { Data = "No ID or event type" },
+        };
 
         var handler = FakeHttpMessageHandler.CreateSseStreamHandler(events);
         var httpClient = new HttpClient(handler);
@@ -77,10 +87,10 @@ public class FakeHttpMessageHandlerSseTests
         // Arrange
         var objects = new[]
         {
-      new { type = "start", message = "Beginning" },
-      new { type = "data", message = "Processing" },
-      new { type = "end", message = "Complete" }
-    };
+            new { type = "start", message = "Beginning" },
+            new { type = "data", message = "Processing" },
+            new { type = "end", message = "Complete" },
+        };
 
         var handler = FakeHttpMessageHandler.CreateJsonSseStreamHandler(objects, "update");
         var httpClient = new HttpClient(handler);
@@ -111,13 +121,13 @@ public class FakeHttpMessageHandlerSseTests
         // Arrange
         var events = new[]
         {
-      new SseEvent
-      {
-        Id = "1",
-        Event = "multiline",
-        Data = "Line 1\nLine 2\nLine 3"
-      }
-    };
+            new SseEvent
+            {
+                Id = "1",
+                Event = "multiline",
+                Data = "Line 1\nLine 2\nLine 3",
+            },
+        };
 
         var handler = FakeHttpMessageHandler.CreateSseStreamHandler(events);
         var httpClient = new HttpClient(handler);

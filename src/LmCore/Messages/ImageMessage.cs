@@ -1,6 +1,6 @@
-using System.Text.RegularExpressions;
-using System.Text.Json.Serialization;
 using System.Collections.Immutable;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -106,7 +106,10 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
 
 public static class ImageMessageExtensions
 {
-    private static readonly Regex DataUriPattern = new Regex(@"^data:(?<mimeType>[a-zA-Z0-9/]+);base64,(?<data>.+)$", RegexOptions.Compiled);
+    private static readonly Regex DataUriPattern = new Regex(
+        @"^data:(?<mimeType>[a-zA-Z0-9/]+);base64,(?<data>.+)$",
+        RegexOptions.Compiled
+    );
 
     // Parse base64 data URI and convert to BinaryData with mime type
     public static BinaryData? ToBinaryDataWithMimeType(this string? dataUrl)

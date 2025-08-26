@@ -22,7 +22,8 @@ public record ToolsCallResultMessage : IMessage
     public string? GenerationId { get; init; } = null;
 
     [JsonPropertyName("tool_call_results")]
-    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = ImmutableList<ToolCallResult>.Empty;
+    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } =
+        ImmutableList<ToolCallResult>.Empty;
 
     public string? GetText() => null;
 
@@ -39,7 +40,8 @@ public record ToolsCallResultMessage : IMessage
         Role role = Role.User,
         string? fromAgent = null,
         ImmutableDictionary<string, object>? metadata = null,
-        string? generationId = null)
+        string? generationId = null
+    )
     {
         return new ToolsCallResultMessage
         {
@@ -47,7 +49,9 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = ImmutableList.Create(new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty))
+            ToolCallResults = ImmutableList.Create(
+                new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)
+            ),
         };
     }
 
@@ -57,7 +61,8 @@ public record ToolsCallResultMessage : IMessage
         Role role = Role.User,
         string? fromAgent = null,
         ImmutableDictionary<string, object>? metadata = null,
-        string? generationId = null)
+        string? generationId = null
+    )
     {
         return new ToolsCallResultMessage
         {
@@ -65,12 +70,15 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty)).ToImmutableList()
+            ToolCallResults = results
+                .Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty))
+                .ToImmutableList(),
         };
     }
 }
 
-public class ToolsCallResultMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallResultMessage>
+public class ToolsCallResultMessageJsonConverter
+    : ShadowPropertiesJsonConverter<ToolsCallResultMessage>
 {
     protected override ToolsCallResultMessage CreateInstance()
     {

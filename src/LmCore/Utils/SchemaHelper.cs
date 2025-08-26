@@ -15,13 +15,8 @@ public static class SchemaHelper
     /// </summary>
     private static readonly JsonSerializerOptions SchemaDeserializationOptions = new()
     {
-        Converters =
-        {
-            new UnionJsonConverter<string, IReadOnlyList<string>>()
-        }
+        Converters = { new UnionJsonConverter<string, IReadOnlyList<string>>() },
     };
-
-
 
     /// <summary>
     /// Cache to store already generated schema objects keyed by .NET type.
@@ -51,7 +46,10 @@ public static class SchemaHelper
             }
 
             JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
-            JsonSchemaObject originalSchema = JsonSerializer.Deserialize<JsonSchemaObject>(dotnetSchema, SchemaDeserializationOptions)!;
+            JsonSchemaObject originalSchema = JsonSerializer.Deserialize<JsonSchemaObject>(
+                dotnetSchema,
+                SchemaDeserializationOptions
+            )!;
             JsonSchemaObject transformedSchema = TransformSchemaUnions(originalSchema);
 
             _schemaCache[type] = transformedSchema;
@@ -82,7 +80,9 @@ public static class SchemaHelper
             foreach (var kvp in transformedProperties)
             {
                 requiredPropertyNames.Add(kvp.Key);
-                Console.WriteLine($"[DEBUG] Added '{kvp.Key}' to required array (OpenAI requires all properties)");
+                Console.WriteLine(
+                    $"[DEBUG] Added '{kvp.Key}' to required array (OpenAI requires all properties)"
+                );
             }
         }
 
@@ -102,7 +102,7 @@ public static class SchemaHelper
             Maximum = schema.Maximum,
             MinItems = schema.MinItems,
             MaxItems = schema.MaxItems,
-            UniqueItems = schema.UniqueItems
+            UniqueItems = schema.UniqueItems,
         };
     }
 
@@ -112,9 +112,11 @@ public static class SchemaHelper
     /// <param name="properties">The properties dictionary to transform</param>
     /// <returns>The transformed properties dictionary</returns>
     private static Dictionary<string, JsonSchemaObject>? TransformPropertiesDictionary(
-        IReadOnlyDictionary<string, JsonSchemaObject>? properties)
+        IReadOnlyDictionary<string, JsonSchemaObject>? properties
+    )
     {
-        if (properties == null) return null;
+        if (properties == null)
+            return null;
 
         var transformedProperties = new Dictionary<string, JsonSchemaObject>();
 
@@ -125,9 +127,12 @@ public static class SchemaHelper
             {
                 Type = TransformUnionType(originalProperty.Type),
                 Properties = TransformPropertiesDictionary(originalProperty.Properties),
-                Items = originalProperty.Items != null ? TransformSchemaUnions(originalProperty.Items) : null,
+                Items =
+                    originalProperty.Items != null
+                        ? TransformSchemaUnions(originalProperty.Items)
+                        : null,
                 // Always set AdditionalProperties = false for OpenAI structured outputs
-                AdditionalProperties = false
+                AdditionalProperties = false,
             };
 
             transformedProperties[kvp.Key] = transformedProperty;
@@ -141,7 +146,8 @@ public static class SchemaHelper
     /// OpenAI structured outputs don't support nullable/optional fields - everything must be required
     /// </summary>
     private static Union<string, IReadOnlyList<string>> TransformUnionType(
-        Union<string, IReadOnlyList<string>> unionType)
+        Union<string, IReadOnlyList<string>> unionType
+    )
     {
         // If it's already a string, return as-is
         if (unionType.Is<string>())

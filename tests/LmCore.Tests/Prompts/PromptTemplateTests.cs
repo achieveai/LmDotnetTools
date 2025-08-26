@@ -11,7 +11,10 @@ public class PromptTemplateTests
     {
         // Get the current assembly for embedded resource access
         var assembly = Assembly.GetExecutingAssembly();
-        _promptReader = new PromptReader(assembly, "AchieveAi.LmDotnetTools.LmCore.Tests.Prompts.TestPrompts.yaml");
+        _promptReader = new PromptReader(
+            assembly,
+            "AchieveAi.LmDotnetTools.LmCore.Tests.Prompts.TestPrompts.yaml"
+        );
     }
 
     [Fact]
@@ -20,10 +23,10 @@ public class PromptTemplateTests
         // Arrange
         var promptName = "TemplatePrompt";
         var variables = new Dictionary<string, object>
-    {
-      { "name", "John" },
-      { "company", "AchieveAI" }
-    };
+        {
+            { "name", "John" },
+            { "company", "AchieveAI" },
+        };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);
@@ -39,9 +42,12 @@ public class PromptTemplateTests
         // Arrange
         var promptName = "TemplatePromptWithList";
         var variables = new Dictionary<string, object>
-    {
-      { "items", new List<string> { "Apple", "Banana", "Cherry" } }
-    };
+        {
+            {
+                "items",
+                new List<string> { "Apple", "Banana", "Cherry" }
+            },
+        };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);
@@ -61,17 +67,17 @@ public class PromptTemplateTests
         // Arrange
         var promptName = "TemplatePromptWithDictionary";
         var variables = new Dictionary<string, object>
-    {
-      {
-        "profile",
-        new Dictionary<string, object>
         {
-          { "Name", "John Doe" },
-          { "Age", "30" },
-          { "Occupation", "Developer" }
-        }
-      }
-    };
+            {
+                "profile",
+                new Dictionary<string, object>
+                {
+                    { "Name", "John Doe" },
+                    { "Age", "30" },
+                    { "Occupation", "Developer" },
+                }
+            },
+        };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);
@@ -91,10 +97,10 @@ public class PromptTemplateTests
         // Arrange
         var promptName = "TemplatePrompt";
         var variables = new Dictionary<string, object>
-    {
-      { "invalidName", "John" },
-      { "company", "AchieveAI" }
-    };
+        {
+            { "invalidName", "John" },
+            { "company", "AchieveAI" },
+        };
 
         // Act
         var prompt = _promptReader.GetPrompt(promptName);

@@ -19,7 +19,8 @@ public class TypeFunctionProviderTests
         [Description("Multiplies two numbers")]
         public static int Multiply(
             [Description("First number")] int x,
-            [Description("Second number")] int y) => x * y;
+            [Description("Second number")] int y
+        ) => x * y;
 
         [Function]
         public async Task<string> AsyncMethod(string input)
@@ -282,7 +283,9 @@ public class TypeFunctionProviderTests
         // Arrange
         var instance = new TestHandlerWithExceptions();
         var provider = new TypeFunctionProvider(instance);
-        var asyncErrorFunction = provider.GetFunctions().First(f => f.Contract.Name == "asyncError");
+        var asyncErrorFunction = provider
+            .GetFunctions()
+            .First(f => f.Contract.Name == "asyncError");
 
         // Act
         var result = await asyncErrorFunction.Handler("{}");
@@ -337,7 +340,7 @@ public class TypeFunctionProviderTests
         var types = new[]
         {
             typeof(TestHandlerWithFunctionAttribute),
-            typeof(TestHandlerWithDescriptionAttribute)
+            typeof(TestHandlerWithDescriptionAttribute),
         };
 
         // Act
@@ -368,7 +371,9 @@ public class TypeFunctionProviderTests
 
         // Test execution through handler
         var calculateHandler = handlers["calculate"];
-        var result = await calculateHandler(JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 }));
+        var result = await calculateHandler(
+            JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 })
+        );
         Assert.Equal(15.0, JsonSerializer.Deserialize<double>(result));
     }
 

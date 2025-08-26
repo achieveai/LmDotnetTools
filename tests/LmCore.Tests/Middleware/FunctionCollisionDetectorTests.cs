@@ -2,11 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Xunit;
-using Microsoft.Extensions.Logging;
-using Moq;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -26,17 +26,18 @@ public class FunctionCollisionDetectorTests
 
     private static FunctionDescriptor CreateTestDescriptor(
         string functionName,
-        string providerName = "TestProvider")
+        string providerName = "TestProvider"
+    )
     {
         return new FunctionDescriptor
         {
             Contract = new FunctionContract
             {
                 Name = functionName,
-                Description = $"Test function {functionName}"
+                Description = $"Test function {functionName}",
             },
             Handler = _ => Task.FromResult($"Result from {functionName}"),
-            ProviderName = providerName
+            ProviderName = providerName,
         };
     }
 
@@ -48,7 +49,7 @@ public class FunctionCollisionDetectorTests
             CreateTestDescriptor("getUser", "Provider2"),
             CreateTestDescriptor("listItems", "Provider1"),
             CreateTestDescriptor("createResource", "Provider2"),
-            CreateTestDescriptor("createResource", "Provider3")
+            CreateTestDescriptor("createResource", "Provider3"),
         };
     }
 
@@ -65,7 +66,7 @@ public class FunctionCollisionDetectorTests
         {
             CreateTestDescriptor("func1", "Provider1"),
             CreateTestDescriptor("func2", "Provider2"),
-            CreateTestDescriptor("func3", "Provider3")
+            CreateTestDescriptor("func3", "Provider3"),
         };
 
         // Act
@@ -90,10 +91,14 @@ public class FunctionCollisionDetectorTests
         Assert.Equal(5, namingMap.Count);
 
         // Functions with collisions should have prefixes
-        var getUserProvider1 = functions.First(f => f.Contract.Name == "getUser" && f.ProviderName == "Provider1");
+        var getUserProvider1 = functions.First(f =>
+            f.Contract.Name == "getUser" && f.ProviderName == "Provider1"
+        );
         Assert.Equal("Provider1-getUser", namingMap[getUserProvider1.Key]);
 
-        var getUserProvider2 = functions.First(f => f.Contract.Name == "getUser" && f.ProviderName == "Provider2");
+        var getUserProvider2 = functions.First(f =>
+            f.Contract.Name == "getUser" && f.ProviderName == "Provider2"
+        );
         Assert.Equal("Provider2-getUser", namingMap[getUserProvider2.Key]);
 
         // Function without collision should not have prefix (when UsePrefixOnlyForCollisions is true)
@@ -113,7 +118,7 @@ public class FunctionCollisionDetectorTests
         var functions = new List<FunctionDescriptor>
         {
             CreateTestDescriptor("func1", "Provider1"),
-            CreateTestDescriptor("func2", "Provider2")
+            CreateTestDescriptor("func2", "Provider2"),
         };
         var config = new FunctionFilterConfig { UsePrefixOnlyForCollisions = false };
 
@@ -134,17 +139,14 @@ public class FunctionCollisionDetectorTests
         var functions = new List<FunctionDescriptor>
         {
             CreateTestDescriptor("func1", "LongProviderName"),
-            CreateTestDescriptor("func1", "AnotherProvider")
+            CreateTestDescriptor("func1", "AnotherProvider"),
         };
         var config = new FunctionFilterConfig
         {
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["LongProviderName"] = new ProviderFilterConfig
-                {
-                    CustomPrefix = "LP"
-                }
-            }
+                ["LongProviderName"] = new ProviderFilterConfig { CustomPrefix = "LP" },
+            },
         };
 
         // Act
@@ -245,7 +247,7 @@ public class FunctionCollisionDetectorTests
         {
             CreateTestDescriptor("func1", "Provider1"),
             CreateTestDescriptor("func2", "Provider2"),
-            CreateTestDescriptor("func3", "Provider3")
+            CreateTestDescriptor("func3", "Provider3"),
         };
 
         // Act
@@ -276,11 +278,19 @@ public class FunctionCollisionDetectorTests
 
         var getUserCollision = report.Collisions.First(c => c.FunctionName == "getUser");
         Assert.Equal(2, getUserCollision.Count);
-        Assert.Equal(new[] { "Provider1", "Provider2" }, getUserCollision.Providers.OrderBy(p => p));
+        Assert.Equal(
+            new[] { "Provider1", "Provider2" },
+            getUserCollision.Providers.OrderBy(p => p)
+        );
 
-        var createResourceCollision = report.Collisions.First(c => c.FunctionName == "createResource");
+        var createResourceCollision = report.Collisions.First(c =>
+            c.FunctionName == "createResource"
+        );
         Assert.Equal(2, createResourceCollision.Count);
-        Assert.Equal(new[] { "Provider2", "Provider3" }, createResourceCollision.Providers.OrderBy(p => p));
+        Assert.Equal(
+            new[] { "Provider2", "Provider3" },
+            createResourceCollision.Providers.OrderBy(p => p)
+        );
     }
 
     [Fact]
@@ -292,7 +302,7 @@ public class FunctionCollisionDetectorTests
         {
             CreateTestDescriptor("func1", "Provider1"),
             CreateTestDescriptor("func1", "Provider1"), // Duplicate from same provider
-            CreateTestDescriptor("func1", "Provider2")
+            CreateTestDescriptor("func1", "Provider2"),
         };
 
         // Act
@@ -338,8 +348,8 @@ public class FunctionCollisionDetectorTests
             {
                 Contract = new FunctionContract { Name = "func1" },
                 Handler = _ => Task.FromResult("result"),
-                ProviderName = null
-            }
+                ProviderName = null,
+            },
         };
 
         // Act
@@ -359,7 +369,7 @@ public class FunctionCollisionDetectorTests
         var functions = new List<FunctionDescriptor>
         {
             CreateTestDescriptor("func.with.dots", "Provider@1"),
-            CreateTestDescriptor("func.with.dots", "Provider#2")
+            CreateTestDescriptor("func.with.dots", "Provider#2"),
         };
 
         // Act
@@ -367,8 +377,10 @@ public class FunctionCollisionDetectorTests
 
         // Assert
         Assert.Equal(2, namingMap.Count);
-        Assert.All(namingMap.Values, name =>
-            Assert.True(name.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '-')));
+        Assert.All(
+            namingMap.Values,
+            name => Assert.True(name.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '-'))
+        );
     }
 
     [Fact]
@@ -419,7 +431,7 @@ public class FunctionCollisionDetectorTests
             CreateTestDescriptor("sharedFunc", "VeryLongProviderName"),
             CreateTestDescriptor("sharedFunc", "AnotherLongProvider"),
             CreateTestDescriptor("uniqueFunc", "VeryLongProviderName"),
-            CreateTestDescriptor("anotherUnique", "ShortName")
+            CreateTestDescriptor("anotherUnique", "ShortName"),
         };
 
         var config = new FunctionFilterConfig
@@ -428,8 +440,8 @@ public class FunctionCollisionDetectorTests
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
                 ["VeryLongProviderName"] = new ProviderFilterConfig { CustomPrefix = "VLPN" },
-                ["AnotherLongProvider"] = new ProviderFilterConfig { CustomPrefix = "ALP" }
-            }
+                ["AnotherLongProvider"] = new ProviderFilterConfig { CustomPrefix = "ALP" },
+            },
         };
 
         // Act
@@ -439,10 +451,14 @@ public class FunctionCollisionDetectorTests
         Assert.Equal(4, namingMap.Count);
 
         // Check custom prefixes are applied
-        var vlpnShared = functions.First(f => f.ProviderName == "VeryLongProviderName" && f.Contract.Name == "sharedFunc");
+        var vlpnShared = functions.First(f =>
+            f.ProviderName == "VeryLongProviderName" && f.Contract.Name == "sharedFunc"
+        );
         Assert.Equal("VLPN-sharedFunc", namingMap[vlpnShared.Key]);
 
-        var vlpnUnique = functions.First(f => f.ProviderName == "VeryLongProviderName" && f.Contract.Name == "uniqueFunc");
+        var vlpnUnique = functions.First(f =>
+            f.ProviderName == "VeryLongProviderName" && f.Contract.Name == "uniqueFunc"
+        );
         Assert.Equal("VLPN-uniqueFunc", namingMap[vlpnUnique.Key]);
 
         var alpShared = functions.First(f => f.ProviderName == "AnotherLongProvider");
@@ -468,24 +484,20 @@ public class FunctionCollisionDetectorTests
             CreateTestDescriptor("search_repositories", "github"),
             CreateTestDescriptor("get_file_contents", "github"),
             CreateTestDescriptor("create_issue", "github"),
-            
             // Filesystem MCP Server
             CreateTestDescriptor("read_file", "filesystem"),
             CreateTestDescriptor("write_file", "filesystem"),
             CreateTestDescriptor("list_directory", "filesystem"),
-            
             // Database MCP Server
             CreateTestDescriptor("execute_query", "database"),
             CreateTestDescriptor("list_tables", "database"),
-            
             // Collision: Both GitHub and Filesystem have a search function
             CreateTestDescriptor("search", "github"),
             CreateTestDescriptor("search", "filesystem"),
-            
             // Collision: Multiple providers have a list function
             CreateTestDescriptor("list", "github"),
             CreateTestDescriptor("list", "filesystem"),
-            CreateTestDescriptor("list", "database")
+            CreateTestDescriptor("list", "database"),
         };
 
         // Act
@@ -495,26 +507,56 @@ public class FunctionCollisionDetectorTests
         Assert.Equal(13, namingMap.Count);
 
         // Non-colliding functions should not have prefixes
-        Assert.Equal("search_repositories",
-            namingMap[functions.First(f => f.Contract.Name == "search_repositories").Key]);
-        Assert.Equal("read_file",
-            namingMap[functions.First(f => f.Contract.Name == "read_file").Key]);
-        Assert.Equal("execute_query",
-            namingMap[functions.First(f => f.Contract.Name == "execute_query").Key]);
+        Assert.Equal(
+            "search_repositories",
+            namingMap[functions.First(f => f.Contract.Name == "search_repositories").Key]
+        );
+        Assert.Equal(
+            "read_file",
+            namingMap[functions.First(f => f.Contract.Name == "read_file").Key]
+        );
+        Assert.Equal(
+            "execute_query",
+            namingMap[functions.First(f => f.Contract.Name == "execute_query").Key]
+        );
 
         // Colliding functions should have prefixes
-        Assert.Equal("github-search",
-            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "github").Key]);
-        Assert.Equal("filesystem-search",
-            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "filesystem").Key]);
+        Assert.Equal(
+            "github-search",
+            namingMap[
+                functions.First(f => f.Contract.Name == "search" && f.ProviderName == "github").Key
+            ]
+        );
+        Assert.Equal(
+            "filesystem-search",
+            namingMap[
+                functions
+                    .First(f => f.Contract.Name == "search" && f.ProviderName == "filesystem")
+                    .Key
+            ]
+        );
 
         // All "list" functions should have prefixes
-        Assert.Equal("github-list",
-            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "github").Key]);
-        Assert.Equal("filesystem-list",
-            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "filesystem").Key]);
-        Assert.Equal("database-list",
-            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "database").Key]);
+        Assert.Equal(
+            "github-list",
+            namingMap[
+                functions.First(f => f.Contract.Name == "list" && f.ProviderName == "github").Key
+            ]
+        );
+        Assert.Equal(
+            "filesystem-list",
+            namingMap[
+                functions
+                    .First(f => f.Contract.Name == "list" && f.ProviderName == "filesystem")
+                    .Key
+            ]
+        );
+        Assert.Equal(
+            "database-list",
+            namingMap[
+                functions.First(f => f.Contract.Name == "list" && f.ProviderName == "database").Key
+            ]
+        );
     }
 
     #endregion

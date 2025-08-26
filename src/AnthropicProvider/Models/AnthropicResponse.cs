@@ -29,7 +29,8 @@ public record AnthropicResponse
     /// The content of the response.
     /// </summary>
     [JsonPropertyName("content")]
-    public List<AnthropicResponseContent> Content { get; init; } = new List<AnthropicResponseContent>();
+    public List<AnthropicResponseContent> Content { get; init; } =
+        new List<AnthropicResponseContent>();
 
     /// <summary>
     /// The model that generated the response.
@@ -104,18 +105,19 @@ public record AnthropicStreamEvent
     /// The type of the event.
     /// </summary>
     [JsonPropertyName("type")]
-    public string Type => this switch
-    {
-        AnthropicMessageStartEvent _ => "message_start",
-        AnthropicContentBlockStartEvent _ => "content_block_start",
-        AnthropicContentBlockDeltaEvent _ => "content_block_delta",
-        AnthropicContentBlockStopEvent _ => "content_block_stop",
-        AnthropicMessageDeltaEvent _ => "message_delta",
-        AnthropicMessageStopEvent _ => "message_stop",
-        AnthropicPingEvent _ => "ping",
-        AnthropicErrorEvent _ => "error",
-        _ => throw new InvalidOperationException("Invalid event type")
-    };
+    public string Type =>
+        this switch
+        {
+            AnthropicMessageStartEvent _ => "message_start",
+            AnthropicContentBlockStartEvent _ => "content_block_start",
+            AnthropicContentBlockDeltaEvent _ => "content_block_delta",
+            AnthropicContentBlockStopEvent _ => "content_block_stop",
+            AnthropicMessageDeltaEvent _ => "message_delta",
+            AnthropicMessageStopEvent _ => "message_stop",
+            AnthropicPingEvent _ => "ping",
+            AnthropicErrorEvent _ => "error",
+            _ => throw new InvalidOperationException("Invalid event type"),
+        };
 }
 
 /// <summary>
@@ -199,16 +201,12 @@ public record AnthropicMessageDeltaEvent : AnthropicStreamEvent
 /// <summary>
 /// Represents the end of a message in a streaming response.
 /// </summary>
-public record AnthropicMessageStopEvent : AnthropicStreamEvent
-{
-}
+public record AnthropicMessageStopEvent : AnthropicStreamEvent { }
 
 /// <summary>
 /// Represents a ping event in a streaming response.
 /// </summary>
-public record AnthropicPingEvent : AnthropicStreamEvent
-{
-}
+public record AnthropicPingEvent : AnthropicStreamEvent { }
 
 /// <summary>
 /// Represents an error event in a streaming response.
@@ -273,15 +271,16 @@ public record AnthropicDelta
     /// The type of the delta.
     /// </summary>
     [JsonPropertyName("type")]
-    public string Type => this switch
-    {
-        AnthropicTextDelta _ => "text_delta",
-        AnthropicInputJsonDelta _ => "input_json_delta",
-        AnthropicThinkingDelta _ => "thinking_delta",
-        AnthropicSignatureDelta _ => "signature_delta",
-        AnthropicToolCallsDelta _ => "tool_calls_delta",
-        _ => throw new InvalidOperationException("Invalid delta type")
-    };
+    public string Type =>
+        this switch
+        {
+            AnthropicTextDelta _ => "text_delta",
+            AnthropicInputJsonDelta _ => "input_json_delta",
+            AnthropicThinkingDelta _ => "thinking_delta",
+            AnthropicSignatureDelta _ => "signature_delta",
+            AnthropicToolCallsDelta _ => "tool_calls_delta",
+            _ => throw new InvalidOperationException("Invalid delta type"),
+        };
 }
 
 /// <summary>
@@ -341,7 +340,8 @@ public record AnthropicToolCallsDelta : AnthropicDelta
     /// The tool calls in this delta.
     /// </summary>
     [JsonPropertyName("tool_calls")]
-    public List<AnthropicDeltaToolCall> ToolCalls { get; init; } = new List<AnthropicDeltaToolCall>();
+    public List<AnthropicDeltaToolCall> ToolCalls { get; init; } =
+        new List<AnthropicDeltaToolCall>();
 }
 
 /// <summary>

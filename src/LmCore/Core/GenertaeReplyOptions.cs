@@ -46,7 +46,8 @@ public record GenerateReplyOptions
     public ResponseFormat? ResponseFormat { get; init; }
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
+    public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
+        ImmutableDictionary<string, object?>.Empty;
 
     public GenerateReplyOptions Merge(GenerateReplyOptions? other)
     {
@@ -61,15 +62,22 @@ public record GenerateReplyOptions
         // First copy the original properties
         foreach (var prop in ExtraProperties)
         {
-            mergedExtraProps = mergedExtraProps.SetItem(prop.Key, CloneExtraPropertyValue(prop.Value));
+            mergedExtraProps = mergedExtraProps.SetItem(
+                prop.Key,
+                CloneExtraPropertyValue(prop.Value)
+            );
         }
 
         // Then merge with the other properties
         foreach (var extraProperty in other.ExtraProperties)
         {
-            mergedExtraProps = mergedExtraProps.SetItem(extraProperty.Key, MergeExtraPropertyValues(
-                ExtraProperties.TryGetValue(extraProperty.Key, out var value) ? value : null,
-                extraProperty.Value));
+            mergedExtraProps = mergedExtraProps.SetItem(
+                extraProperty.Key,
+                MergeExtraPropertyValues(
+                    ExtraProperties.TryGetValue(extraProperty.Key, out var value) ? value : null,
+                    extraProperty.Value
+                )
+            );
         }
 
         // Merge main properties, using other's values if they're set
@@ -82,7 +90,7 @@ public record GenerateReplyOptions
             MaxToken = other.MaxToken ?? MaxToken,
             StopSequence = other.StopSequence ?? StopSequence,
             Functions = other.Functions ?? Functions,
-            ExtraProperties = mergedExtraProps
+            ExtraProperties = mergedExtraProps,
         };
     }
 
@@ -99,15 +107,18 @@ public record GenerateReplyOptions
         }
 
         // Both values are dictionaries - merge them recursively
-        if (original is Dictionary<string, object?> originalDict &&
-            other is Dictionary<string, object?> otherDict)
+        if (
+            original is Dictionary<string, object?> originalDict
+            && other is Dictionary<string, object?> otherDict
+        )
         {
             var result = new Dictionary<string, object?>(originalDict);
             foreach (var kv in otherDict)
             {
                 result[kv.Key] = MergeExtraPropertyValues(
                     originalDict.TryGetValue(kv.Key, out var value) ? value : null,
-                    kv.Value);
+                    kv.Value
+                );
             }
             return result;
         }

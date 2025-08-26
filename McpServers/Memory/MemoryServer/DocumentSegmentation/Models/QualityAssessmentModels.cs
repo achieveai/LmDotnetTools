@@ -92,14 +92,19 @@ public class QualityMetricWeights
     /// <summary>
     /// Validates that weights sum to approximately 1.0.
     /// </summary>
-    public bool AreValid => Math.Abs((CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight) - 1.0) < 0.01;
+    public bool AreValid =>
+        Math.Abs(
+            (CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight)
+                - 1.0
+        ) < 0.01;
 
     /// <summary>
     /// Normalizes weights to sum to 1.0.
     /// </summary>
     public void Normalize()
     {
-        var total = CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight;
+        var total =
+            CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight;
         if (total > 0)
         {
             CoherenceWeight /= total;
@@ -109,7 +114,11 @@ public class QualityMetricWeights
         }
         else
         {
-            CoherenceWeight = IndependenceWeight = TopicConsistencyWeight = CompletenessWeight = 0.25;
+            CoherenceWeight =
+                IndependenceWeight =
+                TopicConsistencyWeight =
+                CompletenessWeight =
+                    0.25;
         }
     }
 }
@@ -403,7 +412,8 @@ public class QualityIssueAnalysis
     /// <summary>
     /// Issues categorized by severity.
     /// </summary>
-    public Dictionary<QualityIssueSeverity, List<QualityIssue>> IssuesBySeverity { get; set; } = new();
+    public Dictionary<QualityIssueSeverity, List<QualityIssue>> IssuesBySeverity { get; set; } =
+        new();
 
     /// <summary>
     /// Issues categorized by type.
@@ -449,7 +459,10 @@ public class ImprovementRecommendations
     /// <summary>
     /// Strategy-specific recommendations.
     /// </summary>
-    public Dictionary<SegmentationStrategy, List<QualityRecommendation>> StrategyRecommendations { get; set; } = new();
+    public Dictionary<
+        SegmentationStrategy,
+        List<QualityRecommendation>
+    > StrategyRecommendations { get; set; } = new();
 
     /// <summary>
     /// Implementation guidance for recommendations.
@@ -475,7 +488,8 @@ public class ComparativeQualityAnalysis
     /// <summary>
     /// Detailed metric comparison across strategies.
     /// </summary>
-    public Dictionary<SegmentationStrategy, QualityMetricScores> MetricComparison { get; set; } = new();
+    public Dictionary<SegmentationStrategy, QualityMetricScores> MetricComparison { get; set; } =
+        new();
 
     /// <summary>
     /// Best performing strategy overall.
@@ -548,7 +562,7 @@ public enum CoherenceIssueType
     StructuralBreak,
     TopicShift,
     LogicalGap,
-    ReferentialAmbiguity
+    ReferentialAmbiguity,
 }
 
 /// <summary>
@@ -573,7 +587,7 @@ public enum DependencyType
     Sequential,
     Causal,
     Conceptual,
-    Definitional
+    Definitional,
 }
 
 /// <summary>
@@ -611,7 +625,7 @@ public enum TopicViolationType
     InconsistentTopicBoundaries,
     OrphanedTopicContent,
     TopicContinuityBreak,
-    UnrelatedContentMixing
+    UnrelatedContentMixing,
 }
 
 /// <summary>
@@ -683,7 +697,7 @@ public enum QualityIssueType
     BoundaryIssue,
     ContentOverlap,
     StructuralProblem,
-    SemanticIssue
+    SemanticIssue,
 }
 
 public enum QualityIssueSeverity
@@ -691,7 +705,7 @@ public enum QualityIssueSeverity
     Low,
     Medium,
     High,
-    Critical
+    Critical,
 }
 
 public enum GapType
@@ -699,7 +713,7 @@ public enum GapType
     ContentMissing,
     TransitionMissing,
     ContextMissing,
-    ConclusionMissing
+    ConclusionMissing,
 }
 
 public enum OverlapType
@@ -707,7 +721,7 @@ public enum OverlapType
     ExactDuplication,
     ParaphrasingOverlap,
     ConceptualOverlap,
-    ReferentialOverlap
+    ReferentialOverlap,
 }
 
 public enum RecommendationType
@@ -717,7 +731,7 @@ public enum RecommendationType
     BoundaryAdjustment,
     ContentReorganization,
     StrategyChange,
-    QualityImprovement
+    QualityImprovement,
 }
 
 public enum RecommendationPriority
@@ -725,7 +739,7 @@ public enum RecommendationPriority
     Low,
     Medium,
     High,
-    Critical
+    Critical,
 }
 
 /// <summary>
@@ -746,7 +760,7 @@ public enum ValidationRuleType
     MaximumLength,
     CoherenceThreshold,
     TopicConsistency,
-    CustomRule
+    CustomRule,
 }
 
 public class CustomQualityCriterion

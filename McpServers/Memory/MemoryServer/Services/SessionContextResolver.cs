@@ -1,7 +1,7 @@
-using MemoryServer.Models;
-using Microsoft.Extensions.Options;
 using System.Security.Claims;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using MemoryServer.Models;
+using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Services;
 
@@ -17,7 +17,8 @@ public class SessionContextResolver : ISessionContextResolver
     public SessionContextResolver(
         ILogger<SessionContextResolver> logger,
         IOptions<MemoryServerOptions> options,
-        IHttpContextAccessor httpContextAccessor)
+        IHttpContextAccessor httpContextAccessor
+    )
     {
         _logger = logger;
         _options = options.Value.SessionDefaults;
@@ -32,17 +33,29 @@ public class SessionContextResolver : ISessionContextResolver
         string? explicitUserId = null,
         string? explicitAgentId = null,
         string? explicitRunId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogDebug("Resolving session context with explicit parameters: UserId={UserId}, AgentId={AgentId}, RunId={RunId}",
-            explicitUserId, explicitAgentId, explicitRunId);
+        _logger.LogDebug(
+            "Resolving session context with explicit parameters: UserId={UserId}, AgentId={AgentId}, RunId={RunId}",
+            explicitUserId,
+            explicitAgentId,
+            explicitRunId
+        );
 
         var sessionContext = new SessionContext
         {
             // Precedence: Explicit Parameters > JWT Claims > Transport Context > System Defaults
-            UserId = explicitUserId ?? GetFromJwtClaims("userId") ?? GetFromTransportContext("userId") ?? _options.DefaultUserId,
-            AgentId = explicitAgentId ?? GetFromJwtClaims("agentId") ?? GetFromTransportContext("agentId"),
-            RunId = explicitRunId ?? GetFromTransportContext("runId") ?? GenerateDefaultRunId()
+            UserId =
+                explicitUserId
+                ?? GetFromJwtClaims("userId")
+                ?? GetFromTransportContext("userId")
+                ?? _options.DefaultUserId,
+            AgentId =
+                explicitAgentId
+                ?? GetFromJwtClaims("agentId")
+                ?? GetFromTransportContext("agentId"),
+            RunId = explicitRunId ?? GetFromTransportContext("runId") ?? GenerateDefaultRunId(),
         };
 
         _logger.LogDebug("Resolved session context: {SessionContext}", sessionContext);
@@ -52,7 +65,10 @@ public class SessionContextResolver : ISessionContextResolver
     /// <summary>
     /// Validates that a session context is valid and accessible.
     /// </summary>
-    public Task<bool> ValidateSessionContextAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
+    public Task<bool> ValidateSessionContextAsync(
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    )
     {
         // Basic validation rules
         if (string.IsNullOrWhiteSpace(sessionContext.UserId))
@@ -63,19 +79,28 @@ public class SessionContextResolver : ISessionContextResolver
 
         if (sessionContext.UserId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: UserId too long ({Length} > 100)", sessionContext.UserId.Length);
+            _logger.LogWarning(
+                "Session context validation failed: UserId too long ({Length} > 100)",
+                sessionContext.UserId.Length
+            );
             return Task.FromResult(false);
         }
 
         if (!string.IsNullOrEmpty(sessionContext.AgentId) && sessionContext.AgentId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: AgentId too long ({Length} > 100)", sessionContext.AgentId.Length);
+            _logger.LogWarning(
+                "Session context validation failed: AgentId too long ({Length} > 100)",
+                sessionContext.AgentId.Length
+            );
             return Task.FromResult(false);
         }
 
         if (!string.IsNullOrEmpty(sessionContext.RunId) && sessionContext.RunId.Length > 100)
         {
-            _logger.LogWarning("Session context validation failed: RunId too long ({Length} > 100)", sessionContext.RunId.Length);
+            _logger.LogWarning(
+                "Session context validation failed: RunId too long ({Length} > 100)",
+                sessionContext.RunId.Length
+            );
             return Task.FromResult(false);
         }
 
@@ -86,7 +111,9 @@ public class SessionContextResolver : ISessionContextResolver
     /// <summary>
     /// Gets the default session context based on transport context and system defaults.
     /// </summary>
-    public Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default)
+    public Task<SessionContext> GetDefaultSessionContextAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         return ResolveSessionContextAsync(cancellationToken: cancellationToken);
     }
@@ -104,7 +131,11 @@ public class SessionContextResolver : ISessionContextResolver
                 var claimValue = httpContext.User.FindFirst(claimName)?.Value;
                 if (!string.IsNullOrWhiteSpace(claimValue))
                 {
-                    _logger.LogDebug("Found {ClaimName} in JWT claims: {Value}", claimName, claimValue);
+                    _logger.LogDebug(
+                        "Found {ClaimName} in JWT claims: {Value}",
+                        claimName,
+                        claimValue
+                    );
                     return claimValue;
                 }
             }
@@ -125,15 +156,25 @@ public class SessionContextResolver : ISessionContextResolver
         // Try environment variables first (STDIO transport)
         var envValue = parameterName.ToLowerInvariant() switch
         {
-            "userid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID"),
-            "agentid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID"),
-            "runid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"),
-            _ => null
+            "userid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+                "MCP_MEMORY_USER_ID"
+            ),
+            "agentid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+                "MCP_MEMORY_AGENT_ID"
+            ),
+            "runid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+                "MCP_MEMORY_RUN_ID"
+            ),
+            _ => null,
         };
 
         if (!string.IsNullOrWhiteSpace(envValue))
         {
-            _logger.LogDebug("Found {ParameterName} in environment variables: {Value}", parameterName, envValue);
+            _logger.LogDebug(
+                "Found {ParameterName} in environment variables: {Value}",
+                parameterName,
+                envValue
+            );
             return envValue;
         }
 

@@ -1,9 +1,9 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using MemoryServer.Models;
 using MemoryServer.Services;
 using MemoryServer.Tests.Mocks;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 using Xunit.Abstractions;
@@ -66,13 +66,16 @@ public class RerankingEngineTests
 
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            engine.RerankResultsAsync("", results, sessionContext));
+            engine.RerankResultsAsync("", results, sessionContext)
+        );
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            engine.RerankResultsAsync("   ", results, sessionContext));
+            engine.RerankResultsAsync("   ", results, sessionContext)
+        );
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            engine.RerankResultsAsync(null!, results, sessionContext));
+            engine.RerankResultsAsync(null!, results, sessionContext)
+        );
     }
 
     [Fact]
@@ -84,7 +87,8 @@ public class RerankingEngineTests
 
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
-            engine.RerankResultsAsync("test query", null!, sessionContext));
+            engine.RerankResultsAsync("test query", null!, sessionContext)
+        );
     }
 
     [Fact]
@@ -154,7 +158,9 @@ public class RerankingEngineTests
             Assert.True(result.Results[i].Score >= result.Results[i + 1].Score);
         }
 
-        _output.WriteLine($"Local scoring completed: {result.Results.Count} results in {result.Metrics.TotalDuration.TotalMilliseconds}ms");
+        _output.WriteLine(
+            $"Local scoring completed: {result.Results.Count} results in {result.Metrics.TotalDuration.TotalMilliseconds}ms"
+        );
     }
 
     [Fact]
@@ -173,7 +179,7 @@ public class RerankingEngineTests
                 Type = UnifiedResultType.Memory,
                 Content = "Old content",
                 Score = 0.5f,
-                CreatedAt = DateTime.UtcNow.AddDays(-60) // Old content
+                CreatedAt = DateTime.UtcNow.AddDays(-60), // Old content
             },
             new UnifiedSearchResult
             {
@@ -181,8 +187,8 @@ public class RerankingEngineTests
                 Type = UnifiedResultType.Memory,
                 Content = "Recent content",
                 Score = 0.5f,
-                CreatedAt = DateTime.UtcNow.AddDays(-5) // Recent content
-            }
+                CreatedAt = DateTime.UtcNow.AddDays(-5), // Recent content
+            },
         };
 
         // Act
@@ -196,10 +202,14 @@ public class RerankingEngineTests
         var recentResult = result.Results.First(r => r.Id == 2);
         var oldResult = result.Results.First(r => r.Id == 1);
 
-        Assert.True(recentResult.Score > oldResult.Score,
-            $"Recent content score ({recentResult.Score}) should be higher than old content score ({oldResult.Score})");
+        Assert.True(
+            recentResult.Score > oldResult.Score,
+            $"Recent content score ({recentResult.Score}) should be higher than old content score ({oldResult.Score})"
+        );
 
-        _output.WriteLine($"Recency boost test: Recent={recentResult.Score:F3}, Old={oldResult.Score:F3}");
+        _output.WriteLine(
+            $"Recency boost test: Recent={recentResult.Score:F3}, Old={oldResult.Score:F3}"
+        );
     }
 
     [Fact]
@@ -218,7 +228,7 @@ public class RerankingEngineTests
                 Type = UnifiedResultType.Memory,
                 Content = "Memory content",
                 Score = 1.0f,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
             },
             new UnifiedSearchResult
             {
@@ -226,7 +236,7 @@ public class RerankingEngineTests
                 Type = UnifiedResultType.Entity,
                 Content = "Entity content",
                 Score = 1.0f,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
             },
             new UnifiedSearchResult
             {
@@ -234,8 +244,8 @@ public class RerankingEngineTests
                 Type = UnifiedResultType.Relationship,
                 Content = "Relationship content",
                 Score = 1.0f,
-                CreatedAt = DateTime.UtcNow
-            }
+                CreatedAt = DateTime.UtcNow,
+            },
         };
 
         // Act
@@ -247,15 +257,23 @@ public class RerankingEngineTests
 
         var memoryResult = result.Results.First(r => r.Type == UnifiedResultType.Memory);
         var entityResult = result.Results.First(r => r.Type == UnifiedResultType.Entity);
-        var relationshipResult = result.Results.First(r => r.Type == UnifiedResultType.Relationship);
+        var relationshipResult = result.Results.First(r =>
+            r.Type == UnifiedResultType.Relationship
+        );
 
         // Memory should have highest score, then Entity, then Relationship
-        Assert.True(memoryResult.Score >= entityResult.Score,
-            $"Memory score ({memoryResult.Score}) should be >= Entity score ({entityResult.Score})");
-        Assert.True(entityResult.Score >= relationshipResult.Score,
-            $"Entity score ({entityResult.Score}) should be >= Relationship score ({relationshipResult.Score})");
+        Assert.True(
+            memoryResult.Score >= entityResult.Score,
+            $"Memory score ({memoryResult.Score}) should be >= Entity score ({entityResult.Score})"
+        );
+        Assert.True(
+            entityResult.Score >= relationshipResult.Score,
+            $"Entity score ({entityResult.Score}) should be >= Relationship score ({relationshipResult.Score})"
+        );
 
-        _output.WriteLine($"Source weights: Memory={memoryResult.Score:F3}, Entity={entityResult.Score:F3}, Relationship={relationshipResult.Score:F3}");
+        _output.WriteLine(
+            $"Source weights: Memory={memoryResult.Score:F3}, Entity={entityResult.Score:F3}, Relationship={relationshipResult.Score:F3}"
+        );
     }
 
     [Fact]
@@ -275,7 +293,9 @@ public class RerankingEngineTests
         Assert.Equal(2, result.Metrics.CandidateCount); // Should be limited to max candidates
         Assert.Equal(2, result.Results.Count);
 
-        _output.WriteLine($"Max candidates test: {result.Metrics.CandidateCount} candidates processed");
+        _output.WriteLine(
+            $"Max candidates test: {result.Metrics.CandidateCount} candidates processed"
+        );
     }
 
     [Fact]
@@ -294,7 +314,7 @@ public class RerankingEngineTests
                 Content = "Low confidence entity",
                 Score = 0.5f,
                 Confidence = 0.3f,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
             },
             new UnifiedSearchResult
             {
@@ -303,8 +323,8 @@ public class RerankingEngineTests
                 Content = "High confidence entity",
                 Score = 0.5f,
                 Confidence = 0.9f,
-                CreatedAt = DateTime.UtcNow
-            }
+                CreatedAt = DateTime.UtcNow,
+            },
         };
 
         // Act
@@ -318,10 +338,14 @@ public class RerankingEngineTests
         var highConfidenceResult = result.Results.First(r => r.Id == 2);
 
         // High confidence should have higher score
-        Assert.True(highConfidenceResult.Score > lowConfidenceResult.Score,
-            $"High confidence score ({highConfidenceResult.Score}) should be higher than low confidence score ({lowConfidenceResult.Score})");
+        Assert.True(
+            highConfidenceResult.Score > lowConfidenceResult.Score,
+            $"High confidence score ({highConfidenceResult.Score}) should be higher than low confidence score ({lowConfidenceResult.Score})"
+        );
 
-        _output.WriteLine($"Confidence boost test: High={highConfidenceResult.Score:F3}, Low={lowConfidenceResult.Score:F3}");
+        _output.WriteLine(
+            $"Confidence boost test: High={highConfidenceResult.Score:F3}, Low={lowConfidenceResult.Score:F3}"
+        );
     }
 
     [Fact]
@@ -340,7 +364,7 @@ public class RerankingEngineTests
                 Type = UnifiedResultType.Relationship, // Lower weight
                 Content = "Short",
                 Score = 1.0f,
-                CreatedAt = DateTime.UtcNow.AddDays(-60)
+                CreatedAt = DateTime.UtcNow.AddDays(-60),
             },
             new UnifiedSearchResult
             {
@@ -348,8 +372,8 @@ public class RerankingEngineTests
                 Type = UnifiedResultType.Memory, // Higher weight
                 Content = "This is a longer content that should score better for content quality",
                 Score = 0.8f,
-                CreatedAt = DateTime.UtcNow.AddDays(-1)
-            }
+                CreatedAt = DateTime.UtcNow.AddDays(-1),
+            },
         };
 
         // Act
@@ -362,13 +386,19 @@ public class RerankingEngineTests
         _output.WriteLine($"Position changes: {result.Metrics.PositionChanges}");
     }
 
-    private RerankingEngine CreateRerankingEngine(bool enableReranking = true, int maxCandidates = 100)
+    private RerankingEngine CreateRerankingEngine(
+        bool enableReranking = true,
+        int maxCandidates = 100
+    )
     {
         var options = CreateTestOptions(enableReranking, maxCandidates);
         return new RerankingEngine(options, _mockLogger.Object);
     }
 
-    private IOptions<MemoryServerOptions> CreateTestOptions(bool enableReranking = true, int maxCandidates = 100)
+    private IOptions<MemoryServerOptions> CreateTestOptions(
+        bool enableReranking = true,
+        int maxCandidates = 100
+    )
     {
         var memoryServerOptions = new MemoryServerOptions
         {
@@ -389,11 +419,11 @@ public class RerankingEngineTests
                 {
                     { UnifiedResultType.Memory, 1.0f },
                     { UnifiedResultType.Entity, 0.8f },
-                    { UnifiedResultType.Relationship, 0.7f }
+                    { UnifiedResultType.Relationship, 0.7f },
                 },
                 EnableRecencyBoost = true,
-                RecencyBoostDays = 30
-            }
+                RecencyBoostDays = 30,
+            },
         };
 
         return Options.Create(memoryServerOptions);
@@ -405,7 +435,7 @@ public class RerankingEngineTests
         {
             UserId = "test_user",
             AgentId = "test_agent",
-            RunId = "test_run"
+            RunId = "test_run",
         };
     }
 
@@ -415,17 +445,19 @@ public class RerankingEngineTests
 
         for (int i = 0; i < count; i++)
         {
-            results.Add(new UnifiedSearchResult
-            {
-                Id = i + 1,
-                Type = (UnifiedResultType)(i % 3), // Cycle through types
-                Content = $"Test content {i + 1}",
-                SecondaryContent = $"Secondary content {i + 1}",
-                Score = 0.5f + (i * 0.1f),
-                Source = "Test",
-                CreatedAt = DateTime.UtcNow.AddDays(-i),
-                Confidence = i % 2 == 0 ? 0.8f : null
-            });
+            results.Add(
+                new UnifiedSearchResult
+                {
+                    Id = i + 1,
+                    Type = (UnifiedResultType)(i % 3), // Cycle through types
+                    Content = $"Test content {i + 1}",
+                    SecondaryContent = $"Secondary content {i + 1}",
+                    Score = 0.5f + (i * 0.1f),
+                    Source = "Test",
+                    CreatedAt = DateTime.UtcNow.AddDays(-i),
+                    Confidence = i % 2 == 0 ? 0.8f : null,
+                }
+            );
         }
 
         return results;

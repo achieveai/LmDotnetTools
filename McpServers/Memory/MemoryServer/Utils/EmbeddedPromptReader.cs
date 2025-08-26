@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using System.Reflection;
+using AchieveAi.LmDotnetTools.LmCore.Prompts;
 
 namespace MemoryServer.Utils;
 
@@ -22,7 +22,12 @@ public class EmbeddedPromptReader : IPromptReader
         try
         {
             // Try to load from embedded resources first
-            if (EmbeddedResourceHelper.TryLoadEmbeddedResource("Prompts.graph-extraction.yaml", out var content))
+            if (
+                EmbeddedResourceHelper.TryLoadEmbeddedResource(
+                    "Prompts.graph-extraction.yaml",
+                    out var content
+                )
+            )
             {
                 _logger.LogDebug("Loading prompts from embedded resource");
                 using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
@@ -30,14 +35,20 @@ public class EmbeddedPromptReader : IPromptReader
             }
 
             // Fallback to file system
-            var promptPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prompts", "graph-extraction.yaml");
+            var promptPath = Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "Prompts",
+                "graph-extraction.yaml"
+            );
             if (File.Exists(promptPath))
             {
                 _logger.LogDebug("Loading prompts from file system at {PromptPath}", promptPath);
                 return new PromptReader(promptPath);
             }
 
-            throw new FileNotFoundException("Prompt file 'graph-extraction.yaml' not found in embedded resources or file system");
+            throw new FileNotFoundException(
+                "Prompt file 'graph-extraction.yaml' not found in embedded resources or file system"
+            );
         }
         catch (Exception ex)
         {

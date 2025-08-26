@@ -26,7 +26,11 @@ public interface IFunctionRegistryBuilder
     /// <param name="handler">The function handler</param>
     /// <param name="providerName">Optional provider name for the function</param>
     /// <returns>The builder for method chaining</returns>
-    IFunctionRegistryBuilder AddFunction(FunctionContract contract, Func<string, Task<string>> handler, string? providerName = null);
+    IFunctionRegistryBuilder AddFunction(
+        FunctionContract contract,
+        Func<string, Task<string>> handler,
+        string? providerName = null
+    );
 
     /// <summary>
     /// Sets the logger for the registry.
@@ -54,7 +58,9 @@ public interface IFunctionRegistryWithProviders : IFunctionRegistryBuilder
     /// </summary>
     /// <param name="handler">The custom conflict handler function</param>
     /// <returns>The builder for method chaining</returns>
-    IFunctionRegistryWithProviders WithConflictHandler(Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler);
+    IFunctionRegistryWithProviders WithConflictHandler(
+        Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler
+    );
 
     /// <summary>
     /// Configures function filtering for the registry.
@@ -92,7 +98,8 @@ public interface IConfiguredFunctionRegistry
     FunctionCallMiddleware BuildMiddleware(
         string? name = null,
         ILogger<FunctionCallMiddleware>? logger = null,
-        IToolResultCallback? resultCallback = null);
+        IToolResultCallback? resultCallback = null
+    );
 
     /// <summary>
     /// Generates comprehensive markdown documentation for all registered functions.

@@ -14,8 +14,11 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Go up to find the repository root (where you'd typically find .git, etc.)
         // This will work even if the test is run from different working directories
-        while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")) &&
-               !File.Exists(Path.Combine(currentDir, "LmDotnetTools.sln")))
+        while (
+            currentDir != null
+            && !Directory.Exists(Path.Combine(currentDir, ".git"))
+            && !File.Exists(Path.Combine(currentDir, "LmDotnetTools.sln"))
+        )
         {
             currentDir = Directory.GetParent(currentDir)?.FullName;
         }
@@ -25,7 +28,13 @@ public class AnthropicResponse_ToMessages_Tests
 
     private static string GetExampleFilePath(string filename)
     {
-        return Path.Combine(GetRepositoryRootPath(), "src", "AnthropicProvider", "Examples", filename);
+        return Path.Combine(
+            GetRepositoryRootPath(),
+            "src",
+            "AnthropicProvider",
+            "Examples",
+            filename
+        );
     }
 
     [Fact]
@@ -33,14 +42,19 @@ public class AnthropicResponse_ToMessages_Tests
     {
         // Arrange
         string exampleJson = File.ReadAllText(GetExampleFilePath("example_responses.json"));
-        var responses = JsonSerializer.Deserialize<AnthropicResponse[]>(exampleJson, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        }) ?? throw new InvalidOperationException("Failed to deserialize example responses");
+        var responses =
+            JsonSerializer.Deserialize<AnthropicResponse[]>(
+                exampleJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+            ) ?? throw new InvalidOperationException("Failed to deserialize example responses");
 
         // Act & Assert for first response - text and tool_use
         var response1 = responses[0];
-        var messages1 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(response1, "test-agent");
+        var messages1 =
+            AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(
+                response1,
+                "test-agent"
+            );
 
         // Assert basic properties - we now have 3 messages because of the additional UsageMessage
         Assert.Equal(3, messages1.Count);
@@ -52,7 +66,10 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.IsType<TextMessage>(messages1[0]);
         var textMessage = messages1[0] as TextMessage;
         Assert.NotNull(textMessage);
-        Assert.Contains("I'll help you list the files in the root and \"code\" directories", textMessage.Text);
+        Assert.Contains(
+            "I'll help you list the files in the root and \"code\" directories",
+            textMessage.Text
+        );
         Assert.False(textMessage.IsThinking);
 
         // Verify tool message content
@@ -73,7 +90,11 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Act & Assert for second response - thinking content
         var response2 = responses[1];
-        var messages2 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(response2, "test-agent");
+        var messages2 =
+            AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(
+                response2,
+                "test-agent"
+            );
 
         // Assert basic properties - we now have 4 messages because of the additional UsageMessage
         Assert.Equal(4, messages2.Count);
@@ -83,7 +104,10 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.IsType<TextMessage>(messages2[0]);
         var thinkingMessage = messages2[0] as TextMessage;
         Assert.NotNull(thinkingMessage);
-        Assert.Contains("The user wants to find files that are in the directory", thinkingMessage.Text);
+        Assert.Contains(
+            "The user wants to find files that are in the directory",
+            thinkingMessage.Text
+        );
         Assert.True(thinkingMessage.IsThinking);
 
         // Verify regular text message
@@ -123,7 +147,8 @@ public class AnthropicResponse_ToMessages_Tests
 
         foreach (var sseEvent in sseEvents)
         {
-            if (string.IsNullOrEmpty(sseEvent.Data)) continue;
+            if (string.IsNullOrEmpty(sseEvent.Data))
+                continue;
 
             try
             {
@@ -141,18 +166,22 @@ public class AnthropicResponse_ToMessages_Tests
                     {
                         // Create a text update message
                         var text = delta["text"]!.GetValue<string>();
-                        textDeltas.Add(new TextUpdateMessage
-                        {
-                            Text = text,
-                            Role = Role.Assistant,
-                            IsThinking = false
-                        });
+                        textDeltas.Add(
+                            new TextUpdateMessage
+                            {
+                                Text = text,
+                                Role = Role.Assistant,
+                                IsThinking = false,
+                            }
+                        );
                     }
                 }
 
                 // Check for tool_use content blocks
-                if (eventType == "content_block_start" &&
-                    jsonNode?["content_block"]?["type"]?.GetValue<string>() == "tool_use")
+                if (
+                    eventType == "content_block_start"
+                    && jsonNode?["content_block"]?["type"]?.GetValue<string>() == "tool_use"
+                )
                 {
                     var toolId = jsonNode["content_block"]?["id"]?.GetValue<string>();
                     var toolName = jsonNode["content_block"]?["name"]?.GetValue<string>();
@@ -163,9 +192,11 @@ public class AnthropicResponse_ToMessages_Tests
                 }
 
                 // Check for message_delta events with usage information
-                if (eventType == "message_delta" &&
-                    jsonNode?["delta"]?["stop_reason"] != null &&
-                    jsonNode?["usage"] != null)
+                if (
+                    eventType == "message_delta"
+                    && jsonNode?["delta"]?["stop_reason"] != null
+                    && jsonNode?["usage"] != null
+                )
                 {
                     // This would handle usage information if needed
                 }

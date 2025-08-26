@@ -28,16 +28,12 @@ public class MemoryServiceTests
 
         _options = new MemoryServerOptions
         {
-            Memory = new MemoryOptions
-            {
-                MaxMemoryLength = 10000,
-                DefaultSearchLimit = 10
-            },
+            Memory = new MemoryOptions { MaxMemoryLength = 10000, DefaultSearchLimit = 10 },
             Embedding = new EmbeddingOptions
             {
                 EnableVectorStorage = false, // Disable for unit tests by default
-                AutoGenerateEmbeddings = false
-            }
+                AutoGenerateEmbeddings = false,
+            },
         };
 
         var optionsMock = new Mock<IOptions<MemoryServerOptions>>();
@@ -46,17 +42,30 @@ public class MemoryServiceTests
         var mockGraphMemoryService = new Mock<IGraphMemoryService>();
 
         // Setup mock embedding manager
-        _mockEmbeddingManager.Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _mockEmbeddingManager
+            .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
         _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
 
-        _memoryService = new MemoryService(_mockRepository, mockGraphMemoryService.Object, _mockEmbeddingManager.Object, _mockLogger.Object, optionsMock.Object);
+        _memoryService = new MemoryService(
+            _mockRepository,
+            mockGraphMemoryService.Object,
+            _mockEmbeddingManager.Object,
+            _mockLogger.Object,
+            optionsMock.Object
+        );
     }
 
     [Theory]
-    [MemberData(nameof(MemoryTestDataFactory.GetMemoryContentTestCases), MemberType = typeof(MemoryTestDataFactory))]
+    [MemberData(
+        nameof(MemoryTestDataFactory.GetMemoryContentTestCases),
+        MemberType = typeof(MemoryTestDataFactory)
+    )]
     public async Task AddMemoryAsync_WithVariousContent_ValidatesCorrectly(
-        string content, bool shouldSucceed, string description)
+        string content,
+        bool shouldSucceed,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing AddMemoryAsync: {description}");
@@ -78,8 +87,9 @@ public class MemoryServiceTests
         }
         else
         {
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => _memoryService.AddMemoryAsync(content, sessionContext));
+            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+                _memoryService.AddMemoryAsync(content, sessionContext)
+            );
 
             Debug.WriteLine($"Expected exception thrown: {exception.Message}");
             Assert.DoesNotContain(nameof(_mockRepository.AddAsync), _mockRepository.MethodCalls);
@@ -89,9 +99,14 @@ public class MemoryServiceTests
     }
 
     [Theory]
-    [MemberData(nameof(MemoryTestDataFactory.GetMetadataTestCases), MemberType = typeof(MemoryTestDataFactory))]
+    [MemberData(
+        nameof(MemoryTestDataFactory.GetMetadataTestCases),
+        MemberType = typeof(MemoryTestDataFactory)
+    )]
     public async Task AddMemoryAsync_WithVariousMetadata_PreservesMetadataCorrectly(
-        Dictionary<string, object>? metadata, string description)
+        Dictionary<string, object>? metadata,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing AddMemoryAsync with metadata: {description}");
@@ -114,9 +129,16 @@ public class MemoryServiceTests
     }
 
     [Theory]
-    [MemberData(nameof(MemoryTestDataFactory.GetSearchQueryTestCases), MemberType = typeof(MemoryTestDataFactory))]
+    [MemberData(
+        nameof(MemoryTestDataFactory.GetSearchQueryTestCases),
+        MemberType = typeof(MemoryTestDataFactory)
+    )]
     public async Task SearchMemoriesAsync_WithVariousQueries_HandlesCorrectly(
-        string query, int limit, float scoreThreshold, string description)
+        string query,
+        int limit,
+        float scoreThreshold,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing SearchMemoriesAsync: {description}");
@@ -133,7 +155,12 @@ public class MemoryServiceTests
         }
 
         // Act
-        var results = await _memoryService.SearchMemoriesAsync(query, sessionContext, limit, scoreThreshold);
+        var results = await _memoryService.SearchMemoriesAsync(
+            query,
+            sessionContext,
+            limit,
+            scoreThreshold
+        );
         Debug.WriteLine($"Search returned {results.Count} results");
 
         // Assert
@@ -160,7 +187,9 @@ public class MemoryServiceTests
     [Theory]
     [MemberData(nameof(GetSessionContextTestData))]
     public async Task GetAllMemoriesAsync_WithDifferentSessions_RespectsSessionIsolation(
-        SessionContext sessionContext, string description)
+        SessionContext sessionContext,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing GetAllMemoriesAsync session isolation: {description}");
@@ -172,8 +201,12 @@ public class MemoryServiceTests
         var user1Context = SessionContext.ForUser("user1");
         var user2Context = SessionContext.ForUser("user2");
 
-        _mockRepository.AddTestMemory(MemoryTestDataFactory.CreateTestMemory(1, "User1 memory", "user1"));
-        _mockRepository.AddTestMemory(MemoryTestDataFactory.CreateTestMemory(2, "User2 memory", "user2"));
+        _mockRepository.AddTestMemory(
+            MemoryTestDataFactory.CreateTestMemory(1, "User1 memory", "user1")
+        );
+        _mockRepository.AddTestMemory(
+            MemoryTestDataFactory.CreateTestMemory(2, "User2 memory", "user2")
+        );
 
         // Act
         var results = await _memoryService.GetAllMemoriesAsync(sessionContext, 100, 0);
@@ -196,17 +229,26 @@ public class MemoryServiceTests
     [Theory]
     [MemberData(nameof(GetUpdateTestData))]
     public async Task UpdateMemoryAsync_WithVariousScenarios_HandlesCorrectly(
-        string newContent, bool shouldSucceed, string description)
+        string newContent,
+        bool shouldSucceed,
+        string description
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing UpdateMemoryAsync: {description}");
-        Debug.WriteLine($"New content length: {newContent.Length}, Should succeed: {shouldSucceed}");
+        Debug.WriteLine(
+            $"New content length: {newContent.Length}, Should succeed: {shouldSucceed}"
+        );
 
         var sessionContext = SessionContext.ForUser("test-user");
         _mockRepository.Reset();
 
         // Add a test memory
-        var originalMemory = MemoryTestDataFactory.CreateTestMemory(1, "Original content", "test-user");
+        var originalMemory = MemoryTestDataFactory.CreateTestMemory(
+            1,
+            "Original content",
+            "test-user"
+        );
         _mockRepository.AddTestMemory(originalMemory);
 
         // Act & Assert
@@ -221,8 +263,9 @@ public class MemoryServiceTests
         }
         else
         {
-            var exception = await Assert.ThrowsAsync<ArgumentException>(
-                () => _memoryService.UpdateMemoryAsync(1, newContent, sessionContext));
+            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+                _memoryService.UpdateMemoryAsync(1, newContent, sessionContext)
+            );
 
             Debug.WriteLine($"Expected exception thrown: {exception.Message}");
             Assert.DoesNotContain(nameof(_mockRepository.UpdateAsync), _mockRepository.MethodCalls);
@@ -267,7 +310,11 @@ public class MemoryServiceTests
         // Add multiple test memories
         for (int i = 1; i <= 3; i++)
         {
-            var memory = MemoryTestDataFactory.CreateTestMemory(i, $"Test content {i}", "test-user");
+            var memory = MemoryTestDataFactory.CreateTestMemory(
+                i,
+                $"Test content {i}",
+                "test-user"
+            );
             _mockRepository.AddTestMemory(memory);
         }
         Debug.WriteLine("Added 3 test memories");
@@ -297,7 +344,11 @@ public class MemoryServiceTests
         {
             MemoryTestDataFactory.CreateTestMemory(1, "Short", "test-user"), // 5 chars
             MemoryTestDataFactory.CreateTestMemory(2, "Medium length content", "test-user"), // 21 chars
-            MemoryTestDataFactory.CreateTestMemory(3, "This is a longer piece of content for testing", "test-user") // 45 chars
+            MemoryTestDataFactory.CreateTestMemory(
+                3,
+                "This is a longer piece of content for testing",
+                "test-user"
+            ), // 45 chars
         };
 
         foreach (var memory in memories)
@@ -308,7 +359,9 @@ public class MemoryServiceTests
 
         // Act
         var stats = await _memoryService.GetMemoryStatsAsync(sessionContext);
-        Debug.WriteLine($"Stats - Total: {stats.TotalMemories}, Size: {stats.TotalContentSize}, Avg: {stats.AverageContentLength}");
+        Debug.WriteLine(
+            $"Stats - Total: {stats.TotalMemories}, Size: {stats.TotalContentSize}, Avg: {stats.AverageContentLength}"
+        );
 
         // Assert
         Assert.NotNull(stats);
@@ -347,8 +400,16 @@ public class MemoryServiceTests
     public static IEnumerable<object[]> GetSessionContextTestData()
     {
         yield return new object[] { SessionContext.ForUser("user1"), "User-only session" };
-        yield return new object[] { SessionContext.ForAgent("user1", "agent1"), "User-agent session" };
-        yield return new object[] { SessionContext.ForRun("user1", "agent1", "run1"), "Full session context" };
+        yield return new object[]
+        {
+            SessionContext.ForAgent("user1", "agent1"),
+            "User-agent session",
+        };
+        yield return new object[]
+        {
+            SessionContext.ForRun("user1", "agent1", "run1"),
+            "Full session context",
+        };
     }
 
     public static IEnumerable<object[]> GetUpdateTestData()
@@ -358,6 +419,11 @@ public class MemoryServiceTests
         yield return new object[] { new string('A', 10000), true, "Maximum length content update" };
         yield return new object[] { "", false, "Empty content should fail" };
         yield return new object[] { "   ", false, "Whitespace-only content should fail" };
-        yield return new object[] { new string('A', 10001), false, "Over-length content should fail" };
+        yield return new object[]
+        {
+            new string('A', 10001),
+            false,
+            "Over-length content should fail",
+        };
     }
 }

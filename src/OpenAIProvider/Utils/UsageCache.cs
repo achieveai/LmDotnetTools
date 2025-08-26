@@ -22,11 +22,13 @@ public class UsageCache : IDisposable
     public UsageCache(int ttlSeconds = 300)
     {
         _defaultTtl = TimeSpan.FromSeconds(ttlSeconds);
-        _cache = new MemoryCache(new MemoryCacheOptions
-        {
-            // Set a reasonable size limit to prevent memory leaks
-            SizeLimit = 10000
-        });
+        _cache = new MemoryCache(
+            new MemoryCacheOptions
+            {
+                // Set a reasonable size limit to prevent memory leaks
+                SizeLimit = 10000,
+            }
+        );
     }
 
     /// <summary>
@@ -44,8 +46,9 @@ public class UsageCache : IDisposable
             // Mark as cached in the returned usage (use with pattern to avoid key collision)
             return cachedUsage with
             {
-                ExtraProperties = (cachedUsage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty)
-                    .SetItem("is_cached", true)
+                ExtraProperties = (
+                    cachedUsage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty
+                ).SetItem("is_cached", true),
             };
         }
 
@@ -65,16 +68,21 @@ public class UsageCache : IDisposable
         // Store with TTL, mark as not cached in stored version (cache flag is added on retrieval)
         var storedUsage = usage with
         {
-            ExtraProperties = (usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty)
-                .SetItem("is_cached", false)
+            ExtraProperties = (
+                usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty
+            ).SetItem("is_cached", false),
         };
 
-        _cache.Set(completionId, storedUsage, new MemoryCacheEntryOptions
-        {
-            AbsoluteExpirationRelativeToNow = _defaultTtl,
-            Size = 1, // Each entry counts as 1 unit toward SizeLimit
-            Priority = CacheItemPriority.Normal
-        });
+        _cache.Set(
+            completionId,
+            storedUsage,
+            new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = _defaultTtl,
+                Size = 1, // Each entry counts as 1 unit toward SizeLimit
+                Priority = CacheItemPriority.Normal,
+            }
+        );
     }
 
     /// <summary>
@@ -115,7 +123,7 @@ public class UsageCache : IDisposable
         return new CacheStatistics
         {
             TtlSeconds = (int)_defaultTtl.TotalSeconds,
-            IsDisposed = _disposed
+            IsDisposed = _disposed,
         };
     }
 

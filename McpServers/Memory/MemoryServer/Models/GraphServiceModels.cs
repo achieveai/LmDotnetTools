@@ -141,7 +141,7 @@ public enum SearchResultSource
     /// <summary>
     /// Result came from both traditional and graph methods.
     /// </summary>
-    Both
+    Both,
 }
 
 /// <summary>
@@ -157,7 +157,11 @@ public class GraphTraversalResult
     /// <summary>
     /// Entities found during traversal with their depth.
     /// </summary>
-    public List<(Entity Entity, Relationship? Relationship, int Depth)> TraversalResults { get; set; } = new();
+    public List<(
+        Entity Entity,
+        Relationship? Relationship,
+        int Depth
+    )> TraversalResults { get; set; } = new();
 
     /// <summary>
     /// All unique entities found.
@@ -367,7 +371,7 @@ public enum GraphValidationErrorType
     /// <summary>
     /// Constraint violation.
     /// </summary>
-    ConstraintViolation
+    ConstraintViolation,
 }
 
 /// <summary>
@@ -393,7 +397,7 @@ public enum GraphValidationWarningType
     /// <summary>
     /// Potential duplicate.
     /// </summary>
-    PotentialDuplicate
+    PotentialDuplicate,
 }
 
 /// <summary>
@@ -419,5 +423,5 @@ public enum ValidationSeverity
     /// <summary>
     /// Critical severity - system integrity at risk.
     /// </summary>
-    Critical
+    Critical,
 }

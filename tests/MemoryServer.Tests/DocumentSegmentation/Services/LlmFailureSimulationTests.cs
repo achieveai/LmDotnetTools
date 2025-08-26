@@ -1,10 +1,10 @@
+using System.Net;
+using System.Text.Json;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Moq.Protected;
-using System.Net;
-using System.Text.Json;
 using Xunit;
 
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
@@ -28,7 +28,7 @@ public class LlmFailureSimulationTests
         {
             FailureThreshold = 3,
             TimeoutMs = 100, // Much shorter for fast fail-fast behavior
-            MaxTimeoutMs = 1000
+            MaxTimeoutMs = 1000,
         };
 
         _retryConfig = new RetryConfiguration
@@ -37,14 +37,14 @@ public class LlmFailureSimulationTests
             BaseDelayMs = 10, // Much shorter for testing
             ExponentialFactor = 1.5, // Reduced exponential factor
             MaxDelayMs = 100, // Much shorter max delay
-            JitterPercent = 0.0 // No jitter for predictable timing
+            JitterPercent = 0.0, // No jitter for predictable timing
         };
 
         _degradationConfig = new GracefulDegradationConfiguration
         {
             FallbackTimeoutMs = 5000,
             RuleBasedQualityScore = 0.7,
-            RuleBasedMaxProcessingMs = 10000
+            RuleBasedMaxProcessingMs = 10000,
         };
     }
 
@@ -58,20 +58,24 @@ public class LlmFailureSimulationTests
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ThrowsAsync(new TaskCanceledException("Network timeout"));
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ThrowsAsync(new TaskCanceledException("Network timeout"));
 
         var resilience = CreateResilienceService(mockHandler.Object);
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
-          () => SimulateLlmCall(mockHandler.Object, "timeout-test"),
-          () => Task.FromResult("rule-based-result"),
-          "network-timeout-test");
+            () => SimulateLlmCall(mockHandler.Object, "timeout-test"),
+            () => Task.FromResult("rule-based-result"),
+            "network-timeout-test"
+        );
 
         stopwatch.Stop();
 
@@ -99,33 +103,37 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ReturnsAsync(() =>
-          {
-              callCount++;
-              if (callCount <= 3) // First 3 calls return 429
-              {
-                  var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
-                  response.Headers.Add("Retry-After", "2"); // 2 seconds
-                  return response;
-              }
-              // 4th call succeeds
-              return new HttpResponseMessage(HttpStatusCode.OK)
-              {
-                  Content = new StringContent("{\"result\": \"success-after-retries\"}")
-              };
-          });
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(() =>
+            {
+                callCount++;
+                if (callCount <= 3) // First 3 calls return 429
+                {
+                    var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+                    response.Headers.Add("Retry-After", "2"); // 2 seconds
+                    return response;
+                }
+                // 4th call succeeds
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"result\": \"success-after-retries\"}"),
+                };
+            });
 
         var resilience = CreateResilienceService(mockHandler.Object);
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
-          () => SimulateLlmCall(mockHandler.Object, "rate-limit-test"),
-          () => Task.FromResult("fallback-result"),
-          "rate-limiting-test");
+            () => SimulateLlmCall(mockHandler.Object, "rate-limit-test"),
+            () => Task.FromResult("fallback-result"),
+            "rate-limiting-test"
+        );
 
         // Assert - AC-1.2 requirements
         Assert.True(result.Success);
@@ -153,26 +161,30 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ReturnsAsync(() =>
-          {
-              callCount++;
-              return new HttpResponseMessage(HttpStatusCode.Unauthorized)
-              {
-                  Content = new StringContent("{\"error\": \"Invalid API key\"}")
-              };
-          });
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(() =>
+            {
+                callCount++;
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent("{\"error\": \"Invalid API key\"}"),
+                };
+            });
 
         var resilience = CreateResilienceService(mockHandler.Object);
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
-          () => SimulateLlmCall(mockHandler.Object, "auth-test"),
-          () => Task.FromResult("fallback-result"),
-          "authentication-error-test");
+            () => SimulateLlmCall(mockHandler.Object, "auth-test"),
+            () => Task.FromResult("fallback-result"),
+            "authentication-error-test"
+        );
 
         // Assert - AC-1.3 requirements
         Assert.True(result.Success); // Fallback succeeded
@@ -197,26 +209,30 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ReturnsAsync(() =>
-          {
-              callCount++;
-              return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
-              {
-                  Content = new StringContent("{\"error\": \"Service temporarily unavailable\"}")
-              };
-          });
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(() =>
+            {
+                callCount++;
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("{\"error\": \"Service temporarily unavailable\"}"),
+                };
+            });
 
         var resilience = CreateResilienceService(mockHandler.Object);
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
-          () => SimulateLlmCall(mockHandler.Object, "service-unavailable-test"),
-          () => Task.FromResult("fallback-result"),
-          "service-unavailable-test");
+            () => SimulateLlmCall(mockHandler.Object, "service-unavailable-test"),
+            () => Task.FromResult("fallback-result"),
+            "service-unavailable-test"
+        );
 
         // Assert - AC-1.4 requirements
         Assert.True(result.Success); // Fallback succeeded
@@ -242,26 +258,30 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ReturnsAsync(() =>
-          {
-              callCount++;
-              return new HttpResponseMessage(HttpStatusCode.OK)
-              {
-                  Content = new StringContent("{ invalid json structure missing closing brace")
-              };
-          });
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(() =>
+            {
+                callCount++;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{ invalid json structure missing closing brace"),
+                };
+            });
 
         var resilience = CreateResilienceService(mockHandler.Object);
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
-          () => SimulateLlmCallWithParsing(mockHandler.Object, "malformed-test"),
-          () => Task.FromResult("fallback-result"),
-          "malformed-response-test");
+            () => SimulateLlmCallWithParsing(mockHandler.Object, "malformed-test"),
+            () => Task.FromResult("fallback-result"),
+            "malformed-response-test"
+        );
 
         // Assert - AC-1.5 requirements
         Assert.True(result.Success); // Fallback succeeded, no exceptions bubbled up
@@ -283,19 +303,23 @@ public class LlmFailureSimulationTests
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ThrowsAsync(new HttpRequestException("Unable to connect to the remote server"));
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ThrowsAsync(new HttpRequestException("Unable to connect to the remote server"));
 
         var resilience = CreateResilienceService(mockHandler.Object);
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
-          () => SimulateLlmCall(mockHandler.Object, "connection-failure-test"),
-          () => Task.FromResult("fallback-result"),
-          "connection-failure-test");
+            () => SimulateLlmCall(mockHandler.Object, "connection-failure-test"),
+            () => Task.FromResult("fallback-result"),
+            "connection-failure-test"
+        );
 
         // Assert - AC-1.6 requirements
         Assert.True(result.Success); // Fallback succeeded
@@ -316,15 +340,29 @@ public class LlmFailureSimulationTests
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ThrowsAsync(new HttpRequestException("503 Service Unavailable"));
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ThrowsAsync(new HttpRequestException("503 Service Unavailable"));
 
-        var circuitBreaker = new CircuitBreakerService(_circuitBreakerConfig, Mock.Of<ILogger<CircuitBreakerService>>());
-        var retryPolicy = new RetryPolicyService(_retryConfig, Mock.Of<ILogger<RetryPolicyService>>());
-        var resilience = new ResilienceService(circuitBreaker, retryPolicy, _degradationConfig, _mockLogger.Object);
+        var circuitBreaker = new CircuitBreakerService(
+            _circuitBreakerConfig,
+            Mock.Of<ILogger<CircuitBreakerService>>()
+        );
+        var retryPolicy = new RetryPolicyService(
+            _retryConfig,
+            Mock.Of<ILogger<RetryPolicyService>>()
+        );
+        var resilience = new ResilienceService(
+            circuitBreaker,
+            retryPolicy,
+            _degradationConfig,
+            _mockLogger.Object
+        );
 
         // Act - Execute enough failures to open circuit breaker
         var results = new List<ResilienceOperationResult<string>>();
@@ -334,13 +372,17 @@ public class LlmFailureSimulationTests
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             var result = await resilience.ExecuteWithResilienceAsync<string>(
-              () => SimulateLlmCall(mockHandler.Object, $"failure-{i}"),
-              () => Task.FromResult($"fallback-{i}"), // Simple, fast fallback
-              "circuit-breaker-test"); // Same operation name for all calls
+                () => SimulateLlmCall(mockHandler.Object, $"failure-{i}"),
+                () => Task.FromResult($"fallback-{i}"), // Simple, fast fallback
+                "circuit-breaker-test"
+            ); // Same operation name for all calls
 
             stopwatch.Stop();
             // Override the processing time to use our more accurate measurement
-            result = result with { ProcessingTimeMs = stopwatch.Elapsed.TotalMilliseconds };
+            result = result with
+            {
+                ProcessingTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+            };
             results.Add(result);
 
             // Brief delay between calls
@@ -348,11 +390,14 @@ public class LlmFailureSimulationTests
         }
 
         // Assert
-        Assert.All(results, result =>
-        {
-            Assert.True(result.Success); // All should succeed via fallback
-            Assert.True(result.DegradedMode);
-        });
+        Assert.All(
+            results,
+            result =>
+            {
+                Assert.True(result.Success); // All should succeed via fallback
+                Assert.True(result.DegradedMode);
+            }
+        );
 
         // Later calls should be faster (circuit open, immediate fallback)
         var earlyResults = results.Take(_circuitBreakerConfig.FailureThreshold).ToList();
@@ -365,8 +410,10 @@ public class LlmFailureSimulationTests
         var avgEarlyTime = earlyResults.Average(r => r.ProcessingTimeMs);
         var avgLaterTime = laterResults.Average(r => r.ProcessingTimeMs);
 
-        Assert.True(avgLaterTime < avgEarlyTime * 1.01,
-          $"Later calls should be faster. Early: {avgEarlyTime}ms, Later: {avgLaterTime}ms. Circuit state: {circuitState.State}, Failures: {circuitState.FailureCount}");
+        Assert.True(
+            avgLaterTime < avgEarlyTime * 1.01,
+            $"Later calls should be faster. Early: {avgEarlyTime}ms, Later: {avgLaterTime}ms. Circuit state: {circuitState.State}, Failures: {circuitState.FailureCount}"
+        );
     }
 
     /// <summary>
@@ -379,8 +426,9 @@ public class LlmFailureSimulationTests
     [InlineData("401", 10000)] // Auth errors should fail fast
     [InlineData("malformed", 30000)] // Parsing errors with retries
     public async Task ErrorHandling_PerformanceRequirements_ShouldMeetTimeLimits(
-      string errorType,
-      int maxTimeMs)
+        string errorType,
+        int maxTimeMs
+    )
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
@@ -391,16 +439,19 @@ public class LlmFailureSimulationTests
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
-          () => SimulateLlmCall(mockHandler.Object, $"performance-test-{errorType}"),
-          () => Task.FromResult("fallback-result"),
-          $"performance-test-{errorType}");
+            () => SimulateLlmCall(mockHandler.Object, $"performance-test-{errorType}"),
+            () => Task.FromResult("fallback-result"),
+            $"performance-test-{errorType}"
+        );
 
         stopwatch.Stop();
 
         // Assert
         Assert.True(result.Success); // Fallback should succeed
-        Assert.True(stopwatch.ElapsedMilliseconds < maxTimeMs,
-          $"Error type {errorType} took {stopwatch.ElapsedMilliseconds}ms, should be < {maxTimeMs}ms");
+        Assert.True(
+            stopwatch.ElapsedMilliseconds < maxTimeMs,
+            $"Error type {errorType} took {stopwatch.ElapsedMilliseconds}ms, should be < {maxTimeMs}ms"
+        );
     }
 
     #region Helper Methods
@@ -412,10 +463,21 @@ public class LlmFailureSimulationTests
 
     private ResilienceService CreateResilienceService(HttpMessageHandler handler)
     {
-        var circuitBreaker = new CircuitBreakerService(_circuitBreakerConfig, Mock.Of<ILogger<CircuitBreakerService>>());
-        var retryPolicy = new RetryPolicyService(_retryConfig, Mock.Of<ILogger<RetryPolicyService>>());
+        var circuitBreaker = new CircuitBreakerService(
+            _circuitBreakerConfig,
+            Mock.Of<ILogger<CircuitBreakerService>>()
+        );
+        var retryPolicy = new RetryPolicyService(
+            _retryConfig,
+            Mock.Of<ILogger<RetryPolicyService>>()
+        );
 
-        return new ResilienceService(circuitBreaker, retryPolicy, _degradationConfig, _mockLogger.Object);
+        return new ResilienceService(
+            circuitBreaker,
+            retryPolicy,
+            _degradationConfig,
+            _mockLogger.Object
+        );
     }
 
     private async Task<string> SimulateLlmCall(HttpMessageHandler handler, string operationId)
@@ -432,7 +494,10 @@ public class LlmFailureSimulationTests
         return content;
     }
 
-    private async Task<string> SimulateLlmCallWithParsing(HttpMessageHandler handler, string operationId)
+    private async Task<string> SimulateLlmCallWithParsing(
+        HttpMessageHandler handler,
+        string operationId
+    )
     {
         using var client = new HttpClient(handler);
         var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
@@ -458,21 +523,26 @@ public class LlmFailureSimulationTests
 
     private void ConfigureMockForErrorType(Mock<HttpMessageHandler> mockHandler, string errorType)
     {
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ReturnsAsync(() => errorType switch
-          {
-              "timeout" => throw new TaskCanceledException("Network timeout"),
-              "503" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
-              "401" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
-              "malformed" => new HttpResponseMessage(HttpStatusCode.OK)
-              {
-                  Content = new StringContent("{ invalid json")
-              },
-              _ => throw new HttpRequestException("Generic error")
-          });
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(() =>
+                errorType switch
+                {
+                    "timeout" => throw new TaskCanceledException("Network timeout"),
+                    "503" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+                    "401" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+                    "malformed" => new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{ invalid json"),
+                    },
+                    _ => throw new HttpRequestException("Generic error"),
+                }
+            );
     }
 
     private void VerifyLogLevel(LogLevel expectedLevel)
@@ -480,13 +550,16 @@ public class LlmFailureSimulationTests
         // In a real implementation, we would verify specific log calls
         // For now, we'll just verify that the logger was used
         _mockLogger.Verify(
-          x => x.Log(
-            It.Is<LogLevel>(l => l >= expectedLevel),
-            It.IsAny<EventId>(),
-            It.Is<It.IsAnyType>((v, t) => true),
-            It.IsAny<Exception>(),
-            It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-          Times.AtLeastOnce);
+            x =>
+                x.Log(
+                    It.Is<LogLevel>(l => l >= expectedLevel),
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => true),
+                    It.IsAny<Exception>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.AtLeastOnce
+        );
     }
 
     #endregion
@@ -501,15 +574,15 @@ public class LlmFailureSimulationTests
         // Arrange - Mixed scenario: timeouts, rate limits, success, failures
         var scenarios = new[]
         {
-      ("timeout", "timeout"),
-      ("rate-limit", "rate-limit"),
-      ("success", "success"),
-      ("auth-error", "auth-error"),
-      ("service-down", "service-down"),
-      ("success", "success"),
-      ("malformed", "malformed"),
-      ("success", "success")
-    };
+            ("timeout", "timeout"),
+            ("rate-limit", "rate-limit"),
+            ("success", "success"),
+            ("auth-error", "auth-error"),
+            ("service-down", "service-down"),
+            ("success", "success"),
+            ("malformed", "malformed"),
+            ("success", "success"),
+        };
 
         var mockHandler = CreateMockHttpHandler();
         var resilience = CreateResilienceService(mockHandler.Object);
@@ -518,32 +591,35 @@ public class LlmFailureSimulationTests
         // Track which scenario we're on
         var currentScenarioIndex = 0;
 
-        mockHandler.Protected()
-          .Setup<Task<HttpResponseMessage>>("SendAsync",
-            ItExpr.IsAny<HttpRequestMessage>(),
-            ItExpr.IsAny<CancellationToken>())
-          .ReturnsAsync(() =>
-          {
-              // Use the current scenario for all retries of the same operation
-              var (scenarioType, _) = scenarios[currentScenarioIndex % scenarios.Length];
+        mockHandler
+            .Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(() =>
+            {
+                // Use the current scenario for all retries of the same operation
+                var (scenarioType, _) = scenarios[currentScenarioIndex % scenarios.Length];
 
-              return scenarioType switch
-              {
-                  "timeout" => throw new TaskCanceledException("Network timeout"),
-                  "auth-error" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
-                  "service-down" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
-                  "rate-limit" => new HttpResponseMessage(HttpStatusCode.TooManyRequests),
-                  "malformed" => new HttpResponseMessage(HttpStatusCode.OK)
-                  {
-                      Content = new StringContent("{ invalid json")
-                  },
-                  "success" => new HttpResponseMessage(HttpStatusCode.OK)
-                  {
-                      Content = new StringContent("{\"result\": \"success\"}")
-                  },
-                  _ => throw new InvalidOperationException("Unknown scenario")
-              };
-          });
+                return scenarioType switch
+                {
+                    "timeout" => throw new TaskCanceledException("Network timeout"),
+                    "auth-error" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+                    "service-down" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+                    "rate-limit" => new HttpResponseMessage(HttpStatusCode.TooManyRequests),
+                    "malformed" => new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{ invalid json"),
+                    },
+                    "success" => new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{\"result\": \"success\"}"),
+                    },
+                    _ => throw new InvalidOperationException("Unknown scenario"),
+                };
+            });
 
         // Act - Execute all scenarios
         for (int i = 0; i < scenarios.Length; i++)
@@ -552,11 +628,16 @@ public class LlmFailureSimulationTests
             currentScenarioIndex = i; // Set the scenario index before each operation
 
             var result = await resilience.ExecuteWithResilienceAsync<string>(
-              () => scenarioName == "malformed"
-                ? SimulateLlmCallWithParsing(mockHandler.Object, $"scenario-{i}-{scenarioName}")
-                : SimulateLlmCall(mockHandler.Object, $"scenario-{i}-{scenarioName}"),
-              () => Task.FromResult($"fallback-{i}"),
-              $"end-to-end-test-{i}");
+                () =>
+                    scenarioName == "malformed"
+                        ? SimulateLlmCallWithParsing(
+                            mockHandler.Object,
+                            $"scenario-{i}-{scenarioName}"
+                        )
+                        : SimulateLlmCall(mockHandler.Object, $"scenario-{i}-{scenarioName}"),
+                () => Task.FromResult($"fallback-{i}"),
+                $"end-to-end-test-{i}"
+            );
 
             results.Add(result);
             await Task.Delay(100); // Brief delay between scenarios
@@ -577,12 +658,16 @@ public class LlmFailureSimulationTests
         {
             var result = results[i];
             var scenario = scenarios[i];
-            var debugMessage = $"Scenario {i}: {scenario.Item1} -> Success: {result.Success}, DegradedMode: {result.DegradedMode}, Strategy: {result.StrategyUsed}";
+            var debugMessage =
+                $"Scenario {i}: {scenario.Item1} -> Success: {result.Success}, DegradedMode: {result.DegradedMode}, Strategy: {result.StrategyUsed}";
             // This would be logged in a real test environment
         }
 
-        Assert.True(fallbackOps.Count >= 4, $"Should have at least 4 fallback operations, but got {fallbackOps.Count}. " +
-                                           $"Fallback scenarios: {string.Join(", ", fallbackOps.Select((r, i) => $"{scenarios[results.IndexOf(r)].Item1}"))}");
+        Assert.True(
+            fallbackOps.Count >= 4,
+            $"Should have at least 4 fallback operations, but got {fallbackOps.Count}. "
+                + $"Fallback scenarios: {string.Join(", ", fallbackOps.Select((r, i) => $"{scenarios[results.IndexOf(r)].Item1}"))}"
+        );
 
         // Verify metrics collection
         var metrics = resilience.GetErrorMetrics();
@@ -591,8 +676,10 @@ public class LlmFailureSimulationTests
 
         // Health status should reflect mixed results
         var health = resilience.GetHealthStatus();
-        Assert.True(health.FallbackUsageRate > 0 && health.FallbackUsageRate < 100,
-          "Fallback usage rate should be between 0 and 100%");
+        Assert.True(
+            health.FallbackUsageRate > 0 && health.FallbackUsageRate < 100,
+            "Fallback usage rate should be between 0 and 100%"
+        );
     }
 }
 
@@ -601,5 +688,6 @@ public class LlmFailureSimulationTests
 /// </summary>
 public static class TestExtensions
 {
-    public static Type GetExceptionType<T>() where T : Exception => typeof(T);
+    public static Type GetExceptionType<T>()
+        where T : Exception => typeof(T);
 }

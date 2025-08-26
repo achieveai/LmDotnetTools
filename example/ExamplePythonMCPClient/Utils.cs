@@ -42,14 +42,23 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         public static void LoadEnvironmentVariables()
         {
             var curPath = Environment.CurrentDirectory;
-            while (curPath != null && !string.IsNullOrEmpty(curPath) && !File.Exists(Path.Combine(curPath, ".env")))
+            while (
+                curPath != null
+                && !string.IsNullOrEmpty(curPath)
+                && !File.Exists(Path.Combine(curPath, ".env"))
+            )
             {
                 curPath = Path.GetDirectoryName(curPath);
             }
 
-            _ = curPath != null && !string.IsNullOrEmpty(curPath) && File.Exists(Path.Combine(curPath, ".env"))
-                ? DotNetEnv.Env.Load(Path.Combine(curPath, ".env"))
-                : throw new FileNotFoundException(".env file not found in the current directory or any parent directories.");
+            _ =
+                curPath != null
+                && !string.IsNullOrEmpty(curPath)
+                && File.Exists(Path.Combine(curPath, ".env"))
+                    ? DotNetEnv.Env.Load(Path.Combine(curPath, ".env"))
+                    : throw new FileNotFoundException(
+                        ".env file not found in the current directory or any parent directories."
+                    );
         }
 
         /// <summary>
@@ -63,8 +72,10 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             while (!string.IsNullOrEmpty(currentDirectory))
             {
                 // Check for a marker file or folder that identifies the workspace root
-                if (Directory.Exists(Path.Combine(currentDirectory, ".git")) ||
-                        Directory.GetFiles(currentDirectory, "*.sln").Any())
+                if (
+                    Directory.Exists(Path.Combine(currentDirectory, ".git"))
+                    || Directory.GetFiles(currentDirectory, "*.sln").Any()
+                )
                 {
                     return currentDirectory;
                 }

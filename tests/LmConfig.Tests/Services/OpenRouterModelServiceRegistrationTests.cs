@@ -1,7 +1,7 @@
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Services;
 
@@ -18,11 +18,8 @@ public class OpenRouterModelServiceRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpClient();
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -31,7 +28,7 @@ public class OpenRouterModelServiceRegistrationTests
         // Assert
         var openRouterService = serviceProvider.GetService<OpenRouterModelService>();
         Assert.NotNull(openRouterService);
-        
+
         // Verify it's registered as singleton
         var openRouterService2 = serviceProvider.GetService<OpenRouterModelService>();
         Assert.Same(openRouterService, openRouterService2);
@@ -44,11 +41,8 @@ public class OpenRouterModelServiceRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpClient();
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -57,11 +51,11 @@ public class OpenRouterModelServiceRegistrationTests
         // Assert
         var openRouterService = serviceProvider.GetRequiredService<OpenRouterModelService>();
         Assert.NotNull(openRouterService);
-        
+
         // Verify dependencies are injected
         var logger = serviceProvider.GetRequiredService<ILogger<OpenRouterModelService>>();
         Assert.NotNull(logger);
-        
+
         var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
         Assert.NotNull(httpClientFactory);
     }
@@ -73,27 +67,24 @@ public class OpenRouterModelServiceRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpClient();
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         services.AddLmConfig(appConfig);
         var serviceProvider = services.BuildServiceProvider();
 
         // Act
         var openRouterService = serviceProvider.GetRequiredService<OpenRouterModelService>();
-        
+
         // Assert - Service should be functional (this will use cache or return empty list)
         var result = await openRouterService.GetModelConfigsAsync();
         Assert.NotNull(result);
-        
+
         // Verify cache info functionality
         var cacheInfo = openRouterService.GetCacheInfo();
         Assert.NotNull(cacheInfo);
         Assert.NotNull(cacheInfo.FilePath);
-        
+
         // Verify refresh functionality doesn't throw due to DI issues
         try
         {
@@ -114,22 +105,19 @@ public class OpenRouterModelServiceRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpClient();
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         // Act - Register multiple times (should not cause issues)
         services.AddLmConfig(appConfig);
         services.AddLmConfig(appConfig);
-        
+
         var serviceProvider = services.BuildServiceProvider();
 
         // Assert
         var openRouterService = serviceProvider.GetRequiredService<OpenRouterModelService>();
         Assert.NotNull(openRouterService);
-        
+
         // Should still be singleton
         var openRouterService2 = serviceProvider.GetRequiredService<OpenRouterModelService>();
         Assert.Same(openRouterService, openRouterService2);
@@ -141,18 +129,15 @@ public class OpenRouterModelServiceRegistrationTests
         // Arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        
+
         // Add custom HttpClient configuration
         services.AddHttpClient<OpenRouterModelService>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(60);
             client.DefaultRequestHeaders.Add("User-Agent", "CustomTestAgent");
         });
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -161,7 +146,7 @@ public class OpenRouterModelServiceRegistrationTests
         // Assert
         var openRouterService = serviceProvider.GetRequiredService<OpenRouterModelService>();
         Assert.NotNull(openRouterService);
-        
+
         // Verify the service can be created (HttpClient configuration is internal)
         var cacheInfo = openRouterService.GetCacheInfo();
         Assert.NotNull(cacheInfo);
@@ -174,11 +159,8 @@ public class OpenRouterModelServiceRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         // Note: Not adding HttpClient explicitly
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         // Act
         services.AddLmConfig(appConfig);
@@ -196,17 +178,16 @@ public class OpenRouterModelServiceRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpClient();
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         // Act
         services.AddLmConfig(appConfig);
 
         // Assert
-        var serviceDescriptor = services.FirstOrDefault(s => s.ServiceType == typeof(OpenRouterModelService));
+        var serviceDescriptor = services.FirstOrDefault(s =>
+            s.ServiceType == typeof(OpenRouterModelService)
+        );
         Assert.NotNull(serviceDescriptor);
         Assert.Equal(ServiceLifetime.Singleton, serviceDescriptor.Lifetime);
     }
@@ -217,7 +198,8 @@ public class OpenRouterModelServiceRegistrationTests
         // Test different AddLmConfig overloads
         var testCases = new[]
         {
-            () => {
+            () =>
+            {
                 var services = new ServiceCollection();
                 services.AddLogging();
                 services.AddHttpClient();
@@ -225,16 +207,18 @@ public class OpenRouterModelServiceRegistrationTests
                 services.AddLmConfig(appConfig);
                 return services.BuildServiceProvider();
             },
-            () => {
+            () =>
+            {
                 var services = new ServiceCollection();
                 services.AddLogging();
                 services.AddHttpClient();
-                services.AddLmConfig(options => {
+                services.AddLmConfig(options =>
+                {
                     options.AppConfig = new AppConfig { Models = new List<ModelConfig>() };
                     options.RegisterAsDefaultAgent = false;
                 });
                 return services.BuildServiceProvider();
-            }
+            },
         };
 
         foreach (var createServiceProvider in testCases)
@@ -255,11 +239,8 @@ public class OpenRouterModelServiceRegistrationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpClient();
-        
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>()
-        };
+
+        var appConfig = new AppConfig { Models = new List<ModelConfig>() };
 
         services.AddLmConfig(appConfig);
         var serviceProvider = services.BuildServiceProvider();

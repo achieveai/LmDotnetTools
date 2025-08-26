@@ -255,5 +255,5 @@ public enum ErrorSource
     /// <summary>
     /// Error from data serialization/deserialization
     /// </summary>
-    Serialization
+    Serialization,
 }

@@ -21,14 +21,14 @@ public record RerankRequest
     public required string Query { get; init; }
 
     /// <summary>
-    /// A list of documents to be ranked. For optimal performance, 
+    /// A list of documents to be ranked. For optimal performance,
     /// avoid sending more than 1,000 documents in a single request.
     /// </summary>
     [JsonPropertyName("documents")]
     public required ImmutableList<string> Documents { get; init; }
 
     /// <summary>
-    /// Limits the number of returned rerank results to the specified value. 
+    /// Limits the number of returned rerank results to the specified value.
     /// If not specified, all rerank results will be returned.
     /// </summary>
     [JsonPropertyName("top_n")]

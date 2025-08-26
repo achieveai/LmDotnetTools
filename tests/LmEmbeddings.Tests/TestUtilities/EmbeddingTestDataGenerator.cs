@@ -20,28 +20,27 @@ public static class EmbeddingTestDataGenerator
     public static string CreateValidEmbeddingResponse(
         int embeddingCount,
         int embeddingSize = 1536,
-        string model = "test-model")
+        string model = "test-model"
+    )
     {
         var embeddings = new List<object>();
         for (int i = 0; i < embeddingCount; i++)
         {
-            embeddings.Add(new
-            {
-                Vector = GenerateTestEmbeddingArray(embeddingSize),
-                Index = i,
-                Text = $"input_text_{i}"
-            });
+            embeddings.Add(
+                new
+                {
+                    Vector = GenerateTestEmbeddingArray(embeddingSize),
+                    Index = i,
+                    Text = $"input_text_{i}",
+                }
+            );
         }
 
         var response = new
         {
             Embeddings = embeddings,
             Model = model,
-            Usage = new
-            {
-                PromptTokens = embeddingCount * 10,
-                TotalTokens = embeddingCount * 10
-            }
+            Usage = new { PromptTokens = embeddingCount * 10, TotalTokens = embeddingCount * 10 },
         };
 
         return JsonSerializer.Serialize(response);
@@ -55,30 +54,27 @@ public static class EmbeddingTestDataGenerator
     /// <returns>JSON string representing a valid rerank response</returns>
     public static string CreateValidRerankResponse(
         int documentCount,
-        string model = "test-rerank-model")
+        string model = "test-rerank-model"
+    )
     {
         var results = new List<object>();
         for (int i = 0; i < documentCount; i++)
         {
-            results.Add(new
-            {
-                index = i,
-                relevance_score = Math.Round(DefaultRandom.NextDouble(), 4),
-                document = new
+            results.Add(
+                new
                 {
-                    text = $"document_text_{i}"
+                    index = i,
+                    relevance_score = Math.Round(DefaultRandom.NextDouble(), 4),
+                    document = new { text = $"document_text_{i}" },
                 }
-            });
+            );
         }
 
         var response = new
         {
             results = results,
             model = model,
-            usage = new
-            {
-                total_tokens = documentCount * 5
-            }
+            usage = new { total_tokens = documentCount * 5 },
         };
 
         return JsonSerializer.Serialize(response);
@@ -145,7 +141,8 @@ public static class EmbeddingTestDataGenerator
         var documents = new string[count];
         for (int i = 0; i < count; i++)
         {
-            documents[i] = $"{prefix}_{i} - This is a test document with some content for testing purposes.";
+            documents[i] =
+                $"{prefix}_{i} - This is a test document with some content for testing purposes.";
         }
         return documents;
     }
@@ -160,7 +157,8 @@ public static class EmbeddingTestDataGenerator
     public static string CreateErrorResponse(
         string errorCode,
         string errorMessage,
-        string errorType = "invalid_request_error")
+        string errorType = "invalid_request_error"
+    )
     {
         var response = new
         {
@@ -168,8 +166,8 @@ public static class EmbeddingTestDataGenerator
             {
                 message = errorMessage,
                 type = errorType,
-                code = errorCode
-            }
+                code = errorCode,
+            },
         };
 
         return JsonSerializer.Serialize(response);
@@ -184,7 +182,8 @@ public static class EmbeddingTestDataGenerator
         return CreateErrorResponse(
             "rate_limit_exceeded",
             "Rate limit exceeded. Please try again later.",
-            "rate_limit_error");
+            "rate_limit_error"
+        );
     }
 
     /// <summary>
@@ -196,7 +195,8 @@ public static class EmbeddingTestDataGenerator
         return CreateErrorResponse(
             "invalid_api_key",
             "Invalid API key provided.",
-            "authentication_error");
+            "authentication_error"
+        );
     }
 
     /// <summary>
@@ -211,7 +211,7 @@ public static class EmbeddingTestDataGenerator
             new object[] { 3, 1536, "Multiple embeddings with standard size" },
             new object[] { 1, 512, "Single embedding with small size" },
             new object[] { 5, 768, "Multiple embeddings with custom size" },
-            new object[] { 10, 1536, "Large batch with standard size" }
+            new object[] { 10, 1536, "Large batch with standard size" },
         };
     }
 
@@ -223,10 +223,20 @@ public static class EmbeddingTestDataGenerator
     {
         return new List<object[]>
         {
-            new object[] { "rate_limit_exceeded", "Rate limit exceeded", "Rate limit error scenario" },
+            new object[]
+            {
+                "rate_limit_exceeded",
+                "Rate limit exceeded",
+                "Rate limit error scenario",
+            },
             new object[] { "invalid_api_key", "Invalid API key", "Authentication error scenario" },
             new object[] { "model_not_found", "Model not found", "Model error scenario" },
-            new object[] { "invalid_input", "Invalid input format", "Input validation error scenario" }
+            new object[]
+            {
+                "invalid_input",
+                "Invalid input format",
+                "Input validation error scenario",
+            },
         };
     }
 }

@@ -1,10 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Moq.Protected;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Tests.Services;
 
@@ -24,9 +24,12 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         _mockLogger = new Mock<ILogger<OpenRouterModelService>>();
         _mockHttpHandler = new Mock<HttpMessageHandler>();
         _httpClient = new HttpClient(_mockHttpHandler.Object);
-        
+
         // Create temporary directory for cache testing
-        _tempCacheDir = Path.Combine(Path.GetTempPath(), "LmDotnetTools_Test_" + Guid.NewGuid().ToString("N")[..8]);
+        _tempCacheDir = Path.Combine(
+            Path.GetTempPath(),
+            "LmDotnetTools_Test_" + Guid.NewGuid().ToString("N")[..8]
+        );
         Directory.CreateDirectory(_tempCacheDir);
         _tempCacheFile = Path.Combine(_tempCacheDir, "openrouter-cache.json");
     }
@@ -38,7 +41,8 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         var validCache = new OpenRouterCache
         {
             CachedAt = DateTime.UtcNow.AddHours(-1), // 1 hour old, still valid
-            ModelsData = JsonNode.Parse("""
+            ModelsData = JsonNode.Parse(
+                """
                 {
                     "data": [
                         {
@@ -48,10 +52,12 @@ public class OpenRouterModelServiceCacheTests : IDisposable
                         }
                     ]
                 }
-                """),
+                """
+            ),
             ModelDetails = new Dictionary<string, JsonNode>
             {
-                ["test-model"] = JsonNode.Parse("""
+                ["test-model"] = JsonNode.Parse(
+                    """
                     {
                         "data": [
                             {
@@ -60,8 +66,9 @@ public class OpenRouterModelServiceCacheTests : IDisposable
                             }
                         ]
                     }
-                    """)!
-            }
+                    """
+                )!,
+            },
         };
 
         await SaveTestCache(validCache);
@@ -82,7 +89,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         // Arrange
         await File.WriteAllTextAsync(_tempCacheFile, "invalid json content");
         Assert.True(File.Exists(_tempCacheFile)); // Verify file was created
-        
+
         var service = CreateService();
 
         // Mock HTTP responses for fresh data fetch
@@ -94,7 +101,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         // Assert
         Assert.NotNull(result); // Should return fresh data
         Assert.True(File.Exists(_tempCacheFile)); // New valid cache should be created after fetching fresh data
-        
+
         // Verify the new cache is valid by loading it
         var cacheInfo = service.GetCacheInfo();
         Assert.True(cacheInfo.Exists);
@@ -113,7 +120,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
 
         // Assert
         Assert.True(File.Exists(_tempCacheFile));
-        
+
         // Verify cache can be loaded back
         var json = await File.ReadAllTextAsync(_tempCacheFile);
         var cache = JsonSerializer.Deserialize<OpenRouterCache>(json);
@@ -129,7 +136,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddDays(1), // Future timestamp
             ModelsData = JsonNode.Parse("""{"data": [{"slug": "test", "name": "Test"}]}"""),
-            ModelDetails = new Dictionary<string, JsonNode>()
+            ModelDetails = new Dictionary<string, JsonNode>(),
         };
 
         await SaveTestCache(invalidCache);
@@ -144,7 +151,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         // Assert
         Assert.NotNull(result); // Should return fresh data
         Assert.True(File.Exists(_tempCacheFile)); // New valid cache should be created after fetching fresh data
-        
+
         // Verify the new cache is valid
         var cacheInfo = service.GetCacheInfo();
         Assert.True(cacheInfo.Exists);
@@ -159,7 +166,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = null, // Missing models data
-            ModelDetails = new Dictionary<string, JsonNode>()
+            ModelDetails = new Dictionary<string, JsonNode>(),
         };
 
         await SaveTestCache(invalidCache);
@@ -174,7 +181,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         // Assert
         Assert.NotNull(result); // Should return fresh data
         Assert.True(File.Exists(_tempCacheFile)); // New valid cache should be created after fetching fresh data
-        
+
         // Verify the new cache is valid
         var cacheInfo = service.GetCacheInfo();
         Assert.True(cacheInfo.Exists);
@@ -189,7 +196,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = JsonNode.Parse("""{"data": [{"slug": "test", "name": "Test"}]}"""),
-            ModelDetails = new Dictionary<string, JsonNode>()
+            ModelDetails = new Dictionary<string, JsonNode>(),
         };
 
         await SaveTestCache(cache);
@@ -213,7 +220,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
             ModelsData = JsonNode.Parse("""{"data": [{"slug": "test", "name": "Test"}]}"""),
-            ModelDetails = new Dictionary<string, JsonNode>()
+            ModelDetails = new Dictionary<string, JsonNode>(),
         };
 
         await SaveTestCache(cache);
@@ -233,7 +240,8 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         var cache = new OpenRouterCache
         {
             CachedAt = DateTime.UtcNow.AddHours(-1),
-            ModelsData = JsonNode.Parse("""
+            ModelsData = JsonNode.Parse(
+                """
                 {
                     "data": [
                         {
@@ -248,12 +256,17 @@ public class OpenRouterModelServiceCacheTests : IDisposable
                         }
                     ]
                 }
-                """),
+                """
+            ),
             ModelDetails = new Dictionary<string, JsonNode>
             {
-                ["test-model-1"] = JsonNode.Parse("""{"data": [{"id": "endpoint1", "provider_name": "Provider1"}]}""")!,
-                ["test-model-2"] = JsonNode.Parse("""{"data": [{"id": "endpoint2", "provider_name": "Provider2"}]}""")!
-            }
+                ["test-model-1"] = JsonNode.Parse(
+                    """{"data": [{"id": "endpoint1", "provider_name": "Provider1"}]}"""
+                )!,
+                ["test-model-2"] = JsonNode.Parse(
+                    """{"data": [{"id": "endpoint2", "provider_name": "Provider2"}]}"""
+                )!,
+            },
         };
 
         await SaveTestCache(cache);
@@ -265,8 +278,10 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         stopwatch.Stop();
 
         // Assert
-        Assert.True(stopwatch.ElapsedMilliseconds < 100, 
-            $"Cache load took {stopwatch.ElapsedMilliseconds}ms, should be under 100ms");
+        Assert.True(
+            stopwatch.ElapsedMilliseconds < 100,
+            $"Cache load took {stopwatch.ElapsedMilliseconds}ms, should be under 100ms"
+        );
         Assert.NotEmpty(result);
     }
 
@@ -277,11 +292,14 @@ public class OpenRouterModelServiceCacheTests : IDisposable
 
     private async Task SaveTestCache(OpenRouterCache cache)
     {
-        var json = JsonSerializer.Serialize(cache, new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-            WriteIndented = false
-        });
+        var json = JsonSerializer.Serialize(
+            cache,
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+                WriteIndented = false,
+            }
+        );
         await File.WriteAllTextAsync(_tempCacheFile, json);
     }
 
@@ -312,33 +330,45 @@ public class OpenRouterModelServiceCacheTests : IDisposable
             }
             """;
 
-        _mockHttpHandler.Protected()
+        _mockHttpHandler
+            .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/models")),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = System.Net.HttpStatusCode.OK,
-                Content = new StringContent(modelsResponse)
-            });
+                ItExpr.Is<HttpRequestMessage>(req =>
+                    req.RequestUri!.ToString().Contains("/models")
+                ),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(
+                new HttpResponseMessage
+                {
+                    StatusCode = System.Net.HttpStatusCode.OK,
+                    Content = new StringContent(modelsResponse),
+                }
+            );
 
-        _mockHttpHandler.Protected()
+        _mockHttpHandler
+            .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/stats/endpoint")),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
-            {
-                StatusCode = System.Net.HttpStatusCode.OK,
-                Content = new StringContent(detailsResponse)
-            });
+                ItExpr.Is<HttpRequestMessage>(req =>
+                    req.RequestUri!.ToString().Contains("/stats/endpoint")
+                ),
+                ItExpr.IsAny<CancellationToken>()
+            )
+            .ReturnsAsync(
+                new HttpResponseMessage
+                {
+                    StatusCode = System.Net.HttpStatusCode.OK,
+                    Content = new StringContent(detailsResponse),
+                }
+            );
     }
 
     public void Dispose()
     {
         _httpClient?.Dispose();
-        
+
         // Clean up temporary cache directory
         if (Directory.Exists(_tempCacheDir))
         {

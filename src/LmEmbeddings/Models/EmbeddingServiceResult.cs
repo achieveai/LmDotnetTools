@@ -46,14 +46,18 @@ public record EmbeddingServiceResult<T>
     /// <param name="metrics">Performance metrics for the operation</param>
     /// <param name="metadata">Additional metadata</param>
     /// <returns>A successful result</returns>
-    public static EmbeddingServiceResult<T> CreateSuccess(T data, RequestMetrics? metrics = null, ImmutableDictionary<string, object>? metadata = null)
+    public static EmbeddingServiceResult<T> CreateSuccess(
+        T data,
+        RequestMetrics? metrics = null,
+        ImmutableDictionary<string, object>? metadata = null
+    )
     {
         return new EmbeddingServiceResult<T>
         {
             Success = true,
             Data = data,
             Metrics = metrics,
-            Metadata = metadata
+            Metadata = metadata,
         };
     }
 
@@ -64,14 +68,18 @@ public record EmbeddingServiceResult<T>
     /// <param name="metrics">Performance metrics (if available)</param>
     /// <param name="metadata">Additional metadata</param>
     /// <returns>A failed result</returns>
-    public static EmbeddingServiceResult<T> CreateFailure(EmbeddingError error, RequestMetrics? metrics = null, ImmutableDictionary<string, object>? metadata = null)
+    public static EmbeddingServiceResult<T> CreateFailure(
+        EmbeddingError error,
+        RequestMetrics? metrics = null,
+        ImmutableDictionary<string, object>? metadata = null
+    )
     {
         return new EmbeddingServiceResult<T>
         {
             Success = false,
             Error = error,
             Metrics = metrics,
-            Metadata = metadata
+            Metadata = metadata,
         };
     }
 
@@ -82,7 +90,11 @@ public record EmbeddingServiceResult<T>
     /// <param name="requestId">The request ID for tracking</param>
     /// <param name="metrics">Performance metrics (if available)</param>
     /// <returns>A failed result</returns>
-    public static EmbeddingServiceResult<T> FromException(Exception exception, string requestId, RequestMetrics? metrics = null)
+    public static EmbeddingServiceResult<T> FromException(
+        Exception exception,
+        string requestId,
+        RequestMetrics? metrics = null
+    )
     {
         var errorSource = ClassifyException(exception);
         var isRetryable = IsRetryableException(exception);
@@ -95,7 +107,7 @@ public record EmbeddingServiceResult<T>
             Source = errorSource,
             RequestId = requestId,
             IsRetryable = isRetryable,
-            RetryAfterMs = isRetryable ? 1000 : null
+            RetryAfterMs = isRetryable ? 1000 : null,
         };
 
         return CreateFailure(error, metrics);
@@ -110,7 +122,7 @@ public record EmbeddingServiceResult<T>
             TimeoutException => ErrorSource.Timeout,
             UnauthorizedAccessException => ErrorSource.Authentication,
             NotSupportedException => ErrorSource.Configuration,
-            _ => ErrorSource.Internal
+            _ => ErrorSource.Internal,
         };
     }
 
@@ -121,7 +133,7 @@ public record EmbeddingServiceResult<T>
             HttpRequestException http when http.Message.Contains("5") => true,
             TimeoutException => true,
             TaskCanceledException => true,
-            _ => false
+            _ => false,
         };
     }
 }
@@ -134,14 +146,19 @@ public static class EmbeddingResults
     /// <summary>
     /// Creates a validation error result
     /// </summary>
-    public static EmbeddingServiceResult<T> ValidationError<T>(string field, string message, object? value = null, string? requestId = null)
+    public static EmbeddingServiceResult<T> ValidationError<T>(
+        string field,
+        string message,
+        object? value = null,
+        string? requestId = null
+    )
     {
         var validationError = new ValidationError
         {
             Field = field,
             Message = message,
             Value = value,
-            Rule = "Required"
+            Rule = "Required",
         };
 
         var error = new EmbeddingError
@@ -151,7 +168,7 @@ public static class EmbeddingResults
             Source = ErrorSource.Validation,
             RequestId = requestId,
             IsRetryable = false,
-            ValidationErrors = ImmutableList.Create(validationError)
+            ValidationErrors = ImmutableList.Create(validationError),
         };
 
         return EmbeddingServiceResult<T>.CreateFailure(error);
@@ -160,14 +177,19 @@ public static class EmbeddingResults
     /// <summary>
     /// Creates an API error result
     /// </summary>
-    public static EmbeddingServiceResult<T> ApiError<T>(string provider, int statusCode, string? apiErrorCode = null, string? requestId = null)
+    public static EmbeddingServiceResult<T> ApiError<T>(
+        string provider,
+        int statusCode,
+        string? apiErrorCode = null,
+        string? requestId = null
+    )
     {
         var apiError = new ApiError
         {
             Provider = provider,
             StatusCode = statusCode,
             ApiErrorCode = apiErrorCode,
-            ApiErrorMessage = $"HTTP {statusCode} error from {provider}"
+            ApiErrorMessage = $"HTTP {statusCode} error from {provider}",
         };
 
         var error = new EmbeddingError
@@ -177,7 +199,7 @@ public static class EmbeddingResults
             Source = ErrorSource.Api,
             RequestId = requestId,
             IsRetryable = statusCode >= 500 || statusCode == 429,
-            RetryAfterMs = statusCode >= 500 ? 1000 : null
+            RetryAfterMs = statusCode >= 500 ? 1000 : null,
         };
 
         return EmbeddingServiceResult<T>.CreateFailure(error);
@@ -186,7 +208,10 @@ public static class EmbeddingResults
     /// <summary>
     /// Creates a rate limit error result
     /// </summary>
-    public static EmbeddingServiceResult<T> RateLimitError<T>(RateLimitInfo rateLimitInfo, string? requestId = null)
+    public static EmbeddingServiceResult<T> RateLimitError<T>(
+        RateLimitInfo rateLimitInfo,
+        string? requestId = null
+    )
     {
         var error = new EmbeddingError
         {
@@ -195,7 +220,7 @@ public static class EmbeddingResults
             Source = ErrorSource.RateLimit,
             RequestId = requestId,
             IsRetryable = true,
-            RetryAfterMs = (int)(rateLimitInfo.ResetTime - DateTime.UtcNow).TotalMilliseconds
+            RetryAfterMs = (int)(rateLimitInfo.ResetTime - DateTime.UtcNow).TotalMilliseconds,
         };
 
         return EmbeddingServiceResult<T>.CreateFailure(error);

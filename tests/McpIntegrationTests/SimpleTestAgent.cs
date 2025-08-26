@@ -45,7 +45,11 @@ public class SimpleTestAgent : IAgent
         _injectedMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
     }
 
-    public Task<IEnumerable<IMessage>> GenerateReplyAsync(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null, CancellationToken cancellationToken = default)
+    public Task<IEnumerable<IMessage>> GenerateReplyAsync(
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         // Store the received messages for later inspection
         _receivedMessages.AddRange(messages);
@@ -57,7 +61,12 @@ public class SimpleTestAgent : IAgent
         }
         else
         {
-            return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = "Default response", Role = Role.Assistant } });
+            return Task.FromResult<IEnumerable<IMessage>>(
+                new[]
+                {
+                    new TextMessage { Text = "Default response", Role = Role.Assistant },
+                }
+            );
         }
     }
 }

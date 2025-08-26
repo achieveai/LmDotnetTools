@@ -23,11 +23,12 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
     /// <param name="name">Optional name for the middleware.</param>
     /// <param name="schemaValidator">Optional schema validator for validating tool call arguments.</param>
     public NaturalToolUseMiddleware(
-      IEnumerable<FunctionContract> functions,
-      IDictionary<string, Func<string, Task<string>>> functionMap,
-      IAgent? fallbackParser = null,
-      string? name = null,
-      IJsonSchemaValidator? schemaValidator = null)
+        IEnumerable<FunctionContract> functions,
+        IDictionary<string, Func<string, Task<string>>> functionMap,
+        IAgent? fallbackParser = null,
+        string? name = null,
+        IJsonSchemaValidator? schemaValidator = null
+    )
     {
         if (functions == null)
             throw new ArgumentNullException(nameof(functions));
@@ -39,16 +40,18 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
 
         // Create the parser middleware
         _parserMiddleware = new NaturalToolUseParserMiddleware(
-          functions,
-          schemaValidator,
-          fallbackParser,
-          $"{_name}.Parser");
+            functions,
+            schemaValidator,
+            fallbackParser,
+            $"{_name}.Parser"
+        );
 
         // Create the function call middleware
         _functionCallMiddleware = new FunctionCallMiddleware(
-          functions,
-          functionMap,
-          $"{_name}.FunctionCall");
+            functions,
+            functionMap,
+            $"{_name}.FunctionCall"
+        );
     }
 
     /// <summary>
@@ -64,18 +67,16 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
     /// <param name="cancellationToken">A cancellation token.</param>
     /// <returns>A collection of messages representing the response.</returns>
     public Task<IEnumerable<IMessage>> InvokeAsync(
-      MiddlewareContext context,
-      IAgent agent,
-      CancellationToken cancellationToken = default)
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken cancellationToken = default
+    )
     {
         // Use the extension method to chain middleware components
         return agent
-          .WithMiddleware(_parserMiddleware)
-          .WithMiddleware(_functionCallMiddleware)
-          .GenerateReplyAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken);
+            .WithMiddleware(_parserMiddleware)
+            .WithMiddleware(_functionCallMiddleware)
+            .GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 
     /// <summary>
@@ -86,19 +87,15 @@ public class NaturalToolUseMiddleware : IStreamingMiddleware
     /// <param name="cancellationToken">A cancellation token.</param>
     /// <returns>An asynchronous stream of messages representing the response.</returns>
     public Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
-      MiddlewareContext context,
-      IStreamingAgent agent,
-      CancellationToken cancellationToken = default)
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken cancellationToken = default
+    )
     {
         // Use the extension method to chain middleware components
         return agent
-          .WithMiddleware(_parserMiddleware)
-          .WithMiddleware(_functionCallMiddleware)
-          .GenerateReplyStreamingAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken);
+            .WithMiddleware(_parserMiddleware)
+            .WithMiddleware(_functionCallMiddleware)
+            .GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
     }
 }
-
-

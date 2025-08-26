@@ -1,6 +1,6 @@
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Logging;
 
@@ -115,13 +115,18 @@ public class SimpleLoggingTests
 
         // Assert - Verify that Log was called with correct parameters
         mockLogger.Verify(
-            x => x.Log(
-                LogLevel.Information,
-                It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("value1") && v.ToString()!.Contains("42")),
-                It.IsAny<Exception>(),
-                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            Times.Once);
+            x =>
+                x.Log(
+                    LogLevel.Information,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>(
+                        (v, t) => v.ToString()!.Contains("value1") && v.ToString()!.Contains("42")
+                    ),
+                    It.IsAny<Exception>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.Once
+        );
     }
 
     [Fact]
@@ -138,13 +143,16 @@ public class SimpleLoggingTests
 
         // Assert - Verify that Log was called with correct EventId
         mockLogger.Verify(
-            x => x.Log(
-                LogLevel.Information,
-                eventId,
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("test-model")),
-                It.IsAny<Exception>(),
-                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            Times.Once);
+            x =>
+                x.Log(
+                    LogLevel.Information,
+                    eventId,
+                    It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("test-model")),
+                    It.IsAny<Exception>(),
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.Once
+        );
     }
 
     #endregion
@@ -168,8 +176,10 @@ public class SimpleLoggingTests
 
         // Assert - Should complete quickly
         var timePerIteration = (double)stopwatch.ElapsedMilliseconds / iterations;
-        Assert.True(timePerIteration < 1.0, // Less than 1ms per iteration
-            $"NullLogger performance is too slow: {timePerIteration:F4}ms per iteration");
+        Assert.True(
+            timePerIteration < 1.0, // Less than 1ms per iteration
+            $"NullLogger performance is too slow: {timePerIteration:F4}ms per iteration"
+        );
     }
 
     [Fact]
@@ -190,8 +200,10 @@ public class SimpleLoggingTests
 
         // Assert - Should complete quickly
         var timePerIteration = (double)stopwatch.ElapsedMilliseconds / iterations;
-        Assert.True(timePerIteration < 2.0, // Less than 2ms per iteration
-            $"Disabled logger performance is too slow: {timePerIteration:F4}ms per iteration");
+        Assert.True(
+            timePerIteration < 2.0, // Less than 2ms per iteration
+            $"Disabled logger performance is too slow: {timePerIteration:F4}ms per iteration"
+        );
     }
 
     #endregion
@@ -211,13 +223,16 @@ public class SimpleLoggingTests
 
         // Assert - Verify that Log was called with exception
         mockLogger.Verify(
-            x => x.Log(
-                LogLevel.Error,
-                It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Test exception")),
-                testException,
-                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            Times.Once);
+            x =>
+                x.Log(
+                    LogLevel.Error,
+                    It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Test exception")),
+                    testException,
+                    It.IsAny<Func<It.IsAnyType, Exception?, string>>()
+                ),
+            Times.Once
+        );
     }
 
     [Fact]
@@ -246,7 +261,8 @@ public class SimpleLoggingTests
         var mockLoggerFactory = new Mock<ILoggerFactory>();
         var mockLogger = new Mock<ILogger>();
 
-        mockLoggerFactory.Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!))
+        mockLoggerFactory
+            .Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!))
             .Returns(mockLogger.Object);
 
         // Act
@@ -255,7 +271,10 @@ public class SimpleLoggingTests
         // Assert
         Assert.NotNull(logger);
         Assert.Same(mockLogger.Object, logger);
-        mockLoggerFactory.Verify(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!), Times.Once);
+        mockLoggerFactory.Verify(
+            x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!),
+            Times.Once
+        );
     }
 
     [Fact]
@@ -265,7 +284,9 @@ public class SimpleLoggingTests
         ILoggerFactory? nullLoggerFactory = null;
 
         // Act
-        var logger = nullLoggerFactory?.CreateLogger<SimpleLoggingTests>() ?? NullLogger<SimpleLoggingTests>.Instance;
+        var logger =
+            nullLoggerFactory?.CreateLogger<SimpleLoggingTests>()
+            ?? NullLogger<SimpleLoggingTests>.Instance;
 
         // Assert
         Assert.NotNull(logger);

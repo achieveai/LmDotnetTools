@@ -1,11 +1,11 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
+using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using MemoryServer.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 
 namespace MemoryServer.Services;
 
@@ -36,7 +36,8 @@ public class EmbeddingManager : IEmbeddingManager
         IMemoryRepository memoryRepository,
         IMemoryCache cache,
         ILogger<EmbeddingManager> logger,
-        IOptions<MemoryServerOptions> options)
+        IOptions<MemoryServerOptions> options
+    )
     {
         _lmConfigService = lmConfigService;
         _memoryRepository = memoryRepository;
@@ -72,7 +73,10 @@ public class EmbeddingManager : IEmbeddingManager
     /// <summary>
     /// Generates an embedding for the given content with caching.
     /// </summary>
-    public async Task<float[]> GenerateEmbeddingAsync(string content, CancellationToken cancellationToken = default)
+    public async Task<float[]> GenerateEmbeddingAsync(
+        string content,
+        CancellationToken cancellationToken = default
+    )
     {
         if (string.IsNullOrWhiteSpace(content))
             throw new ArgumentException("Content cannot be empty", nameof(content));
@@ -94,7 +98,11 @@ public class EmbeddingManager : IEmbeddingManager
         try
         {
             var embeddingService = await GetEmbeddingServiceAsync(cancellationToken);
-            var response = await embeddingService.GenerateEmbeddingAsync(content, ModelName, cancellationToken);
+            var response = await embeddingService.GenerateEmbeddingAsync(
+                content,
+                ModelName,
+                cancellationToken
+            );
 
             if (response.Embeddings == null || response.Embeddings.Count == 0)
                 throw new InvalidOperationException("Embedding service returned no embeddings");
@@ -105,16 +113,23 @@ public class EmbeddingManager : IEmbeddingManager
             var cacheOptions = new MemoryCacheEntryOptions
             {
                 SlidingExpiration = TimeSpan.FromHours(_options.CacheExpirationHours),
-                Size = embedding.Length * sizeof(float)
+                Size = embedding.Length * sizeof(float),
             };
             _cache.Set(cacheKey, embedding, cacheOptions);
 
-            _logger.LogDebug("Generated and cached embedding for content (length: {Length})", content.Length);
+            _logger.LogDebug(
+                "Generated and cached embedding for content (length: {Length})",
+                content.Length
+            );
             return embedding;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to generate embedding for content (length: {Length})", content.Length);
+            _logger.LogError(
+                ex,
+                "Failed to generate embedding for content (length: {Length})",
+                content.Length
+            );
             throw;
         }
     }
@@ -122,7 +137,10 @@ public class EmbeddingManager : IEmbeddingManager
     /// <summary>
     /// Generates embeddings for multiple contents in a batch.
     /// </summary>
-    public async Task<List<float[]>> GenerateBatchEmbeddingsAsync(List<string> contents, CancellationToken cancellationToken = default)
+    public async Task<List<float[]>> GenerateBatchEmbeddingsAsync(
+        List<string> contents,
+        CancellationToken cancellationToken = default
+    )
     {
         if (contents == null || contents.Count == 0)
             return new List<float[]>();
@@ -136,7 +154,10 @@ public class EmbeddingManager : IEmbeddingManager
             var content = contents[i];
             if (string.IsNullOrWhiteSpace(content))
             {
-                throw new ArgumentException($"Content at index {i} cannot be empty", nameof(contents));
+                throw new ArgumentException(
+                    $"Content at index {i} cannot be empty",
+                    nameof(contents)
+                );
             }
 
             Interlocked.Increment(ref _totalRequests);
@@ -166,13 +187,18 @@ public class EmbeddingManager : IEmbeddingManager
                 var request = new AchieveAi.LmDotnetTools.LmEmbeddings.Models.EmbeddingRequest
                 {
                     Inputs = uncachedTexts,
-                    Model = ModelName
+                    Model = ModelName,
                 };
 
-                var response = await embeddingService.GenerateEmbeddingsAsync(request, cancellationToken);
+                var response = await embeddingService.GenerateEmbeddingsAsync(
+                    request,
+                    cancellationToken
+                );
 
                 if (response.Embeddings == null || response.Embeddings.Count != uncachedTexts.Count)
-                    throw new InvalidOperationException("Embedding service returned unexpected number of embeddings");
+                    throw new InvalidOperationException(
+                        "Embedding service returned unexpected number of embeddings"
+                    );
 
                 // Update results and cache
                 for (int i = 0; i < uncachedContents.Count; i++)
@@ -187,16 +213,23 @@ public class EmbeddingManager : IEmbeddingManager
                     var cacheOptions = new MemoryCacheEntryOptions
                     {
                         SlidingExpiration = TimeSpan.FromHours(_options.CacheExpirationHours),
-                        Size = embedding.Length * sizeof(float)
+                        Size = embedding.Length * sizeof(float),
                     };
                     _cache.Set(cacheKey, embedding, cacheOptions);
                 }
 
-                _logger.LogDebug("Generated and cached {Count} embeddings in batch", uncachedContents.Count);
+                _logger.LogDebug(
+                    "Generated and cached {Count} embeddings in batch",
+                    uncachedContents.Count
+                );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to generate batch embeddings for {Count} contents", uncachedContents.Count);
+                _logger.LogError(
+                    ex,
+                    "Failed to generate batch embeddings for {Count} contents",
+                    uncachedContents.Count
+                );
                 throw;
             }
         }
@@ -212,34 +245,58 @@ public class EmbeddingManager : IEmbeddingManager
         SessionContext sessionContext,
         int limit = 10,
         float threshold = 0.7f,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         if (queryEmbedding == null || queryEmbedding.Length == 0)
             throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
 
         if (queryEmbedding.Length != EmbeddingDimension)
-            throw new ArgumentException($"Query embedding dimension ({queryEmbedding.Length}) does not match expected dimension ({EmbeddingDimension})", nameof(queryEmbedding));
+            throw new ArgumentException(
+                $"Query embedding dimension ({queryEmbedding.Length}) does not match expected dimension ({EmbeddingDimension})",
+                nameof(queryEmbedding)
+            );
 
         try
         {
-            _logger.LogDebug("Performing vector similarity search with threshold {Threshold} and limit {Limit}", threshold, limit);
+            _logger.LogDebug(
+                "Performing vector similarity search with threshold {Threshold} and limit {Limit}",
+                threshold,
+                limit
+            );
 
             // Use the repository's vector search functionality
-            var searchResults = await _memoryRepository.SearchVectorAsync(queryEmbedding, sessionContext, limit, threshold, cancellationToken);
+            var searchResults = await _memoryRepository.SearchVectorAsync(
+                queryEmbedding,
+                sessionContext,
+                limit,
+                threshold,
+                cancellationToken
+            );
 
-            var results = searchResults.Select(result => new MemorySearchResult
-            {
-                Memory = result.Memory,
-                SimilarityScore = result.Score,
-                DistanceMetric = "cosine"
-            }).ToList();
+            var results = searchResults
+                .Select(result => new MemorySearchResult
+                {
+                    Memory = result.Memory,
+                    SimilarityScore = result.Score,
+                    DistanceMetric = "cosine",
+                })
+                .ToList();
 
-            _logger.LogInformation("Vector similarity search returned {Count} results for session {SessionContext}", results.Count, sessionContext);
+            _logger.LogInformation(
+                "Vector similarity search returned {Count} results for session {SessionContext}",
+                results.Count,
+                sessionContext
+            );
             return results;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to perform vector similarity search for session {SessionContext}", sessionContext);
+            _logger.LogError(
+                ex,
+                "Failed to perform vector similarity search for session {SessionContext}",
+                sessionContext
+            );
             throw;
         }
     }
@@ -267,7 +324,10 @@ public class EmbeddingManager : IEmbeddingManager
         // Try to get cache entry count (this is implementation-dependent)
         if (_cache is MemoryCache memoryCache)
         {
-            var field = typeof(MemoryCache).GetField("_entries", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var field = typeof(MemoryCache).GetField(
+                "_entries",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+            );
             if (field?.GetValue(memoryCache) is System.Collections.IDictionary entries)
             {
                 entryCount = entries.Count;
@@ -281,7 +341,7 @@ public class EmbeddingManager : IEmbeddingManager
             CacheHits = _cacheHits,
             CacheMisses = _cacheMisses,
             EntryCount = entryCount,
-            EstimatedMemoryUsage = estimatedMemoryUsage
+            EstimatedMemoryUsage = estimatedMemoryUsage,
         };
     }
 
@@ -301,24 +361,41 @@ public class EmbeddingManager : IEmbeddingManager
     /// <summary>
     /// Gets or creates the embedding service instance.
     /// </summary>
-    private async Task<IEmbeddingService> GetEmbeddingServiceAsync(CancellationToken cancellationToken)
+    private async Task<IEmbeddingService> GetEmbeddingServiceAsync(
+        CancellationToken cancellationToken
+    )
     {
         if (_cachedEmbeddingService != null)
             return _cachedEmbeddingService;
 
         _logger.LogDebug("Creating embedding service via LmConfigService");
 
-        _cachedEmbeddingService = await _lmConfigService.CreateEmbeddingServiceAsync(cancellationToken);
+        _cachedEmbeddingService = await _lmConfigService.CreateEmbeddingServiceAsync(
+            cancellationToken
+        );
 
         // Get model information from environment variables
-        _cachedModelName = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_MODEL", null, "text-embedding-3-small");
+        _cachedModelName = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+            "EMBEDDING_MODEL",
+            null,
+            "text-embedding-3-small"
+        );
 
         // Set embedding dimension from environment variable or based on model
-        var embeddingSizeEnv = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_SIZE");
-        if (!string.IsNullOrEmpty(embeddingSizeEnv) && int.TryParse(embeddingSizeEnv, out var customDimension) && customDimension > 0)
+        var embeddingSizeEnv = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+            "EMBEDDING_SIZE"
+        );
+        if (
+            !string.IsNullOrEmpty(embeddingSizeEnv)
+            && int.TryParse(embeddingSizeEnv, out var customDimension)
+            && customDimension > 0
+        )
         {
             _cachedEmbeddingDimension = customDimension;
-            _logger.LogInformation("Using custom embedding dimension from EMBEDDING_SIZE: {Dimension}", customDimension);
+            _logger.LogInformation(
+                "Using custom embedding dimension from EMBEDDING_SIZE: {Dimension}",
+                customDimension
+            );
         }
         else
         {
@@ -328,13 +405,19 @@ public class EmbeddingManager : IEmbeddingManager
                 "text-embedding-3-small" => 1536,
                 "text-embedding-3-large" => 3072,
                 "text-embedding-ada-002" => 1536,
-                _ => 1536 // Default to OpenAI small dimension
+                _ => 1536, // Default to OpenAI small dimension
             };
-            _logger.LogDebug("Using model-based embedding dimension: {Dimension}", _cachedEmbeddingDimension);
+            _logger.LogDebug(
+                "Using model-based embedding dimension: {Dimension}",
+                _cachedEmbeddingDimension
+            );
         }
 
-        _logger.LogInformation("Embedding service initialized with model {ModelName} (dimension: {Dimension})",
-            _cachedModelName, _cachedEmbeddingDimension);
+        _logger.LogInformation(
+            "Embedding service initialized with model {ModelName} (dimension: {Dimension})",
+            _cachedModelName,
+            _cachedEmbeddingDimension
+        );
 
         return _cachedEmbeddingService;
     }

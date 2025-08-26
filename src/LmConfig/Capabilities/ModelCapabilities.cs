@@ -90,9 +90,10 @@ public record ModelCapabilities
             return false;
 
         // Split by comma or semicolon and check all capabilities
-        var capabilities = capability.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(c => c.Trim())
-                .Where(c => !string.IsNullOrWhiteSpace(c));
+        var capabilities = capability
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(c => c.Trim())
+            .Where(c => !string.IsNullOrWhiteSpace(c));
 
         return capabilities.All(HasSingleCapability);
     }
@@ -107,16 +108,16 @@ public record ModelCapabilities
         return capability.ToLowerInvariant() switch
         {
             "thinking" => Thinking?.Type != ThinkingType.None,
-            "multimodal" => Multimodal?.SupportsImages == true ||
-                           Multimodal?.SupportsAudio == true ||
-                           Multimodal?.SupportsVideo == true,
+            "multimodal" => Multimodal?.SupportsImages == true
+                || Multimodal?.SupportsAudio == true
+                || Multimodal?.SupportsVideo == true,
             "function_calling" or "tools" => FunctionCalling?.SupportsTools == true,
             "streaming" => SupportsStreaming,
             "json_mode" => ResponseFormats?.SupportsJsonMode == true,
             "json_schema" => ResponseFormats?.SupportsJsonSchema == true,
             "structured_output" => ResponseFormats?.SupportsStructuredOutput == true,
-            _ => SupportedFeatures.Contains(capability) ||
-                 CustomCapabilities?.ContainsKey(capability) == true
+            _ => SupportedFeatures.Contains(capability)
+                || CustomCapabilities?.ContainsKey(capability) == true,
         };
     }
 
@@ -131,9 +132,11 @@ public record ModelCapabilities
         if (Thinking?.Type != ThinkingType.None)
             capabilities.Add("thinking");
 
-        if (Multimodal?.SupportsImages == true ||
-            Multimodal?.SupportsAudio == true ||
-            Multimodal?.SupportsVideo == true)
+        if (
+            Multimodal?.SupportsImages == true
+            || Multimodal?.SupportsAudio == true
+            || Multimodal?.SupportsVideo == true
+        )
             capabilities.Add("multimodal");
 
         if (FunctionCalling?.SupportsTools == true)

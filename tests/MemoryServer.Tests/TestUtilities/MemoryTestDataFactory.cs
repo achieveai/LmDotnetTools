@@ -14,14 +14,44 @@ public static class MemoryTestDataFactory
     public static IEnumerable<object[]> GetMemoryContentTestCases()
     {
         yield return new object[] { "Valid short content", true, "Normal content should be valid" };
-        yield return new object[] { "Valid content with special chars: !@#$%^&*()", true, "Special characters should be allowed" };
-        yield return new object[] { new string('A', 100), true, "100 character content should be valid" };
-        yield return new object[] { new string('A', 1000), true, "1000 character content should be valid" };
-        yield return new object[] { new string('A', 10000), true, "10000 character content should be at limit" };
+        yield return new object[]
+        {
+            "Valid content with special chars: !@#$%^&*()",
+            true,
+            "Special characters should be allowed",
+        };
+        yield return new object[]
+        {
+            new string('A', 100),
+            true,
+            "100 character content should be valid",
+        };
+        yield return new object[]
+        {
+            new string('A', 1000),
+            true,
+            "1000 character content should be valid",
+        };
+        yield return new object[]
+        {
+            new string('A', 10000),
+            true,
+            "10000 character content should be at limit",
+        };
         yield return new object[] { "", false, "Empty content should be invalid" };
         yield return new object[] { "   ", false, "Whitespace-only content should be invalid" };
-        yield return new object[] { new string('A', 10001), false, "Content over 10000 chars should be invalid" };
-        yield return new object[] { new string('A', 50000), false, "Very long content should be invalid" };
+        yield return new object[]
+        {
+            new string('A', 10001),
+            false,
+            "Content over 10000 chars should be invalid",
+        };
+        yield return new object[]
+        {
+            new string('A', 50000),
+            false,
+            "Very long content should be invalid",
+        };
     }
 
     /// <summary>
@@ -42,53 +72,60 @@ public static class MemoryTestDataFactory
     public static IEnumerable<object[]> GetSessionMatchingTestCases()
     {
         // Format: context1, context2, shouldMatch, description
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForUser("user1"),
             SessionContext.ForUser("user1"),
             true,
-            "Same user contexts should match"
+            "Same user contexts should match",
         };
 
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForUser("user1"),
             SessionContext.ForUser("user2"),
             false,
-            "Different user contexts should not match"
+            "Different user contexts should not match",
         };
 
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForAgent("user1", "agent1"),
             SessionContext.ForAgent("user1", "agent1"),
             true,
-            "Same user-agent contexts should match"
+            "Same user-agent contexts should match",
         };
 
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForAgent("user1", "agent1"),
             SessionContext.ForAgent("user1", "agent2"),
             false,
-            "Different agent contexts should not match"
+            "Different agent contexts should not match",
         };
 
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForUser("user1"),
             SessionContext.ForAgent("user1", "agent1"),
             false,
-            "User context should not match user-agent context (strict matching)"
+            "User context should not match user-agent context (strict matching)",
         };
 
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForRun("user1", "agent1", "run1"),
             SessionContext.ForRun("user1", "agent1", "run1"),
             true,
-            "Same full contexts should match"
+            "Same full contexts should match",
         };
 
-        yield return new object[] {
+        yield return new object[]
+        {
             SessionContext.ForRun("user1", "agent1", "run1"),
             SessionContext.ForRun("user1", "agent1", "run2"),
             false,
-            "Different run contexts should not match"
+            "Different run contexts should not match",
         };
     }
 
@@ -101,7 +138,13 @@ public static class MemoryTestDataFactory
         yield return new object[] { "test query", 5, 0.8f, "Multi-word search query" };
         yield return new object[] { "special!@#", 20, 0.5f, "Special characters in query" };
         yield return new object[] { "", 10, 0.7f, "Empty query should return empty results" };
-        yield return new object[] { "   ", 10, 0.7f, "Whitespace query should return empty results" };
+        yield return new object[]
+        {
+            "   ",
+            10,
+            0.7f,
+            "Whitespace query should return empty results",
+        };
         yield return new object[] { "test", 1, 0.9f, "Single result limit" };
         yield return new object[] { "test", 100, 0.1f, "High limit, low threshold" };
     }
@@ -111,39 +154,40 @@ public static class MemoryTestDataFactory
     /// </summary>
     public static IEnumerable<object?[]> GetMetadataTestCases()
     {
-        yield return new object?[] {
-            null,
-            "Null metadata"
-        };
+        yield return new object?[] { null, "Null metadata" };
 
-        yield return new object?[] {
+        yield return new object?[]
+        {
             new Dictionary<string, object>(),
-            "Empty metadata dictionary"
+            "Empty metadata dictionary",
         };
 
-        yield return new object?[] {
+        yield return new object?[]
+        {
             new Dictionary<string, object> { { "key1", "value1" } },
-            "Single metadata entry"
+            "Single metadata entry",
         };
 
-        yield return new object?[] {
+        yield return new object?[]
+        {
             new Dictionary<string, object>
             {
                 { "key1", "value1" },
                 { "key2", 42 },
-                { "key3", true }
+                { "key3", true },
             },
-            "Multiple metadata entries with different types"
+            "Multiple metadata entries with different types",
         };
 
-        yield return new object?[] {
+        yield return new object?[]
+        {
             new Dictionary<string, object>
             {
                 { "source", "api" },
                 { "priority", 5 },
-                { "tags", new[] { "important", "user-generated" } }
+                { "tags", new[] { "important", "user-generated" } },
             },
-            "Complex metadata with arrays"
+            "Complex metadata with arrays",
         };
     }
 
@@ -156,7 +200,8 @@ public static class MemoryTestDataFactory
         string userId = "test-user",
         string? agentId = null,
         string? runId = null,
-        Dictionary<string, object>? metadata = null)
+        Dictionary<string, object>? metadata = null
+    )
     {
         return new Memory
         {
@@ -168,7 +213,7 @@ public static class MemoryTestDataFactory
             Metadata = metadata,
             CreatedAt = DateTime.UtcNow.AddMinutes(-10),
             UpdatedAt = DateTime.UtcNow.AddMinutes(-5),
-            Version = 1
+            Version = 1,
         };
     }
 
@@ -180,13 +225,15 @@ public static class MemoryTestDataFactory
         var memories = new List<Memory>();
         for (int i = 1; i <= count; i++)
         {
-            memories.Add(CreateTestMemory(
-                id: i,
-                content: $"Test memory content {i}",
-                userId: sessionContext.UserId,
-                agentId: sessionContext.AgentId,
-                runId: sessionContext.RunId
-            ));
+            memories.Add(
+                CreateTestMemory(
+                    id: i,
+                    content: $"Test memory content {i}",
+                    userId: sessionContext.UserId,
+                    agentId: sessionContext.AgentId,
+                    runId: sessionContext.RunId
+                )
+            );
         }
         return memories;
     }

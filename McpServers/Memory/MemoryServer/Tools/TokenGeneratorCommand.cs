@@ -1,11 +1,11 @@
 using System.CommandLine;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Options;
 using MemoryServer.Configuration;
 using MemoryServer.Services;
 using MemoryServer.Utils;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Tools;
 
@@ -22,28 +22,34 @@ public static class TokenGeneratorCommand
     {
         var userIdOption = new Option<string>(
             name: "--userId",
-            description: "The user identifier for the token")
+            description: "The user identifier for the token"
+        )
         {
-            IsRequired = true
+            IsRequired = true,
         };
 
         var agentIdOption = new Option<string>(
             name: "--agentId",
-            description: "The agent identifier for the token")
+            description: "The agent identifier for the token"
+        )
         {
-            IsRequired = true
+            IsRequired = true,
         };
 
         var command = new Command("generate-token", "Generate a JWT token for authentication")
         {
             userIdOption,
-            agentIdOption
+            agentIdOption,
         };
 
-        command.SetHandler(async (userId, agentId) =>
-        {
-            await GenerateTokenAsync(userId, agentId);
-        }, userIdOption, agentIdOption);
+        command.SetHandler(
+            async (userId, agentId) =>
+            {
+                await GenerateTokenAsync(userId, agentId);
+            },
+            userIdOption,
+            agentIdOption
+        );
 
         return command;
     }
@@ -64,7 +70,10 @@ public static class TokenGeneratorCommand
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: true)
-                .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
+                .AddJsonFile(
+                    $"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json",
+                    optional: true
+                )
                 .AddEnvironmentVariables()
                 .Build();
 
@@ -89,8 +98,12 @@ public static class TokenGeneratorCommand
             var jwtOptions = serviceProvider.GetRequiredService<IOptions<JwtOptions>>().Value;
             if (!jwtOptions.IsValid())
             {
-                Console.Error.WriteLine("❌ JWT configuration is invalid. Please check your JWT settings.");
-                Console.Error.WriteLine($"   - Secret: {(string.IsNullOrEmpty(jwtOptions.Secret) ? "Missing" : "Present")}");
+                Console.Error.WriteLine(
+                    "❌ JWT configuration is invalid. Please check your JWT settings."
+                );
+                Console.Error.WriteLine(
+                    $"   - Secret: {(string.IsNullOrEmpty(jwtOptions.Secret) ? "Missing" : "Present")}"
+                );
                 Console.Error.WriteLine($"   - Issuer: {jwtOptions.Issuer}");
                 Console.Error.WriteLine($"   - Audience: {jwtOptions.Audience}");
                 Console.Error.WriteLine($"   - ExpirationMinutes: {jwtOptions.ExpirationMinutes}");
@@ -107,7 +120,9 @@ public static class TokenGeneratorCommand
             Console.WriteLine();
             Console.WriteLine($"UserId: {userId}");
             Console.WriteLine($"AgentId: {agentId}");
-            Console.WriteLine($"Expires: {DateTime.UtcNow.AddMinutes(jwtOptions.ExpirationMinutes):yyyy-MM-dd HH:mm:ss} UTC");
+            Console.WriteLine(
+                $"Expires: {DateTime.UtcNow.AddMinutes(jwtOptions.ExpirationMinutes):yyyy-MM-dd HH:mm:ss} UTC"
+            );
             Console.WriteLine();
             Console.WriteLine("Token:");
             Console.WriteLine(token);

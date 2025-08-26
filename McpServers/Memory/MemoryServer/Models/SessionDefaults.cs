@@ -51,11 +51,17 @@ public class SessionDefaults
         return new SessionDefaults
         {
             ConnectionId = "stdio-env",
-            UserId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID"),
-            AgentId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID"),
-            RunId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"),
+            UserId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+                "MCP_MEMORY_USER_ID"
+            ),
+            AgentId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+                "MCP_MEMORY_AGENT_ID"
+            ),
+            RunId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
+                "MCP_MEMORY_RUN_ID"
+            ),
             Source = SessionDefaultsSource.EnvironmentVariables,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
     }
 
@@ -70,7 +76,7 @@ public class SessionDefaults
         {
             ConnectionId = "sse-url",
             Source = SessionDefaultsSource.UrlParameters,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
 
         if (queryParameters.TryGetValue("user_id", out var userId))
@@ -96,7 +102,7 @@ public class SessionDefaults
         {
             ConnectionId = "sse-headers",
             Source = SessionDefaultsSource.HttpHeaders,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
 
         if (headers.TryGetValue("X-Memory-User-ID", out var userId))
@@ -148,5 +154,5 @@ public enum SessionDefaultsSource
     /// <summary>
     /// From HTTP headers (SSE transport)
     /// </summary>
-    HttpHeaders = 4
+    HttpHeaders = 4,
 }

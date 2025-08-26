@@ -34,7 +34,8 @@ public class HttpConfiguration
     /// <summary>
     /// Base delay for exponential backoff retry logic
     /// </summary>
-    public TimeSpan BaseDelay { get; set; } = TimeSpan.FromMilliseconds(DefaultBaseDelayMilliseconds);
+    public TimeSpan BaseDelay { get; set; } =
+        TimeSpan.FromMilliseconds(DefaultBaseDelayMilliseconds);
 
     /// <summary>
     /// Whether to enable detailed HTTP logging
@@ -59,9 +60,7 @@ public class HttpConfiguration
     /// <summary>
     /// Creates a new HttpConfiguration with default values
     /// </summary>
-    public HttpConfiguration()
-    {
-    }
+    public HttpConfiguration() { }
 
     /// <summary>
     /// Creates a new HttpConfiguration with custom values
@@ -92,7 +91,10 @@ public class HttpConfiguration
             throw new ArgumentException("BaseDelay must be greater than zero", nameof(BaseDelay));
 
         if (string.IsNullOrWhiteSpace(UserAgent))
-            throw new ArgumentException("UserAgent cannot be null or whitespace", nameof(UserAgent));
+            throw new ArgumentException(
+                "UserAgent cannot be null or whitespace",
+                nameof(UserAgent)
+            );
     }
 
     /// <summary>
@@ -106,7 +108,7 @@ public class HttpConfiguration
             EnableDetailedLogging = EnableDetailedLogging,
             RetryOnNetworkErrors = RetryOnNetworkErrors,
             RetryOnServerErrors = RetryOnServerErrors,
-            UserAgent = UserAgent
+            UserAgent = UserAgent,
         };
     }
 }

@@ -8,12 +8,16 @@ public enum Role
 {
     [JsonPropertyName("none")]
     None,
+
     [JsonPropertyName("user")]
     User,
+
     [JsonPropertyName("assistant")]
     Assistant,
+
     [JsonPropertyName("system")]
     System,
+
     [JsonPropertyName("tool")]
-    Tool
+    Tool,
 }

@@ -21,7 +21,8 @@ public interface IResultEnricher
         List<UnifiedSearchResult> results,
         SessionContext sessionContext,
         EnrichmentOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Checks if the enrichment service is available and configured.

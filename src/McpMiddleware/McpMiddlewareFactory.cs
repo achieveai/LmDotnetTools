@@ -1,8 +1,8 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
-using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -21,7 +21,9 @@ public class McpMiddlewareFactory
     public McpMiddlewareFactory(ILoggerFactory? loggerFactory = null)
     {
         _loggerFactory = loggerFactory;
-        _logger = loggerFactory?.CreateLogger<McpMiddlewareFactory>() ?? NullLogger<McpMiddlewareFactory>.Instance;
+        _logger =
+            loggerFactory?.CreateLogger<McpMiddlewareFactory>()
+            ?? NullLogger<McpMiddlewareFactory>.Instance;
     }
 
     /// <summary>
@@ -30,21 +32,36 @@ public class McpMiddlewareFactory
     /// <param name="configFilePath">Path to the configuration file</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>The created middleware</returns>
-    public async Task<IStreamingMiddleware> CreateFromConfigFileAsync(string configFilePath, CancellationToken cancellationToken = default)
+    public async Task<IStreamingMiddleware> CreateFromConfigFileAsync(
+        string configFilePath,
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogInformation("Creating MCP middleware from config file asynchronously: {ConfigFilePath}", configFilePath);
+        _logger.LogInformation(
+            "Creating MCP middleware from config file asynchronously: {ConfigFilePath}",
+            configFilePath
+        );
 
-        _logger.LogDebug("Factory initialization: Reading configuration file: {ConfigFilePath}", configFilePath);
+        _logger.LogDebug(
+            "Factory initialization: Reading configuration file: {ConfigFilePath}",
+            configFilePath
+        );
 
         // Read and parse the configuration file
         var configJson = await File.ReadAllTextAsync(configFilePath, cancellationToken);
 
         _logger.LogDebug("Configuration file read: Size={ConfigSize} bytes", configJson.Length);
 
-        var config = JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson)
-            ?? throw new InvalidOperationException($"Failed to deserialize config file: {configFilePath}");
+        var config =
+            JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson)
+            ?? throw new InvalidOperationException(
+                $"Failed to deserialize config file: {configFilePath}"
+            );
 
-        _logger.LogDebug("Configuration deserialized: ClientCount={ClientCount}", config.Clients.Count);
+        _logger.LogDebug(
+            "Configuration deserialized: ClientCount={ClientCount}",
+            config.Clients.Count
+        );
 
         return await CreateFromConfigAsync(config, cancellationToken);
     }
@@ -57,12 +74,18 @@ public class McpMiddlewareFactory
     /// <returns>The created middleware</returns>
     public async Task<IStreamingMiddleware> CreateFromConfigAsync(
         McpMiddlewareConfiguration config,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
+        _logger.LogInformation(
+            "Creating MCP middleware from config with {ClientCount} clients",
+            config.Clients.Count
+        );
 
-        _logger.LogDebug("MCP client configuration validation: ClientIds={ClientIds}",
-            string.Join(", ", config.Clients.Keys));
+        _logger.LogDebug(
+            "MCP client configuration validation: ClientIds={ClientIds}",
+            string.Join(", ", config.Clients.Keys)
+        );
 
         // Create MCP clients from the configuration
         var mcpClients = new Dictionary<string, IMcpClient>();
@@ -75,20 +98,29 @@ public class McpMiddlewareFactory
                 var clientSettings = clientConfig.Value;
 
                 _logger.LogInformation("Creating MCP client: {ClientId}", clientId);
-                _logger.LogDebug("Client validation: ClientId={ClientId}, ConfigType={ConfigType}",
-                    clientId, clientSettings?.GetType().Name ?? "null");
+                _logger.LogDebug(
+                    "Client validation: ClientId={ClientId}, ConfigType={ConfigType}",
+                    clientId,
+                    clientSettings?.GetType().Name ?? "null"
+                );
 
                 // Create transport from configuration
                 var transport = CreateTransportFromConfig(clientId, clientSettings);
-                _logger.LogDebug("Transport created for client: ClientId={ClientId}, TransportType={TransportType}",
-                    clientId, transport.GetType().Name);
+                _logger.LogDebug(
+                    "Transport created for client: ClientId={ClientId}, TransportType={TransportType}",
+                    clientId,
+                    transport.GetType().Name
+                );
 
                 var client = await McpClientFactory.CreateAsync(transport);
                 mcpClients[clientId] = client;
 
                 _logger.LogInformation("Successfully created MCP client: {ClientId}", clientId);
-                _logger.LogDebug("Client creation completed: ClientId={ClientId}, ClientType={ClientType}",
-                    clientId, client.GetType().Name);
+                _logger.LogDebug(
+                    "Client creation completed: ClientId={ClientId}, ClientType={ClientType}",
+                    clientId,
+                    client.GetType().Name
+                );
             }
             catch (Exception ex)
             {
@@ -97,24 +129,32 @@ public class McpMiddlewareFactory
             }
         }
 
-        _logger.LogDebug("Middleware setup: Preparing to create middleware with {ClientCount} validated clients",
-            mcpClients.Count);
+        _logger.LogDebug(
+            "Middleware setup: Preparing to create middleware with {ClientCount} validated clients",
+            mcpClients.Count
+        );
 
         // Create loggers for middleware components
         var mcpMiddlewareLogger = _loggerFactory?.CreateLogger<McpMiddleware>();
         var functionCallMiddlewareLogger = _loggerFactory?.CreateLogger<FunctionCallMiddleware>();
 
-        _logger.LogDebug("Creating MCP middleware with logger propagation: HasMcpLogger={HasMcpLogger}, HasFunctionLogger={HasFunctionLogger}",
-            mcpMiddlewareLogger != null, functionCallMiddlewareLogger != null);
+        _logger.LogDebug(
+            "Creating MCP middleware with logger propagation: HasMcpLogger={HasMcpLogger}, HasFunctionLogger={HasFunctionLogger}",
+            mcpMiddlewareLogger != null,
+            functionCallMiddlewareLogger != null
+        );
 
-        _logger.LogDebug("Function contract processing: Starting middleware creation with automatic contract extraction");
+        _logger.LogDebug(
+            "Function contract processing: Starting middleware creation with automatic contract extraction"
+        );
 
         // Create the middleware using the async factory pattern with loggers
         return await McpMiddleware.CreateAsync(
             mcpClients,
             logger: mcpMiddlewareLogger,
             functionCallLogger: functionCallMiddlewareLogger,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken
+        );
     }
 
     /// <summary>
@@ -137,7 +177,9 @@ public class McpMiddlewareFactory
             return CreateTransportFromDictionary(clientId, configDict);
         }
 
-        throw new InvalidOperationException($"Unsupported client configuration type for client '{clientId}': {clientSettings.GetType()}");
+        throw new InvalidOperationException(
+            $"Unsupported client configuration type for client '{clientId}': {clientSettings.GetType()}"
+        );
     }
 
     /// <summary>
@@ -146,7 +188,10 @@ public class McpMiddlewareFactory
     /// <param name="clientId">The client ID</param>
     /// <param name="jsonElement">The JSON configuration</param>
     /// <returns>The created transport</returns>
-    private IClientTransport CreateTransportFromJsonElement(string clientId, JsonElement jsonElement)
+    private IClientTransport CreateTransportFromJsonElement(
+        string clientId,
+        JsonElement jsonElement
+    )
     {
         string? command = null;
         string[]? arguments = null;
@@ -162,17 +207,35 @@ public class McpMiddlewareFactory
         }
 
         // Try to extract arguments
-        if (jsonElement.TryGetProperty("arguments", out var argsElement) && argsElement.ValueKind == JsonValueKind.Array)
+        if (
+            jsonElement.TryGetProperty("arguments", out var argsElement)
+            && argsElement.ValueKind == JsonValueKind.Array
+        )
         {
-            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
+            arguments = argsElement
+                .EnumerateArray()
+                .Select(e => e.GetString() ?? string.Empty)
+                .ToArray();
         }
-        else if (jsonElement.TryGetProperty("Arguments", out argsElement) && argsElement.ValueKind == JsonValueKind.Array)
+        else if (
+            jsonElement.TryGetProperty("Arguments", out argsElement)
+            && argsElement.ValueKind == JsonValueKind.Array
+        )
         {
-            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
+            arguments = argsElement
+                .EnumerateArray()
+                .Select(e => e.GetString() ?? string.Empty)
+                .ToArray();
         }
-        else if (jsonElement.TryGetProperty("args", out argsElement) && argsElement.ValueKind == JsonValueKind.Array)
+        else if (
+            jsonElement.TryGetProperty("args", out argsElement)
+            && argsElement.ValueKind == JsonValueKind.Array
+        )
         {
-            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
+            arguments = argsElement
+                .EnumerateArray()
+                .Select(e => e.GetString() ?? string.Empty)
+                .ToArray();
         }
 
         // If no command found, try to parse from a single command string that might include arguments
@@ -200,15 +263,19 @@ public class McpMiddlewareFactory
 
         if (string.IsNullOrEmpty(command))
         {
-            throw new InvalidOperationException($"No command found in configuration for client '{clientId}'");
+            throw new InvalidOperationException(
+                $"No command found in configuration for client '{clientId}'"
+            );
         }
 
-        return new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = clientId,
-            Command = command,
-            Arguments = arguments ?? Array.Empty<string>()
-        });
+        return new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = clientId,
+                Command = command,
+                Arguments = arguments ?? Array.Empty<string>(),
+            }
+        );
     }
 
     /// <summary>
@@ -217,17 +284,24 @@ public class McpMiddlewareFactory
     /// <param name="clientId">The client ID</param>
     /// <param name="configDict">The configuration dictionary</param>
     /// <returns>The created transport</returns>
-    private IClientTransport CreateTransportFromDictionary(string clientId, Dictionary<string, object> configDict)
+    private IClientTransport CreateTransportFromDictionary(
+        string clientId,
+        Dictionary<string, object> configDict
+    )
     {
         string? command = null;
         string[]? arguments = null;
 
         // Try to extract command
-        if (configDict.TryGetValue("command", out var commandObj) && commandObj is string commandStr)
+        if (
+            configDict.TryGetValue("command", out var commandObj) && commandObj is string commandStr
+        )
         {
             command = commandStr;
         }
-        else if (configDict.TryGetValue("Command", out commandObj) && commandObj is string commandStr2)
+        else if (
+            configDict.TryGetValue("Command", out commandObj) && commandObj is string commandStr2
+        )
         {
             command = commandStr2;
         }
@@ -248,15 +322,19 @@ public class McpMiddlewareFactory
 
         if (string.IsNullOrEmpty(command))
         {
-            throw new InvalidOperationException($"No command found in configuration for client '{clientId}'");
+            throw new InvalidOperationException(
+                $"No command found in configuration for client '{clientId}'"
+            );
         }
 
-        return new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = clientId,
-            Command = command,
-            Arguments = arguments ?? Array.Empty<string>()
-        });
+        return new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = clientId,
+                Command = command,
+                Arguments = arguments ?? Array.Empty<string>(),
+            }
+        );
     }
 
     /// <summary>
@@ -270,9 +348,11 @@ public class McpMiddlewareFactory
         {
             string[] stringArray => stringArray,
             IEnumerable<string> stringEnumerable => stringEnumerable.ToArray(),
-            IEnumerable<object> objectEnumerable => objectEnumerable.Select(o => o?.ToString() ?? string.Empty).ToArray(),
+            IEnumerable<object> objectEnumerable => objectEnumerable
+                .Select(o => o?.ToString() ?? string.Empty)
+                .ToArray(),
             string singleArg => singleArg.Split(' ', StringSplitOptions.RemoveEmptyEntries),
-            _ => Array.Empty<string>()
+            _ => Array.Empty<string>(),
         };
     }
 
@@ -284,23 +364,36 @@ public class McpMiddlewareFactory
     /// <returns>The created middleware</returns>
     public async Task<IStreamingMiddleware> CreateFromClientsAsync(
         Dictionary<string, IMcpClient> mcpClients,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
+        _logger.LogInformation(
+            "Creating MCP middleware from {ClientCount} clients asynchronously",
+            mcpClients.Count
+        );
 
-        _logger.LogDebug("Client validation: Validating {ClientCount} provided clients: {ClientIds}",
-            mcpClients.Count, string.Join(", ", mcpClients.Keys));
+        _logger.LogDebug(
+            "Client validation: Validating {ClientCount} provided clients: {ClientIds}",
+            mcpClients.Count,
+            string.Join(", ", mcpClients.Keys)
+        );
 
         // Validate clients
         foreach (var kvp in mcpClients)
         {
             if (kvp.Value == null)
             {
-                _logger.LogDebug("Client validation failed: ClientId={ClientId} has null client instance", kvp.Key);
+                _logger.LogDebug(
+                    "Client validation failed: ClientId={ClientId} has null client instance",
+                    kvp.Key
+                );
                 throw new ArgumentException($"Client '{kvp.Key}' is null", nameof(mcpClients));
             }
-            _logger.LogDebug("Client validation passed: ClientId={ClientId}, ClientType={ClientType}",
-                kvp.Key, kvp.Value.GetType().Name);
+            _logger.LogDebug(
+                "Client validation passed: ClientId={ClientId}, ClientType={ClientType}",
+                kvp.Key,
+                kvp.Value.GetType().Name
+            );
         }
 
         _logger.LogDebug("Middleware setup: All clients validated, preparing middleware creation");
@@ -309,10 +402,15 @@ public class McpMiddlewareFactory
         var mcpMiddlewareLogger = _loggerFactory?.CreateLogger<McpMiddleware>();
         var functionCallMiddlewareLogger = _loggerFactory?.CreateLogger<FunctionCallMiddleware>();
 
-        _logger.LogDebug("Creating MCP middleware from clients with logger propagation: HasMcpLogger={HasMcpLogger}, HasFunctionLogger={HasFunctionLogger}",
-            mcpMiddlewareLogger != null, functionCallMiddlewareLogger != null);
+        _logger.LogDebug(
+            "Creating MCP middleware from clients with logger propagation: HasMcpLogger={HasMcpLogger}, HasFunctionLogger={HasFunctionLogger}",
+            mcpMiddlewareLogger != null,
+            functionCallMiddlewareLogger != null
+        );
 
-        _logger.LogDebug("Function contract processing: Starting automatic contract extraction from clients");
+        _logger.LogDebug(
+            "Function contract processing: Starting automatic contract extraction from clients"
+        );
 
         // Use the async factory pattern from McpMiddleware with loggers
         // This will automatically extract function contracts from the clients
@@ -320,6 +418,7 @@ public class McpMiddlewareFactory
             mcpClients,
             logger: mcpMiddlewareLogger,
             functionCallLogger: functionCallMiddlewareLogger,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken
+        );
     }
 }

@@ -15,7 +15,13 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 public class DataDrivenFunctionToolTests
 {
     private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
-    private static string EnvTestPath => Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
+    private static string EnvTestPath =>
+        Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            ".env.test"
+        );
 
     [Theory]
     [MemberData(nameof(GetFunctionToolTestCases))]
@@ -25,14 +31,23 @@ public class DataDrivenFunctionToolTests
 
         // Arrange - Load data from test files
         var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.OpenAI);
-        Debug.WriteLine($"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions");
+        Debug.WriteLine(
+            $"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions"
+        );
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "OpenAI", $"{testName}.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "TestData",
+            "OpenAI",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: false)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
@@ -49,9 +64,15 @@ public class DataDrivenFunctionToolTests
         // Assert - Compare with expected response
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
 
-        Debug.WriteLine($"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses?.Count() ?? 0}");
-        Debug.WriteLine($"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}");
-        Debug.WriteLine($"Expected types: {string.Join(", ", expectedResponses?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}");
+        Debug.WriteLine(
+            $"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses?.Count() ?? 0}"
+        );
+        Debug.WriteLine(
+            $"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}"
+        );
+        Debug.WriteLine(
+            $"Expected types: {string.Join(", ", expectedResponses?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}"
+        );
 
         Assert.NotNull(response);
 
@@ -75,17 +96,29 @@ public class DataDrivenFunctionToolTests
                 Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
                 Assert.Equal(expectedTextResponse.Role, responseItem.Role);
             }
-            else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
+            else if (
+                expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage
+            )
             {
                 Assert.IsType<ToolsCallAggregateMessage>(responseItem);
                 var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
-                Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
-                Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
+                Assert.Equal(
+                    expectedToolsCallAggregateMessage.Role,
+                    toolsCallAggregateMessage.Role
+                );
+                Assert.Equal(
+                    expectedToolsCallAggregateMessage.FromAgent,
+                    toolsCallAggregateMessage.FromAgent
+                );
                 Assert.Equal(
                     expectedToolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count(),
-                    toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count());
-                foreach (var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage.ToolsCallMessage!
-                    .GetToolCalls()!.Zip(toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!))
+                    toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count()
+                );
+                foreach (
+                    var (expectedToolCall, toolCall) in expectedToolsCallAggregateMessage
+                        .ToolsCallMessage!.GetToolCalls()!
+                        .Zip(toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!)
+                )
                 {
                     Assert.Equal(expectedToolCall.FunctionName, toolCall.FunctionName);
                     Assert.Equal(expectedToolCall.FunctionArgs, toolCall.FunctionArgs);
@@ -106,7 +139,8 @@ public class DataDrivenFunctionToolTests
     public static IEnumerable<object[]> GetFunctionToolTestCases()
     {
         var testDataManager = new ProviderTestDataManager();
-        return testDataManager.GetTestCaseNames(ProviderType.OpenAI)
+        return testDataManager
+            .GetTestCaseNames(ProviderType.OpenAI)
             .Where(name => name.Contains("FunctionTool"))
             .Select(name => new object[] { name });
     }
@@ -119,7 +153,11 @@ public class DataDrivenFunctionToolTests
     {
         // Skip if the test data already exists
         string testName = "WeatherFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
+        string testDataPath = _testDataManager.GetTestDataPath(
+            testName,
+            ProviderType.OpenAI,
+            DataType.LmCoreRequest
+        );
 
         if (File.Exists(testDataPath))
         {
@@ -130,7 +168,7 @@ public class DataDrivenFunctionToolTests
         // 1. LmCore request data - messages and options
         var messages = new[]
         {
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
         var weatherFunction = new FunctionContract
@@ -144,15 +182,15 @@ public class DataDrivenFunctionToolTests
                     Name = "location",
                     Description = "City name",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = true
-                }
-            }
+                    IsRequired = true,
+                },
+            },
         };
 
         var options = new GenerateReplyOptions
         {
             ModelId = "gpt-4",
-            Functions = new[] { weatherFunction }
+            Functions = new[] { weatherFunction },
         };
 
         // Save LmCore request
@@ -160,10 +198,17 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "OpenAI", $"{testName}.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "TestData",
+            "OpenAI",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
@@ -187,7 +232,11 @@ public class DataDrivenFunctionToolTests
     {
         // Skip if the test data already exists
         string testName = "MultiFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
+        string testDataPath = _testDataManager.GetTestDataPath(
+            testName,
+            ProviderType.OpenAI,
+            DataType.LmCoreRequest
+        );
 
         if (File.Exists(testDataPath))
         {
@@ -198,8 +247,16 @@ public class DataDrivenFunctionToolTests
         // 1. LmCore request data - messages and options
         var messages = new[]
         {
-            new TextMessage { Role = Role.System, Text = "You are a helpful assistant that can use tools to help users." },
-            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." }
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You are a helpful assistant that can use tools to help users.",
+            },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "List files in root and \"code\" directories.",
+            },
         };
 
         // Create multiple function definitions
@@ -214,9 +271,9 @@ public class DataDrivenFunctionToolTests
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = false
-                }
-            }
+                    IsRequired = false,
+                },
+            },
         };
 
         var getDirTreeFunction = new FunctionContract
@@ -230,9 +287,9 @@ public class DataDrivenFunctionToolTests
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = false
-                }
-            }
+                    IsRequired = false,
+                },
+            },
         };
 
         var options = new GenerateReplyOptions
@@ -240,7 +297,7 @@ public class DataDrivenFunctionToolTests
             ModelId = "gpt-4",
             MaxToken = 2000,
             Temperature = 0.7f,
-            Functions = new[] { listDirectoryFunction, getDirTreeFunction }
+            Functions = new[] { listDirectoryFunction, getDirTreeFunction },
         };
 
         // Save LmCore request
@@ -248,10 +305,17 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "OpenAI", $"{testName}.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "TestData",
+            "OpenAI",
+            $"{testName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: true)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
@@ -272,9 +336,11 @@ public class DataDrivenFunctionToolTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY",
+        return EnvironmentHelper.GetApiKeyFromEnv(
+            "OPENAI_API_KEY",
             new[] { "LLM_API_KEY" },
-            "test-api-key");
+            "test-api-key"
+        );
     }
 
     /// <summary>
@@ -282,8 +348,10 @@ public class DataDrivenFunctionToolTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL",
+        return EnvironmentHelper.GetApiBaseUrlFromEnv(
+            "OPENAI_API_URL",
             new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1");
+            "https://api.openai.com/v1"
+        );
     }
 }

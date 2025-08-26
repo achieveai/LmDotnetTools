@@ -1,17 +1,17 @@
+using AchieveAi.LmDotnetTools.LmConfig.Agents;
+using AchieveAi.LmDotnetTools.LmConfig.Models;
+using AchieveAi.LmDotnetTools.LmConfig.Services;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using MemoryServer.Models;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
-using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Configuration;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -38,9 +38,10 @@ public class TopicBasedSegmentationServiceTests
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
         _service = new TopicBasedSegmentationService(
-          _mockLlmService.Object,
-          _mockPromptManager.Object,
-          _logger);
+            _mockLlmService.Object,
+            _mockPromptManager.Object,
+            _logger
+        );
 
         SetupDefaultMocks();
     }
@@ -56,7 +57,7 @@ public class TopicBasedSegmentationServiceTests
         {
             MinSegmentSize = 50,
             MaxSegments = 10,
-            UseLlmEnhancement = false // Disable for simpler testing
+            UseLlmEnhancement = false, // Disable for simpler testing
         };
 
         // Act
@@ -71,7 +72,10 @@ public class TopicBasedSegmentationServiceTests
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
             segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.TopicBased.ToString());
+            segment
+                .Metadata["segmentation_strategy"]
+                .Should()
+                .Be(SegmentationStrategy.TopicBased.ToString());
         }
     }
 
@@ -87,19 +91,25 @@ public class TopicBasedSegmentationServiceTests
             CoherenceScore = 0.85,
             PrimaryTopic = "Technology Discussion",
             TopicKeywords = new List<string> { "technology", "innovation", "development" },
-            KeyConcepts = new List<string> { "AI", "machine learning", "software" }
+            KeyConcepts = new List<string> { "AI", "machine learning", "software" },
         };
 
         // Mock LLM enhancement calls
-        _mockLlmService.Setup(x => x.AnalyzeOptimalStrategyAsync(
-            It.IsAny<string>(),
-            It.IsAny<DocumentType>(),
-            It.IsAny<CancellationToken>()))
-          .ReturnsAsync(new StrategyRecommendation
-          {
-              Strategy = SegmentationStrategy.TopicBased,
-              Confidence = 0.9
-          });
+        _mockLlmService
+            .Setup(x =>
+                x.AnalyzeOptimalStrategyAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<DocumentType>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                new StrategyRecommendation
+                {
+                    Strategy = SegmentationStrategy.TopicBased,
+                    Confidence = 0.9,
+                }
+            );
 
         // Act
         var result = await _service.SegmentByTopicsAsync(content, DocumentType.Technical, options);
@@ -124,7 +134,7 @@ public class TopicBasedSegmentationServiceTests
         {
             MergeSimilarTopics = true,
             TopicSimilarityThreshold = 0.8,
-            UseLlmEnhancement = false
+            UseLlmEnhancement = false,
         };
 
         // Act
@@ -153,7 +163,9 @@ public class TopicBasedSegmentationServiceTests
 
         foreach (var boundary in result)
         {
-            System.Diagnostics.Debug.WriteLine($"Boundary at position {boundary.Position} with confidence {boundary.Confidence}");
+            System.Diagnostics.Debug.WriteLine(
+                $"Boundary at position {boundary.Position} with confidence {boundary.Confidence}"
+            );
         }
 
         // Assert
@@ -176,7 +188,8 @@ public class TopicBasedSegmentationServiceTests
     public async Task DetectTopicBoundariesAsync_WithTransitionWords_DetectsTransitions()
     {
         // Arrange
-        var content = @"Technology has revolutionized our daily lives. Modern devices are everywhere.
+        var content =
+            @"Technology has revolutionized our daily lives. Modern devices are everywhere.
 
 However, environmental concerns are rising. Climate change affects everyone.
 
@@ -190,7 +203,9 @@ Furthermore, economic implications must be considered. Market volatility is incr
         System.Diagnostics.Debug.WriteLine($"Transition test result count: {result.Count}");
         foreach (var boundary in result)
         {
-            System.Diagnostics.Debug.WriteLine($"Boundary at position {boundary.Position}, confidence {boundary.Confidence}, keywords: [{string.Join(", ", boundary.TransitionKeywords)}]");
+            System.Diagnostics.Debug.WriteLine(
+                $"Boundary at position {boundary.Position}, confidence {boundary.Confidence}, keywords: [{string.Join(", ", boundary.TransitionKeywords)}]"
+            );
         }
 
         // Assert
@@ -202,9 +217,12 @@ Furthermore, economic implications must be considered. Market volatility is incr
 
         // Check for expected transition words
         var allTransitionKeywords = result.SelectMany(b => b.TransitionKeywords).ToList();
-        allTransitionKeywords.Should().Contain(word =>
-          word.Equals("however", StringComparison.OrdinalIgnoreCase) ||
-          word.Equals("furthermore", StringComparison.OrdinalIgnoreCase));
+        allTransitionKeywords
+            .Should()
+            .Contain(word =>
+                word.Equals("however", StringComparison.OrdinalIgnoreCase)
+                || word.Equals("furthermore", StringComparison.OrdinalIgnoreCase)
+            );
     }
 
     #endregion
@@ -215,7 +233,8 @@ Furthermore, economic implications must be considered. Market volatility is incr
     public async Task AnalyzeThematicCoherenceAsync_WithCoherentContent_ReturnsHighScore()
     {
         // Arrange
-        var coherentContent = @"
+        var coherentContent =
+            @"
         Machine learning algorithms have transformed data analysis. These computational methods
         enable pattern recognition and predictive modeling. Deep learning, a subset of machine learning,
         uses neural networks to process complex data structures. The applications of these technologies
@@ -240,7 +259,8 @@ Furthermore, economic implications must be considered. Market volatility is incr
     public async Task AnalyzeThematicCoherenceAsync_WithIncoherentContent_ReturnsLowerScore()
     {
         // Arrange
-        var incoherentContent = @"
+        var incoherentContent =
+            @"
         The weather is nice today. Database optimization requires careful indexing.
         My favorite color is blue. Quantum computing uses qubits for calculations.
         Pizza delivery takes 30 minutes. Stock market volatility affects investments.
@@ -296,30 +316,30 @@ Furthermore, economic implications must be considered. Market volatility is incr
         // Arrange
         var originalContent = "Test content";
         var poorSegments = new List<DocumentSegment>
-    {
-      new DocumentSegment
-      {
-        Id = "1",
-        Content = "A", // Too short
-        SequenceNumber = 0,
-        Metadata = new Dictionary<string, object>
         {
-          ["start_position"] = 0,
-          ["end_position"] = 1
-        }
-      },
-      new DocumentSegment
-      {
-        Id = "2",
-        Content = CreateIncoherentContent(), // Poor coherence
-        SequenceNumber = 1,
-        Metadata = new Dictionary<string, object>
-        {
-          ["start_position"] = 2,
-          ["end_position"] = 100
-        }
-      }
-    };
+            new DocumentSegment
+            {
+                Id = "1",
+                Content = "A", // Too short
+                SequenceNumber = 0,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["start_position"] = 0,
+                    ["end_position"] = 1,
+                },
+            },
+            new DocumentSegment
+            {
+                Id = "2",
+                Content = CreateIncoherentContent(), // Poor coherence
+                SequenceNumber = 1,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["start_position"] = 2,
+                    ["end_position"] = 100,
+                },
+            },
+        };
 
         // Act
         var result = await _service.ValidateTopicSegmentsAsync(poorSegments, originalContent);
@@ -329,7 +349,9 @@ Furthermore, economic implications must be considered. Market volatility is incr
         result.Issues.Should().NotBeEmpty();
 
         // Should identify coherence issues
-        var coherenceIssues = result.Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence).ToList();
+        var coherenceIssues = result
+            .Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence)
+            .ToList();
         coherenceIssues.Should().NotBeEmpty();
 
         result.Recommendations.Should().NotBeEmpty();
@@ -361,7 +383,11 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var options = new TopicSegmentationOptions { MinSegmentSize = 50 };
 
         // Act
-        var result = await _service.SegmentByTopicsAsync(shortContent, DocumentType.Generic, options);
+        var result = await _service.SegmentByTopicsAsync(
+            shortContent,
+            DocumentType.Generic,
+            options
+        );
 
         // Assert
         result.Should().NotBeNull();
@@ -372,7 +398,8 @@ Furthermore, economic implications must be considered. Market volatility is incr
     public async Task DetectTopicBoundariesAsync_WithSingleTopicContent_ReturnsMinimalBoundaries()
     {
         // Arrange
-        var singleTopicContent = @"
+        var singleTopicContent =
+            @"
         This document discusses only one topic throughout its entirety.
         The topic remains consistent and focused on the same subject matter.
         All paragraphs relate to the same central theme and concept.
@@ -380,7 +407,10 @@ Furthermore, economic implications must be considered. Market volatility is incr
         ";
 
         // Act
-        var result = await _service.DetectTopicBoundariesAsync(singleTopicContent, DocumentType.Generic);
+        var result = await _service.DetectTopicBoundariesAsync(
+            singleTopicContent,
+            DocumentType.Generic
+        );
 
         // Assert
         result.Should().NotBeNull();
@@ -395,25 +425,33 @@ Furthermore, economic implications must be considered. Market volatility is incr
     private void SetupDefaultMocks()
     {
         // Setup default prompt manager response
-        _mockPromptManager.Setup(x => x.GetPromptAsync(
-            It.IsAny<SegmentationStrategy>(),
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()))
-          .ReturnsAsync(new PromptTemplate
-          {
-              SystemPrompt = "You are a topic analysis expert.",
-              UserPrompt = "Analyze the following content for topic boundaries: {DocumentContent}",
-              ExpectedFormat = "json",
-              Metadata = new Dictionary<string, object>
-              {
-                  ["strategy"] = SegmentationStrategy.TopicBased.ToString(),
-                  ["language"] = "en"
-              }
-          });
+        _mockPromptManager
+            .Setup(x =>
+                x.GetPromptAsync(
+                    It.IsAny<SegmentationStrategy>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                new PromptTemplate
+                {
+                    SystemPrompt = "You are a topic analysis expert.",
+                    UserPrompt =
+                        "Analyze the following content for topic boundaries: {DocumentContent}",
+                    ExpectedFormat = "json",
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["strategy"] = SegmentationStrategy.TopicBased.ToString(),
+                        ["language"] = "en",
+                    },
+                }
+            );
 
         // Setup default LLM service responses
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-          .ReturnsAsync(true);
+        _mockLlmService
+            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
     }
 
     private string CreateMultiTopicDocument()
@@ -476,19 +514,31 @@ public class TopicBasedSegmentationServiceIntegrationTests
 
         // Test data path for recording/playback
         var testDataPath = Path.Combine(
-          "tests", "TestData", "DocumentSegmentation", "TopicBasedSegmentation",
-          "RealLlmService.json");
+            "tests",
+            "TestData",
+            "DocumentSegmentation",
+            "TopicBasedSegmentation",
+            "RealLlmService.json"
+        );
 
-        var workspaceRoot = EnvironmentHelper.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+        var workspaceRoot = EnvironmentHelper.FindWorkspaceRoot(
+            AppDomain.CurrentDomain.BaseDirectory
+        );
         var fullTestDataPath = Path.Combine(workspaceRoot, testDataPath);
 
         // Create HTTP handler with record/playback functionality
-        var handler = MockHttpHandlerBuilder.Create()
-          .WithRecordPlayback(fullTestDataPath, allowAdditional: true)
-          .ForwardToApi(
-            EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL", null, "https://openrouter.ai/api/v1"),
-            EnvironmentHelper.GetApiKeyFromEnv("OPENROUTER_API_KEY"))
-          .Build();
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .WithRecordPlayback(fullTestDataPath, allowAdditional: true)
+            .ForwardToApi(
+                EnvironmentHelper.GetApiBaseUrlFromEnv(
+                    "LLM_API_BASE_URL",
+                    null,
+                    "https://openrouter.ai/api/v1"
+                ),
+                EnvironmentHelper.GetApiKeyFromEnv("OPENROUTER_API_KEY")
+            )
+            .Build();
 
         var httpClient = new HttpClient(handler);
 
@@ -497,10 +547,12 @@ public class TopicBasedSegmentationServiceIntegrationTests
         ConfigureIntegrationServices(serviceCollection, httpClient);
         var serviceProvider = serviceCollection.BuildServiceProvider();
 
-        var segmentationService = serviceProvider.GetRequiredService<ITopicBasedSegmentationService>();
+        var segmentationService =
+            serviceProvider.GetRequiredService<ITopicBasedSegmentationService>();
 
         // Test content with clear topic boundaries
-        var testContent = @"
+        var testContent =
+            @"
         Technology has revolutionized our daily lives in unprecedented ways. Modern smartphones, computers, and internet connectivity have created a globally connected society where information flows instantly across continents. Artificial intelligence and machine learning algorithms are reshaping industries from healthcare to finance.
 
         However, environmental concerns are becoming increasingly critical. Climate change poses unprecedented challenges to our planet's ecosystems. Rising sea levels, extreme weather patterns, and biodiversity loss require immediate global action. Sustainable development practices and renewable energy adoption are essential for our future survival.
@@ -512,15 +564,16 @@ public class TopicBasedSegmentationServiceIntegrationTests
 
         // Act - Perform topic-based segmentation
         var result = await segmentationService.SegmentByTopicsAsync(
-          testContent,
-          DocumentType.Generic,
-          new TopicSegmentationOptions
-          {
-              MinSegmentSize = 100,
-              MaxSegmentSize = 1000,
-              MinThematicCoherence = 0.7,
-              UseLlmEnhancement = true
-          });
+            testContent,
+            DocumentType.Generic,
+            new TopicSegmentationOptions
+            {
+                MinSegmentSize = 100,
+                MaxSegmentSize = 1000,
+                MinThematicCoherence = 0.7,
+                UseLlmEnhancement = true,
+            }
+        );
 
         // Assert - Verify quality segmentation
         result.Should().NotBeNull();
@@ -555,20 +608,23 @@ public class TopicBasedSegmentationServiceIntegrationTests
         Console.WriteLine($"Segmentation produced {result.Count} segments:");
         foreach (var segment in result)
         {
-            Console.WriteLine($"Segment {segment.SequenceNumber}: {segment.Content[..Math.Min(100, segment.Content.Length)]}...");
+            Console.WriteLine(
+                $"Segment {segment.SequenceNumber}: {segment.Content[..Math.Min(100, segment.Content.Length)]}..."
+            );
             Console.WriteLine($"  Quality: Coherence={segment.Quality?.CoherenceScore:F2}");
         }
     }
 
-    private static void ConfigureIntegrationServices(ServiceCollection services, HttpClient httpClient)
+    private static void ConfigureIntegrationServices(
+        ServiceCollection services,
+        HttpClient httpClient
+    )
     {
         // Add logging
         services.AddLogging(builder => builder.AddConsole());
 
         // Add configuration
-        var configuration = new ConfigurationBuilder()
-          .AddEnvironmentVariables()
-          .Build();
+        var configuration = new ConfigurationBuilder().AddEnvironmentVariables().Build();
         services.AddSingleton<IConfiguration>(configuration);
 
         // Add LmConfig services with custom HttpClient
@@ -591,10 +647,10 @@ public class TopicBasedSegmentationServiceIntegrationTests
             {
                 ["strategy_analysis"] = "gpt-4o-mini",
                 ["segmentation"] = "gpt-4o-mini",
-                ["quality_validation"] = "gpt-4o-mini"
+                ["quality_validation"] = "gpt-4o-mini",
             },
             Temperature = 0.1,
-            MaxRetries = 3
+            MaxRetries = 3,
         };
         services.AddSingleton(llmConfig);
     }

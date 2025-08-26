@@ -20,7 +20,11 @@ public interface IFunctionCallMiddlewareFactory
     /// <param name="name">Optional name for the middleware</param>
     /// <param name="configure">Optional configuration for the function registry</param>
     /// <returns>Configured FunctionCallMiddleware with callback</returns>
-    FunctionCallMiddleware Create(IToolResultCallback? resultCallback, string? name = null, Action<FunctionRegistry>? configure = null);
+    FunctionCallMiddleware Create(
+        IToolResultCallback? resultCallback,
+        string? name = null,
+        Action<FunctionRegistry>? configure = null
+    );
 
     /// <summary>
     /// Create a FunctionRegistry with all registered providers

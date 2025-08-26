@@ -91,12 +91,18 @@ public static class LogEventIds
     /// <summary>
     /// Logged when middleware completes processing a request.
     /// </summary>
-    public static readonly EventId MiddlewareProcessingCompleted = new(2002, "MiddlewareProcessingCompleted");
+    public static readonly EventId MiddlewareProcessingCompleted = new(
+        2002,
+        "MiddlewareProcessingCompleted"
+    );
 
     /// <summary>
     /// Logged when middleware processing fails.
     /// </summary>
-    public static readonly EventId MiddlewareProcessingFailed = new(2003, "MiddlewareProcessingFailed");
+    public static readonly EventId MiddlewareProcessingFailed = new(
+        2003,
+        "MiddlewareProcessingFailed"
+    );
 
     /// <summary>
     /// Logged when a function call is executed successfully.
@@ -111,12 +117,18 @@ public static class LogEventIds
     /// <summary>
     /// Logged when function call arguments are processed.
     /// </summary>
-    public static readonly EventId FunctionArgumentsProcessed = new(2006, "FunctionArgumentsProcessed");
+    public static readonly EventId FunctionArgumentsProcessed = new(
+        2006,
+        "FunctionArgumentsProcessed"
+    );
 
     /// <summary>
     /// Logged when function call results are transformed.
     /// </summary>
-    public static readonly EventId FunctionResultTransformed = new(2007, "FunctionResultTransformed");
+    public static readonly EventId FunctionResultTransformed = new(
+        2007,
+        "FunctionResultTransformed"
+    );
 
     /// <summary>
     /// Logged when usage data is successfully enriched.
@@ -205,12 +217,18 @@ public static class LogEventIds
     /// <summary>
     /// Logged when provider configuration is loaded.
     /// </summary>
-    public static readonly EventId ProviderConfigurationLoaded = new(3008, "ProviderConfigurationLoaded");
+    public static readonly EventId ProviderConfigurationLoaded = new(
+        3008,
+        "ProviderConfigurationLoaded"
+    );
 
     /// <summary>
     /// Logged when provider selection criteria are evaluated.
     /// </summary>
-    public static readonly EventId ProviderSelectionCriteria = new(3009, "ProviderSelectionCriteria");
+    public static readonly EventId ProviderSelectionCriteria = new(
+        3009,
+        "ProviderSelectionCriteria"
+    );
 
     /// <summary>
     /// Logged when fallback provider is used.

@@ -176,7 +176,7 @@ public class FunctionRegistryTests
         var naturalResult = await handlers["func1"]("{}");
         Assert.Equal("natural-result", naturalResult);
 
-        // MCP function with key "TestClass-func1"  
+        // MCP function with key "TestClass-func1"
         var mcpResult = await handlers["TestClass-func1"]("{}");
         Assert.Equal("mcp-result", mcpResult);
     }
@@ -192,8 +192,9 @@ public class FunctionRegistryTests
         // Act
         registry.AddProvider(provider1);
         registry.AddProvider(provider2);
-        registry.WithConflictHandler((key, candidates) =>
-            candidates.First(c => c.ProviderName == "provider1"));
+        registry.WithConflictHandler(
+            (key, candidates) => candidates.First(c => c.ProviderName == "provider1")
+        );
 
         var (contracts, handlers) = registry.Build();
 
@@ -243,7 +244,11 @@ public class FunctionRegistryTests
     {
         // Arrange
         var registry = new FunctionRegistry();
-        var provider = CreateTestProvider("TestProvider", new[] { "func1", "func2" }, priority: 100);
+        var provider = CreateTestProvider(
+            "TestProvider",
+            new[] { "func1", "func2" },
+            priority: 100
+        );
 
         // Act
         registry.AddProvider(provider);
@@ -269,7 +274,10 @@ public class FunctionRegistryTests
     {
         // Arrange
         var registry = new FunctionRegistry();
-        var explicitContract = CreateTestContract("explicitFunc", description: "Explicit test function");
+        var explicitContract = CreateTestContract(
+            "explicitFunc",
+            description: "Explicit test function"
+        );
         var explicitHandler = CreateTestHandler("explicit-result");
 
         // Act
@@ -376,26 +384,37 @@ public class FunctionRegistryTests
         Assert.Contains("- **Description:** Returns a string result", markdown);
     }
 
-
-
-    internal static IFunctionProvider CreateTestProvider(string name, string[] functionNames, int priority = 100, bool isMcp = false)
+    internal static IFunctionProvider CreateTestProvider(
+        string name,
+        string[] functionNames,
+        int priority = 100,
+        bool isMcp = false
+    )
     {
         return new TestFunctionProvider(name, functionNames, priority, isMcp);
     }
 
-    internal static IFunctionProvider CreateTestProviderWithSameKey(string name, string functionName, bool isMcp = false)
+    internal static IFunctionProvider CreateTestProviderWithSameKey(
+        string name,
+        string functionName,
+        bool isMcp = false
+    )
     {
         return new TestFunctionProviderWithSameKey(name, functionName, isMcp);
     }
 
-    internal static FunctionContract CreateTestContract(string name, string? className = null, string? description = null)
+    internal static FunctionContract CreateTestContract(
+        string name,
+        string? className = null,
+        string? description = null
+    )
     {
         return new FunctionContract
         {
             Name = name,
             ClassName = className,
             Description = description ?? $"Test function {name}",
-            Parameters = new List<FunctionParameterContract>()
+            Parameters = new List<FunctionParameterContract>(),
         };
     }
 
@@ -409,7 +428,12 @@ public class FunctionRegistryTests
         private readonly string[] _functionNames;
         private readonly bool _isMcp;
 
-        public TestFunctionProvider(string name, string[] functionNames, int priority = 100, bool isMcp = false)
+        public TestFunctionProvider(
+            string name,
+            string[] functionNames,
+            int priority = 100,
+            bool isMcp = false
+        )
         {
             ProviderName = name;
             Priority = priority;
@@ -429,10 +453,10 @@ public class FunctionRegistryTests
                     Name = name,
                     ClassName = _isMcp ? "TestClass" : null,
                     Description = $"Test function {name}",
-                    Parameters = new List<FunctionParameterContract>()
+                    Parameters = new List<FunctionParameterContract>(),
                 },
                 Handler = _ => Task.FromResult($"{ProviderName}-result"),
-                ProviderName = ProviderName
+                ProviderName = ProviderName,
             });
         }
     }
@@ -463,11 +487,11 @@ public class FunctionRegistryTests
                         Name = _functionName,
                         ClassName = _isMcp ? "TestClass" : null, // Use isMcp flag for testing conflict resolution
                         Description = $"Test function {_functionName}",
-                        Parameters = new List<FunctionParameterContract>()
+                        Parameters = new List<FunctionParameterContract>(),
                     },
                     Handler = _ => Task.FromResult($"{ProviderName}-result"),
-                    ProviderName = ProviderName
-                }
+                    ProviderName = ProviderName,
+                },
             };
         }
     }
@@ -498,11 +522,11 @@ public class FunctionRegistryTests
                         Name = _functionName,
                         ClassName = _isMcp ? "TestClass" : null, // MCP has class name, natural doesn't
                         Description = $"Test function {_functionName}",
-                        Parameters = new List<FunctionParameterContract>()
+                        Parameters = new List<FunctionParameterContract>(),
                     },
                     Handler = _ => Task.FromResult($"{ProviderName}-result"),
-                    ProviderName = ProviderName
-                }
+                    ProviderName = ProviderName,
+                },
             };
         }
     }
@@ -519,18 +543,24 @@ public class FunctionRegistryTests
                 {
                     Name = "stringParam",
                     Description = "A string parameter",
-                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
-                    IsRequired = true
+                    ParameterType = new JsonSchemaObject
+                    {
+                        Type = JsonSchemaTypeHelper.ToType("string"),
+                    },
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "optionalParam",
                     Description = "An optional parameter",
-                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number") },
+                    ParameterType = new JsonSchemaObject
+                    {
+                        Type = JsonSchemaTypeHelper.ToType("number"),
+                    },
                     IsRequired = false,
-                    DefaultValue = 42
-                }
-            }
+                    DefaultValue = 42,
+                },
+            },
         };
     }
 
@@ -542,7 +572,7 @@ public class FunctionRegistryTests
             Description = $"Test function {name}",
             ReturnType = typeof(string),
             ReturnDescription = "Returns a string result",
-            Parameters = new List<FunctionParameterContract>()
+            Parameters = new List<FunctionParameterContract>(),
         };
     }
 }

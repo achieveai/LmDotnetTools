@@ -13,7 +13,7 @@ public static class MockToolTypes
         typeof(MockGreetingTool),
         typeof(MockCalculatorTool),
         typeof(MockPythonExecutionTool),
-        typeof(MockWeatherTool)
+        typeof(MockWeatherTool),
     };
 
     /// <summary>
@@ -22,7 +22,7 @@ public static class MockToolTypes
     public static readonly IReadOnlyList<Type> CSharpSample = new[]
     {
         typeof(MockGreetingTool),
-        typeof(MockCalculatorTool)
+        typeof(MockCalculatorTool),
     };
 
     /// <summary>
@@ -30,14 +30,11 @@ public static class MockToolTypes
     /// </summary>
     public static readonly IReadOnlyList<Type> PythonSample = new[]
     {
-        typeof(MockPythonExecutionTool)
+        typeof(MockPythonExecutionTool),
     };
 
     /// <summary>
     /// Weather tool types
     /// </summary>
-    public static readonly IReadOnlyList<Type> Weather = new[]
-    {
-        typeof(MockWeatherTool)
-    };
+    public static readonly IReadOnlyList<Type> Weather = new[] { typeof(MockWeatherTool) };
 }

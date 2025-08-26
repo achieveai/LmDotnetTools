@@ -1,11 +1,11 @@
+using AchieveAi.LmDotnetTools.LmConfig.Services;
+using AchieveAi.LmDotnetTools.ModelConfigGenerator.Configuration;
+using AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NLog;
 using NLog.Extensions.Logging;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
-using AchieveAi.LmDotnetTools.ModelConfigGenerator.Configuration;
-using AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
 
 namespace AchieveAi.LmDotnetTools.ModelConfigGenerator;
 
@@ -19,13 +19,16 @@ public class Program
         try
         {
             var options = ParseArguments(args);
-            if (options == null) return 1;
+            if (options == null)
+                return 1;
 
             // Special handling for list families
             if (args.Contains("--list-families"))
             {
                 Console.WriteLine("Supported model families:");
-                foreach (var family in ModelConfigGeneratorService.GetSupportedFamilies().OrderBy(f => f))
+                foreach (
+                    var family in ModelConfigGeneratorService.GetSupportedFamilies().OrderBy(f => f)
+                )
                 {
                     Console.WriteLine($"  {family}");
                 }
@@ -34,51 +37,62 @@ public class Program
 
             // Setup NLog and logging
             var logger = LogManager.GetCurrentClassLogger();
-            var logLevel = options.Verbose ? Microsoft.Extensions.Logging.LogLevel.Debug : Microsoft.Extensions.Logging.LogLevel.Information;
+            var logLevel = options.Verbose
+                ? Microsoft.Extensions.Logging.LogLevel.Debug
+                : Microsoft.Extensions.Logging.LogLevel.Information;
 
             try
             {
-                logger.Info("Starting ModelConfigGenerator with options: {@Options}", new
-                {
-                    options.OutputPath,
-                    options.ModelFamilies,
-                    options.Verbose,
-                    options.MaxModels,
-                    options.ReasoningOnly,
-                    options.MultimodalOnly,
-                    options.MinContextLength,
-                    options.MaxCostPerMillion,
-                    options.ModelUpdatedSince
-                });
+                logger.Info(
+                    "Starting ModelConfigGenerator with options: {@Options}",
+                    new
+                    {
+                        options.OutputPath,
+                        options.ModelFamilies,
+                        options.Verbose,
+                        options.MaxModels,
+                        options.ReasoningOnly,
+                        options.MultimodalOnly,
+                        options.MinContextLength,
+                        options.MaxCostPerMillion,
+                        options.ModelUpdatedSince,
+                    }
+                );
 
                 // Create host and services with NLog
                 var host = Host.CreateDefaultBuilder()
-                  .ConfigureLogging(logging =>
-                  {
-                      logging.ClearProviders();
-                      logging.SetMinimumLevel(logLevel);
-                      logging.AddNLog("nlog.config");
-                  })
-                  .ConfigureServices(services =>
-                  {
-                      services.AddHttpClient();
-                      services.AddTransient<OpenRouterModelService>(provider =>
-                      {
-                          var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
-                          var httpClient = httpClientFactory.CreateClient();
-                          var serviceLogger = provider.GetRequiredService<ILogger<OpenRouterModelService>>();
-                          return new OpenRouterModelService(httpClient, serviceLogger);
-                      });
-                      services.AddTransient<ModelConfigGeneratorService>();
-                  })
-                  .Build();
+                    .ConfigureLogging(logging =>
+                    {
+                        logging.ClearProviders();
+                        logging.SetMinimumLevel(logLevel);
+                        logging.AddNLog("nlog.config");
+                    })
+                    .ConfigureServices(services =>
+                    {
+                        services.AddHttpClient();
+                        services.AddTransient<OpenRouterModelService>(provider =>
+                        {
+                            var httpClientFactory =
+                                provider.GetRequiredService<IHttpClientFactory>();
+                            var httpClient = httpClientFactory.CreateClient();
+                            var serviceLogger = provider.GetRequiredService<
+                                ILogger<OpenRouterModelService>
+                            >();
+                            return new OpenRouterModelService(httpClient, serviceLogger);
+                        });
+                        services.AddTransient<ModelConfigGeneratorService>();
+                    })
+                    .Build();
 
                 var generator = host.Services.GetRequiredService<ModelConfigGeneratorService>();
                 var success = await generator.GenerateConfigAsync(options);
 
                 if (success)
                 {
-                    logger.Info("Successfully generated model configuration at {OutputPath}", options.OutputPath);
+                    logger.Info(
+                        "Successfully generated model configuration at {OutputPath}",
+                        options.OutputPath
+                    );
                 }
                 else
                 {
@@ -121,7 +135,8 @@ public class Program
                     ShowHelp();
                     return null;
 
-                case "--output" or "-o":
+                case "--output"
+                or "-o":
                     if (i + 1 >= args.Length)
                     {
                         Console.Error.WriteLine("Error: --output requires a value");
@@ -130,7 +145,8 @@ public class Program
                     options = options with { OutputPath = args[++i] };
                     break;
 
-                case "--families" or "-f":
+                case "--families"
+                or "-f":
                     if (i + 1 >= args.Length)
                     {
                         Console.Error.WriteLine("Error: --families requires a value");
@@ -139,21 +155,30 @@ public class Program
                     families.AddRange(args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries));
                     break;
 
-                case "--verbose" or "-v":
+                case "--verbose"
+                or "-v":
                     options = options with { Verbose = true };
                     break;
 
-                case "--max-models" or "-m":
-                    if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var maxModels) || maxModels < 0)
+                case "--max-models"
+                or "-m":
+                    if (
+                        i + 1 >= args.Length
+                        || !int.TryParse(args[i + 1], out var maxModels)
+                        || maxModels < 0
+                    )
                     {
-                        Console.Error.WriteLine("Error: --max-models requires a non-negative integer");
+                        Console.Error.WriteLine(
+                            "Error: --max-models requires a non-negative integer"
+                        );
                         return null;
                     }
                     options = options with { MaxModels = maxModels };
                     i++;
                     break;
 
-                case "--reasoning-only" or "-r":
+                case "--reasoning-only"
+                or "-r":
                     options = options with { ReasoningOnly = true };
                     break;
 
@@ -162,9 +187,15 @@ public class Program
                     break;
 
                 case "--min-context":
-                    if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var minContext) || minContext < 0)
+                    if (
+                        i + 1 >= args.Length
+                        || !int.TryParse(args[i + 1], out var minContext)
+                        || minContext < 0
+                    )
                     {
-                        Console.Error.WriteLine("Error: --min-context requires a non-negative integer");
+                        Console.Error.WriteLine(
+                            "Error: --min-context requires a non-negative integer"
+                        );
                         return null;
                     }
                     options = options with { MinContextLength = minContext };
@@ -172,9 +203,15 @@ public class Program
                     break;
 
                 case "--max-cost":
-                    if (i + 1 >= args.Length || !decimal.TryParse(args[i + 1], out var maxCost) || maxCost < 0)
+                    if (
+                        i + 1 >= args.Length
+                        || !decimal.TryParse(args[i + 1], out var maxCost)
+                        || maxCost < 0
+                    )
                     {
-                        Console.Error.WriteLine("Error: --max-cost requires a non-negative decimal");
+                        Console.Error.WriteLine(
+                            "Error: --max-cost requires a non-negative decimal"
+                        );
                         return null;
                     }
                     options = options with { MaxCostPerMillion = maxCost };
@@ -189,7 +226,9 @@ public class Program
                     }
                     if (!DateTime.TryParse(args[i + 1], out var sinceDate))
                     {
-                        Console.Error.WriteLine("Error: --model-updated-since requires a valid date (YYYY-MM-DD)");
+                        Console.Error.WriteLine(
+                            "Error: --model-updated-since requires a valid date (YYYY-MM-DD)"
+                        );
                         return null;
                     }
                     options = options with { ModelUpdatedSince = sinceDate };
@@ -217,7 +256,9 @@ public class Program
         // Validate mutually exclusive options
         if (options.ReasoningOnly && options.MultimodalOnly)
         {
-            Console.Error.WriteLine("Error: Cannot specify both --reasoning-only and --multimodal-only");
+            Console.Error.WriteLine(
+                "Error: Cannot specify both --reasoning-only and --multimodal-only"
+            );
             return null;
         }
 
@@ -227,28 +268,36 @@ public class Program
 
     private static void ShowHelp()
     {
-        Console.WriteLine("ModelConfigGenerator - Generate Models.config files from OpenRouter API");
+        Console.WriteLine(
+            "ModelConfigGenerator - Generate Models.config files from OpenRouter API"
+        );
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine("  ModelConfigGenerator [options]");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  --output, -o <path>       Output file path (default: Models.config)");
-        Console.WriteLine("  --families, -f <families> Comma-separated model families (e.g., llama,claude,gpt)");
+        Console.WriteLine(
+            "  --families, -f <families> Comma-separated model families (e.g., llama,claude,gpt)"
+        );
         Console.WriteLine("  --verbose, -v             Enable verbose logging");
         Console.WriteLine("  --max-models, -m <count>  Maximum number of models to include");
         Console.WriteLine("  --reasoning-only, -r      Include only reasoning models");
         Console.WriteLine("  --multimodal-only         Include only multimodal models");
         Console.WriteLine("  --min-context <tokens>    Minimum context length required");
         Console.WriteLine("  --max-cost <cost>         Maximum cost per million tokens");
-        Console.WriteLine("  --model-updated-since <date>  Include only models updated since this date (YYYY-MM-DD)");
+        Console.WriteLine(
+            "  --model-updated-since <date>  Include only models updated since this date (YYYY-MM-DD)"
+        );
         Console.WriteLine("  --no-capabilities         Exclude detailed capabilities information");
         Console.WriteLine("  --compact                 Generate compact JSON without indentation");
         Console.WriteLine("  --list-families           List all supported model families");
         Console.WriteLine("  --help, -h                Show this help message");
         Console.WriteLine();
         Console.WriteLine("Examples:");
-        Console.WriteLine("  ModelConfigGenerator --output ./config/models.json --families llama,claude --verbose");
+        Console.WriteLine(
+            "  ModelConfigGenerator --output ./config/models.json --families llama,claude --verbose"
+        );
         Console.WriteLine("  ModelConfigGenerator --reasoning-only --max-models 10");
         Console.WriteLine("  ModelConfigGenerator --list-families");
     }

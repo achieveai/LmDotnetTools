@@ -29,7 +29,7 @@ public class TaskManagerTests
         // Assert
         result.Should().StartWith("Added task 2:");
         result.Should().Contain("Test task");
-        
+
         var tasks = _taskManager.ListTasks();
         tasks.Should().Contain("Test task");
     }
@@ -101,18 +101,18 @@ public class TaskManagerTests
         // Arrange
         var tasks = new List<TaskManager.BulkTaskItem>
         {
-            new() 
-            { 
-                Task = "Task 1", 
+            new()
+            {
+                Task = "Task 1",
                 SubTasks = new List<string> { "Subtask 1.1", "Subtask 1.2" },
-                Notes = new List<string> { "Note 1", "Note 2" }
+                Notes = new List<string> { "Note 1", "Note 2" },
             },
-            new() 
-            { 
-                Task = "Task 2", 
+            new()
+            {
+                Task = "Task 2",
                 SubTasks = new List<string> { "Subtask 2.1" },
-                Notes = new List<string> { "Note A" }
-            }
+                Notes = new List<string> { "Note A" },
+            },
         };
 
         // Act
@@ -122,7 +122,7 @@ public class TaskManagerTests
         result.Should().Contain("Added 2 task(s)");
         result.Should().Contain("Task 1");
         result.Should().Contain("Task 2");
-        
+
         var taskList = _taskManager.ListTasks();
         taskList.Should().Contain("Task 1");
         taskList.Should().Contain("Task 2");
@@ -136,10 +136,7 @@ public class TaskManagerTests
     {
         // Arrange
         _taskManager.AddTask("Existing task");
-        var tasks = new List<TaskManager.BulkTaskItem>
-        {
-            new() { Task = "New task" }
-        };
+        var tasks = new List<TaskManager.BulkTaskItem> { new() { Task = "New task" } };
 
         // Act
         var result = _taskManager.BulkInitialize(tasks, clearExisting: true);
@@ -147,7 +144,7 @@ public class TaskManagerTests
         // Assert
         result.Should().Contain("Cleared existing tasks");
         result.Should().Contain("Added 1 task(s)");
-        
+
         var taskList = _taskManager.ListTasks();
         taskList.Should().NotContain("Existing task");
         taskList.Should().Contain("New task");
@@ -162,7 +159,7 @@ public class TaskManagerTests
             new() { Task = "" },
             new() { Task = "   " },
             new() { Task = "Valid task" },
-            new() { Task = null! }
+            new() { Task = null! },
         };
 
         // Act
@@ -180,11 +177,11 @@ public class TaskManagerTests
         // Arrange
         var tasks = new List<TaskManager.BulkTaskItem>
         {
-            new() 
-            { 
+            new()
+            {
                 Task = "Main task",
-                SubTasks = new List<string> { "", "Valid subtask", "   ", null! }
-            }
+                SubTasks = new List<string> { "", "Valid subtask", "   ", null! },
+            },
         };
 
         // Act
@@ -227,7 +224,7 @@ public class TaskManagerTests
         // Assert
         result1.Should().Contain($"Updated task {taskId} status to 'in progress'");
         result2.Should().Contain($"Updated task {taskId} status to 'completed'");
-        
+
         var taskDetails = _taskManager.GetTask(taskId);
         taskDetails.Should().Contain("Status: completed");
     }
@@ -245,8 +242,10 @@ public class TaskManagerTests
         var result = _taskManager.UpdateTask(parentId, subtaskId, "completed");
 
         // Assert
-        result.Should().Contain($"Updated subtask {subtaskId} of task {parentId} status to 'completed'");
-        
+        result
+            .Should()
+            .Contain($"Updated subtask {subtaskId} of task {parentId} status to 'completed'");
+
         var taskDetails = _taskManager.GetTask(parentId, subtaskId);
         taskDetails.Should().Contain("Status: completed");
     }
@@ -262,7 +261,9 @@ public class TaskManagerTests
         var result = _taskManager.UpdateTask(taskId, status: "invalid");
 
         // Assert
-        result.Should().Be("Error: Invalid status. Use: not started, in progress, completed, removed.");
+        result
+            .Should()
+            .Be("Error: Invalid status. Use: not started, in progress, completed, removed.");
     }
 
     [Fact]
@@ -280,7 +281,7 @@ public class TaskManagerTests
             ("completed", "completed"),
             ("done", "completed"),
             ("removed", "removed"),
-            ("deleted", "removed")
+            ("deleted", "removed"),
         };
 
         foreach (var (input, expected) in tasks)
@@ -315,7 +316,7 @@ public class TaskManagerTests
         // Assert
         result.Should().Contain($"Deleted task {parentId} and all subtasks");
         result.Should().Contain("Parent task");
-        
+
         var getResult = _taskManager.GetTask(parentId);
         getResult.Should().Contain("Error: Task");
         getResult.Should().Contain("not found");
@@ -338,7 +339,7 @@ public class TaskManagerTests
         // Assert
         result.Should().Contain($"Deleted subtask {subtask1Id} from task {parentId}");
         result.Should().Contain("Subtask 1");
-        
+
         var parentDetails = _taskManager.GetTask(parentId);
         parentDetails.Should().NotContain("Subtask 1");
         parentDetails.Should().Contain("Subtask 2");
@@ -412,7 +413,7 @@ public class TaskManagerTests
 
         // Assert
         result.Should().Contain($"Added note to task {taskId}");
-        
+
         var notes = _taskManager.ListNotes(taskId);
         notes.Should().Contain("Test note");
     }
@@ -426,11 +427,16 @@ public class TaskManagerTests
         _taskManager.ManageNotes(taskId, noteText: "Original note", action: "add");
 
         // Act
-        var result = _taskManager.ManageNotes(taskId, noteText: "Updated note", noteIndex: 1, action: "edit");
+        var result = _taskManager.ManageNotes(
+            taskId,
+            noteText: "Updated note",
+            noteIndex: 1,
+            action: "edit"
+        );
 
         // Assert
         result.Should().Contain($"Edited note 1 on task {taskId}");
-        
+
         var notes = _taskManager.ListNotes(taskId);
         notes.Should().NotContain("Original note");
         notes.Should().Contain("Updated note");
@@ -450,7 +456,7 @@ public class TaskManagerTests
 
         // Assert
         result.Should().Contain($"Deleted note 1 from task {taskId}");
-        
+
         var notes = _taskManager.ListNotes(taskId);
         notes.Should().NotContain("Note 1");
         notes.Should().Contain("Note 2");
@@ -479,8 +485,18 @@ public class TaskManagerTests
         _taskManager.ManageNotes(taskId, noteText: "Note 1", action: "add");
 
         // Act
-        var result1 = _taskManager.ManageNotes(taskId, noteText: "Updated", noteIndex: 0, action: "edit");
-        var result2 = _taskManager.ManageNotes(taskId, noteText: "Updated", noteIndex: 2, action: "edit");
+        var result1 = _taskManager.ManageNotes(
+            taskId,
+            noteText: "Updated",
+            noteIndex: 0,
+            action: "edit"
+        );
+        var result2 = _taskManager.ManageNotes(
+            taskId,
+            noteText: "Updated",
+            noteIndex: 2,
+            action: "edit"
+        );
 
         // Assert
         result1.Should().Contain("Error: Note index 0 out of range (1-1)");
@@ -511,7 +527,7 @@ public class TaskManagerTests
         var task2Id = ExtractTaskId(task2Result);
         var task3Result = _taskManager.AddTask("Task 3");
         var task3Id = ExtractTaskId(task3Result);
-        
+
         _taskManager.UpdateTask(task1Id, status: "in progress");
         _taskManager.UpdateTask(task2Id, status: "completed");
 
@@ -524,10 +540,10 @@ public class TaskManagerTests
         inProgressTasks.Should().Contain("Task 1");
         inProgressTasks.Should().NotContain("Task 2");
         inProgressTasks.Should().NotContain("Task 3");
-        
+
         completedTasks.Should().Contain("Task 2");
         completedTasks.Should().NotContain("Task 1");
-        
+
         notStartedTasks.Should().Contain("Task 3");
         notStartedTasks.Should().NotContain("Task 1");
     }
@@ -549,7 +565,7 @@ public class TaskManagerTests
         allTasks.Should().Contain("Parent task");
         allTasks.Should().Contain("Subtask 1");
         allTasks.Should().Contain("Subtask 2");
-        
+
         mainOnly.Should().Contain("Parent task");
         mainOnly.Should().NotContain("Subtask 1");
         mainOnly.Should().NotContain("Subtask 2");
@@ -586,7 +602,7 @@ public class TaskManagerTests
         var task2Result = _taskManager.AddTask("Task 2");
         var task2Id = ExtractTaskId(task2Result);
         _taskManager.AddTask("Subtask", task1Id);
-        
+
         _taskManager.UpdateTask(task1Id, status: "completed");
         _taskManager.UpdateTask(task2Id, status: "removed");
 
@@ -637,13 +653,13 @@ public class TaskManagerTests
             var taskNum = i;
             tasks.Add(Task.Run(() => _taskManager.AddTask($"Task {taskNum}")));
         }
-        
+
         var results = await Task.WhenAll(tasks);
 
         // Assert
         results.Should().HaveCount(taskCount);
         results.Should().OnlyContain(r => r.StartsWith("Added task"));
-        
+
         // Verify all task IDs are unique
         var taskIds = results.Select(r => ExtractTaskId(r)).ToList();
         taskIds.Should().OnlyHaveUniqueItems();
@@ -661,23 +677,33 @@ public class TaskManagerTests
         for (int i = 0; i < concurrentOps; i++)
         {
             var opNum = i;
-            tasks.Add(Task.Run(() =>
-            {
-                var bulkTasks = new List<TaskManager.BulkTaskItem>
+            tasks.Add(
+                Task.Run(() =>
                 {
-                    new() { Task = $"Bulk {opNum} Task 1", SubTasks = new() { $"Sub {opNum}.1" } },
-                    new() { Task = $"Bulk {opNum} Task 2", SubTasks = new() { $"Sub {opNum}.2" } }
-                };
-                return _taskManager.BulkInitialize(bulkTasks);
-            }));
+                    var bulkTasks = new List<TaskManager.BulkTaskItem>
+                    {
+                        new()
+                        {
+                            Task = $"Bulk {opNum} Task 1",
+                            SubTasks = new() { $"Sub {opNum}.1" },
+                        },
+                        new()
+                        {
+                            Task = $"Bulk {opNum} Task 2",
+                            SubTasks = new() { $"Sub {opNum}.2" },
+                        },
+                    };
+                    return _taskManager.BulkInitialize(bulkTasks);
+                })
+            );
         }
-        
+
         var results = await Task.WhenAll(tasks);
 
         // Assert
         results.Should().HaveCount(concurrentOps);
         results.Should().OnlyContain(r => r.Contains("Added 2 task(s)"));
-        
+
         var allTasks = _taskManager.ListTasks();
         for (int i = 0; i < concurrentOps; i++)
         {
@@ -698,21 +724,23 @@ public class TaskManagerTests
         // Act
         for (int i = 0; i < updateCount; i++)
         {
-            var status = i % 3 switch
-            {
-                0 => "not started",
-                1 => "in progress",
-                _ => "completed"
-            };
+            var status =
+                i
+                % 3 switch
+                {
+                    0 => "not started",
+                    1 => "in progress",
+                    _ => "completed",
+                };
             tasks.Add(Task.Run(() => _taskManager.UpdateTask(taskId, status: status)));
         }
-        
+
         var results = await Task.WhenAll(tasks);
 
         // Assert
         results.Should().HaveCount(updateCount);
         results.Should().OnlyContain(r => r.Contains("Updated task"));
-        
+
         // Final state should be one of the valid statuses
         var finalTask = _taskManager.GetTask(taskId);
         finalTask.Should().ContainAny("not started", "in progress", "completed");
@@ -731,22 +759,29 @@ public class TaskManagerTests
         for (int i = 0; i < noteCount; i++)
         {
             var noteNum = i;
-            tasks.Add(Task.Run(() => 
-                _taskManager.ManageNotes(taskId, noteText: $"Note {noteNum}", action: "add")));
+            tasks.Add(
+                Task.Run(() =>
+                    _taskManager.ManageNotes(taskId, noteText: $"Note {noteNum}", action: "add")
+                )
+            );
         }
-        
+
         var results = await Task.WhenAll(tasks);
 
         // Assert
         results.Should().HaveCount(noteCount);
         results.Should().OnlyContain(r => r.Contains("Added note"));
-        
+
         var notes = _taskManager.ListNotes(taskId);
-        var noteLines = notes.Split('\n').Where(l => l.Trim().StartsWith("1.") || 
-                                                      l.Trim().StartsWith("2.") ||
-                                                      l.Trim().StartsWith("3.") ||
-                                                      l.Trim().StartsWith("4.") ||
-                                                      l.Trim().StartsWith("5."));
+        var noteLines = notes
+            .Split('\n')
+            .Where(l =>
+                l.Trim().StartsWith("1.")
+                || l.Trim().StartsWith("2.")
+                || l.Trim().StartsWith("3.")
+                || l.Trim().StartsWith("4.")
+                || l.Trim().StartsWith("5.")
+            );
         noteLines.Count().Should().BeGreaterOrEqualTo(1); // At least some notes should be added
     }
 
@@ -761,31 +796,39 @@ public class TaskManagerTests
         for (int i = 0; i < 20; i++)
         {
             var opNum = i;
-            operations.Add(Task.Run(async () =>
-            {
-                switch (opNum % 5)
+            operations.Add(
+                Task.Run(async () =>
                 {
-                    case 0:
-                        results.Add(await Task.Run(() => _taskManager.AddTask($"Task {opNum}")));
-                        break;
-                    case 1:
-                        results.Add(await Task.Run(() => _taskManager.ListTasks()));
-                        break;
-                    case 2:
-                        results.Add(await Task.Run(() => _taskManager.SearchTasks(countType: "total")));
-                        break;
-                    case 3:
-                        var bulkTasks = new List<TaskManager.BulkTaskItem>
-                        {
-                            new() { Task = $"Bulk {opNum}" }
-                        };
-                        results.Add(await Task.Run(() => _taskManager.BulkInitialize(bulkTasks)));
-                        break;
-                    case 4:
-                        results.Add(await Task.Run(() => _taskManager.GetMarkdown()));
-                        break;
-                }
-            }));
+                    switch (opNum % 5)
+                    {
+                        case 0:
+                            results.Add(
+                                await Task.Run(() => _taskManager.AddTask($"Task {opNum}"))
+                            );
+                            break;
+                        case 1:
+                            results.Add(await Task.Run(() => _taskManager.ListTasks()));
+                            break;
+                        case 2:
+                            results.Add(
+                                await Task.Run(() => _taskManager.SearchTasks(countType: "total"))
+                            );
+                            break;
+                        case 3:
+                            var bulkTasks = new List<TaskManager.BulkTaskItem>
+                            {
+                                new() { Task = $"Bulk {opNum}" },
+                            };
+                            results.Add(
+                                await Task.Run(() => _taskManager.BulkInitialize(bulkTasks))
+                            );
+                            break;
+                        case 4:
+                            results.Add(await Task.Run(() => _taskManager.GetMarkdown()));
+                            break;
+                    }
+                })
+            );
         }
 
         await Task.WhenAll(operations);
@@ -816,7 +859,7 @@ public class TaskManagerTests
         // Assert
         _output.WriteLine($"Added {taskCount} tasks in {stopwatch.ElapsedMilliseconds}ms");
         stopwatch.ElapsedMilliseconds.Should().BeLessThan(5000); // Should be fast
-        
+
         var count = _taskManager.SearchTasks(countType: "total");
         count.Should().Be($"Total tasks: {taskCount}");
     }
@@ -849,7 +892,7 @@ public class TaskManagerTests
             "Task with & ampersand",
             "Task with \n newline",
             "Task with \t tab",
-            "Task with émojis 🎉"
+            "Task with émojis 🎉",
         };
 
         // Act & Assert
@@ -882,7 +925,7 @@ public class TaskManagerTests
         // Assert
         addResult.Should().Contain("Added task");
         noteResult.Should().Contain("Added note");
-        
+
         var taskDetails = _taskManager.GetTask(taskId);
         taskDetails.Should().Contain(longTitle);
         taskDetails.Should().Contain(longNote);

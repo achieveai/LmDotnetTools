@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text.Json;
-using Xunit;
 using AchieveAi.LmDotnetTools.LmTestUtils;
+using Xunit;
 
 namespace LmTestUtils.Tests;
 
@@ -11,8 +11,13 @@ public class ErrorResponseTests
     public async Task RespondWithAnthropicError_ShouldGenerateValidAnthropicErrorFormat()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicError(HttpStatusCode.BadRequest, "invalid_request_error", "Invalid request parameters")
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .RespondWithAnthropicError(
+                HttpStatusCode.BadRequest,
+                "invalid_request_error",
+                "Invalid request parameters"
+            )
             .Build();
 
         using var client = new HttpClient(handler);
@@ -27,15 +32,22 @@ public class ErrorResponseTests
         var json = JsonDocument.Parse(content);
 
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
-        Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
-        Assert.Equal("Invalid request parameters", json.RootElement.GetProperty("error").GetProperty("message").GetString());
+        Assert.Equal(
+            "invalid_request_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
+        Assert.Equal(
+            "Invalid request parameters",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithAnthropicRateLimit_ShouldGenerateRateLimitError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithAnthropicRateLimit("Rate limit exceeded")
             .Build();
 
@@ -51,15 +63,22 @@ public class ErrorResponseTests
         var json = JsonDocument.Parse(content);
 
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
-        Assert.Equal("rate_limit_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
-        Assert.Equal("Rate limit exceeded", json.RootElement.GetProperty("error").GetProperty("message").GetString());
+        Assert.Equal(
+            "rate_limit_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
+        Assert.Equal(
+            "Rate limit exceeded",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithAnthropicAuthError_ShouldGenerateAuthenticationError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithAnthropicAuthError("Invalid API key")
             .Build();
 
@@ -75,16 +94,29 @@ public class ErrorResponseTests
         var json = JsonDocument.Parse(content);
 
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
-        Assert.Equal("authentication_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
-        Assert.Equal("Invalid API key", json.RootElement.GetProperty("error").GetProperty("message").GetString());
+        Assert.Equal(
+            "authentication_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
+        Assert.Equal(
+            "Invalid API key",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithOpenAIError_ShouldGenerateValidOpenAIErrorFormat()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithOpenAIError(HttpStatusCode.BadRequest, "invalid_request_error", "Invalid model specified", "model", "invalid_model")
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .RespondWithOpenAIError(
+                HttpStatusCode.BadRequest,
+                "invalid_request_error",
+                "Invalid model specified",
+                "model",
+                "invalid_model"
+            )
             .Build();
 
         using var client = new HttpClient(handler);
@@ -98,17 +130,30 @@ public class ErrorResponseTests
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
 
-        Assert.Equal("Invalid model specified", json.RootElement.GetProperty("error").GetProperty("message").GetString());
-        Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
-        Assert.Equal("model", json.RootElement.GetProperty("error").GetProperty("param").GetString());
-        Assert.Equal("invalid_model", json.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(
+            "Invalid model specified",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
+        Assert.Equal(
+            "invalid_request_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
+        Assert.Equal(
+            "model",
+            json.RootElement.GetProperty("error").GetProperty("param").GetString()
+        );
+        Assert.Equal(
+            "invalid_model",
+            json.RootElement.GetProperty("error").GetProperty("code").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithOpenAIRateLimit_ShouldGenerateRateLimitError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithOpenAIRateLimit("Rate limit exceeded")
             .Build();
 
@@ -123,15 +168,22 @@ public class ErrorResponseTests
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
 
-        Assert.Equal("Rate limit exceeded", json.RootElement.GetProperty("error").GetProperty("message").GetString());
-        Assert.Equal("rate_limit_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.Equal(
+            "Rate limit exceeded",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
+        Assert.Equal(
+            "rate_limit_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithOpenAIAuthError_ShouldGenerateAuthenticationError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithOpenAIAuthError("Invalid API key")
             .Build();
 
@@ -146,17 +198,32 @@ public class ErrorResponseTests
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
 
-        Assert.Equal("Invalid API key", json.RootElement.GetProperty("error").GetProperty("message").GetString());
-        Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
-        Assert.Equal("invalid_api_key", json.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(
+            "Invalid API key",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
+        Assert.Equal(
+            "invalid_request_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
+        Assert.Equal(
+            "invalid_api_key",
+            json.RootElement.GetProperty("error").GetProperty("code").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithStatusCodeSequence_ShouldReturnSequenceOfStatusCodes()
     {
         // Arrange
-        var statusCodes = new[] { HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests, HttpStatusCode.OK };
-        var handler = MockHttpHandlerBuilder.Create()
+        var statusCodes = new[]
+        {
+            HttpStatusCode.ServiceUnavailable,
+            HttpStatusCode.TooManyRequests,
+            HttpStatusCode.OK,
+        };
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithStatusCodeSequence(statusCodes, "Success after retries")
             .Build();
 
@@ -182,7 +249,8 @@ public class ErrorResponseTests
     public async Task RespondWithRetrySequence_ShouldUseStandardRetryPattern()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithRetrySequence("Final success")
             .Build();
 
@@ -208,7 +276,8 @@ public class ErrorResponseTests
     public async Task RespondWithRateLimitError_ShouldIncludeRetryAfterHeader()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithRateLimitError(60, "anthropic")
             .Build();
 
@@ -226,16 +295,17 @@ public class ErrorResponseTests
         var json = JsonDocument.Parse(content);
 
         Assert.Equal("error", json.RootElement.GetProperty("type").GetString());
-        Assert.Equal("rate_limit_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.Equal(
+            "rate_limit_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithRateLimitError_Generic_ShouldUseGenericFormat()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithRateLimitError(30)
-            .Build();
+        var handler = MockHttpHandlerBuilder.Create().RespondWithRateLimitError(30).Build();
 
         using var client = new HttpClient(handler);
 
@@ -250,15 +320,22 @@ public class ErrorResponseTests
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
 
-        Assert.Equal("Rate limit exceeded. Please retry after 30 seconds.", json.RootElement.GetProperty("error").GetProperty("message").GetString());
-        Assert.Equal(30, json.RootElement.GetProperty("error").GetProperty("retry_after").GetInt32());
+        Assert.Equal(
+            "Rate limit exceeded. Please retry after 30 seconds.",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
+        Assert.Equal(
+            30,
+            json.RootElement.GetProperty("error").GetProperty("retry_after").GetInt32()
+        );
     }
 
     [Fact]
     public async Task RespondWithAuthenticationError_ShouldReturn401()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithAuthenticationError("openai")
             .Build();
 
@@ -273,22 +350,32 @@ public class ErrorResponseTests
         var content = await response.Content.ReadAsStringAsync();
         var json = JsonDocument.Parse(content);
 
-        Assert.Equal("Invalid API key provided.", json.RootElement.GetProperty("error").GetProperty("message").GetString());
-        Assert.Equal("invalid_request_error", json.RootElement.GetProperty("error").GetProperty("type").GetString());
-        Assert.Equal("invalid_api_key", json.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(
+            "Invalid API key provided.",
+            json.RootElement.GetProperty("error").GetProperty("message").GetString()
+        );
+        Assert.Equal(
+            "invalid_request_error",
+            json.RootElement.GetProperty("error").GetProperty("type").GetString()
+        );
+        Assert.Equal(
+            "invalid_api_key",
+            json.RootElement.GetProperty("error").GetProperty("code").GetString()
+        );
     }
 
     [Fact]
     public async Task RespondWithTimeout_ShouldThrowTaskCanceledException()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithTimeout(100) // 100ms timeout
             .Build();
 
         using var client = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromMilliseconds(50) // Client timeout shorter than mock timeout
+            Timeout = TimeSpan.FromMilliseconds(50), // Client timeout shorter than mock timeout
         };
 
         // Act & Assert
@@ -302,13 +389,14 @@ public class ErrorResponseTests
     public async Task RespondWithTimeout_WithLongerClientTimeout_ShouldCompleteAfterDelay()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithTimeout(50) // 50ms timeout
             .Build();
 
         using var client = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(5) // Client timeout longer than mock timeout
+            Timeout = TimeSpan.FromSeconds(5), // Client timeout longer than mock timeout
         };
 
         var startTime = DateTime.UtcNow;
@@ -318,7 +406,10 @@ public class ErrorResponseTests
 
         // Assert
         var elapsed = DateTime.UtcNow - startTime;
-        Assert.True(elapsed.TotalMilliseconds >= 45, $"Expected at least 45ms delay, got {elapsed.TotalMilliseconds}ms");
+        Assert.True(
+            elapsed.TotalMilliseconds >= 45,
+            $"Expected at least 45ms delay, got {elapsed.TotalMilliseconds}ms"
+        );
         Assert.Equal(HttpStatusCode.RequestTimeout, response.StatusCode);
     }
 
@@ -327,15 +418,16 @@ public class ErrorResponseTests
     {
         // Arrange - Test demonstrates that the first provider that can handle the request is used
         // This validates the MockHttpHandler's behavior: FirstOrDefault(p => p.CanHandle(request, requestIndex))
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithAnthropicRateLimit()         // This will be used for ALL requests since CanHandle = true
-            .RespondWithAnthropicAuthError()         // These are never reached
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .RespondWithAnthropicRateLimit() // This will be used for ALL requests since CanHandle = true
+            .RespondWithAnthropicAuthError() // These are never reached
             .RespondWithAnthropicMessage("Finally successful")
             .Build();
 
         using var client = new HttpClient(handler);
 
-        // Act & Assert - All requests should get the same response (rate limit) 
+        // Act & Assert - All requests should get the same response (rate limit)
         // because that's the first provider and it can handle all requests
 
         // First request - Anthropic rate limit (expected)

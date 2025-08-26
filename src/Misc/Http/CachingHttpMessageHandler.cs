@@ -1,13 +1,13 @@
+using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.Misc.Configuration;
+using AchieveAi.LmDotnetTools.Misc.Storage;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using AchieveAi.LmDotnetTools.Misc.Storage;
-using AchieveAi.LmDotnetTools.Misc.Configuration;
-using AchieveAi.LmDotnetTools.Misc.Utils;
-using System.Net;
 
 namespace AchieveAi.LmDotnetTools.Misc.Http;
 
@@ -33,7 +33,8 @@ public class CachingHttpMessageHandler : DelegatingHandler
         IKvStore cache,
         LlmCacheOptions options,
         HttpMessageHandler? innerHandler = null,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -49,7 +50,10 @@ public class CachingHttpMessageHandler : DelegatingHandler
     /// <summary>
     /// Processes HTTP requests with caching logic.
     /// </summary>
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken
+    )
     {
         if (!_options.EnableCaching)
         {
@@ -98,7 +102,10 @@ public class CachingHttpMessageHandler : DelegatingHandler
     /// <summary>
     /// Generates a cache key from the HTTP request URL and POST body.
     /// </summary>
-    private async Task<string> GenerateCacheKeyAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    private async Task<string> GenerateCacheKeyAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken
+    )
     {
         var keyBuilder = new StringBuilder();
 
@@ -130,7 +137,10 @@ public class CachingHttpMessageHandler : DelegatingHandler
     /// <summary>
     /// Retrieves a cached response if it exists and is not expired.
     /// </summary>
-    private async Task<HttpResponseMessage?> GetFromCacheAsync(string cacheKey, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage?> GetFromCacheAsync(
+        string cacheKey,
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -152,8 +162,12 @@ public class CachingHttpMessageHandler : DelegatingHandler
             // Reconstruct HttpResponseMessage
             var response = new HttpResponseMessage((System.Net.HttpStatusCode)cachedItem.StatusCode)
             {
-                Content = new StringContent(cachedItem.Content, Encoding.UTF8, cachedItem.ContentType),
-                ReasonPhrase = cachedItem.ReasonPhrase
+                Content = new StringContent(
+                    cachedItem.Content,
+                    Encoding.UTF8,
+                    cachedItem.ContentType
+                ),
+                ReasonPhrase = cachedItem.ReasonPhrase,
             };
 
             // Add headers
@@ -187,7 +201,8 @@ public class CachingHttpMessageHandler : DelegatingHandler
                     _cache,
                     _options,
                     _logger,
-                    _semaphore);
+                    _semaphore
+                );
             }
         }
         catch (Exception ex)
@@ -268,9 +283,11 @@ public class CachingHttpContent : HttpContent
         IKvStore cache,
         LlmCacheOptions options,
         ILogger logger,
-        SemaphoreSlim semaphore)
+        SemaphoreSlim semaphore
+    )
     {
-        _originalContent = originalContent ?? throw new ArgumentNullException(nameof(originalContent));
+        _originalContent =
+            originalContent ?? throw new ArgumentNullException(nameof(originalContent));
         _cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -341,7 +358,8 @@ public class CachingStream : Stream
         IKvStore cache,
         LlmCacheOptions options,
         ILogger logger,
-        SemaphoreSlim semaphore)
+        SemaphoreSlim semaphore
+    )
     {
         _originalStream = originalStream ?? throw new ArgumentNullException(nameof(originalStream));
         _cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
@@ -362,7 +380,12 @@ public class CachingStream : Stream
         set => throw new NotSupportedException("Seeking is not supported");
     }
 
-    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    public override async Task<int> ReadAsync(
+        byte[] buffer,
+        int offset,
+        int count,
+        CancellationToken cancellationToken
+    )
     {
         var bytesRead = await _originalStream.ReadAsync(buffer, offset, count, cancellationToken);
 
@@ -440,15 +463,18 @@ public class CachingStream : Stream
                 ContentType = "application/json", // Default assumption for LLM APIs
                 Headers = new Dictionary<string, string[]>(),
                 CachedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.Add(_options.CacheExpiration ?? TimeSpan.FromHours(24))
+                ExpiresAt = DateTime.UtcNow.Add(_options.CacheExpiration ?? TimeSpan.FromHours(24)),
             };
 
             await _semaphore.WaitAsync(CancellationToken.None);
             try
             {
                 await _cache.SetAsync(_cacheKey, cachedItem, CancellationToken.None);
-                _logger.LogDebug("Successfully cached streaming response for key: {CacheKey}, size: {Size} bytes",
-                    _cacheKey, data.Length);
+                _logger.LogDebug(
+                    "Successfully cached streaming response for key: {CacheKey}, size: {Size} bytes",
+                    _cacheKey,
+                    data.Length
+                );
             }
             finally
             {
@@ -466,7 +492,9 @@ public class CachingStream : Stream
     }
 
     public override void Flush() => _originalStream.Flush();
-    public override Task FlushAsync(CancellationToken cancellationToken) => _originalStream.FlushAsync(cancellationToken);
+
+    public override Task FlushAsync(CancellationToken cancellationToken) =>
+        _originalStream.FlushAsync(cancellationToken);
 
     public override long Seek(long offset, SeekOrigin origin) =>
         throw new NotSupportedException("Seeking is not supported");

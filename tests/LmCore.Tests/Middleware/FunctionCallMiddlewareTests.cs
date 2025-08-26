@@ -10,17 +10,17 @@ using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using static AchieveAi.LmDotnetTools.LmTestUtils.ChatCompletionTestData;
-using static AchieveAi.LmDotnetTools.LmTestUtils.FakeHttpMessageHandler;
+using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpSampleServer;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
-using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
-using AchieveAi.LmDotnetTools.McpMiddleware;
 using dotenv.net;
 using Xunit;
+using static AchieveAi.LmDotnetTools.LmTestUtils.ChatCompletionTestData;
+using static AchieveAi.LmDotnetTools.LmTestUtils.FakeHttpMessageHandler;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -34,9 +34,8 @@ public class FunctionCallMiddlewareTests
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentNullException>(() =>
-          new FunctionCallMiddleware(
-            functions: null!,
-            functionMap: functionMap));
+            new FunctionCallMiddleware(functions: null!, functionMap: functionMap)
+        );
 
         Assert.Equal("functions", exception.ParamName);
     }
@@ -45,29 +44,34 @@ public class FunctionCallMiddlewareTests
     public void Constructor_ShouldThrowArgumentException_WhenFunctionMissingFromMap()
     {
         // Arrange
-        var functions = new List<FunctionContract> {
-            new FunctionContract {
+        var functions = new List<FunctionContract>
+        {
+            new FunctionContract
+            {
                 Name = "getWeather",
                 Description = "Get the weather in a location",
-                Parameters = [
-                    new FunctionParameterContract {
+                Parameters =
+                [
+                    new FunctionParameterContract
+                    {
                         Name = "location",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         Description = "City name",
-                        IsRequired = true
-                    }
-                ]
-            }
+                        IsRequired = true,
+                    },
+                ],
+            },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["add"] = args => Task.FromResult("10")
+            ["add"] = args => Task.FromResult("10"),
         };
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
-            new FunctionCallMiddleware(functions, functionMap));
+            new FunctionCallMiddleware(functions, functionMap)
+        );
 
         Assert.Contains("getWeather", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -77,16 +81,19 @@ public class FunctionCallMiddlewareTests
     public void Constructor_ShouldThrowArgumentException_WhenFunctionMapIsNullButFunctionsAreProvided()
     {
         // Arrange
-        var functions = new List<FunctionContract> {
-            new FunctionContract {
+        var functions = new List<FunctionContract>
+        {
+            new FunctionContract
+            {
                 Name = "getWeather",
-                Description = "Get the weather in a location"
-            }
+                Description = "Get the weather in a location",
+            },
         };
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
-            new FunctionCallMiddleware(functions, null!));
+            new FunctionCallMiddleware(functions, null!)
+        );
 
         Assert.Contains("Function map must be provided", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -108,15 +115,10 @@ public class FunctionCallMiddlewareTests
     public void Constructor_ShouldNotThrow_WhenAllFunctionsHaveCorrespondingMapEntries()
     {
         // Arrange
-        var functions = new List<FunctionContract> {
-            new FunctionContract {
-                Name = "function1",
-                Description = "Test function 1"
-            },
-            new FunctionContract {
-                Name = "function2",
-                Description = "Test function 2"
-            }
+        var functions = new List<FunctionContract>
+        {
+            new FunctionContract { Name = "function1", Description = "Test function 1" },
+            new FunctionContract { Name = "function2", Description = "Test function 2" },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -139,13 +141,13 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a message with a tool call for the getWeather function
-        var toolCallMessage = CreateToolCallMessage("getWeather",
-          new { location = "San Francisco", unit = "celsius" });
+        var toolCallMessage = CreateToolCallMessage(
+            "getWeather",
+            new { location = "San Francisco", unit = "celsius" }
+        );
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(
-          new[] { toolCallMessage },
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -177,13 +179,13 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a message with a tool call for a non-existent function
-        var toolCallMessage = CreateToolCallMessage("getNonExistentFunction",
-          new { param = "value" });
+        var toolCallMessage = CreateToolCallMessage(
+            "getNonExistentFunction",
+            new { param = "value" }
+        );
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(
-          new[] { toolCallMessage },
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -216,25 +218,36 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a regular text message (no tool call)
-        var message = new TextMessage { Text = "What's the weather in San Francisco?", Role = Role.User };
+        var message = new TextMessage
+        {
+            Text = "What's the weather in San Francisco?",
+            Role = Role.User,
+        };
 
         // Create the context with our message
-        var context = new MiddlewareContext(
-          new[] { message },
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new[] { message }, new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
         mockAgent
-          .Setup(a => a.GenerateReplyAsync(
-            It.IsAny<IEnumerable<IMessage>>(),
-            It.IsAny<GenerateReplyOptions>(),
-            It.IsAny<CancellationToken>()))
-          .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-            (msgs, options, token) => capturedOptions = options)
-          .ReturnsAsync(new[] { new TextMessage { Text = "Mock response", Role = Role.Assistant } });
+            .Setup(a =>
+                a.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
+                (msgs, options, token) => capturedOptions = options
+            )
+            .ReturnsAsync(
+                new[]
+                {
+                    new TextMessage { Text = "Mock response", Role = Role.Assistant },
+                }
+            );
 
         // Act
         await middleware.InvokeAsync(context, mockAgent.Object);
@@ -259,13 +272,10 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a message with a tool call for the add function
-        var toolCallMessage = CreateToolCallMessage("add",
-          new { a = 5, b = 7 });
+        var toolCallMessage = CreateToolCallMessage("add", new { a = 5, b = 7 });
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(
-          new[] { toolCallMessage },
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -295,13 +305,13 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a message with a tool call
-        var toolCallMessage = CreateToolCallMessage("get_weather",
-          new { location = "San Francisco", unit = "celsius" });
+        var toolCallMessage = CreateToolCallMessage(
+            "get_weather",
+            new { location = "San Francisco", unit = "celsius" }
+        );
 
         // Create the context with our tool call message
-        var context = new MiddlewareContext(
-          new[] { toolCallMessage },
-          new GenerateReplyOptions());
+        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Create a simple streaming agent that returns no messages
         var nextAgent = new MockStreamingAgent(Array.Empty<IMessage>());
@@ -342,7 +352,7 @@ public class FunctionCallMiddlewareTests
             ["add"] = argsJson => Task.FromResult(AddAsync(argsJson)),
             ["subtract"] = argsJson => Task.FromResult(SubtractAsync(argsJson)),
             ["multiply"] = argsJson => Task.FromResult(MultiplyAsync(argsJson)),
-            ["divide"] = argsJson => Task.FromResult(DivideAsync(argsJson))
+            ["divide"] = argsJson => Task.FromResult(DivideAsync(argsJson)),
         };
     }
 
@@ -350,139 +360,139 @@ public class FunctionCallMiddlewareTests
     {
         return new[]
         {
-      new FunctionContract
-      {
-        Name = "getWeather",
-        Description = "Get current weather for a location",
-        Parameters = new[]
-        {
-          new FunctionParameterContract
-          {
-            Name = "location",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-            Description = "City name",
-            IsRequired = true
-          },
-          new FunctionParameterContract
-          {
-            Name = "unit",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-            Description = "Temperature unit (celsius or fahrenheit)",
-            IsRequired = false
-          }
-        }
-      },
-      new FunctionContract
-      {
-        Name = "getWeatherHistory",
-        Description = "Get historical weather data for a location",
-        Parameters = new[]
-        {
-          new FunctionParameterContract
-          {
-            Name = "location",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-            Description = "City name",
-            IsRequired = true
-          },
-          new FunctionParameterContract
-          {
-            Name = "days",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(int)),
-            Description = "Number of days of history",
-            IsRequired = true
-          }
-        }
-      },
-      new FunctionContract
-      {
-        Name = "add",
-        Description = "Add two numbers",
-        Parameters = new[]
-        {
-          new FunctionParameterContract
-          {
-            Name = "a",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "First number",
-            IsRequired = true
-          },
-          new FunctionParameterContract
-          {
-            Name = "b",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "Second number",
-            IsRequired = true
-          }
-        }
-      },
-      new FunctionContract
-      {
-        Name = "subtract",
-        Description = "Subtract second number from first number",
-        Parameters = new[]
-        {
-          new FunctionParameterContract
-          {
-            Name = "a",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "First number",
-            IsRequired = true
-          },
-          new FunctionParameterContract
-          {
-            Name = "b",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "Second number",
-            IsRequired = true
-          }
-        }
-      },
-      new FunctionContract
-      {
-        Name = "multiply",
-        Description = "Multiply two numbers",
-        Parameters = new[]
-        {
-          new FunctionParameterContract
-          {
-            Name = "a",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "First number",
-            IsRequired = true
-          },
-          new FunctionParameterContract
-          {
-            Name = "b",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "Second number",
-            IsRequired = true
-          }
-        }
-      },
-      new FunctionContract
-      {
-        Name = "divide",
-        Description = "Divide first number by second number",
-        Parameters = new[]
-        {
-          new FunctionParameterContract
-          {
-            Name = "a",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "First number",
-            IsRequired = true
-          },
-          new FunctionParameterContract
-          {
-            Name = "b",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            Description = "Second number",
-            IsRequired = true
-          }
-        }
-      }
-    };
+            new FunctionContract
+            {
+                Name = "getWeather",
+                Description = "Get current weather for a location",
+                Parameters = new[]
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        Description = "City name",
+                        IsRequired = true,
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "unit",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        Description = "Temperature unit (celsius or fahrenheit)",
+                        IsRequired = false,
+                    },
+                },
+            },
+            new FunctionContract
+            {
+                Name = "getWeatherHistory",
+                Description = "Get historical weather data for a location",
+                Parameters = new[]
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        Description = "City name",
+                        IsRequired = true,
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "days",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(int)),
+                        Description = "Number of days of history",
+                        IsRequired = true,
+                    },
+                },
+            },
+            new FunctionContract
+            {
+                Name = "add",
+                Description = "Add two numbers",
+                Parameters = new[]
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "a",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "First number",
+                        IsRequired = true,
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "b",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "Second number",
+                        IsRequired = true,
+                    },
+                },
+            },
+            new FunctionContract
+            {
+                Name = "subtract",
+                Description = "Subtract second number from first number",
+                Parameters = new[]
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "a",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "First number",
+                        IsRequired = true,
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "b",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "Second number",
+                        IsRequired = true,
+                    },
+                },
+            },
+            new FunctionContract
+            {
+                Name = "multiply",
+                Description = "Multiply two numbers",
+                Parameters = new[]
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "a",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "First number",
+                        IsRequired = true,
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "b",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "Second number",
+                        IsRequired = true,
+                    },
+                },
+            },
+            new FunctionContract
+            {
+                Name = "divide",
+                Description = "Divide first number by second number",
+                Parameters = new[]
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "a",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "First number",
+                        IsRequired = true,
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "b",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        Description = "Second number",
+                        IsRequired = true,
+                    },
+                },
+            },
+        };
     }
 
     private ToolsCallMessage CreateToolCallMessage(string functionName, object args)
@@ -492,11 +502,10 @@ public class FunctionCallMiddlewareTests
 
         return new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(new ToolCall(functionName, jsonArgs)
-            {
-                ToolCallId = Guid.NewGuid().ToString()
-            }),
-            Role = Role.Assistant
+            ToolCalls = ImmutableList.Create(
+                new ToolCall(functionName, jsonArgs) { ToolCallId = Guid.NewGuid().ToString() }
+            ),
+            Role = Role.Assistant,
         };
     }
 
@@ -554,10 +563,10 @@ public class FunctionCallMiddlewareTests
             int days = daysNode.GetValue<int>();
 
             // Ensure we have the exact phrase "weather history" for the test to pass
-            return $"Weather history for {location} (last {days} days):\n" +
-                   $"- Day 1: 22°C, Sunny\n" +
-                   $"- Day 2: 20°C, Partly Cloudy\n" +
-                   $"- Day 3: 19°C, Light Rain";
+            return $"Weather history for {location} (last {days} days):\n"
+                + $"- Day 1: 22°C, Sunny\n"
+                + $"- Day 2: 20°C, Partly Cloudy\n"
+                + $"- Day 3: 19°C, Light Rain";
         }
         catch (Exception ex)
         {
@@ -710,17 +719,17 @@ public class FunctionCallMiddlewareTests
                         Name = "location",
                         Description = "City name",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "unit",
                         Description = "Temperature unit (celsius or fahrenheit)",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = false
-                    }
-                }
-            }
+                        IsRequired = false,
+                    },
+                },
+            },
         };
 
         System.Diagnostics.Debug.WriteLine("Function contracts created");
@@ -731,7 +740,7 @@ public class FunctionCallMiddlewareTests
             {
                 await Task.Delay(1);
                 return "{\"location\":\"San Francisco\",\"temperature\":23,\"unit\":\"celsius\"}";
-            }
+            },
         };
 
         System.Diagnostics.Debug.WriteLine("Function map created");
@@ -742,17 +751,17 @@ public class FunctionCallMiddlewareTests
 
         var messages = new List<IMessage>
         {
-            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You're a helpful AI Agent that can use tools",
+            },
+            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
         System.Diagnostics.Debug.WriteLine("Messages created");
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "gpt-4",
-            Functions = functionContracts
-        };
+        var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = functionContracts };
 
         System.Diagnostics.Debug.WriteLine("Options created");
 
@@ -764,7 +773,8 @@ public class FunctionCallMiddlewareTests
         var toolCallStreamingResponse = CreateToolCallStreamingResponse();
         var handler = CreateRetryHandler(
             failureCount: 0, // No failures, just success
-            successResponse: toolCallStreamingResponse);
+            successResponse: toolCallStreamingResponse
+        );
 
         System.Diagnostics.Debug.WriteLine("Handler created");
 
@@ -782,7 +792,9 @@ public class FunctionCallMiddlewareTests
 
         System.Diagnostics.Debug.WriteLine("=== MIDDLEWARE TEST DEBUG ===");
         System.Diagnostics.Debug.WriteLine($"Context messages count: {context.Messages.Count()}");
-        System.Diagnostics.Debug.WriteLine($"Last message type: {context.Messages.Last().GetType().Name}");
+        System.Diagnostics.Debug.WriteLine(
+            $"Last message type: {context.Messages.Last().GetType().Name}"
+        );
         System.Diagnostics.Debug.WriteLine($"Agent type: {agent.GetType().Name}");
 
         // Act
@@ -793,10 +805,14 @@ public class FunctionCallMiddlewareTests
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
-            System.Diagnostics.Debug.WriteLine($"Response received: {response.GetType().Name}, Role: {response.Role}");
+            System.Diagnostics.Debug.WriteLine(
+                $"Response received: {response.GetType().Name}, Role: {response.Role}"
+            );
             if (response is ToolsCallMessage toolsCall)
             {
-                System.Diagnostics.Debug.WriteLine($"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}");
+                System.Diagnostics.Debug.WriteLine(
+                    $"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}"
+                );
             }
             responses.Add(response);
         }
@@ -805,7 +821,9 @@ public class FunctionCallMiddlewareTests
         System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
         foreach (var response in responses)
         {
-            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+            System.Diagnostics.Debug.WriteLine(
+                $"Response type: {response.GetType().Name}, Role: {response.Role}"
+            );
         }
         System.Diagnostics.Debug.WriteLine("=== END DEBUG ===");
         Assert.NotEmpty(responses);
@@ -816,7 +834,10 @@ public class FunctionCallMiddlewareTests
 
         var aggregate = (ToolsCallAggregateMessage)lastMessage;
         Assert.NotEmpty(aggregate.ToolsCallMessage.GetToolCalls()!);
-        Assert.Contains(aggregate.ToolsCallMessage.GetToolCalls()!, call => call.FunctionName == "getWeather");
+        Assert.Contains(
+            aggregate.ToolsCallMessage.GetToolCalls()!,
+            call => call.FunctionName == "getWeather"
+        );
     }
 
     [Fact]
@@ -830,7 +851,8 @@ public class FunctionCallMiddlewareTests
             new FunctionContract
             {
                 Name = "python-mcp.execute_python_in_container",
-                Description = "\nExecute Python code in a Docker container. The environment is limited to the container.\nFollowing packages are available:\n- pandas\n- numpy\n- matplotlib\n- seaborn\n- plotly\n- bokeh\n- hvplot\n- datashader\n- plotnine\n- cufflinks\n- graphviz\n- scipy\n- statsmodels\n- openpyxl\n- xlrd\n- xlsxwriter\n- pandasql\n- csv23\n- csvkit\n- polars\n- pyarrow\n- fastparquet\n- dask\n- vaex\n- python-dateutil\n- beautifulsoup4\n- requests\n- lxml\n- geopandas\n- folium\n- pydeck\n- holoviews\n- altair\n- visualkeras\n- kaleido\n- panel\n- voila\n\nArgs:\n    code: Python code to execute\n\nReturns:\n    Output from executed code\n",
+                Description =
+                    "\nExecute Python code in a Docker container. The environment is limited to the container.\nFollowing packages are available:\n- pandas\n- numpy\n- matplotlib\n- seaborn\n- plotly\n- bokeh\n- hvplot\n- datashader\n- plotnine\n- cufflinks\n- graphviz\n- scipy\n- statsmodels\n- openpyxl\n- xlrd\n- xlsxwriter\n- pandasql\n- csv23\n- csvkit\n- polars\n- pyarrow\n- fastparquet\n- dask\n- vaex\n- python-dateutil\n- beautifulsoup4\n- requests\n- lxml\n- geopandas\n- folium\n- pydeck\n- holoviews\n- altair\n- visualkeras\n- kaleido\n- panel\n- voila\n\nArgs:\n    code: Python code to execute\n\nReturns:\n    Output from executed code\n",
                 Parameters = new List<FunctionParameterContract>
                 {
                     new FunctionParameterContract
@@ -838,14 +860,15 @@ public class FunctionCallMiddlewareTests
                         Name = "code",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
-                    }
-                }
+                        IsRequired = true,
+                    },
+                },
             },
             new FunctionContract
             {
                 Name = "python-mcp.list_directory",
-                Description = "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
+                Description =
+                    "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
                 Parameters = new List<FunctionParameterContract>
                 {
                     new FunctionParameterContract
@@ -853,14 +876,15 @@ public class FunctionCallMiddlewareTests
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = false
-                    }
-                }
+                        IsRequired = false,
+                    },
+                },
             },
             new FunctionContract
             {
                 Name = "python-mcp.read_file",
-                Description = "\nRead a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    File contents as a string\n",
+                Description =
+                    "\nRead a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    File contents as a string\n",
                 Parameters = new List<FunctionParameterContract>
                 {
                     new FunctionParameterContract
@@ -868,14 +892,15 @@ public class FunctionCallMiddlewareTests
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
-                    }
-                }
+                        IsRequired = true,
+                    },
+                },
             },
             new FunctionContract
             {
                 Name = "python-mcp.write_file",
-                Description = "\nWrite content to a file in the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    content: Content to write to the file\n    \nReturns:\n    Status message\n",
+                Description =
+                    "\nWrite content to a file in the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    content: Content to write to the file\n    \nReturns:\n    Status message\n",
                 Parameters = new List<FunctionParameterContract>
                 {
                     new FunctionParameterContract
@@ -883,21 +908,22 @@ public class FunctionCallMiddlewareTests
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
+                        IsRequired = true,
                     },
                     new FunctionParameterContract
                     {
                         Name = "content",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
-                    }
-                }
+                        IsRequired = true,
+                    },
+                },
             },
             new FunctionContract
             {
                 Name = "python-mcp.delete_file",
-                Description = "\nDelete a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    Status message\n",
+                Description =
+                    "\nDelete a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    Status message\n",
                 Parameters = new List<FunctionParameterContract>
                 {
                     new FunctionParameterContract
@@ -905,14 +931,15 @@ public class FunctionCallMiddlewareTests
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
-                    }
-                }
+                        IsRequired = true,
+                    },
+                },
             },
             new FunctionContract
             {
                 Name = "python-mcp.get_directory_tree",
-                Description = "\nGet an ASCII tree representation of a directory structure where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: root code directory)\n    \nReturns:\n    ASCII tree representation as a string\n",
+                Description =
+                    "\nGet an ASCII tree representation of a directory structure where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: root code directory)\n    \nReturns:\n    ASCII tree representation as a string\n",
                 Parameters = new List<FunctionParameterContract>
                 {
                     new FunctionParameterContract
@@ -920,42 +947,80 @@ public class FunctionCallMiddlewareTests
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = false
-                    }
-                }
+                        IsRequired = false,
+                    },
+                },
             },
             new FunctionContract
             {
                 Name = "python-mcp.cleanup_code_directory",
-                Description = "\nClean up the code directory by removing all files and subdirectories\n\nReturns:\n    Status message\n",
-                Parameters = new List<FunctionParameterContract>()
-            }
+                Description =
+                    "\nClean up the code directory by removing all files and subdirectories\n\nReturns:\n    Status message\n",
+                Parameters = new List<FunctionParameterContract>(),
+            },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
-            ["python-mcp.execute_python_in_container"] = async argsJson => { await Task.Delay(1); return ""; },
-            ["python-mcp.list_directory"] = async argsJson => { await Task.Delay(1); return ""; },
-            ["python-mcp.read_file"] = async argsJson => { await Task.Delay(1); return ""; },
-            ["python-mcp.write_file"] = async argsJson => { await Task.Delay(1); return ""; },
-            ["python-mcp.delete_file"] = async argsJson => { await Task.Delay(1); return ""; },
-            ["python-mcp.get_directory_tree"] = async argsJson => { await Task.Delay(1); return ""; },
-            ["python-mcp.cleanup_code_directory"] = async argsJson => { await Task.Delay(1); return ""; }
+            ["python-mcp.execute_python_in_container"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "";
+            },
+            ["python-mcp.list_directory"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "";
+            },
+            ["python-mcp.read_file"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "";
+            },
+            ["python-mcp.write_file"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "";
+            },
+            ["python-mcp.delete_file"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "";
+            },
+            ["python-mcp.get_directory_tree"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "";
+            },
+            ["python-mcp.cleanup_code_directory"] = async argsJson =>
+            {
+                await Task.Delay(1);
+                return "";
+            },
         };
 
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         var messages = new List<IMessage>
         {
-            new TextMessage { Role = Role.System, Text = "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool." },
-            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." }
+            new TextMessage
+            {
+                Role = Role.System,
+                Text =
+                    "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool.",
+            },
+            new TextMessage
+            {
+                Role = Role.User,
+                Text = "List files in root and \"code\" directories.",
+            },
         };
 
         var options = new GenerateReplyOptions
         {
             ModelId = "meta-llama/llama-4-maverick",
             Temperature = (float?)0.699999988079071,
-            Functions = functionContracts
+            Functions = functionContracts,
         };
 
         var context = new MiddlewareContext(messages, options);
@@ -964,7 +1029,8 @@ public class FunctionCallMiddlewareTests
         var streamingResponse = CreateMultipleToolCallStreamingResponse();
         var handler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount: 0, // No failures, just success
-            successResponse: streamingResponse);
+            successResponse: streamingResponse
+        );
 
         var httpClient = new HttpClient(handler);
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
@@ -985,7 +1051,9 @@ public class FunctionCallMiddlewareTests
         System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
         foreach (var response in responses)
         {
-            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
+            System.Diagnostics.Debug.WriteLine(
+                $"Response type: {response.GetType().Name}, Role: {response.Role}"
+            );
         }
         Assert.NotEmpty(responses);
 
@@ -1009,7 +1077,10 @@ public class FunctionCallMiddlewareTests
         var mcpSampleServerAssembly = typeof(CalculatorTool).Assembly;
 
         // Create function call middleware components from the MCP sample server assembly
-        var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromAssembly(mcpSampleServerAssembly);
+        var (functions, functionMap) =
+            McpFunctionCallExtensions.CreateFunctionCallComponentsFromAssembly(
+                mcpSampleServerAssembly
+            );
 
         // Create the middleware with the MCP tools
         var middleware = new FunctionCallMiddleware(functions, functionMap, "McpCalculatorTest");
@@ -1025,11 +1096,16 @@ public class FunctionCallMiddlewareTests
         // Create a tool call message with the calculator add function and our large numbers
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(new ToolCall("CalculatorTool-Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
-            {
-                ToolCallId = toolCallId
-            }),
-            Role = Role.Assistant
+            ToolCalls = ImmutableList.Create(
+                new ToolCall(
+                    "CalculatorTool-Add",
+                    JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber })
+                )
+                {
+                    ToolCallId = toolCallId,
+                }
+            ),
+            Role = Role.Assistant,
         };
 
         var messages = new List<IMessage> { toolCallMessage };
@@ -1037,7 +1113,9 @@ public class FunctionCallMiddlewareTests
 
         // Create a mock agent that won't actually be used for generation
         // since we're directly testing the middleware function execution
-        var mockAgent = new MockAgent(new TextMessage { Role = Role.Assistant, Text = "This is a mock response" });
+        var mockAgent = new MockAgent(
+            new TextMessage { Role = Role.Assistant, Text = "This is a mock response" }
+        );
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent);
@@ -1049,9 +1127,9 @@ public class FunctionCallMiddlewareTests
 
         var toolsCallResultMessage = (ToolsCallResultMessage)result.First();
         Assert.Single(toolsCallResultMessage.ToolCallResults);
-        var resultJson = toolsCallResultMessage.ToolCallResults
-                .FirstOrDefault(tr => tr.ToolCallId == toolCallId)
-                .Result!;
+        var resultJson = toolsCallResultMessage
+            .ToolCallResults.FirstOrDefault(tr => tr.ToolCallId == toolCallId)
+            .Result!;
         Assert.NotNull(resultJson);
 
         var resultValue = JsonSerializer.Deserialize<double>(resultJson);
@@ -1075,7 +1153,8 @@ public class FunctionCallMiddlewareTests
             System.Diagnostics.Debug.WriteLine($"Base URL: {baseUrl}");
 
             // Test MockHttpHandlerBuilder
-            var handler = MockHttpHandlerBuilder.Create()
+            var handler = MockHttpHandlerBuilder
+                .Create()
                 .RespondWithJson("{\"test\": \"value\"}")
                 .Build();
             System.Diagnostics.Debug.WriteLine("Handler created successfully");
@@ -1114,7 +1193,8 @@ public class FunctionCallMiddlewareTests
             var streamingResponse = CreateStreamingResponse();
             var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
                 failureCount: 0, // No failures, just success
-                successResponse: streamingResponse);
+                successResponse: streamingResponse
+            );
 
             var httpClient = new HttpClient(fakeHandler);
             var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
@@ -1122,8 +1202,12 @@ public class FunctionCallMiddlewareTests
 
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-                new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+                new TextMessage
+                {
+                    Role = Role.System,
+                    Text = "You're a helpful AI Agent that can use tools",
+                },
+                new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
             };
 
             var options = new GenerateReplyOptions
@@ -1141,12 +1225,14 @@ public class FunctionCallMiddlewareTests
                             {
                                 Name = "location",
                                 Description = "City name",
-                                ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                                IsRequired = true
-                            }
-                        }
-                    }
-                }
+                                ParameterType = SchemaHelper.CreateJsonSchemaFromType(
+                                    typeof(string)
+                                ),
+                                IsRequired = true,
+                            },
+                        },
+                    },
+                },
             };
 
             System.Diagnostics.Debug.WriteLine("Calling agent.GenerateReplyStreamingAsync...");
@@ -1159,7 +1245,9 @@ public class FunctionCallMiddlewareTests
             var responses = new List<IMessage>();
             await foreach (var response in streamingResponse2)
             {
-                System.Diagnostics.Debug.WriteLine($"Agent response: {response.GetType().Name}, Role: {response.Role}");
+                System.Diagnostics.Debug.WriteLine(
+                    $"Agent response: {response.GetType().Name}, Role: {response.Role}"
+                );
                 responses.Add(response);
             }
 
@@ -1181,9 +1269,11 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY",
+        return EnvironmentHelper.GetApiKeyFromEnv(
+            "OPENAI_API_KEY",
             new[] { "LLM_API_KEY" },
-            "test-api-key");
+            "test-api-key"
+        );
     }
 
     /// <summary>
@@ -1191,9 +1281,11 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL",
+        return EnvironmentHelper.GetApiBaseUrlFromEnv(
+            "OPENAI_API_URL",
             new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1");
+            "https://api.openai.com/v1"
+        );
     }
 
     /// <summary>
@@ -1204,108 +1296,106 @@ public class FunctionCallMiddlewareTests
         var chunks = new List<string>
         {
             // Start with role
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test123",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "gpt-4",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test123",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "gpt-4",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new {
-                            role = "assistant",
-                            content = string.Empty
+                        new
+                        {
+                            index = 0,
+                            delta = new { role = "assistant", content = string.Empty },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-            
+            ),
             // Tool call start
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test123",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "gpt-4",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test123",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "gpt-4",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new
+                        new
                         {
-                            tool_calls = new[]
+                            index = 0,
+                            delta = new
                             {
-                                new
+                                tool_calls = new[]
                                 {
-                                    index = 0,
-                                    id = "call_test123",
-                                    type = "function",
-                                    function = new
+                                    new
                                     {
-                                        name = "getWeather",
-                                        arguments = ""
-                                    }
-                                }
-                            }
+                                        index = 0,
+                                        id = "call_test123",
+                                        type = "function",
+                                        function = new { name = "getWeather", arguments = "" },
+                                    },
+                                },
+                            },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-            
+            ),
             // Tool call arguments
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test123",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "gpt-4",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test123",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "gpt-4",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new
+                        new
                         {
-                            tool_calls = new[]
+                            index = 0,
+                            delta = new
                             {
-                                new
+                                tool_calls = new[]
                                 {
-                                    index = 0,
-                                    function = new
+                                    new
                                     {
-                                        arguments = "{\"location\": \"San Francisco\"}"
-                                    }
-                                }
-                            }
+                                        index = 0,
+                                        function = new
+                                        {
+                                            arguments = "{\"location\": \"San Francisco\"}",
+                                        },
+                                    },
+                                },
+                            },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-            
+            ),
             // End with tool_calls finish reason
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test123",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "gpt-4",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test123",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "gpt-4",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new { },
-                        finish_reason = "tool_calls"
-                    }
+                        new
+                        {
+                            index = 0,
+                            delta = new { },
+                            finish_reason = "tool_calls",
+                        },
+                    },
                 }
-            })
+            ),
         };
 
         var sseResponse = string.Join("\n\n", chunks.Select(chunk => $"data: {chunk}"));
@@ -1320,173 +1410,174 @@ public class FunctionCallMiddlewareTests
         var chunks = new List<string>
         {
             // Start with role
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test456",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "meta-llama/llama-4-maverick",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test456",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "meta-llama/llama-4-maverick",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new {
-                            role = "assistant",
-                            content = string.Empty
+                        new
+                        {
+                            index = 0,
+                            delta = new { role = "assistant", content = string.Empty },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-            
+            ),
             // First tool call start
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test456",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "meta-llama/llama-4-maverick",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test456",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "meta-llama/llama-4-maverick",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new
+                        new
                         {
-                            tool_calls = new[]
+                            index = 0,
+                            delta = new
                             {
-                                new
+                                tool_calls = new[]
                                 {
-                                    index = 0,
-                                    id = "call_test123",
-                                    type = "function",
-                                    function = new
+                                    new
                                     {
-                                        name = "python-mcp.list_directory",
-                                        arguments = ""
-                                    }
-                                }
-                            }
+                                        index = 0,
+                                        id = "call_test123",
+                                        type = "function",
+                                        function = new
+                                        {
+                                            name = "python-mcp.list_directory",
+                                            arguments = "",
+                                        },
+                                    },
+                                },
+                            },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-            
+            ),
             // First tool call arguments
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test456",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "meta-llama/llama-4-maverick",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test456",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "meta-llama/llama-4-maverick",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new
+                        new
                         {
-                            tool_calls = new[]
+                            index = 0,
+                            delta = new
                             {
-                                new
+                                tool_calls = new[]
                                 {
-                                    index = 0,
-                                    function = new
+                                    new
                                     {
-                                        arguments = "{\"relative_path\": \"\"}"
-                                    }
-                                }
-                            }
+                                        index = 0,
+                                        function = new { arguments = "{\"relative_path\": \"\"}" },
+                                    },
+                                },
+                            },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-
+            ),
             // Second tool call start
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test456",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "meta-llama/llama-4-maverick",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test456",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "meta-llama/llama-4-maverick",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new
+                        new
                         {
-                            tool_calls = new[]
+                            index = 0,
+                            delta = new
                             {
-                                new
+                                tool_calls = new[]
                                 {
-                                    index = 1,
-                                    id = "call_test456",
-                                    type = "function",
-                                    function = new
+                                    new
                                     {
-                                        name = "python-mcp.list_directory",
-                                        arguments = ""
-                                    }
-                                }
-                            }
+                                        index = 1,
+                                        id = "call_test456",
+                                        type = "function",
+                                        function = new
+                                        {
+                                            name = "python-mcp.list_directory",
+                                            arguments = "",
+                                        },
+                                    },
+                                },
+                            },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-            
+            ),
             // Second tool call arguments
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test456",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "meta-llama/llama-4-maverick",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test456",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "meta-llama/llama-4-maverick",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new
+                        new
                         {
-                            tool_calls = new[]
+                            index = 0,
+                            delta = new
                             {
-                                new
+                                tool_calls = new[]
                                 {
-                                    index = 1,
-                                    function = new
+                                    new
                                     {
-                                        arguments = "{\"relative_path\": \"code\"}"
-                                    }
-                                }
-                            }
+                                        index = 1,
+                                        function = new
+                                        {
+                                            arguments = "{\"relative_path\": \"code\"}",
+                                        },
+                                    },
+                                },
+                            },
+                            finish_reason = (string?)null,
                         },
-                        finish_reason = (string?)null
-                    }
+                    },
                 }
-            }),
-            
+            ),
             // End with tool_calls finish reason
-            JsonSerializer.Serialize(new
-            {
-                id = "chatcmpl-test456",
-                @object = "chat.completion.chunk",
-                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                model = "meta-llama/llama-4-maverick",
-                choices = new[]
+            JsonSerializer.Serialize(
+                new
                 {
-                    new
+                    id = "chatcmpl-test456",
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = "meta-llama/llama-4-maverick",
+                    choices = new[]
                     {
-                        index = 0,
-                        delta = new { },
-                        finish_reason = "tool_calls"
-                    }
+                        new
+                        {
+                            index = 0,
+                            delta = new { },
+                            finish_reason = "tool_calls",
+                        },
+                    },
                 }
-            })
+            ),
         };
 
         var sseResponse = string.Join("\n\n", chunks.Select(chunk => $"data: {chunk}"));

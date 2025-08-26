@@ -13,7 +13,6 @@ public record TextBlock : ContentBlock
     public required string Text { get; init; }
 }
 
-
 public abstract record FunctionCallResult
 {
     public bool? IsError { get; init; }

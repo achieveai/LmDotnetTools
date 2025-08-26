@@ -2,10 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.McpMiddleware;
 
@@ -49,7 +49,8 @@ public class McpToolFilter
     public McpToolFilter(
         McpToolFilterConfig? globalConfig,
         Dictionary<string, McpServerFilterConfig> serverConfigs,
-        ILogger? logger = null)
+        ILogger? logger = null
+    )
     {
         // Convert MCP-specific config to generalized config
         _config = globalConfig;
@@ -57,7 +58,8 @@ public class McpToolFilter
         {
             _config.ProviderConfigs = serverConfigs.ToDictionary(
                 kvp => kvp.Key,
-                kvp => (ProviderFilterConfig)kvp.Value);
+                kvp => (ProviderFilterConfig)kvp.Value
+            );
         }
 
         _functionFilter = new FunctionFilter(_config, logger);
@@ -73,20 +75,20 @@ public class McpToolFilter
     public bool ShouldFilterTool(
         string serverId,
         string originalToolName,
-        string registeredToolName)
+        string registeredToolName
+    )
     {
         // Create a temporary descriptor to pass to the generalized filter
         var descriptor = new FunctionDescriptor
         {
             Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
             {
-                Name = originalToolName
+                Name = originalToolName,
             },
             Handler = _ => Task.FromResult(string.Empty), // Dummy handler
-            ProviderName = serverId
+            ProviderName = serverId,
         };
 
         return _functionFilter.ShouldFilterFunction(descriptor, registeredToolName);
     }
-
 }

@@ -1,6 +1,6 @@
-using Microsoft.Data.Sqlite;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Microsoft.Data.Sqlite;
 
 namespace MemoryServer.Infrastructure;
 
@@ -27,21 +27,31 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
     {
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = _loggerFactory.CreateLogger<TestSqliteSessionFactory>();
-        _testDirectory = Path.Combine(Path.GetTempPath(), "MemoryServerTests", Guid.NewGuid().ToString("N")[..8]);
+        _testDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "MemoryServerTests",
+            Guid.NewGuid().ToString("N")[..8]
+        );
         _activeSessions = new ConcurrentDictionary<string, DateTime>();
 
         // Create a single shared database file for this test factory instance
         var factoryId = Guid.NewGuid().ToString("N")[..8];
         _sharedDatabasePath = Path.Combine(_testDirectory, $"test_memory_shared_{factoryId}.db");
-        _sharedConnectionString = $"Data Source={_sharedDatabasePath};Mode=ReadWriteCreate;Cache=Shared;";
+        _sharedConnectionString =
+            $"Data Source={_sharedDatabasePath};Mode=ReadWriteCreate;Cache=Shared;";
 
         // Ensure test directory exists
         Directory.CreateDirectory(_testDirectory);
 
-        _logger.LogDebug("Test SQLite session factory created with shared database: {SharedDatabasePath}", _sharedDatabasePath);
+        _logger.LogDebug(
+            "Test SQLite session factory created with shared database: {SharedDatabasePath}",
+            _sharedDatabasePath
+        );
     }
 
-    public async Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default)
+    public async Task<ISqliteSession> CreateSessionAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -50,7 +60,11 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
             // Use the shared database file for all sessions from this factory
             var sessionId = Guid.NewGuid().ToString("N")[..8];
 
-            var session = new TestSqliteSession(_sharedConnectionString, _sharedDatabasePath, _loggerFactory.CreateLogger<TestSqliteSession>());
+            var session = new TestSqliteSession(
+                _sharedConnectionString,
+                _sharedDatabasePath,
+                _loggerFactory.CreateLogger<TestSqliteSession>()
+            );
 
             // Initialize the database schema only if this is the first session
             await session.InitializeAsync(cancellationToken);
@@ -71,8 +85,12 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug("Created test session {SessionId} using shared database {DatabasePath} in {ElapsedMs}ms",
-                session.SessionId, _sharedDatabasePath, stopwatch.ElapsedMilliseconds);
+            _logger.LogDebug(
+                "Created test session {SessionId} using shared database {DatabasePath} in {ElapsedMs}ms",
+                session.SessionId,
+                _sharedDatabasePath,
+                stopwatch.ElapsedMilliseconds
+            );
 
             return new TrackedTestSqliteSession(session, this);
         }
@@ -83,15 +101,25 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 _failedSessionCreations++;
             }
 
-            _logger.LogError(ex, "Failed to create test session after {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
+            _logger.LogError(
+                ex,
+                "Failed to create test session after {ElapsedMs}ms",
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
 
-    public Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default)
+    public Task<ISqliteSession> CreateSessionAsync(
+        string connectionString,
+        CancellationToken cancellationToken = default
+    )
     {
         if (string.IsNullOrEmpty(connectionString))
-            throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
+            throw new ArgumentException(
+                "Connection string cannot be null or empty",
+                nameof(connectionString)
+            );
 
         var stopwatch = Stopwatch.StartNew();
 
@@ -100,7 +128,11 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
             // Extract database path from connection string for cleanup
             var databasePath = ExtractDatabasePath(connectionString);
 
-            var session = new TestSqliteSession(connectionString, databasePath, _loggerFactory.CreateLogger<TestSqliteSession>());
+            var session = new TestSqliteSession(
+                connectionString,
+                databasePath,
+                _loggerFactory.CreateLogger<TestSqliteSession>()
+            );
 
             // Track session for metrics
             _activeSessions[session.SessionId] = DateTime.UtcNow;
@@ -116,8 +148,11 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug("Created test session {SessionId} with custom connection string in {ElapsedMs}ms",
-                session.SessionId, stopwatch.ElapsedMilliseconds);
+            _logger.LogDebug(
+                "Created test session {SessionId} with custom connection string in {ElapsedMs}ms",
+                session.SessionId,
+                stopwatch.ElapsedMilliseconds
+            );
 
             return Task.FromResult<ISqliteSession>(new TrackedTestSqliteSession(session, this));
         }
@@ -128,8 +163,11 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 _failedSessionCreations++;
             }
 
-            _logger.LogError(ex, "Failed to create test session with custom connection string after {ElapsedMs}ms",
-                stopwatch.ElapsedMilliseconds);
+            _logger.LogError(
+                ex,
+                "Failed to create test session with custom connection string after {ElapsedMs}ms",
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -141,7 +179,9 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         return Task.CompletedTask;
     }
 
-    public Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
+    public Task<SessionPerformanceMetrics> GetMetricsAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         lock (_metricsLock)
         {
@@ -151,7 +191,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 ActiveSessions = _activeSessions.Count,
                 FailedSessionCreations = _failedSessionCreations,
                 ConnectionLeaksDetected = 0, // TODO: Implement leak detection
-                LastUpdated = DateTime.UtcNow
+                LastUpdated = DateTime.UtcNow,
             };
 
             if (_sessionCreationTimes.Count > 0)
@@ -201,7 +241,11 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug("Test session {SessionId} disposed after {LifetimeMs}ms", sessionId, lifetime);
+            _logger.LogDebug(
+                "Test session {SessionId} disposed after {LifetimeMs}ms",
+                sessionId,
+                lifetime
+            );
         }
     }
 
@@ -221,7 +265,11 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to clean up test directory: {TestDirectory}", _testDirectory);
+            _logger.LogWarning(
+                ex,
+                "Failed to clean up test directory: {TestDirectory}",
+                _testDirectory
+            );
         }
     }
 
@@ -258,9 +306,14 @@ public class TestSqliteSession : ISqliteSession
     public string SessionId { get; }
     public bool IsDisposed => _disposed;
 
-    public TestSqliteSession(string connectionString, string databasePath, ILogger<TestSqliteSession> logger)
+    public TestSqliteSession(
+        string connectionString,
+        string databasePath,
+        ILogger<TestSqliteSession> logger
+    )
     {
-        _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
+        _connectionString =
+            connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _databasePath = databasePath ?? throw new ArgumentNullException(nameof(databasePath));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -268,24 +321,35 @@ public class TestSqliteSession : ISqliteSession
         _sessionStopwatch = Stopwatch.StartNew();
         _lastActivity = DateTime.UtcNow;
 
-        _logger.LogDebug("Test SQLite session {SessionId} created for database {DatabasePath}", SessionId, _databasePath);
+        _logger.LogDebug(
+            "Test SQLite session {SessionId} created for database {DatabasePath}",
+            SessionId,
+            _databasePath
+        );
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         await EnsureConnectionAsync(cancellationToken);
 
-        await ExecuteAsync(async connection =>
-        {
-            await ExecuteSchemaScriptsAsync(connection, cancellationToken);
-        }, cancellationToken);
+        await ExecuteAsync(
+            async connection =>
+            {
+                await ExecuteSchemaScriptsAsync(connection, cancellationToken);
+            },
+            cancellationToken
+        );
 
         _logger.LogDebug("Test session {SessionId} database initialized", SessionId);
     }
 
-    public async Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation, CancellationToken cancellationToken = default)
+    public async Task<T> ExecuteAsync<T>(
+        Func<SqliteConnection, Task<T>> operation,
+        CancellationToken cancellationToken = default
+    )
     {
-        if (operation == null) throw new ArgumentNullException(nameof(operation));
+        if (operation == null)
+            throw new ArgumentNullException(nameof(operation));
 
         await EnsureConnectionAsync(cancellationToken);
 
@@ -294,24 +358,41 @@ public class TestSqliteSession : ISqliteSession
             _operationCount++;
             _lastActivity = DateTime.UtcNow;
 
-            _logger.LogDebug("Executing operation {OperationCount} in test session {SessionId}", _operationCount, SessionId);
+            _logger.LogDebug(
+                "Executing operation {OperationCount} in test session {SessionId}",
+                _operationCount,
+                SessionId
+            );
 
             var result = await operation(_connection!);
 
-            _logger.LogDebug("Operation {OperationCount} completed successfully in test session {SessionId}", _operationCount, SessionId);
+            _logger.LogDebug(
+                "Operation {OperationCount} completed successfully in test session {SessionId}",
+                _operationCount,
+                SessionId
+            );
 
             return result;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error executing operation {OperationCount} in test session {SessionId}", _operationCount, SessionId);
+            _logger.LogError(
+                ex,
+                "Error executing operation {OperationCount} in test session {SessionId}",
+                _operationCount,
+                SessionId
+            );
             throw;
         }
     }
 
-    public async Task<T> ExecuteInTransactionAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> operation, CancellationToken cancellationToken = default)
+    public async Task<T> ExecuteInTransactionAsync<T>(
+        Func<SqliteConnection, SqliteTransaction, Task<T>> operation,
+        CancellationToken cancellationToken = default
+    )
     {
-        if (operation == null) throw new ArgumentNullException(nameof(operation));
+        if (operation == null)
+            throw new ArgumentNullException(nameof(operation));
 
         await EnsureConnectionAsync(cancellationToken);
 
@@ -321,40 +402,65 @@ public class TestSqliteSession : ISqliteSession
             _operationCount++;
             _lastActivity = DateTime.UtcNow;
 
-            _logger.LogDebug("Executing transactional operation {OperationCount} in test session {SessionId}", _operationCount, SessionId);
+            _logger.LogDebug(
+                "Executing transactional operation {OperationCount} in test session {SessionId}",
+                _operationCount,
+                SessionId
+            );
 
             var result = await operation(_connection, transaction);
 
             await transaction.CommitAsync(cancellationToken);
 
-            _logger.LogDebug("Transactional operation {OperationCount} committed successfully in test session {SessionId}", _operationCount, SessionId);
+            _logger.LogDebug(
+                "Transactional operation {OperationCount} committed successfully in test session {SessionId}",
+                _operationCount,
+                SessionId
+            );
 
             return result;
         }
         catch (Exception ex)
         {
             await transaction.RollbackAsync(cancellationToken);
-            _logger.LogError(ex, "Transactional operation {OperationCount} rolled back in test session {SessionId}", _operationCount, SessionId);
+            _logger.LogError(
+                ex,
+                "Transactional operation {OperationCount} rolled back in test session {SessionId}",
+                _operationCount,
+                SessionId
+            );
             throw;
         }
     }
 
-    public async Task ExecuteAsync(Func<SqliteConnection, Task> operation, CancellationToken cancellationToken = default)
+    public async Task ExecuteAsync(
+        Func<SqliteConnection, Task> operation,
+        CancellationToken cancellationToken = default
+    )
     {
-        await ExecuteAsync(async conn =>
-        {
-            await operation(conn);
-            return true;
-        }, cancellationToken);
+        await ExecuteAsync(
+            async conn =>
+            {
+                await operation(conn);
+                return true;
+            },
+            cancellationToken
+        );
     }
 
-    public async Task ExecuteInTransactionAsync(Func<SqliteConnection, SqliteTransaction, Task> operation, CancellationToken cancellationToken = default)
+    public async Task ExecuteInTransactionAsync(
+        Func<SqliteConnection, SqliteTransaction, Task> operation,
+        CancellationToken cancellationToken = default
+    )
     {
-        await ExecuteInTransactionAsync(async (conn, trans) =>
-        {
-            await operation(conn, trans);
-            return true;
-        }, cancellationToken);
+        await ExecuteInTransactionAsync(
+            async (conn, trans) =>
+            {
+                await operation(conn, trans);
+                return true;
+            },
+            cancellationToken
+        );
     }
 
     public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
@@ -365,7 +471,7 @@ public class TestSqliteSession : ISqliteSession
             ConnectionState = _connection?.State.ToString() ?? "NotCreated",
             CreatedAt = DateTime.UtcNow - _sessionStopwatch.Elapsed,
             LastActivity = _lastActivity,
-            OperationCount = _operationCount
+            OperationCount = _operationCount,
         };
 
         if (_disposed)
@@ -382,10 +488,15 @@ public class TestSqliteSession : ISqliteSession
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        if (_disposed)
+            return;
 
-        _logger.LogDebug("Disposing test SQLite session {SessionId} after {ElapsedMs}ms with {OperationCount} operations",
-            SessionId, _sessionStopwatch.ElapsedMilliseconds, _operationCount);
+        _logger.LogDebug(
+            "Disposing test SQLite session {SessionId} after {ElapsedMs}ms with {OperationCount} operations",
+            SessionId,
+            _sessionStopwatch.ElapsedMilliseconds,
+            _operationCount
+        );
 
         try
         {
@@ -397,11 +508,18 @@ public class TestSqliteSession : ISqliteSession
                     using var cmd = _connection.CreateCommand();
                     cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
                     await cmd.ExecuteNonQueryAsync();
-                    _logger.LogDebug("WAL checkpoint completed for test session {SessionId}", SessionId);
+                    _logger.LogDebug(
+                        "WAL checkpoint completed for test session {SessionId}",
+                        SessionId
+                    );
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to execute WAL checkpoint during disposal of test session {SessionId}", SessionId);
+                    _logger.LogWarning(
+                        ex,
+                        "Failed to execute WAL checkpoint during disposal of test session {SessionId}",
+                        SessionId
+                    );
                 }
 
                 await _connection.DisposeAsync();
@@ -421,15 +539,21 @@ public class TestSqliteSession : ISqliteSession
             // Clean up database files
             await CleanupDatabaseFilesAsync();
 
-            _logger.LogDebug("Test SQLite session {SessionId} disposed successfully after {ElapsedMs}ms",
-                SessionId, _sessionStopwatch.ElapsedMilliseconds);
+            _logger.LogDebug(
+                "Test SQLite session {SessionId} disposed successfully after {ElapsedMs}ms",
+                SessionId,
+                _sessionStopwatch.ElapsedMilliseconds
+            );
         }
     }
 
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         if (_disposed)
-            throw new ObjectDisposedException(nameof(TestSqliteSession), $"Test session {SessionId} is disposed");
+            throw new ObjectDisposedException(
+                nameof(TestSqliteSession),
+                $"Test session {SessionId} is disposed"
+            );
 
         if (_connection == null)
         {
@@ -445,7 +569,11 @@ public class TestSqliteSession : ISqliteSession
         }
         else if (_connection.State != System.Data.ConnectionState.Open)
         {
-            _logger.LogWarning("Connection for test session {SessionId} is in {State} state, recreating", SessionId, _connection.State);
+            _logger.LogWarning(
+                "Connection for test session {SessionId} is in {State} state, recreating",
+                SessionId,
+                _connection.State
+            );
 
             await _connection.DisposeAsync();
             _connection = new SqliteConnection(_connectionString);
@@ -454,16 +582,19 @@ public class TestSqliteSession : ISqliteSession
         }
     }
 
-    private async Task ConfigureTestConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    private async Task ConfigureTestConnectionAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken
+    )
     {
         // Configure SQLite pragmas for testing (optimized for speed and isolation)
         var pragmas = new[]
         {
-            "PRAGMA journal_mode=WAL",           // Enable WAL mode for better concurrency
-            "PRAGMA synchronous=NORMAL",        // Balance between safety and performance
-            "PRAGMA cache_size=1000",           // Smaller cache for tests
-            "PRAGMA foreign_keys=ON",           // Enable foreign key constraints
-            "PRAGMA temp_store=MEMORY"          // Store temporary tables in memory
+            "PRAGMA journal_mode=WAL", // Enable WAL mode for better concurrency
+            "PRAGMA synchronous=NORMAL", // Balance between safety and performance
+            "PRAGMA cache_size=1000", // Smaller cache for tests
+            "PRAGMA foreign_keys=ON", // Enable foreign key constraints
+            "PRAGMA temp_store=MEMORY", // Store temporary tables in memory
         };
 
         foreach (var pragma in pragmas)
@@ -476,11 +607,19 @@ public class TestSqliteSession : ISqliteSession
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to execute pragma '{Pragma}' for test session {SessionId}", pragma, SessionId);
+                _logger.LogWarning(
+                    ex,
+                    "Failed to execute pragma '{Pragma}' for test session {SessionId}",
+                    pragma,
+                    SessionId
+                );
             }
         }
 
-        _logger.LogDebug("Test connection configured with pragmas for session {SessionId}", SessionId);
+        _logger.LogDebug(
+            "Test connection configured with pragmas for session {SessionId}",
+            SessionId
+        );
     }
 
     private async Task CleanupDatabaseFilesAsync()
@@ -514,11 +653,18 @@ public class TestSqliteSession : ISqliteSession
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to clean up test database files for session {SessionId}", SessionId);
+            _logger.LogWarning(
+                ex,
+                "Failed to clean up test database files for session {SessionId}",
+                SessionId
+            );
         }
     }
 
-    private async Task ExecuteSchemaScriptsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    private async Task ExecuteSchemaScriptsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken
+    )
     {
         // Use the same schema scripts as production but optimized for testing
         var schemaScripts = GetTestSchemaScripts();
@@ -530,7 +676,10 @@ public class TestSqliteSession : ISqliteSession
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        _logger.LogDebug("Test schema scripts executed successfully for session {SessionId}", SessionId);
+        _logger.LogDebug(
+            "Test schema scripts executed successfully for session {SessionId}",
+            SessionId
+        );
     }
 
     private static string[] GetTestSchemaScripts()
@@ -541,7 +690,6 @@ public class TestSqliteSession : ISqliteSession
             @"CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
             )",
-
             @"CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY,
                 content TEXT NOT NULL,
@@ -553,21 +701,18 @@ public class TestSqliteSession : ISqliteSession
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 version INTEGER DEFAULT 1
             )",
-
             @"CREATE TABLE IF NOT EXISTS memory_embeddings (
                 memory_id INTEGER PRIMARY KEY,
                 embedding BLOB NOT NULL,
                 dimension INTEGER NOT NULL,
                 FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
             )",
-
             @"CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 content,
                 metadata,
                 content='memories',
                 content_rowid='id'
             )",
-
             @"CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -583,7 +728,6 @@ public class TestSqliteSession : ISqliteSession
                 metadata TEXT,
                 version INTEGER DEFAULT 1
             )",
-
             @"CREATE TABLE IF NOT EXISTS relationships (
                 id INTEGER PRIMARY KEY,
                 source_entity_name TEXT NOT NULL,
@@ -600,25 +744,20 @@ public class TestSqliteSession : ISqliteSession
                 metadata TEXT,
                 version INTEGER DEFAULT 1
             )",
-
             // Basic indexes for testing
             @"CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_entities_session ON entities(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_relationships_session ON relationships(user_id, agent_id, run_id)",
-
             // FTS5 triggers for automatic content indexing
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
                 INSERT INTO memory_fts(rowid, content, metadata) VALUES (new.id, new.content, new.metadata);
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
                 UPDATE memory_fts SET content = new.content, metadata = new.metadata WHERE rowid = new.id;
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.id;
             END",
-
             // Document Segmentation tables (for testing)
             @"CREATE TABLE IF NOT EXISTS document_segments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -638,7 +777,6 @@ public class TestSqliteSession : ISqliteSession
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 metadata TEXT
             )",
-
             @"CREATE TABLE IF NOT EXISTS segment_relationships (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_segment_id TEXT NOT NULL,
@@ -652,7 +790,6 @@ public class TestSqliteSession : ISqliteSession
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 metadata TEXT
             )",
-
             // Document segments FTS5 table for full-text search (testing)
             @"CREATE VIRTUAL TABLE IF NOT EXISTS document_segments_fts USING fts5(
                 content,
@@ -661,24 +798,20 @@ public class TestSqliteSession : ISqliteSession
                 content='document_segments',
                 content_rowid='id'
             )",
-
             // FTS5 triggers for document segments automatic content indexing
             @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_insert AFTER INSERT ON document_segments BEGIN
                 INSERT INTO document_segments_fts(rowid, content, title, summary) VALUES (new.id, new.content, new.title, new.summary);
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_update AFTER UPDATE ON document_segments BEGIN
                 UPDATE document_segments_fts SET content = new.content, title = new.title, summary = new.summary WHERE rowid = new.id;
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_delete AFTER DELETE ON document_segments BEGIN
                 DELETE FROM document_segments_fts WHERE rowid = old.id;
             END",
-
             // Test indexes for document segments
             @"CREATE INDEX IF NOT EXISTS idx_test_document_segments_parent ON document_segments(parent_document_id)",
             @"CREATE INDEX IF NOT EXISTS idx_test_document_segments_session ON document_segments(user_id, agent_id, run_id)",
-            @"CREATE INDEX IF NOT EXISTS idx_test_segment_relationships_session ON segment_relationships(user_id, agent_id, run_id)"
+            @"CREATE INDEX IF NOT EXISTS idx_test_segment_relationships_session ON segment_relationships(user_id, agent_id, run_id)",
         };
     }
 }
@@ -701,20 +834,29 @@ internal class TrackedTestSqliteSession : ISqliteSession
     public string SessionId => _innerSession.SessionId;
     public bool IsDisposed => _disposed || _innerSession.IsDisposed;
 
-    public Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteAsync(operation, cancellationToken);
+    public Task<T> ExecuteAsync<T>(
+        Func<SqliteConnection, Task<T>> operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
 
-    public Task<T> ExecuteInTransactionAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    public Task<T> ExecuteInTransactionAsync<T>(
+        Func<SqliteConnection, SqliteTransaction, Task<T>> operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
-    public Task ExecuteAsync(Func<SqliteConnection, Task> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteAsync(operation, cancellationToken);
+    public Task ExecuteAsync(
+        Func<SqliteConnection, Task> operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
 
-    public Task ExecuteInTransactionAsync(Func<SqliteConnection, SqliteTransaction, Task> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    public Task ExecuteInTransactionAsync(
+        Func<SqliteConnection, SqliteTransaction, Task> operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
-    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
-        => _innerSession.GetHealthAsync(cancellationToken);
+    public Task<SessionHealthStatus> GetHealthAsync(
+        CancellationToken cancellationToken = default
+    ) => _innerSession.GetHealthAsync(cancellationToken);
 
     public async ValueTask DisposeAsync()
     {

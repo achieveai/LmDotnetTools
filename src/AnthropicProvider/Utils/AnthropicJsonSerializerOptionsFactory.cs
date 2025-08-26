@@ -18,36 +18,38 @@ public static class AnthropicJsonSerializerOptionsFactory
     /// <param name="allowTrailingCommas">Whether to allow trailing commas in JSON</param>
     /// <returns>JsonSerializerOptions with LmCore converters and Anthropic settings</returns>
     public static JsonSerializerOptions CreateForAnthropic(
-      bool writeIndented = false,
-      bool caseInsensitive = false,
-      bool allowTrailingCommas = true)
+        bool writeIndented = false,
+        bool caseInsensitive = false,
+        bool allowTrailingCommas = true
+    )
     {
         // Anthropic API requires camelCase property naming
         return JsonSerializerOptionsFactory.CreateBase(
-          writeIndented: writeIndented,
-          namingPolicy: JsonNamingPolicy.CamelCase,
-          caseInsensitive: caseInsensitive,
-          allowTrailingCommas: allowTrailingCommas);
+            writeIndented: writeIndented,
+            namingPolicy: JsonNamingPolicy.CamelCase,
+            caseInsensitive: caseInsensitive,
+            allowTrailingCommas: allowTrailingCommas
+        );
     }
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for Anthropic API production use.
     /// Uses the standard Anthropic configuration with compact formatting.
     /// </summary>
-    public static JsonSerializerOptions CreateForProduction()
-      => CreateForAnthropic(writeIndented: false);
+    public static JsonSerializerOptions CreateForProduction() =>
+        CreateForAnthropic(writeIndented: false);
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for Anthropic testing and debugging.
     /// Uses indented formatting for better readability.
     /// </summary>
-    public static JsonSerializerOptions CreateForTesting()
-      => CreateForAnthropic(writeIndented: true);
+    public static JsonSerializerOptions CreateForTesting() =>
+        CreateForAnthropic(writeIndented: true);
 
     /// <summary>
     /// Creates JsonSerializerOptions for cross-provider scenarios.
     /// Uses case-insensitive matching for robustness across different providers.
     /// </summary>
-    public static JsonSerializerOptions CreateUniversal()
-      => CreateForAnthropic(caseInsensitive: true);
+    public static JsonSerializerOptions CreateUniversal() =>
+        CreateForAnthropic(caseInsensitive: true);
 }

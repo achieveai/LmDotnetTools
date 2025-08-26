@@ -15,9 +15,10 @@ public class MockAgent : IAgent
     }
 
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         return Task.FromResult<IEnumerable<IMessage>>(new[] { _response });
     }
@@ -36,25 +37,32 @@ public class MockStreamingAgent : IStreamingAgent
     }
 
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         // For non-streaming, just return the stream as a collection
-        return Task.FromResult(_responseStream.Any() ? _responseStream : new[] { new TextMessage { Text = string.Empty } });
+        return Task.FromResult(
+            _responseStream.Any()
+                ? _responseStream
+                : new[] { new TextMessage { Text = string.Empty } }
+        );
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         return Task.FromResult(ConvertToAsyncEnumerable(_responseStream, cancellationToken));
     }
 
     private static async IAsyncEnumerable<IMessage> ConvertToAsyncEnumerable(
-      IEnumerable<IMessage> messages,
-      [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         foreach (var message in messages)
         {
@@ -72,9 +80,10 @@ public class MockStreamingAgent : IStreamingAgent
 public class ToolCallStreamingAgent : IStreamingAgent
 {
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         // For non-streaming just return a complete tool call
         var finalToolCall = CreateFinalToolCall();
@@ -82,15 +91,17 @@ public class ToolCallStreamingAgent : IStreamingAgent
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         return Task.FromResult(GenerateToolCallUpdatesAsync(cancellationToken));
     }
 
     private async IAsyncEnumerable<IMessage> GenerateToolCallUpdatesAsync(
-      [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         // Simulate a sequence of tool call updates
         var updates = CreateToolCallUpdateSequence();
@@ -108,67 +119,62 @@ public class ToolCallStreamingAgent : IStreamingAgent
     {
         // Create a fully formed tool call
         var jsonArgs = System.Text.Json.JsonSerializer.Serialize(
-          new { location = "San Francisco", unit = "celsius" });
+            new { location = "San Francisco", unit = "celsius" }
+        );
 
         return new ToolsCallMessage
         {
             ToolCalls = System.Collections.Immutable.ImmutableList.Create(
-            new ToolCall(
-              "get_weather",
-              jsonArgs)
-            {
-                ToolCallId = "tool-123"
-            })
+                new ToolCall("get_weather", jsonArgs) { ToolCallId = "tool-123" }
+            ),
         };
     }
 
     private static List<IMessage> CreateToolCallUpdateSequence()
     {
         return new List<IMessage>
-    {
-      // First update: Just the function name
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-          new ToolCallUpdate
-          {
-            FunctionName = "get_weather"
-          })
-      },
-      
-      // Second update: With partial args
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-          new ToolCallUpdate
-          {
-            FunctionName = "get_weather",
-            FunctionArgs = "{\"location\":\"San"
-          })
-      },
-      
-      // Third update: More complete args
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-          new ToolCallUpdate
-          {
-            FunctionName = "get_weather",
-            FunctionArgs = "{\"location\":\"San Francisco\""
-          })
-      },
-      
-      // Final update: Complete args
-      new ToolsCallUpdateMessage
-      {
-        ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-          new ToolCallUpdate
-          {
-            FunctionName = "get_weather",
-            FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}"
-          })
-      }
-    };
+        {
+            // First update: Just the function name
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
+                    new ToolCallUpdate { FunctionName = "get_weather" }
+                ),
+            },
+            // Second update: With partial args
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
+                    new ToolCallUpdate
+                    {
+                        FunctionName = "get_weather",
+                        FunctionArgs = "{\"location\":\"San",
+                    }
+                ),
+            },
+            // Third update: More complete args
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
+                    new ToolCallUpdate
+                    {
+                        FunctionName = "get_weather",
+                        FunctionArgs = "{\"location\":\"San Francisco\"",
+                    }
+                ),
+            },
+            // Final update: Complete args
+            new ToolsCallUpdateMessage
+            {
+                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
+                    new ToolCallUpdate
+                    {
+                        FunctionName = "get_weather",
+                        FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}",
+                    }
+                ),
+            },
+        };
     }
 }
 
@@ -185,24 +191,29 @@ public class TextStreamingAgent : IStreamingAgent
     }
 
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         // For non-streaming just return the full text
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = _fullText } });
+        return Task.FromResult<IEnumerable<IMessage>>(
+            new[] { new TextMessage { Text = _fullText } }
+        );
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
-      IEnumerable<IMessage> messages,
-      GenerateReplyOptions? options = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        GenerateReplyOptions? options = null,
+        CancellationToken cancellationToken = default
+    )
     {
         return Task.FromResult(GenerateTextUpdatesAsync(cancellationToken));
     }
 
     private async IAsyncEnumerable<IMessage> GenerateTextUpdatesAsync(
-      [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         // Break the full text into word chunks (keeping spaces with the following word)
         List<string> parts = new();
@@ -224,7 +235,10 @@ public class TextStreamingAgent : IStreamingAgent
             accumulated += part;
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(5, cancellationToken);
-            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.TextUpdateMessage { Text = accumulated };
+            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.TextUpdateMessage
+            {
+                Text = accumulated,
+            };
         }
     }
 }

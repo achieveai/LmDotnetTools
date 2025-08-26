@@ -1,7 +1,7 @@
 using System.Collections.Immutable;
-using ModelContextProtocol.Client;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using ModelContextProtocol.Client;
 
 namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
 {
@@ -17,7 +17,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         public SingleToolCallExample(
             IMcpClient mcpClient,
             IAgent llmAgent,
-            IStreamingAgent agentWithMcp)
+            IStreamingAgent agentWithMcp
+        )
         {
             _mcpClient = mcpClient;
             _llmAgent = llmAgent;
@@ -35,13 +36,15 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 new TextMessage
                 {
                     Role = Role.System,
-                    Text = "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the python-mcp.execute_python_in_container tool."
+                    Text =
+                        "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the python-mcp.execute_python_in_container tool.",
                 },
                 new TextMessage
                 {
                     Role = Role.User,
-                    Text = "Write a Python function to calculate the Fibonacci sequence up to n terms and then call it for n=10."
-                }
+                    Text =
+                        "Write a Python function to calculate the Fibonacci sequence up to n terms and then call it for n=10.",
+                },
             };
 
             // Generate a response with the agent using MCP middleware for tool calls
@@ -52,7 +55,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 ModelId = "meta-llama/llama-4-maverick",
                 Temperature = 0.7f,
                 MaxToken = 2000,
-                ExtraProperties = ImmutableDictionary<string, object?>.Empty
+                ExtraProperties = ImmutableDictionary<string, object?>.Empty,
             };
 
             var replies = await _agentWithMcp.GenerateReplyAsync(messages, options);
@@ -73,7 +76,9 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             }
             else if (reply2 is ToolsCallResultMessage toolsCallMessage)
             {
-                Console.WriteLine(string.Join("\n", toolsCallMessage.ToolCallResults.Select(tc => tc.Result)));
+                Console.WriteLine(
+                    string.Join("\n", toolsCallMessage.ToolCallResults.Select(tc => tc.Result))
+                );
             }
             else if (reply2 != null)
             {

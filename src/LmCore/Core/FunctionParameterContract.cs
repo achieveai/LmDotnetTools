@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Agents;
 

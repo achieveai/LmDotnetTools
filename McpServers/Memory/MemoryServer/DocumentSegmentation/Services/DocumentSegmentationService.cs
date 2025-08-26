@@ -20,12 +20,13 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     private readonly DocumentSegmentationOptions _options;
 
     public DocumentSegmentationService(
-      IDocumentSizeAnalyzer sizeAnalyzer,
-      ISegmentationPromptManager promptManager,
-      IDocumentSegmentRepository repository,
-      ISqliteSessionFactory sessionFactory,
-      ILogger<DocumentSegmentationService> logger,
-      IOptions<DocumentSegmentationOptions> options)
+        IDocumentSizeAnalyzer sizeAnalyzer,
+        ISegmentationPromptManager promptManager,
+        IDocumentSegmentRepository repository,
+        ISqliteSessionFactory sessionFactory,
+        ILogger<DocumentSegmentationService> logger,
+        IOptions<DocumentSegmentationOptions> options
+    )
     {
         _sizeAnalyzer = sizeAnalyzer ?? throw new ArgumentNullException(nameof(sizeAnalyzer));
         _promptManager = promptManager ?? throw new ArgumentNullException(nameof(promptManager));
@@ -39,10 +40,11 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     /// Segments a document into logical chunks using the optimal strategy.
     /// </summary>
     public async Task<DocumentSegmentationResult> SegmentDocumentAsync(
-      string content,
-      DocumentSegmentationRequest request,
-      SessionContext sessionContext,
-      CancellationToken cancellationToken = default)
+        string content,
+        DocumentSegmentationRequest request,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    )
     {
         if (string.IsNullOrWhiteSpace(content))
         {
@@ -52,8 +54,11 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         // Use a hash of the content as a pseudo document ID for this implementation
         var pseudoDocumentId = Math.Abs(content.GetHashCode());
 
-        _logger.LogDebug("Starting document segmentation for content hash {DocumentId}, content length: {Length}",
-          pseudoDocumentId, content.Length);
+        _logger.LogDebug(
+            "Starting document segmentation for content hash {DocumentId}, content length: {Length}",
+            pseudoDocumentId,
+            content.Length
+        );
 
         var result = new DocumentSegmentationResult();
 
@@ -61,15 +66,24 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         {
             // Step 1: Analyze document size and determine if segmentation is needed
             var statistics = await _sizeAnalyzer.AnalyzeDocumentAsync(content, cancellationToken);
-            var shouldSegment = _sizeAnalyzer.ShouldSegmentDocument(statistics, request.DocumentType);
+            var shouldSegment = _sizeAnalyzer.ShouldSegmentDocument(
+                statistics,
+                request.DocumentType
+            );
 
-            _logger.LogDebug("Document analysis complete: {WordCount} words, should segment: {ShouldSegment}",
-              statistics.WordCount, shouldSegment);
+            _logger.LogDebug(
+                "Document analysis complete: {WordCount} words, should segment: {ShouldSegment}",
+                statistics.WordCount,
+                shouldSegment
+            );
 
             if (!shouldSegment)
             {
-                _logger.LogInformation("Document {DocumentId} does not require segmentation ({WordCount} words)",
-                  pseudoDocumentId, statistics.WordCount);
+                _logger.LogInformation(
+                    "Document {DocumentId} does not require segmentation ({WordCount} words)",
+                    pseudoDocumentId,
+                    statistics.WordCount
+                );
 
                 result.IsComplete = true;
                 result.Metadata.ProcessingTimeMs = 0;
@@ -77,10 +91,14 @@ public class DocumentSegmentationService : IDocumentSegmentationService
             }
 
             // Step 2: Validate prompt configuration
-            var promptsValid = await _promptManager.ValidatePromptConfigurationAsync(cancellationToken);
+            var promptsValid = await _promptManager.ValidatePromptConfigurationAsync(
+                cancellationToken
+            );
             if (!promptsValid)
             {
-                result.Warnings.Add("Prompt configuration validation failed, using fallback segmentation");
+                result.Warnings.Add(
+                    "Prompt configuration validation failed, using fallback segmentation"
+                );
             }
 
             // Step 3: Use the requested strategy
@@ -90,7 +108,11 @@ public class DocumentSegmentationService : IDocumentSegmentationService
 
             // Step 4: Perform segmentation (using rule-based fallback for now)
             result.Segments = await PerformRuleBasedSegmentationAsync(
-              content, statistics, strategy, cancellationToken);
+                content,
+                statistics,
+                strategy,
+                cancellationToken
+            );
 
             // Step 5: Generate relationships between segments
             result.Relationships = GenerateSegmentRelationships(result.Segments);
@@ -99,29 +121,48 @@ public class DocumentSegmentationService : IDocumentSegmentationService
             await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
             var storedSegmentIds = await _repository.StoreSegmentsAsync(
-              session, result.Segments, pseudoDocumentId, sessionContext, cancellationToken);
+                session,
+                result.Segments,
+                pseudoDocumentId,
+                sessionContext,
+                cancellationToken
+            );
 
             if (result.Relationships.Any())
             {
                 await _repository.StoreSegmentRelationshipsAsync(
-                  session, result.Relationships, sessionContext, cancellationToken);
+                    session,
+                    result.Relationships,
+                    sessionContext,
+                    cancellationToken
+                );
             }
 
             // Step 7: Verify stored data
             var storedSegments = await _repository.GetDocumentSegmentsAsync(
-              session, pseudoDocumentId, sessionContext, cancellationToken);
+                session,
+                pseudoDocumentId,
+                sessionContext,
+                cancellationToken
+            );
 
             var verificationSuccessful = storedSegments.Count == result.Segments.Count;
             if (!verificationSuccessful)
             {
-                result.Warnings.Add($"Verification failed: expected {result.Segments.Count} segments, found {storedSegments.Count}");
+                result.Warnings.Add(
+                    $"Verification failed: expected {result.Segments.Count} segments, found {storedSegments.Count}"
+                );
             }
 
             result.IsComplete = true;
             result.Metadata.ProcessingTimeMs = 100; // Placeholder
 
-            _logger.LogInformation("Document segmentation completed for {DocumentId}: {SegmentCount} segments, {RelationshipCount} relationships",
-              pseudoDocumentId, result.Segments.Count, result.Relationships.Count);
+            _logger.LogInformation(
+                "Document segmentation completed for {DocumentId}: {SegmentCount} segments, {RelationshipCount} relationships",
+                pseudoDocumentId,
+                result.Segments.Count,
+                result.Relationships.Count
+            );
 
             return result;
         }
@@ -129,7 +170,11 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         {
             result.Warnings.Add($"Error during segmentation: {ex.Message}");
 
-            _logger.LogError(ex, "Error during document segmentation for document {DocumentId}", pseudoDocumentId);
+            _logger.LogError(
+                ex,
+                "Error during document segmentation for document {DocumentId}",
+                pseudoDocumentId
+            );
             throw;
         }
     }
@@ -138,9 +183,10 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     /// Determines if a document should be segmented based on size and complexity.
     /// </summary>
     public async Task<bool> ShouldSegmentAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      CancellationToken cancellationToken = default)
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        CancellationToken cancellationToken = default
+    )
     {
         if (string.IsNullOrWhiteSpace(content))
         {
@@ -155,9 +201,10 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     /// Determines the optimal segmentation strategy for a document.
     /// </summary>
     public async Task<SegmentationStrategy> DetermineOptimalStrategyAsync(
-      string content,
-      DocumentType documentType = DocumentType.Generic,
-      CancellationToken cancellationToken = default)
+        string content,
+        DocumentType documentType = DocumentType.Generic,
+        CancellationToken cancellationToken = default
+    )
     {
         // Simple rule-based strategy determination
         // In a full implementation, this would use LLM analysis
@@ -169,7 +216,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
             DocumentType.Email or DocumentType.Chat => SegmentationStrategy.TopicBased,
             DocumentType.ResearchPaper or DocumentType.Legal => SegmentationStrategy.StructureBased,
             DocumentType.Technical => SegmentationStrategy.Hybrid,
-            _ => SegmentationStrategy.TopicBased
+            _ => SegmentationStrategy.TopicBased,
         };
     }
 
@@ -177,8 +224,9 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     /// Validates the quality of segmentation results.
     /// </summary>
     public async Task<SegmentationQualityAssessment> ValidateSegmentationQualityAsync(
-      DocumentSegmentationResult result,
-      CancellationToken cancellationToken = default)
+        DocumentSegmentationResult result,
+        CancellationToken cancellationToken = default
+    )
     {
         var assessment = new SegmentationQualityAssessment();
 
@@ -192,36 +240,49 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         // Calculate aggregate quality scores
         var segments = result.Segments;
         assessment.AverageCoherenceScore = segments.Average(s => s.Quality?.CoherenceScore ?? 0.0);
-        assessment.AverageIndependenceScore = segments.Average(s => s.Quality?.IndependenceScore ?? 0.0);
-        assessment.AverageTopicConsistencyScore = segments.Average(s => s.Quality?.TopicConsistencyScore ?? 0.0);
+        assessment.AverageIndependenceScore = segments.Average(s =>
+            s.Quality?.IndependenceScore ?? 0.0
+        );
+        assessment.AverageTopicConsistencyScore = segments.Average(s =>
+            s.Quality?.TopicConsistencyScore ?? 0.0
+        );
 
         // Calculate pass rate
         var passingSegments = segments.Count(s => s.Quality?.PassesQualityThreshold == true);
         assessment.QualityPassRate = (double)passingSegments / segments.Count;
 
         // Calculate overall score (weighted average)
-        assessment.OverallScore = (assessment.AverageCoherenceScore * 0.4) +
-                                 (assessment.AverageIndependenceScore * 0.3) +
-                                 (assessment.AverageTopicConsistencyScore * 0.3);
+        assessment.OverallScore =
+            (assessment.AverageCoherenceScore * 0.4)
+            + (assessment.AverageIndependenceScore * 0.3)
+            + (assessment.AverageTopicConsistencyScore * 0.3);
 
         // Determine if meets quality standards
-        assessment.MeetsQualityStandards = assessment.OverallScore >= 0.7 && // Default threshold
-                                           assessment.QualityPassRate >= 0.8;
+        assessment.MeetsQualityStandards =
+            assessment.OverallScore >= 0.7
+            && // Default threshold
+            assessment.QualityPassRate >= 0.8;
 
         // Provide feedback
         if (assessment.AverageCoherenceScore < 0.7)
         {
-            assessment.QualityFeedback.Add("Low coherence scores detected - consider refining segmentation boundaries");
+            assessment.QualityFeedback.Add(
+                "Low coherence scores detected - consider refining segmentation boundaries"
+            );
         }
 
         if (assessment.AverageIndependenceScore < 0.6)
         {
-            assessment.QualityFeedback.Add("Segments may have too much interdependence - consider larger segment sizes");
+            assessment.QualityFeedback.Add(
+                "Segments may have too much interdependence - consider larger segment sizes"
+            );
         }
 
         if (assessment.QualityPassRate < 0.8)
         {
-            assessment.QualityFeedback.Add($"Only {assessment.QualityPassRate:P0} of segments pass quality thresholds");
+            assessment.QualityFeedback.Add(
+                $"Only {assessment.QualityPassRate:P0} of segments pass quality thresholds"
+            );
         }
 
         if (assessment.MeetsQualityStandards)
@@ -236,10 +297,11 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     #region Private Methods
 
     private async Task<List<DocumentSegment>> PerformRuleBasedSegmentationAsync(
-      string content,
-      DocumentStatistics statistics,
-      SegmentationStrategy strategy,
-      CancellationToken cancellationToken)
+        string content,
+        DocumentStatistics statistics,
+        SegmentationStrategy strategy,
+        CancellationToken cancellationToken
+    )
     {
         _logger.LogDebug("Performing rule-based segmentation using {Strategy} strategy", strategy);
 
@@ -270,15 +332,15 @@ public class DocumentSegmentationService : IDocumentSegmentationService
                     CoherenceScore = 0.8, // Default score for rule-based segmentation
                     IndependenceScore = 0.7,
                     TopicConsistencyScore = 0.75,
-                    PassesQualityThreshold = true
+                    PassesQualityThreshold = true,
                 },
                 Metadata = new Dictionary<string, object>
                 {
                     ["strategy"] = strategy.ToString(),
                     ["method"] = "rule_based",
                     ["created_by"] = "workflow_demo",
-                    ["word_count"] = segmentWords.Length
-                }
+                    ["word_count"] = segmentWords.Length,
+                },
             };
 
             segments.Add(segment);
@@ -305,8 +367,8 @@ public class DocumentSegmentationService : IDocumentSegmentationService
                 Metadata = new Dictionary<string, object>
                 {
                     ["type"] = "adjacent_sequence",
-                    ["created_by"] = "workflow_demo"
-                }
+                    ["created_by"] = "workflow_demo",
+                },
             };
 
             relationships.Add(relationship);

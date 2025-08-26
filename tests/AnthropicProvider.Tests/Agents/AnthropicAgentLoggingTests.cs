@@ -12,12 +12,18 @@ public class AnthropicAgentLoggingTests
     {
         public bool ThrowOnDispose { get; set; }
 
-        public Task<AnthropicResponse> CreateChatCompletionsAsync(AnthropicRequest request, CancellationToken cancellationToken = default)
+        public Task<AnthropicResponse> CreateChatCompletionsAsync(
+            AnthropicRequest request,
+            CancellationToken cancellationToken = default
+        )
         {
             throw new NotImplementedException();
         }
 
-        public Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(AnthropicRequest request, CancellationToken cancellationToken = default)
+        public Task<IAsyncEnumerable<AnthropicStreamEvent>> StreamingChatCompletionsAsync(
+            AnthropicRequest request,
+            CancellationToken cancellationToken = default
+        )
         {
             throw new NotImplementedException();
         }
@@ -33,18 +39,28 @@ public class AnthropicAgentLoggingTests
     {
         public List<LogEntry> LogEntries { get; } = new();
 
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
         public bool IsEnabled(LogLevel logLevel) => true;
 
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
         {
-            LogEntries.Add(new LogEntry
-            {
-                Level = logLevel,
-                EventId = eventId,
-                Message = formatter(state, exception),
-                Exception = exception
-            });
+            LogEntries.Add(
+                new LogEntry
+                {
+                    Level = logLevel,
+                    EventId = eventId,
+                    Message = formatter(state, exception),
+                    Exception = exception,
+                }
+            );
         }
     }
 

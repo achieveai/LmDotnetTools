@@ -3,7 +3,6 @@ using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Agents;
 
-
 /// <summary>
 /// Represents a function contract for Tool calls.
 /// </summary>
@@ -79,6 +78,5 @@ public class FunctionContract
         }
 
         return builder.Build();
-
     }
 }

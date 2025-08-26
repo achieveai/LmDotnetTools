@@ -1,13 +1,13 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 using System.Linq;
+using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
+using AchieveAi.LmDotnetTools.Misc.Http;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Misc.Utils;
-using AchieveAi.LmDotnetTools.Misc.Http;
-using AchieveAi.LmDotnetTools.LmConfig.Http;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.Misc.Extensions;
 
@@ -22,7 +22,10 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <param name="options">Cache configuration options</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCache(this IServiceCollection services, LlmCacheOptions options)
+    public static IServiceCollection AddLlmFileCache(
+        this IServiceCollection services,
+        LlmCacheOptions options
+    )
     {
         // Guard against duplicate registration – if cache options have already been added we assume the
         // cache pipeline has been wired up previously and simply return the collection unchanged.
@@ -35,7 +38,10 @@ public static class ServiceCollectionExtensions
         var validationErrors = options.Validate();
         if (validationErrors.Count > 0)
         {
-            throw new ArgumentException($"Invalid cache options: {string.Join(", ", validationErrors)}", nameof(options));
+            throw new ArgumentException(
+                $"Invalid cache options: {string.Join(", ", validationErrors)}",
+                nameof(options)
+            );
         }
 
         // Register the options (idempotent)
@@ -52,7 +58,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IKvStore>(provider => provider.GetRequiredService<FileKvStore>());
 
         // Ensure a single IHttpHandlerBuilder and attach the cache wrapper without building a temporary provider
-        var builderDescriptor = services.FirstOrDefault(sd => sd.ServiceType == typeof(IHttpHandlerBuilder));
+        var builderDescriptor = services.FirstOrDefault(sd =>
+            sd.ServiceType == typeof(IHttpHandlerBuilder)
+        );
 
         if (builderDescriptor == null)
         {
@@ -73,9 +81,10 @@ public static class ServiceCollectionExtensions
 
             services.AddSingleton<IHttpHandlerBuilder>(sp =>
             {
-                var innerBuilder = (builderDescriptor.ImplementationInstance as HandlerBuilder)
-                                   ?? (builderDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder)
-                                   ?? new HandlerBuilder();
+                var innerBuilder =
+                    (builderDescriptor.ImplementationInstance as HandlerBuilder)
+                    ?? (builderDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder)
+                    ?? new HandlerBuilder();
 
                 var store = sp.GetRequiredService<IKvStore>();
                 var opts = sp.GetRequiredService<LlmCacheOptions>();
@@ -96,7 +105,11 @@ public static class ServiceCollectionExtensions
     /// <param name="configuration">Configuration instance</param>
     /// <param name="configurationSection">Configuration section name (defaults to "LlmCache")</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCache(this IServiceCollection services, IConfiguration configuration, string configurationSection = "LlmCache")
+    public static IServiceCollection AddLlmFileCache(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        string configurationSection = "LlmCache"
+    )
     {
         if (configuration == null)
             throw new ArgumentNullException(nameof(configuration));
@@ -104,26 +117,34 @@ public static class ServiceCollectionExtensions
         var section = configuration.GetSection(configurationSection);
         var options = new LlmCacheOptions
         {
-            CacheDirectory = section.GetValue<string>("CacheDirectory") ?? LlmCacheOptions.GetDefaultCacheDirectory(),
+            CacheDirectory =
+                section.GetValue<string>("CacheDirectory")
+                ?? LlmCacheOptions.GetDefaultCacheDirectory(),
             EnableCaching = section.GetValue<bool>("EnableCaching", true),
-            CacheExpiration = section.GetValue<int?>("CacheExpirationHours") is int hours && hours > 0
-                ? TimeSpan.FromHours(hours) : TimeSpan.FromHours(24),
-            MaxCacheItems = section.GetValue<int?>("MaxCacheItems") is int items && items > 0 ? items : 10_000,
-            MaxCacheSizeBytes = section.GetValue<long?>("MaxCacheSizeBytes") is long bytes && bytes > 0 ? bytes : 1_073_741_824,
-            CleanupOnStartup = section.GetValue<bool>("CleanupOnStartup", false)
+            CacheExpiration =
+                section.GetValue<int?>("CacheExpirationHours") is int hours && hours > 0
+                    ? TimeSpan.FromHours(hours)
+                    : TimeSpan.FromHours(24),
+            MaxCacheItems =
+                section.GetValue<int?>("MaxCacheItems") is int items && items > 0 ? items : 10_000,
+            MaxCacheSizeBytes =
+                section.GetValue<long?>("MaxCacheSizeBytes") is long bytes && bytes > 0
+                    ? bytes
+                    : 1_073_741_824,
+            CleanupOnStartup = section.GetValue<bool>("CleanupOnStartup", false),
         };
 
         return services.AddLlmFileCache(options);
     }
-
-
 
     /// <summary>
     /// Registers LLM file caching services with configuration from environment variables.
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCacheFromEnvironment(this IServiceCollection services)
+    public static IServiceCollection AddLlmFileCacheFromEnvironment(
+        this IServiceCollection services
+    )
     {
         var options = LlmCacheOptions.FromEnvironment();
         return services.AddLlmFileCache(options);
@@ -138,22 +159,29 @@ public static class ServiceCollectionExtensions
     /// <param name="timeout">Optional timeout (defaults to 5 minutes)</param>
     /// <param name="headers">Optional additional headers</param>
     /// <returns>Configured HttpClient with caching</returns>
-    public static HttpClient CreateCachingOpenAIClient(this IServiceCollection services,
+    public static HttpClient CreateCachingOpenAIClient(
+        this IServiceCollection services,
         string apiKey,
         string baseUrl,
         TimeSpan? timeout = null,
-        IReadOnlyDictionary<string, string>? headers = null)
+        IReadOnlyDictionary<string, string>? headers = null
+    )
     {
         var sp = services.BuildServiceProvider();
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
         return AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
-            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(apiKey, baseUrl, AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.OpenAI),
+            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(
+                apiKey,
+                baseUrl,
+                AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.OpenAI
+            ),
             handlerBuilder,
             timeout,
             headers,
-            logger);
+            logger
+        );
     }
 
     /// <summary>
@@ -165,22 +193,29 @@ public static class ServiceCollectionExtensions
     /// <param name="timeout">Optional timeout (defaults to 5 minutes)</param>
     /// <param name="headers">Optional additional headers</param>
     /// <returns>Configured HttpClient with caching</returns>
-    public static HttpClient CreateCachingAnthropicClient(this IServiceCollection services,
+    public static HttpClient CreateCachingAnthropicClient(
+        this IServiceCollection services,
         string apiKey,
         string baseUrl,
         TimeSpan? timeout = null,
-        IReadOnlyDictionary<string, string>? headers = null)
+        IReadOnlyDictionary<string, string>? headers = null
+    )
     {
         var sp = services.BuildServiceProvider();
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
         return AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
-            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(apiKey, baseUrl, AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.Anthropic),
+            new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(
+                apiKey,
+                baseUrl,
+                AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.Anthropic
+            ),
             handlerBuilder,
             timeout,
             headers,
-            logger);
+            logger
+        );
     }
 
     /// <summary>
@@ -189,9 +224,13 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <param name="existingClient">The existing HttpClient to wrap</param>
     /// <returns>New HttpClient with caching capabilities</returns>
-    public static HttpClient WrapWithCache(this IServiceCollection services, HttpClient existingClient)
+    public static HttpClient WrapWithCache(
+        this IServiceCollection services,
+        HttpClient existingClient
+    )
     {
-        if (existingClient == null) throw new ArgumentNullException(nameof(existingClient));
+        if (existingClient == null)
+            throw new ArgumentNullException(nameof(existingClient));
 
         var sp = services.BuildServiceProvider();
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
@@ -202,7 +241,8 @@ public static class ServiceCollectionExtensions
             pipeline: handlerBuilder,
             timeout: existingClient.Timeout,
             headers: null,
-            logger: logger);
+            logger: logger
+        );
 
         newClient.BaseAddress = existingClient.BaseAddress;
         foreach (var h in existingClient.DefaultRequestHeaders)
@@ -216,7 +256,9 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <returns>Cache statistics</returns>
-    public static async Task<CacheStatistics> GetCacheStatisticsAsync(this IServiceCollection services)
+    public static async Task<CacheStatistics> GetCacheStatisticsAsync(
+        this IServiceCollection services
+    )
     {
         var serviceProvider = services.BuildServiceProvider();
         var cache = serviceProvider.GetService<IKvStore>();
@@ -231,7 +273,7 @@ public static class ServiceCollectionExtensions
                 CacheDirectory = string.Empty,
                 IsEnabled = false,
                 MaxItems = 0,
-                MaxSizeBytes = 0
+                MaxSizeBytes = 0,
             };
         }
 
@@ -249,7 +291,7 @@ public static class ServiceCollectionExtensions
                 CacheDirectory = fileStore.CacheDirectory,
                 IsEnabled = options.EnableCaching,
                 MaxItems = options.MaxCacheItems ?? 0,
-                MaxSizeBytes = options.MaxCacheSizeBytes ?? 0
+                MaxSizeBytes = options.MaxCacheSizeBytes ?? 0,
             };
         }
 
@@ -260,7 +302,7 @@ public static class ServiceCollectionExtensions
             CacheDirectory = options.CacheDirectory,
             IsEnabled = options.EnableCaching,
             MaxItems = options.MaxCacheItems ?? 0,
-            MaxSizeBytes = options.MaxCacheSizeBytes ?? 0
+            MaxSizeBytes = options.MaxCacheSizeBytes ?? 0,
         };
     }
 
@@ -331,5 +373,6 @@ public class CacheStatistics
     /// <summary>
     /// Size utilization as a percentage (0-100).
     /// </summary>
-    public double SizeUtilizationPercent => MaxSizeBytes > 0 ? (double)TotalSizeBytes / MaxSizeBytes * 100 : 0;
+    public double SizeUtilizationPercent =>
+        MaxSizeBytes > 0 ? (double)TotalSizeBytes / MaxSizeBytes * 100 : 0;
 }

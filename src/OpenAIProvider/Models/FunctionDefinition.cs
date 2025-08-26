@@ -59,7 +59,8 @@ public sealed record FunctionDefinition
     public static FunctionDefinition Create(
         string name,
         string description,
-        Func<JsonSchemaObjectBuilder, JsonSchemaObjectBuilder> parametersBuilder)
+        Func<JsonSchemaObjectBuilder, JsonSchemaObjectBuilder> parametersBuilder
+    )
     {
         var builder = JsonSchemaObject.Create();
         var schema = parametersBuilder(builder).Build();

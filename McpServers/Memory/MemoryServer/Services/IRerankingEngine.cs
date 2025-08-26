@@ -23,7 +23,8 @@ public interface IRerankingEngine
         List<UnifiedSearchResult> results,
         SessionContext sessionContext,
         RerankingOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Checks if the reranking service is available and configured.

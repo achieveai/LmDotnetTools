@@ -31,15 +31,19 @@ public static class EnvironmentHelper
                 if (envPath != null)
                 {
                     Console.WriteLine($"Loading environment variables from: {envPath}");
-                    DotEnv.Load(options: new DotEnvOptions(
-                        envFilePaths: new[] { envPath },
-                        ignoreExceptions: false
-                    ));
+                    DotEnv.Load(
+                        options: new DotEnvOptions(
+                            envFilePaths: new[] { envPath },
+                            ignoreExceptions: false
+                        )
+                    );
                     Console.WriteLine("Environment variables loaded successfully");
                 }
                 else
                 {
-                    Console.WriteLine("No .env file found in current directory or parent directories");
+                    Console.WriteLine(
+                        "No .env file found in current directory or parent directories"
+                    );
                 }
             }
             catch (Exception ex)
@@ -68,8 +72,10 @@ public static class EnvironmentHelper
             }
 
             // Check for workspace indicators (solution file, .git directory)
-            if (Directory.GetFiles(currentDir, "*.sln").Any() ||
-                Directory.Exists(Path.Combine(currentDir, ".git")))
+            if (
+                Directory.GetFiles(currentDir, "*.sln").Any()
+                || Directory.Exists(Path.Combine(currentDir, ".git"))
+            )
             {
                 // We've found the workspace root, stop searching
                 break;

@@ -14,9 +14,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     /// Initializes a new instance of the <see cref="MessageUpdateJoinerMiddleware"/> class.
     /// </summary>
     /// <param name="name">Optional name for the middleware.</param>
-    /// 
-    public MessageUpdateJoinerMiddleware(
-        string? name = null)
+    ///
+    public MessageUpdateJoinerMiddleware(string? name = null)
     {
         Name = name ?? nameof(MessageUpdateJoinerMiddleware);
     }
@@ -32,7 +31,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // For non-streaming responses, we just pass through to the agent
         return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
@@ -44,15 +44,21 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        var sourceStream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+        var sourceStream = await agent.GenerateReplyStreamingAsync(
+            context.Messages,
+            context.Options,
+            cancellationToken
+        );
         return TransformStreamWithBuilder(sourceStream, cancellationToken);
     }
 
     private async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
         IAsyncEnumerable<IMessage> sourceStream,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         // Track a single active builder instead of a dictionary
         IMessageBuilder? activeBuilder = null;
@@ -78,7 +84,11 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             }
 
             // Check if we're switching message types and need to complete current builder
-            if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
+            if (
+                lastMessageType != null
+                && lastMessageType != message.GetType()
+                && activeBuilder != null
+            )
             {
                 // Complete the previous builder before processing the new message
                 var builtMessage = activeBuilder.Build();
@@ -94,14 +104,20 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             var processedMessage = ProcessStreamingMessage(
                 message,
                 ref activeBuilder,
-                ref activeBuilderType);
+                ref activeBuilderType
+            );
 
             // Only emit the message if it's not being accumulated by a builder
-            bool isBeingAccumulated = activeBuilder != null &&
-                (message is TextUpdateMessage ||
-                 message is ReasoningUpdateMessage ||
-                 message is ToolsCallUpdateMessage ||
-                 (message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage)));
+            bool isBeingAccumulated =
+                activeBuilder != null
+                && (
+                    message is TextUpdateMessage
+                    || message is ReasoningUpdateMessage
+                    || message is ToolsCallUpdateMessage
+                    || (
+                        message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage)
+                    )
+                );
 
             if (!isBeingAccumulated)
             {
@@ -126,7 +142,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     private IMessage ProcessStreamingMessage(
         IMessage message,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType
+    )
     {
         // Handle tool call updates (ToolsCallUpdateMessage)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
@@ -141,7 +158,11 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // For rqwen/qwen3-235b-a22b-thinking-2507easoning update messages
         else if (message is ReasoningUpdateMessage reasoningUpdate)
         {
-            return ProcessReasoningUpdate(reasoningUpdate, ref activeBuilder, ref activeBuilderType);
+            return ProcessReasoningUpdate(
+                reasoningUpdate,
+                ref activeBuilder,
+                ref activeBuilderType
+            );
         }
 
         return message;
@@ -150,7 +171,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     private IMessage ProcessToolCallUpdate(
         ToolsCallUpdateMessage toolCallUpdate,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType
+    )
     {
         Type builderType = typeof(ToolsCallMessage);
 
@@ -160,7 +182,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             var builder = new ToolsCallMessageBuilder
             {
                 FromAgent = toolCallUpdate.FromAgent,
-                Role = toolCallUpdate.Role
+                Role = toolCallUpdate.Role,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -180,7 +202,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     private static IMessage ProcessTextUpdate(
         TextUpdateMessage textUpdateMessage,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType
+    )
     {
         Type builderType = typeof(TextMessage);
 
@@ -191,7 +214,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             {
                 FromAgent = textUpdateMessage.FromAgent,
                 Role = textUpdateMessage.Role,
-                GenerationId = textUpdateMessage.GenerationId
+                GenerationId = textUpdateMessage.GenerationId,
             };
             activeBuilder = builder;
             activeBuilderType = builderType;
@@ -218,7 +241,8 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     private IMessage ProcessReasoningUpdate(
         ReasoningUpdateMessage reasoningUpdate,
         ref IMessageBuilder? activeBuilder,
-        ref Type? activeBuilderType)
+        ref Type? activeBuilderType
+    )
     {
         Type builderType = typeof(ReasoningMessage);
 
@@ -230,7 +254,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                 FromAgent = reasoningUpdate.FromAgent,
                 Role = reasoningUpdate.Role,
                 GenerationId = reasoningUpdate.GenerationId,
-                Visibility = ReasoningVisibility.Plain // Default to Plain for updates
+                Visibility = ReasoningVisibility.Plain, // Default to Plain for updates
             };
             activeBuilder = builder;
             activeBuilderType = builderType;

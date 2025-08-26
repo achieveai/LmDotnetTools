@@ -11,17 +11,27 @@ public static class SessionContextInitializer
         try
         {
             using var scope = services.CreateScope();
-            var sessionInitializer = scope.ServiceProvider.GetRequiredService<TransportSessionInitializer>();
+            var sessionInitializer =
+                scope.ServiceProvider.GetRequiredService<TransportSessionInitializer>();
             var sessionDefaults = await sessionInitializer.InitializeStdioSessionAsync();
 
-            if (sessionDefaults != null && sessionInitializer.ValidateSessionContext(sessionDefaults))
+            if (
+                sessionDefaults != null
+                && sessionInitializer.ValidateSessionContext(sessionDefaults)
+            )
             {
-                logger.LogInformation("STDIO session context initialized: {SessionDefaults}", sessionDefaults);
+                logger.LogInformation(
+                    "STDIO session context initialized: {SessionDefaults}",
+                    sessionDefaults
+                );
             }
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to initialize STDIO session context from environment variables");
+            logger.LogWarning(
+                ex,
+                "Failed to initialize STDIO session context from environment variables"
+            );
         }
     }
 }

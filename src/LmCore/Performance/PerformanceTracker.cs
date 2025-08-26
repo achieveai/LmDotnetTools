@@ -30,7 +30,10 @@ public class PerformanceTracker : IPerformanceTracker
         {
             if (!_providerStats.TryGetValue(metric.Provider, out var providerStats))
             {
-                providerStats = new ProviderStatistics(metric.Provider, MaxRecentMetricsPerProvider);
+                providerStats = new ProviderStatistics(
+                    metric.Provider,
+                    MaxRecentMetricsPerProvider
+                );
                 _providerStats[metric.Provider] = providerStats;
             }
 
@@ -67,7 +70,11 @@ public class PerformanceTracker : IPerformanceTracker
     /// <param name="model">Optional model filter</param>
     /// <param name="since">Optional time filter (defaults to last 24 hours)</param>
     /// <returns>Performance profile for the specified criteria</returns>
-    public PerformanceProfile GetPerformanceProfile(string provider, string model = "", DateTimeOffset? since = null)
+    public PerformanceProfile GetPerformanceProfile(
+        string provider,
+        string model = "",
+        DateTimeOffset? since = null
+    )
     {
         if (string.IsNullOrEmpty(provider))
         {
@@ -76,7 +83,7 @@ public class PerformanceTracker : IPerformanceTracker
                 Provider = provider,
                 Model = model,
                 PeriodStart = DateTimeOffset.UtcNow,
-                PeriodEnd = DateTimeOffset.UtcNow
+                PeriodEnd = DateTimeOffset.UtcNow,
             };
         }
 
@@ -88,7 +95,7 @@ public class PerformanceTracker : IPerformanceTracker
                 Provider = provider,
                 Model = model,
                 PeriodStart = DateTimeOffset.UtcNow,
-                PeriodEnd = DateTimeOffset.UtcNow
+                PeriodEnd = DateTimeOffset.UtcNow,
             };
         }
 
@@ -105,9 +112,7 @@ public class PerformanceTracker : IPerformanceTracker
 
         lock (_lock)
         {
-            return _providerStats.Values
-                .Select(stats => stats.GetProfileSince(sinceTime))
-                .ToList();
+            return _providerStats.Values.Select(stats => stats.GetProfileSince(sinceTime)).ToList();
         }
     }
 
@@ -145,13 +150,17 @@ public class PerformanceTracker : IPerformanceTracker
     /// <returns>Top performing models</returns>
     public IEnumerable<(string Provider, string Model, ModelStatistics Stats)> GetTopModels(
         int count = 10,
-        string orderBy = "requests")
+        string orderBy = "requests"
+    )
     {
         lock (_lock)
         {
             var allModels = _providerStats
-                .SelectMany(kvp => kvp.Value.ModelStatistics.Select(ms =>
-                    (Provider: kvp.Key, Model: ms.Key, Stats: ms.Value)))
+                .SelectMany(kvp =>
+                    kvp.Value.ModelStatistics.Select(ms =>
+                        (Provider: kvp.Key, Model: ms.Key, Stats: ms.Value)
+                    )
+                )
                 .ToList();
 
             var ordered = orderBy.ToLower() switch
@@ -159,7 +168,7 @@ public class PerformanceTracker : IPerformanceTracker
                 "tokens" => allModels.OrderByDescending(m => m.Stats.TotalTokens),
                 "success_rate" => allModels.OrderByDescending(m => m.Stats.SuccessRate),
                 "avg_duration" => allModels.OrderBy(m => m.Stats.AverageRequestDuration),
-                _ => allModels.OrderByDescending(m => m.Stats.TotalRequests)
+                _ => allModels.OrderByDescending(m => m.Stats.TotalRequests),
             };
 
             return ordered.Take(count).ToList();
@@ -180,7 +189,7 @@ public class PerformanceTracker : IPerformanceTracker
                 {
                     TotalProviders = 0,
                     TotalModels = 0,
-                    ProviderSummaries = new Dictionary<string, ProviderSummary>()
+                    ProviderSummaries = new Dictionary<string, ProviderSummary>(),
                 };
             }
 
@@ -202,8 +211,9 @@ public class PerformanceTracker : IPerformanceTracker
                     TotalRequests = p.TotalRequests,
                     SuccessRate = p.SuccessRate,
                     AverageRequestDuration = p.AverageRequestDuration,
-                    TotalTokens = p.TotalTokensProcessed
-                });
+                    TotalTokens = p.TotalTokensProcessed,
+                }
+            );
 
             return new OverallStatistics
             {
@@ -215,7 +225,7 @@ public class PerformanceTracker : IPerformanceTracker
                 RetriedRequests = retriedRequests,
                 TotalTokensProcessed = totalTokens,
                 TotalProcessingTime = totalProcessingTime,
-                ProviderSummaries = providerSummaries
+                ProviderSummaries = providerSummaries,
             };
         }
     }

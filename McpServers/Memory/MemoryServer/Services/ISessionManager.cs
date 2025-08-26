@@ -12,7 +12,9 @@ public interface ISessionManager
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults from environment variables</returns>
-    Task<SessionDefaults?> ProcessEnvironmentVariablesAsync(CancellationToken cancellationToken = default);
+    Task<SessionDefaults?> ProcessEnvironmentVariablesAsync(
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Processes URL parameters for SSE transport session context.
@@ -20,7 +22,10 @@ public interface ISessionManager
     /// <param name="queryParameters">URL query parameters</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults from URL parameters</returns>
-    Task<SessionDefaults?> ProcessUrlParametersAsync(IDictionary<string, string> queryParameters, CancellationToken cancellationToken = default);
+    Task<SessionDefaults?> ProcessUrlParametersAsync(
+        IDictionary<string, string> queryParameters,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Processes HTTP headers for SSE transport session context.
@@ -28,7 +33,10 @@ public interface ISessionManager
     /// <param name="headers">HTTP headers</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults from HTTP headers</returns>
-    Task<SessionDefaults?> ProcessHttpHeadersAsync(IDictionary<string, string> headers, CancellationToken cancellationToken = default);
+    Task<SessionDefaults?> ProcessHttpHeadersAsync(
+        IDictionary<string, string> headers,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Processes transport-specific context (combines environment variables, URL parameters, and headers).
@@ -40,7 +48,8 @@ public interface ISessionManager
     Task<SessionDefaults?> ProcessTransportContextAsync(
         IDictionary<string, string>? queryParameters = null,
         IDictionary<string, string>? headers = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Stores session defaults in the database.
@@ -48,7 +57,10 @@ public interface ISessionManager
     /// <param name="sessionDefaults">Session defaults to store</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if stored successfully</returns>
-    Task<bool> StoreSessionDefaultsAsync(SessionDefaults sessionDefaults, CancellationToken cancellationToken = default);
+    Task<bool> StoreSessionDefaultsAsync(
+        SessionDefaults sessionDefaults,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Retrieves session defaults by connection ID.
@@ -56,7 +68,10 @@ public interface ISessionManager
     /// <param name="connectionId">Connection identifier</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults if found</returns>
-    Task<SessionDefaults?> GetSessionDefaultsAsync(string connectionId, CancellationToken cancellationToken = default);
+    Task<SessionDefaults?> GetSessionDefaultsAsync(
+        string connectionId,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Removes session defaults for a connection.
@@ -64,7 +79,10 @@ public interface ISessionManager
     /// <param name="connectionId">Connection identifier</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if removed successfully</returns>
-    Task<bool> RemoveSessionDefaultsAsync(string connectionId, CancellationToken cancellationToken = default);
+    Task<bool> RemoveSessionDefaultsAsync(
+        string connectionId,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Cleans up expired session defaults.
@@ -72,5 +90,8 @@ public interface ISessionManager
     /// <param name="maxAge">Maximum age for session defaults</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of cleaned up sessions</returns>
-    Task<int> CleanupExpiredSessionsAsync(TimeSpan maxAge, CancellationToken cancellationToken = default);
+    Task<int> CleanupExpiredSessionsAsync(
+        TimeSpan maxAge,
+        CancellationToken cancellationToken = default
+    );
 }

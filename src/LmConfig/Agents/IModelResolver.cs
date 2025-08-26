@@ -18,7 +18,8 @@ public interface IModelResolver
     Task<ProviderResolution?> ResolveProviderAsync(
         string modelId,
         ProviderSelectionCriteria? criteria = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets all available providers for a given model ID, ordered by preference.
@@ -30,7 +31,8 @@ public interface IModelResolver
     Task<IReadOnlyList<ProviderResolution>> GetAvailableProvidersAsync(
         string modelId,
         ProviderSelectionCriteria? criteria = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Checks if a specific provider is available and properly configured.
@@ -40,7 +42,8 @@ public interface IModelResolver
     /// <returns>True if the provider is available and configured, false otherwise.</returns>
     Task<bool> IsProviderAvailableAsync(
         string providerName,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets all models that have a specific capability.
@@ -52,7 +55,8 @@ public interface IModelResolver
     Task<IReadOnlyList<ModelConfig>> GetModelsWithCapabilityAsync(
         string capability,
         ProviderSelectionCriteria? criteria = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Resolves the best model and provider for a specific capability.
@@ -65,12 +69,15 @@ public interface IModelResolver
     Task<ProviderResolution?> ResolveByCapabilityAsync(
         string capability,
         ProviderSelectionCriteria? criteria = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates the current configuration and returns any issues found.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>Validation result with any errors or warnings.</returns>
-    Task<ValidationResult> ValidateConfigurationAsync(CancellationToken cancellationToken = default);
+    Task<ValidationResult> ValidateConfigurationAsync(
+        CancellationToken cancellationToken = default
+    );
 }

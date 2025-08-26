@@ -11,13 +11,16 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string, object?>>
 {
     public override ImmutableDictionary<string, object?> Read(
-      ref Utf8JsonReader reader,
-      Type typeToConvert,
-      JsonSerializerOptions options)
+        ref Utf8JsonReader reader,
+        Type typeToConvert,
+        JsonSerializerOptions options
+    )
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
-            throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
+            throw new JsonException(
+                $"Expected {JsonTokenType.StartObject} but got {reader.TokenType}"
+            );
         }
 
         var builder = ImmutableDictionary.CreateBuilder<string, object?>();
@@ -31,7 +34,9 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
 
             if (reader.TokenType != JsonTokenType.PropertyName)
             {
-                throw new JsonException($"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}");
+                throw new JsonException(
+                    $"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}"
+                );
             }
 
             // Read property name
@@ -98,9 +103,10 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
     }
 
     public override void Write(
-      Utf8JsonWriter writer,
-      ImmutableDictionary<string, object?> value,
-      JsonSerializerOptions options)
+        Utf8JsonWriter writer,
+        ImmutableDictionary<string, object?> value,
+        JsonSerializerOptions options
+    )
     {
         writer.WriteStartObject();
         foreach (var kvp in value)
@@ -111,7 +117,11 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
         writer.WriteEndObject();
     }
 
-    private static void WriteValue(Utf8JsonWriter writer, object? value, JsonSerializerOptions options)
+    private static void WriteValue(
+        Utf8JsonWriter writer,
+        object? value,
+        JsonSerializerOptions options
+    )
     {
         if (value == null)
         {

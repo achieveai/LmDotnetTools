@@ -10,47 +10,87 @@ public interface IMemoryRepository
     /// <summary>
     /// Adds a new memory to the repository.
     /// </summary>
-    Task<Memory> AddAsync(string content, SessionContext sessionContext, Dictionary<string, object>? metadata = null, CancellationToken cancellationToken = default);
+    Task<Memory> AddAsync(
+        string content,
+        SessionContext sessionContext,
+        Dictionary<string, object>? metadata = null,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets a memory by its integer ID within the session context.
     /// </summary>
-    Task<Memory?> GetByIdAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<Memory?> GetByIdAsync(
+        int id,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Updates an existing memory.
     /// </summary>
-    Task<Memory?> UpdateAsync(int id, string content, SessionContext sessionContext, Dictionary<string, object>? metadata = null, CancellationToken cancellationToken = default);
+    Task<Memory?> UpdateAsync(
+        int id,
+        string content,
+        SessionContext sessionContext,
+        Dictionary<string, object>? metadata = null,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Deletes a memory by its integer ID within the session context.
     /// </summary>
-    Task<bool> DeleteAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<bool> DeleteAsync(
+        int id,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets all memories for a session context with optional pagination.
     /// </summary>
-    Task<List<Memory>> GetAllAsync(SessionContext sessionContext, int limit = 100, int offset = 0, CancellationToken cancellationToken = default);
+    Task<List<Memory>> GetAllAsync(
+        SessionContext sessionContext,
+        int limit = 100,
+        int offset = 0,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Searches memories using full-text search within the session context.
     /// </summary>
-    Task<List<Memory>> SearchAsync(string query, SessionContext sessionContext, int limit = 10, float scoreThreshold = 0.0f, CancellationToken cancellationToken = default);
+    Task<List<Memory>> SearchAsync(
+        string query,
+        SessionContext sessionContext,
+        int limit = 10,
+        float scoreThreshold = 0.0f,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets memory statistics for a session context.
     /// </summary>
-    Task<MemoryStats> GetStatsAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<MemoryStats> GetStatsAsync(
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Deletes all memories for a session context.
     /// </summary>
-    Task<int> DeleteAllAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<int> DeleteAllAsync(
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets memory history entries for a specific memory ID.
     /// </summary>
-    Task<List<MemoryHistoryEntry>> GetHistoryAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
+    Task<List<MemoryHistoryEntry>> GetHistoryAsync(
+        int id,
+        SessionContext sessionContext,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets all agents for a specific user.
@@ -60,7 +100,11 @@ public interface IMemoryRepository
     /// <summary>
     /// Gets all run IDs for a specific user and agent.
     /// </summary>
-    Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default);
+    Task<List<string>> GetRunsAsync(
+        string userId,
+        string agentId,
+        CancellationToken cancellationToken = default
+    );
 
     // Vector storage and search methods
 
@@ -71,7 +115,12 @@ public interface IMemoryRepository
     /// <param name="embedding">The embedding vector.</param>
     /// <param name="modelName">The name of the embedding model used.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    Task StoreEmbeddingAsync(int memoryId, float[] embedding, string modelName, CancellationToken cancellationToken = default);
+    Task StoreEmbeddingAsync(
+        int memoryId,
+        float[] embedding,
+        string modelName,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Gets the embedding for a specific memory.
@@ -95,7 +144,8 @@ public interface IMemoryRepository
         SessionContext sessionContext,
         int limit = 10,
         float threshold = 0.7f,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Performs hybrid search combining FTS5 and vector similarity search.
@@ -115,7 +165,8 @@ public interface IMemoryRepository
         int limit = 10,
         float traditionalWeight = 0.3f,
         float vectorWeight = 0.7f,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }
 
 /// <summary>

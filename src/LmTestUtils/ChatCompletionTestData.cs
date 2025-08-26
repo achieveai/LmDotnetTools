@@ -20,7 +20,8 @@ public static class ChatCompletionTestData
         string content = "Hello! How can I help you today?",
         string model = "test-model",
         int promptTokens = 10,
-        int completionTokens = 20)
+        int completionTokens = 20
+    )
     {
         var response = new
         {
@@ -31,20 +32,16 @@ public static class ChatCompletionTestData
                 new
                 {
                     index = 0,
-                    message = new
-                    {
-                        role = "assistant",
-                        content = content
-                    },
-                    finish_reason = "stop"
-                }
+                    message = new { role = "assistant", content = content },
+                    finish_reason = "stop",
+                },
             },
             usage = new
             {
                 prompt_tokens = promptTokens,
                 completion_tokens = completionTokens,
-                total_tokens = promptTokens + completionTokens
-            }
+                total_tokens = promptTokens + completionTokens,
+            },
         };
 
         return System.Text.Json.JsonSerializer.Serialize(response);
@@ -60,7 +57,8 @@ public static class ChatCompletionTestData
     public static string CreateStreamingChunk(
         string content = "Hello",
         string model = "test-model",
-        string? finishReason = null)
+        string? finishReason = null
+    )
     {
         var response = new
         {
@@ -74,11 +72,11 @@ public static class ChatCompletionTestData
                     delta = new
                     {
                         role = finishReason == null ? (string?)"assistant" : null,
-                        content = content
+                        content = content,
                     },
-                    finish_reason = finishReason
-                }
-            }
+                    finish_reason = finishReason,
+                },
+            },
         };
 
         return System.Text.Json.JsonSerializer.Serialize(response);
@@ -94,7 +92,8 @@ public static class ChatCompletionTestData
     public static string CreateErrorResponse(
         string errorMessage = "Invalid request",
         string errorType = "invalid_request_error",
-        HttpStatusCode statusCode = HttpStatusCode.BadRequest)
+        HttpStatusCode statusCode = HttpStatusCode.BadRequest
+    )
     {
         var response = new
         {
@@ -102,8 +101,8 @@ public static class ChatCompletionTestData
             {
                 message = errorMessage,
                 type = errorType,
-                code = ((int)statusCode).ToString()
-            }
+                code = ((int)statusCode).ToString(),
+            },
         };
 
         return System.Text.Json.JsonSerializer.Serialize(response);
@@ -118,7 +117,8 @@ public static class ChatCompletionTestData
         return CreateErrorResponse(
             "Rate limit exceeded",
             "rate_limit_exceeded",
-            HttpStatusCode.TooManyRequests);
+            HttpStatusCode.TooManyRequests
+        );
     }
 
     /// <summary>
@@ -130,7 +130,8 @@ public static class ChatCompletionTestData
         return CreateErrorResponse(
             "Invalid API key",
             "authentication_error",
-            HttpStatusCode.Unauthorized);
+            HttpStatusCode.Unauthorized
+        );
     }
 
     /// <summary>
@@ -142,7 +143,8 @@ public static class ChatCompletionTestData
         return CreateErrorResponse(
             "Internal server error",
             "server_error",
-            HttpStatusCode.InternalServerError);
+            HttpStatusCode.InternalServerError
+        );
     }
 
     /// <summary>
@@ -153,11 +155,41 @@ public static class ChatCompletionTestData
     {
         return new List<object[]>
         {
-            new object[] { CreateSuccessfulResponse(), HttpStatusCode.OK, true, "Successful response should work" },
-            new object[] { CreateErrorResponse(), HttpStatusCode.BadRequest, false, "Bad request should fail" },
-            new object[] { CreateRateLimitErrorResponse(), HttpStatusCode.TooManyRequests, false, "Rate limit should fail" },
-            new object[] { CreateAuthenticationErrorResponse(), HttpStatusCode.Unauthorized, false, "Auth error should fail" },
-            new object[] { CreateServerErrorResponse(), HttpStatusCode.InternalServerError, false, "Server error should fail" }
+            new object[]
+            {
+                CreateSuccessfulResponse(),
+                HttpStatusCode.OK,
+                true,
+                "Successful response should work",
+            },
+            new object[]
+            {
+                CreateErrorResponse(),
+                HttpStatusCode.BadRequest,
+                false,
+                "Bad request should fail",
+            },
+            new object[]
+            {
+                CreateRateLimitErrorResponse(),
+                HttpStatusCode.TooManyRequests,
+                false,
+                "Rate limit should fail",
+            },
+            new object[]
+            {
+                CreateAuthenticationErrorResponse(),
+                HttpStatusCode.Unauthorized,
+                false,
+                "Auth error should fail",
+            },
+            new object[]
+            {
+                CreateServerErrorResponse(),
+                HttpStatusCode.InternalServerError,
+                false,
+                "Server error should fail",
+            },
         };
     }
 
@@ -172,7 +204,7 @@ public static class ChatCompletionTestData
             CreateStreamingChunk("Hello", "test-model"),
             CreateStreamingChunk(" there", "test-model"),
             CreateStreamingChunk("!", "test-model"),
-            CreateStreamingChunk("", "test-model", "stop")
+            CreateStreamingChunk("", "test-model", "stop"),
         };
     }
 
@@ -195,12 +227,28 @@ public static class ChatCompletionTestData
     {
         return new List<object[]>
         {
-            new object[] { new[] { ProviderTestDataGenerator.CreateTestMessage("user", "Hello") }, "Single user message" },
-            new object[] { ProviderTestDataGenerator.CreateTestMessages(), "Multi-turn conversation" },
-            new object[] { new[] {
-                ProviderTestDataGenerator.CreateTestMessage("system", "You are a helpful assistant"),
-                ProviderTestDataGenerator.CreateTestMessage("user", "What is 2+2?")
-            }, "System message with user question" }
+            new object[]
+            {
+                new[] { ProviderTestDataGenerator.CreateTestMessage("user", "Hello") },
+                "Single user message",
+            },
+            new object[]
+            {
+                ProviderTestDataGenerator.CreateTestMessages(),
+                "Multi-turn conversation",
+            },
+            new object[]
+            {
+                new[]
+                {
+                    ProviderTestDataGenerator.CreateTestMessage(
+                        "system",
+                        "You are a helpful assistant"
+                    ),
+                    ProviderTestDataGenerator.CreateTestMessage("user", "What is 2+2?"),
+                },
+                "System message with user question",
+            },
         };
     }
 
@@ -215,7 +263,7 @@ public static class ChatCompletionTestData
             new object[] { 10, 20, 30, "Normal token usage" },
             new object[] { 0, 5, 5, "No prompt tokens" },
             new object[] { 100, 0, 100, "No completion tokens" },
-            new object[] { 1000, 2000, 3000, "High token usage" }
+            new object[] { 1000, 2000, 3000, "High token usage" },
         };
     }
 }

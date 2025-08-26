@@ -21,7 +21,9 @@ public static class EmbeddedResourceHelper
         using var stream = assembly.GetManifestResourceStream(fullResourceName);
         if (stream == null)
         {
-            throw new InvalidOperationException($"Embedded resource '{fullResourceName}' not found. Available resources: {string.Join(", ", assembly.GetManifestResourceNames())}");
+            throw new InvalidOperationException(
+                $"Embedded resource '{fullResourceName}' not found. Available resources: {string.Join(", ", assembly.GetManifestResourceNames())}"
+            );
         }
 
         using var reader = new StreamReader(stream);

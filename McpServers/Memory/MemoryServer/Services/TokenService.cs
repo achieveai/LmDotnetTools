@@ -1,9 +1,9 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using MemoryServer.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
-using MemoryServer.Configuration;
 
 namespace MemoryServer.Services;
 
@@ -51,8 +51,12 @@ public class TokenService : ITokenService
             new Claim(JwtRegisteredClaimNames.Sub, userId),
             new Claim("userId", userId),
             new Claim("agentId", agentId),
-            new Claim(JwtRegisteredClaimNames.Iat, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+            new Claim(
+                JwtRegisteredClaimNames.Iat,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+                ClaimValueTypes.Integer64
+            ),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
         };
 
         var tokenDescriptor = new SecurityTokenDescriptor
@@ -61,13 +65,17 @@ public class TokenService : ITokenService
             Expires = DateTime.UtcNow.AddMinutes(_jwtOptions.ExpirationMinutes),
             Issuer = _jwtOptions.Issuer,
             Audience = _jwtOptions.Audience,
-            SigningCredentials = credentials
+            SigningCredentials = credentials,
         };
 
         var token = tokenHandler.CreateToken(tokenDescriptor);
         var tokenString = tokenHandler.WriteToken(token);
 
-        _logger.LogDebug("Generated JWT token for userId: {UserId}, agentId: {AgentId}", userId, agentId);
+        _logger.LogDebug(
+            "Generated JWT token for userId: {UserId}, agentId: {AgentId}",
+            userId,
+            agentId
+        );
 
         return tokenString;
     }
@@ -94,15 +102,23 @@ public class TokenService : ITokenService
                 ValidateAudience = true,
                 ValidAudience = _jwtOptions.Audience,
                 ValidateLifetime = true,
-                ClockSkew = TimeSpan.Zero
+                ClockSkew = TimeSpan.Zero,
             };
 
-            tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
+            tokenHandler.ValidateToken(
+                token,
+                validationParameters,
+                out SecurityToken validatedToken
+            );
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Token validation failed for token: {Token}", token[..Math.Min(token.Length, 20)] + "...");
+            _logger.LogWarning(
+                ex,
+                "Token validation failed for token: {Token}",
+                token[..Math.Min(token.Length, 20)] + "..."
+            );
             return false;
         }
     }

@@ -20,7 +20,8 @@ public interface IGraphDecisionEngine
         List<Entity> extractedEntities,
         List<Relationship> extractedRelationships,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Resolves conflicts when multiple entities or relationships refer to the same real-world object.
@@ -34,7 +35,8 @@ public interface IGraphDecisionEngine
         Entity existingEntity,
         Entity newEntity,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Resolves conflicts when multiple relationships refer to the same connection.
@@ -48,7 +50,8 @@ public interface IGraphDecisionEngine
         Relationship existingRelationship,
         Relationship newRelationship,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates that a proposed graph update is consistent and doesn't violate business rules.
@@ -60,7 +63,8 @@ public interface IGraphDecisionEngine
     Task<bool> ValidateGraphUpdateAsync(
         GraphDecisionInstruction instruction,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Determines the confidence score for a proposed graph update based on various factors.
@@ -72,5 +76,6 @@ public interface IGraphDecisionEngine
     Task<float> CalculateUpdateConfidenceAsync(
         GraphDecisionInstruction instruction,
         SessionContext sessionContext,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

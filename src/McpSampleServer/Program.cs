@@ -1,8 +1,8 @@
+using System.ComponentModel;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
-using System.ComponentModel;
 
 namespace AchieveAi.LmDotnetTools.McpSampleServer;
 
@@ -17,10 +17,7 @@ class Program
             consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
         });
 
-        builder.Services
-            .AddMcpServer()
-            .WithStdioServerTransport()
-            .WithToolsFromAssembly();
+        builder.Services.AddMcpServer().WithStdioServerTransport().WithToolsFromAssembly();
 
         await builder.Build().RunAsync();
     }
@@ -71,7 +68,8 @@ public static class CalculatorTool
             Name = "Add",
             OpenWorld = false,
             ReadOnly = true,
-            Title = "Add numbers"),
+            Title = "Add numbers"
+        ),
         Description("Adds two numbers")
     ]
     public static double Add(double a, double b) => a + b;

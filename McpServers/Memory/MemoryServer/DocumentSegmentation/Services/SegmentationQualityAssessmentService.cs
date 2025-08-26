@@ -1,8 +1,8 @@
+using System.Text.RegularExpressions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
-using System.Text.RegularExpressions;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -18,13 +18,23 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     // Text analysis patterns
     private static readonly Regex SentencePattern = new(@"[.!?]+\s*", RegexOptions.Compiled);
     private static readonly Regex ParagraphPattern = new(@"\n\s*\n", RegexOptions.Compiled);
-    private static readonly Regex CoherenceMarkerPattern = new(@"\b(however|therefore|thus|hence|moreover|furthermore|additionally|consequently|meanwhile|nevertheless|nonetheless)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex ReferentialPattern = new(@"\b(this|that|these|those|it|they|such|aforementioned|above|below|previous|following)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex TransitionPattern = new(@"\b(first|second|third|finally|next|then|after|before|during|while|since)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex CoherenceMarkerPattern = new(
+        @"\b(however|therefore|thus|hence|moreover|furthermore|additionally|consequently|meanwhile|nevertheless|nonetheless)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled
+    );
+    private static readonly Regex ReferentialPattern = new(
+        @"\b(this|that|these|those|it|they|such|aforementioned|above|below|previous|following)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled
+    );
+    private static readonly Regex TransitionPattern = new(
+        @"\b(first|second|third|finally|next|then|after|before|during|while|since)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled
+    );
 
     public SegmentationQualityAssessmentService(
         ILlmProviderIntegrationService llmService,
-        ILogger<SegmentationQualityAssessmentService> logger)
+        ILogger<SegmentationQualityAssessmentService> logger
+    )
     {
         _llmService = llmService ?? throw new ArgumentNullException(nameof(llmService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -38,9 +48,13 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         string originalContent,
         DocumentType documentType = DocumentType.Generic,
         QualityAssessmentOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogDebug("Starting comprehensive quality assessment for {SegmentCount} segments", segments.Count);
+        _logger.LogDebug(
+            "Starting comprehensive quality assessment for {SegmentCount} segments",
+            segments.Count
+        );
 
         var startTime = DateTime.UtcNow;
         options ??= new QualityAssessmentOptions();
@@ -52,40 +66,74 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             // Step 1: Validate semantic coherence for each segment
             _logger.LogDebug("Validating semantic coherence for all segments");
             var coherenceValidationTasks = segments.Select(segment =>
-                ValidateSemanticCoherenceAsync(segment, options, cancellationToken));
-            assessment.CoherenceValidations = (await Task.WhenAll(coherenceValidationTasks)).ToList();
+                ValidateSemanticCoherenceAsync(segment, options, cancellationToken)
+            );
+            assessment.CoherenceValidations = (
+                await Task.WhenAll(coherenceValidationTasks)
+            ).ToList();
 
             // Step 2: Calculate independence scores
             _logger.LogDebug("Calculating independence scores for all segments");
             var independenceAnalysisTasks = segments.Select(segment =>
-                CalculateIndependenceScoreAsync(segment, segments, originalContent, cancellationToken));
-            assessment.IndependenceAnalyses = (await Task.WhenAll(independenceAnalysisTasks)).ToList();
+                CalculateIndependenceScoreAsync(
+                    segment,
+                    segments,
+                    originalContent,
+                    cancellationToken
+                )
+            );
+            assessment.IndependenceAnalyses = (
+                await Task.WhenAll(independenceAnalysisTasks)
+            ).ToList();
 
             // Step 3: Validate topic consistency
             _logger.LogDebug("Validating topic consistency across segments");
-            assessment.TopicConsistency = await ValidateTopicConsistencyAsync(segments, originalContent, cancellationToken);
+            assessment.TopicConsistency = await ValidateTopicConsistencyAsync(
+                segments,
+                originalContent,
+                cancellationToken
+            );
 
             // Step 4: Verify completeness
             _logger.LogDebug("Verifying completeness of segmentation");
-            assessment.Completeness = await VerifyCompletenessAsync(segments, originalContent, cancellationToken);
+            assessment.Completeness = await VerifyCompletenessAsync(
+                segments,
+                originalContent,
+                cancellationToken
+            );
 
             // Step 5: Calculate overall quality metrics
             assessment.MetricScores = CalculateQualityMetricScores(assessment, options);
 
             // Step 6: Calculate overall quality score
-            assessment.OverallQualityScore = CalculateOverallQualityScore(assessment.MetricScores, options.MetricWeights);
+            assessment.OverallQualityScore = CalculateOverallQualityScore(
+                assessment.MetricScores,
+                options.MetricWeights
+            );
 
             // Step 7: Analyze quality issues
             _logger.LogDebug("Analyzing quality issues");
-            assessment.QualityIssues = await AnalyzeQualityIssuesAsync(segments, originalContent, assessment, cancellationToken);
+            assessment.QualityIssues = await AnalyzeQualityIssuesAsync(
+                segments,
+                originalContent,
+                assessment,
+                cancellationToken
+            );
 
             // Step 8: Generate improvement recommendations
             _logger.LogDebug("Generating improvement recommendations");
             assessment.Recommendations = await GenerateImprovementRecommendationsAsync(
-                assessment, documentType, SegmentationStrategy.Hybrid, cancellationToken);
+                assessment,
+                documentType,
+                SegmentationStrategy.Hybrid,
+                cancellationToken
+            );
 
             // Step 9: Determine if quality standards are met
-            assessment.MeetsQualityStandards = DetermineQualityStandardsCompliance(assessment, options);
+            assessment.MeetsQualityStandards = DetermineQualityStandardsCompliance(
+                assessment,
+                options
+            );
 
             // Step 10: Calculate assessment confidence
             assessment.AssessmentConfidence = CalculateAssessmentConfidence(assessment);
@@ -99,8 +147,11 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             assessment.Metadata["original_length"] = originalContent.Length;
             assessment.Metadata["assessment_date"] = DateTime.UtcNow;
 
-            _logger.LogInformation("Quality assessment completed: Overall score {Score:F2}, Standards met: {StandardsMet}",
-                assessment.OverallQualityScore, assessment.MeetsQualityStandards);
+            _logger.LogInformation(
+                "Quality assessment completed: Overall score {Score:F2}, Standards met: {StandardsMet}",
+                assessment.OverallQualityScore,
+                assessment.MeetsQualityStandards
+            );
 
             return assessment;
         }
@@ -111,15 +162,16 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             // Return basic assessment with error indication
             assessment.OverallQualityScore = 0.5;
             assessment.AssessmentConfidence = 0.3;
-            assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.Critical] = new List<QualityIssue>
-            {
-                new QualityIssue
+            assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.Critical] =
+                new List<QualityIssue>
                 {
-                    Type = QualityIssueType.SemanticIssue,
-                    Severity = QualityIssueSeverity.Critical,
-                    Description = $"Assessment failed due to error: {ex.Message}"
-                }
-            };
+                    new QualityIssue
+                    {
+                        Type = QualityIssueType.SemanticIssue,
+                        Severity = QualityIssueSeverity.Critical,
+                        Description = $"Assessment failed due to error: {ex.Message}",
+                    },
+                };
 
             return assessment;
         }
@@ -131,16 +183,14 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     public async Task<SemanticCoherenceValidation> ValidateSemanticCoherenceAsync(
         DocumentSegment segment,
         QualityAssessmentOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         _logger.LogDebug("Validating semantic coherence for segment {SegmentId}", segment.Id);
 
         options ??= new QualityAssessmentOptions();
 
-        var validation = new SemanticCoherenceValidation
-        {
-            SegmentId = segment.Id
-        };
+        var validation = new SemanticCoherenceValidation { SegmentId = segment.Id };
 
         try
         {
@@ -148,22 +198,27 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             validation.LexicalCoherenceScore = CalculateLexicalCoherence(segment.Content);
 
             // Calculate semantic coherence
-            validation.SemanticCoherenceScore = await CalculateSemanticCoherenceAsync(segment.Content, cancellationToken);
+            validation.SemanticCoherenceScore = await CalculateSemanticCoherenceAsync(
+                segment.Content,
+                cancellationToken
+            );
 
             // Calculate structural coherence
             validation.StructuralCoherenceScore = CalculateStructuralCoherence(segment.Content);
 
             // Overall coherence score (weighted average)
-            validation.CoherenceScore = (validation.LexicalCoherenceScore * 0.3) +
-                                       (validation.SemanticCoherenceScore * 0.5) +
-                                       (validation.StructuralCoherenceScore * 0.2);
+            validation.CoherenceScore =
+                (validation.LexicalCoherenceScore * 0.3)
+                + (validation.SemanticCoherenceScore * 0.5)
+                + (validation.StructuralCoherenceScore * 0.2);
 
             // Identify coherence issues
             validation.CoherenceIssues = IdentifyCoherenceIssues(segment.Content, validation);
 
             // Determine if validation passes
-            validation.PassesValidation = validation.CoherenceScore >= options.MinCoherenceThreshold &&
-                                         validation.CoherenceIssues.Count(i => i.Severity > 0.7) == 0;
+            validation.PassesValidation =
+                validation.CoherenceScore >= options.MinCoherenceThreshold
+                && validation.CoherenceIssues.Count(i => i.Severity > 0.7) == 0;
 
             // Generate analysis notes
             validation.AnalysisNotes = GenerateCoherenceAnalysisNotes(validation);
@@ -172,7 +227,11 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error validating coherence for segment {SegmentId}", segment.Id);
+            _logger.LogWarning(
+                ex,
+                "Error validating coherence for segment {SegmentId}",
+                segment.Id
+            );
 
             validation.CoherenceScore = 0.5;
             validation.PassesValidation = false;
@@ -189,14 +248,12 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         DocumentSegment segment,
         List<DocumentSegment> allSegments,
         string originalContent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         _logger.LogDebug("Calculating independence score for segment {SegmentId}", segment.Id);
 
-        var analysis = new IndependenceScoreAnalysis
-        {
-            SegmentId = segment.Id
-        };
+        var analysis = new IndependenceScoreAnalysis { SegmentId = segment.Id };
 
         try
         {
@@ -204,21 +261,30 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             analysis.SelfContainmentScore = CalculateSelfContainment(segment.Content);
 
             // Calculate context dependency
-            analysis.ContextDependencyScore = await CalculateContextDependencyAsync(segment, allSegments, cancellationToken);
+            analysis.ContextDependencyScore = await CalculateContextDependencyAsync(
+                segment,
+                allSegments,
+                cancellationToken
+            );
 
             // Calculate cross-reference dependency
-            analysis.CrossReferenceDependencyScore = CalculateCrossReferenceDependency(segment, allSegments);
+            analysis.CrossReferenceDependencyScore = CalculateCrossReferenceDependency(
+                segment,
+                allSegments
+            );
 
             // Overall independence score
-            analysis.IndependenceScore = (analysis.SelfContainmentScore * 0.5) +
-                                        ((1.0 - analysis.ContextDependencyScore) * 0.3) +
-                                        ((1.0 - analysis.CrossReferenceDependencyScore) * 0.2);
+            analysis.IndependenceScore =
+                (analysis.SelfContainmentScore * 0.5)
+                + ((1.0 - analysis.ContextDependencyScore) * 0.3)
+                + ((1.0 - analysis.CrossReferenceDependencyScore) * 0.2);
 
             // Identify dependencies
             analysis.Dependencies = IdentifySegmentDependencies(segment, allSegments);
 
             // Determine independence status
-            analysis.IsIndependent = analysis.IndependenceScore >= 0.6 && analysis.Dependencies.Count <= 2;
+            analysis.IsIndependent =
+                analysis.IndependenceScore >= 0.6 && analysis.Dependencies.Count <= 2;
 
             // Generate recommendations
             analysis.IndependenceRecommendations = GenerateIndependenceRecommendations(analysis);
@@ -227,7 +293,11 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error calculating independence for segment {SegmentId}", segment.Id);
+            _logger.LogWarning(
+                ex,
+                "Error calculating independence for segment {SegmentId}",
+                segment.Id
+            );
 
             analysis.IndependenceScore = 0.5;
             analysis.IsIndependent = false;
@@ -242,9 +312,13 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     public Task<TopicConsistencyValidation> ValidateTopicConsistencyAsync(
         List<DocumentSegment> segments,
         string originalContent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogDebug("Validating topic consistency across {SegmentCount} segments", segments.Count);
+        _logger.LogDebug(
+            "Validating topic consistency across {SegmentCount} segments",
+            segments.Count
+        );
 
         var validation = new TopicConsistencyValidation();
 
@@ -253,7 +327,8 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             // Calculate within-segment consistency
             foreach (var segment in segments)
             {
-                validation.WithinSegmentConsistency[segment.Id] = CalculateWithinSegmentTopicConsistency(segment.Content);
+                validation.WithinSegmentConsistency[segment.Id] =
+                    CalculateWithinSegmentTopicConsistency(segment.Content);
             }
 
             // Analyze topic overlaps
@@ -266,11 +341,13 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             validation.TopicDistribution = AnalyzeTopicDistribution(segments);
 
             // Calculate overall consistency
-            validation.OverallConsistencyScore = validation.WithinSegmentConsistency.Values.Average();
+            validation.OverallConsistencyScore =
+                validation.WithinSegmentConsistency.Values.Average();
 
             // Determine if standards are met
-            validation.MeetsConsistencyStandards = validation.OverallConsistencyScore >= 0.7 &&
-                                                  validation.TopicViolations.Count(v => v.Severity > 0.7) == 0;
+            validation.MeetsConsistencyStandards =
+                validation.OverallConsistencyScore >= 0.7
+                && validation.TopicViolations.Count(v => v.Severity > 0.7) == 0;
 
             return Task.FromResult(validation);
         }
@@ -291,7 +368,8 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     public async Task<CompletenessVerification> VerifyCompletenessAsync(
         List<DocumentSegment> segments,
         string originalContent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         _logger.LogDebug("Verifying completeness of segmentation");
 
@@ -300,10 +378,17 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         try
         {
             // Calculate content coverage
-            verification.ContentCoveragePercentage = CalculateContentCoverage(segments, originalContent);
+            verification.ContentCoveragePercentage = CalculateContentCoverage(
+                segments,
+                originalContent
+            );
 
             // Calculate information preservation
-            verification.InformationPreservationScore = await CalculateInformationPreservationAsync(segments, originalContent, cancellationToken);
+            verification.InformationPreservationScore = await CalculateInformationPreservationAsync(
+                segments,
+                originalContent,
+                cancellationToken
+            );
 
             // Identify content gaps
             verification.ContentGaps = IdentifyContentGaps(segments, originalContent);
@@ -315,12 +400,13 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             verification.MissingContentAreas = AnalyzeMissingContent(segments, originalContent);
 
             // Overall completeness score
-            verification.CompletenessScore = (verification.ContentCoveragePercentage * 0.4) +
-                                           (verification.InformationPreservationScore * 0.6);
+            verification.CompletenessScore =
+                (verification.ContentCoveragePercentage * 0.4)
+                + (verification.InformationPreservationScore * 0.6);
 
             // Determine if standards are met
-            verification.MeetsCompletenessStandards = verification.CompletenessScore >= 0.8 &&
-                                                     verification.ContentGaps.Count <= 2;
+            verification.MeetsCompletenessStandards =
+                verification.CompletenessScore >= 0.8 && verification.ContentGaps.Count <= 2;
 
             return verification;
         }
@@ -342,7 +428,8 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         List<DocumentSegment> segments,
         string originalContent,
         ComprehensiveQualityAssessment? assessmentResults = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         _logger.LogDebug("Analyzing quality issues across {SegmentCount} segments", segments.Count);
 
@@ -359,14 +446,16 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
                 {
                     foreach (var coherenceIssue in validation.CoherenceIssues)
                     {
-                        allIssues.Add(new QualityIssue
-                        {
-                            Type = QualityIssueType.PoorCoherence,
-                            Severity = MapSeverityFromDouble(coherenceIssue.Severity),
-                            Description = coherenceIssue.Description,
-                            AffectedSegmentIds = new List<string> { validation.SegmentId },
-                            Context = coherenceIssue.Context
-                        });
+                        allIssues.Add(
+                            new QualityIssue
+                            {
+                                Type = QualityIssueType.PoorCoherence,
+                                Severity = MapSeverityFromDouble(coherenceIssue.Severity),
+                                Description = coherenceIssue.Description,
+                                AffectedSegmentIds = new List<string> { validation.SegmentId },
+                                Context = coherenceIssue.Context,
+                            }
+                        );
                     }
                 }
             }
@@ -378,14 +467,24 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
                 {
                     if (!independenceAnalysis.IsIndependent)
                     {
-                        allIssues.Add(new QualityIssue
-                        {
-                            Type = QualityIssueType.LowIndependence,
-                            Severity = independenceAnalysis.IndependenceScore < 0.5 ? QualityIssueSeverity.High : QualityIssueSeverity.Medium,
-                            Description = $"Segment has low independence score: {independenceAnalysis.IndependenceScore:F2}",
-                            AffectedSegmentIds = new List<string> { independenceAnalysis.SegmentId },
-                            RecommendedActions = independenceAnalysis.IndependenceRecommendations
-                        });
+                        allIssues.Add(
+                            new QualityIssue
+                            {
+                                Type = QualityIssueType.LowIndependence,
+                                Severity =
+                                    independenceAnalysis.IndependenceScore < 0.5
+                                        ? QualityIssueSeverity.High
+                                        : QualityIssueSeverity.Medium,
+                                Description =
+                                    $"Segment has low independence score: {independenceAnalysis.IndependenceScore:F2}",
+                                AffectedSegmentIds = new List<string>
+                                {
+                                    independenceAnalysis.SegmentId,
+                                },
+                                RecommendedActions =
+                                    independenceAnalysis.IndependenceRecommendations,
+                            }
+                        );
                     }
                 }
             }
@@ -395,14 +494,16 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             {
                 foreach (var violation in assessmentResults.TopicConsistency.TopicViolations)
                 {
-                    allIssues.Add(new QualityIssue
-                    {
-                        Type = QualityIssueType.TopicInconsistency,
-                        Severity = MapSeverityFromDouble(violation.Severity),
-                        Description = violation.Description,
-                        AffectedSegmentIds = new List<string> { violation.SegmentId },
-                        Context = string.Join(", ", violation.ConflictingTopics)
-                    });
+                    allIssues.Add(
+                        new QualityIssue
+                        {
+                            Type = QualityIssueType.TopicInconsistency,
+                            Severity = MapSeverityFromDouble(violation.Severity),
+                            Description = violation.Description,
+                            AffectedSegmentIds = new List<string> { violation.SegmentId },
+                            Context = string.Join(", ", violation.ConflictingTopics),
+                        }
+                    );
                 }
             }
 
@@ -411,33 +512,51 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             {
                 foreach (var gap in assessmentResults.Completeness.ContentGaps)
                 {
-                    allIssues.Add(new QualityIssue
-                    {
-                        Type = QualityIssueType.CompletenessGap,
-                        Severity = MapSeverityFromDouble(gap.Significance),
-                        Description = $"Content gap detected: {gap.MissingContent}",
-                        Context = string.Join(", ", gap.PotentialCauses)
-                    });
+                    allIssues.Add(
+                        new QualityIssue
+                        {
+                            Type = QualityIssueType.CompletenessGap,
+                            Severity = MapSeverityFromDouble(gap.Significance),
+                            Description = $"Content gap detected: {gap.MissingContent}",
+                            Context = string.Join(", ", gap.PotentialCauses),
+                        }
+                    );
                 }
             }
 
             // Categorize issues
             analysis.TotalIssueCount = allIssues.Count;
-            analysis.IssuesBySeverity = allIssues.GroupBy(i => i.Severity)
-                                               .ToDictionary(g => g.Key, g => g.ToList());
-            analysis.IssuesByType = allIssues.GroupBy(i => i.Type)
-                                           .ToDictionary(g => g.Key, g => g.ToList());
-            analysis.IssuesBySegment = allIssues.Where(i => i.AffectedSegmentIds.Any())
-                                               .SelectMany(i => i.AffectedSegmentIds.Select(segId => new { SegmentId = segId, Issue = i }))
-                                               .GroupBy(x => x.SegmentId)
-                                               .ToDictionary(g => g.Key, g => g.Select(x => x.Issue).ToList());
+            analysis.IssuesBySeverity = allIssues
+                .GroupBy(i => i.Severity)
+                .ToDictionary(g => g.Key, g => g.ToList());
+            analysis.IssuesByType = allIssues
+                .GroupBy(i => i.Type)
+                .ToDictionary(g => g.Key, g => g.ToList());
+            analysis.IssuesBySegment = allIssues
+                .Where(i => i.AffectedSegmentIds.Any())
+                .SelectMany(i =>
+                    i.AffectedSegmentIds.Select(segId => new { SegmentId = segId, Issue = i })
+                )
+                .GroupBy(x => x.SegmentId)
+                .ToDictionary(g => g.Key, g => g.Select(x => x.Issue).ToList());
 
             // Calculate overall issue severity
             analysis.OverallIssueSeverityScore = CalculateOverallIssueSeverity(allIssues);
 
             // Determine acceptability
-            analysis.IsAcceptableIssueLevel = analysis.IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.Critical, new List<QualityIssue>()).Count == 0 &&
-                                            analysis.IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.High, new List<QualityIssue>()).Count <= 2;
+            analysis.IsAcceptableIssueLevel =
+                analysis
+                    .IssuesBySeverity.GetValueOrDefault(
+                        QualityIssueSeverity.Critical,
+                        new List<QualityIssue>()
+                    )
+                    .Count == 0
+                && analysis
+                    .IssuesBySeverity.GetValueOrDefault(
+                        QualityIssueSeverity.High,
+                        new List<QualityIssue>()
+                    )
+                    .Count <= 2;
 
             return Task.FromResult(analysis);
         }
@@ -459,7 +578,8 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         ComprehensiveQualityAssessment assessment,
         DocumentType documentType,
         SegmentationStrategy strategy,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         _logger.LogDebug("Generating improvement recommendations");
 
@@ -468,29 +588,46 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         try
         {
             // Generate recommendations based on quality issues
-            if (assessment.QualityIssues.IssuesBySeverity.ContainsKey(QualityIssueSeverity.Critical))
+            if (
+                assessment.QualityIssues.IssuesBySeverity.ContainsKey(QualityIssueSeverity.Critical)
+            )
             {
                 recommendations.HighPriorityRecommendations.AddRange(
-                    GenerateRecommendationsForIssues(assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.Critical], RecommendationPriority.Critical));
+                    GenerateRecommendationsForIssues(
+                        assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.Critical],
+                        RecommendationPriority.Critical
+                    )
+                );
             }
 
             if (assessment.QualityIssues.IssuesBySeverity.ContainsKey(QualityIssueSeverity.High))
             {
                 recommendations.HighPriorityRecommendations.AddRange(
-                    GenerateRecommendationsForIssues(assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.High], RecommendationPriority.High));
+                    GenerateRecommendationsForIssues(
+                        assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.High],
+                        RecommendationPriority.High
+                    )
+                );
             }
 
             if (assessment.QualityIssues.IssuesBySeverity.ContainsKey(QualityIssueSeverity.Medium))
             {
                 recommendations.MediumPriorityRecommendations.AddRange(
-                    GenerateRecommendationsForIssues(assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.Medium], RecommendationPriority.Medium));
+                    GenerateRecommendationsForIssues(
+                        assessment.QualityIssues.IssuesBySeverity[QualityIssueSeverity.Medium],
+                        RecommendationPriority.Medium
+                    )
+                );
             }
 
             // Generate strategy-specific recommendations
-            recommendations.StrategyRecommendations[strategy] = GenerateStrategySpecificRecommendations(assessment, strategy);
+            recommendations.StrategyRecommendations[strategy] =
+                GenerateStrategySpecificRecommendations(assessment, strategy);
 
             // Generate implementation guidance
-            recommendations.ImplementationGuidance = GenerateImplementationGuidance(recommendations);
+            recommendations.ImplementationGuidance = GenerateImplementationGuidance(
+                recommendations
+            );
 
             // Calculate expected impact
             recommendations.ExpectedImpact = CalculateExpectedImpact(recommendations, assessment);
@@ -510,9 +647,13 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     public async Task<ComparativeQualityAnalysis> CompareSegmentationQualityAsync(
         Dictionary<SegmentationStrategy, List<DocumentSegment>> segmentationResults,
         string originalContent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogDebug("Comparing quality across {StrategyCount} segmentation strategies", segmentationResults.Count);
+        _logger.LogDebug(
+            "Comparing quality across {StrategyCount} segmentation strategies",
+            segmentationResults.Count
+        );
 
         var analysis = new ComparativeQualityAnalysis();
 
@@ -521,31 +662,59 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             // Assess quality for each strategy
             foreach (var kvp in segmentationResults)
             {
-                var assessment = await AssessSegmentationQualityAsync(kvp.Value, originalContent, cancellationToken: cancellationToken);
+                var assessment = await AssessSegmentationQualityAsync(
+                    kvp.Value,
+                    originalContent,
+                    cancellationToken: cancellationToken
+                );
                 analysis.StrategyQualityScores[kvp.Key] = assessment.OverallQualityScore;
                 analysis.MetricComparison[kvp.Key] = assessment.MetricScores;
             }
 
             // Determine best overall strategy
-            analysis.BestOverallStrategy = analysis.StrategyQualityScores.OrderByDescending(kvp => kvp.Value).First().Key;
+            analysis.BestOverallStrategy = analysis
+                .StrategyQualityScores.OrderByDescending(kvp => kvp.Value)
+                .First()
+                .Key;
 
             // Determine best strategies by metric
-            analysis.BestStrategyByMetric["coherence"] = analysis.MetricComparison.OrderByDescending(kvp => kvp.Value.AverageCoherenceScore).First().Key;
-            analysis.BestStrategyByMetric["independence"] = analysis.MetricComparison.OrderByDescending(kvp => kvp.Value.AverageIndependenceScore).First().Key;
-            analysis.BestStrategyByMetric["topic_consistency"] = analysis.MetricComparison.OrderByDescending(kvp => kvp.Value.AverageTopicConsistencyScore).First().Key;
-            analysis.BestStrategyByMetric["completeness"] = analysis.MetricComparison.OrderByDescending(kvp => kvp.Value.CompletenessScore).First().Key;
+            analysis.BestStrategyByMetric["coherence"] = analysis
+                .MetricComparison.OrderByDescending(kvp => kvp.Value.AverageCoherenceScore)
+                .First()
+                .Key;
+            analysis.BestStrategyByMetric["independence"] = analysis
+                .MetricComparison.OrderByDescending(kvp => kvp.Value.AverageIndependenceScore)
+                .First()
+                .Key;
+            analysis.BestStrategyByMetric["topic_consistency"] = analysis
+                .MetricComparison.OrderByDescending(kvp => kvp.Value.AverageTopicConsistencyScore)
+                .First()
+                .Key;
+            analysis.BestStrategyByMetric["completeness"] = analysis
+                .MetricComparison.OrderByDescending(kvp => kvp.Value.CompletenessScore)
+                .First()
+                .Key;
 
             // Create strategy rankings
-            analysis.StrategyRankings = analysis.StrategyQualityScores
-                .OrderByDescending(kvp => kvp.Value)
-                .Select((kvp, index) => new StrategyRanking
-                {
-                    Strategy = kvp.Key,
-                    Rank = index + 1,
-                    Score = kvp.Value,
-                    Strengths = GenerateStrategyStrengths(kvp.Key, analysis.MetricComparison[kvp.Key]),
-                    Weaknesses = GenerateStrategyWeaknesses(kvp.Key, analysis.MetricComparison[kvp.Key])
-                })
+            analysis.StrategyRankings = analysis
+                .StrategyQualityScores.OrderByDescending(kvp => kvp.Value)
+                .Select(
+                    (kvp, index) =>
+                        new StrategyRanking
+                        {
+                            Strategy = kvp.Key,
+                            Rank = index + 1,
+                            Score = kvp.Value,
+                            Strengths = GenerateStrategyStrengths(
+                                kvp.Key,
+                                analysis.MetricComparison[kvp.Key]
+                            ),
+                            Weaknesses = GenerateStrategyWeaknesses(
+                                kvp.Key,
+                                analysis.MetricComparison[kvp.Key]
+                            ),
+                        }
+                )
                 .ToList();
 
             // Generate comparative insights
@@ -566,10 +735,14 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     public Task<CustomValidationResults> ValidateCustomCriteriaAsync(
         List<DocumentSegment> segments,
         List<CustomQualityCriterion> customCriteria,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
-        _logger.LogDebug("Validating {SegmentCount} segments against {CriteriaCount} custom criteria",
-            segments.Count, customCriteria.Count);
+        _logger.LogDebug(
+            "Validating {SegmentCount} segments against {CriteriaCount} custom criteria",
+            segments.Count,
+            customCriteria.Count
+        );
 
         var results = new CustomValidationResults();
 
@@ -584,13 +757,15 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
                 foreach (var segment in segments)
                 {
                     var passed = criterion.ValidationFunction(segment);
-                    if (passed) passedSegments++;
+                    if (passed)
+                        passedSegments++;
                     totalScore += passed ? 1.0 : 0.0;
                 }
 
                 criterionResult.Passed = passedSegments == segments.Count;
                 criterionResult.Score = totalScore / segments.Count;
-                criterionResult.Feedback = $"{passedSegments}/{segments.Count} segments passed criterion '{criterion.Name}'";
+                criterionResult.Feedback =
+                    $"{passedSegments}/{segments.Count} segments passed criterion '{criterion.Name}'";
 
                 results.CriterionResults[criterion.Name] = criterionResult;
             }
@@ -602,8 +777,8 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             results.PassesCustomValidation = results.CriterionResults.Values.All(r => r.Passed);
 
             // Generate feedback
-            results.CustomFeedback = results.CriterionResults
-                .Where(kvp => !kvp.Value.Passed)
+            results.CustomFeedback = results
+                .CriterionResults.Where(kvp => !kvp.Value.Passed)
                 .Select(kvp => $"Failed criterion: {kvp.Key} - {kvp.Value.Feedback}")
                 .ToList();
 
@@ -625,18 +800,25 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
     // Quality Metric Calculation Methods
 
-    private QualityMetricScores CalculateQualityMetricScores(ComprehensiveQualityAssessment assessment, QualityAssessmentOptions options)
+    private QualityMetricScores CalculateQualityMetricScores(
+        ComprehensiveQualityAssessment assessment,
+        QualityAssessmentOptions options
+    )
     {
         var scores = new QualityMetricScores();
 
         if (assessment.CoherenceValidations.Any())
         {
-            scores.AverageCoherenceScore = assessment.CoherenceValidations.Average(v => v.CoherenceScore);
+            scores.AverageCoherenceScore = assessment.CoherenceValidations.Average(v =>
+                v.CoherenceScore
+            );
         }
 
         if (assessment.IndependenceAnalyses.Any())
         {
-            scores.AverageIndependenceScore = assessment.IndependenceAnalyses.Average(a => a.IndependenceScore);
+            scores.AverageIndependenceScore = assessment.IndependenceAnalyses.Average(a =>
+                a.IndependenceScore
+            );
         }
 
         scores.AverageTopicConsistencyScore = assessment.TopicConsistency.OverallConsistencyScore;
@@ -648,24 +830,33 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return scores;
     }
 
-    private double CalculateOverallQualityScore(QualityMetricScores scores, QualityMetricWeights weights)
+    private double CalculateOverallQualityScore(
+        QualityMetricScores scores,
+        QualityMetricWeights weights
+    )
     {
         weights.Normalize();
 
-        return (scores.AverageCoherenceScore * weights.CoherenceWeight) +
-               (scores.AverageIndependenceScore * weights.IndependenceWeight) +
-               (scores.AverageTopicConsistencyScore * weights.TopicConsistencyWeight) +
-               (scores.CompletenessScore * weights.CompletenessWeight);
+        return (scores.AverageCoherenceScore * weights.CoherenceWeight)
+            + (scores.AverageIndependenceScore * weights.IndependenceWeight)
+            + (scores.AverageTopicConsistencyScore * weights.TopicConsistencyWeight)
+            + (scores.CompletenessScore * weights.CompletenessWeight);
     }
 
-    private bool DetermineQualityStandardsCompliance(ComprehensiveQualityAssessment assessment, QualityAssessmentOptions options)
+    private bool DetermineQualityStandardsCompliance(
+        ComprehensiveQualityAssessment assessment,
+        QualityAssessmentOptions options
+    )
     {
-        return assessment.OverallQualityScore >= options.MinOverallQualityThreshold &&
-               assessment.MetricScores.AverageCoherenceScore >= options.MinCoherenceThreshold &&
-               assessment.MetricScores.AverageIndependenceScore >= options.MinIndependenceThreshold &&
-               assessment.MetricScores.AverageTopicConsistencyScore >= options.MinTopicConsistencyThreshold &&
-               assessment.MetricScores.CompletenessScore >= options.MinCompletenessThreshold &&
-               !assessment.QualityIssues.IssuesBySeverity.ContainsKey(QualityIssueSeverity.Critical);
+        return assessment.OverallQualityScore >= options.MinOverallQualityThreshold
+            && assessment.MetricScores.AverageCoherenceScore >= options.MinCoherenceThreshold
+            && assessment.MetricScores.AverageIndependenceScore >= options.MinIndependenceThreshold
+            && assessment.MetricScores.AverageTopicConsistencyScore
+                >= options.MinTopicConsistencyThreshold
+            && assessment.MetricScores.CompletenessScore >= options.MinCompletenessThreshold
+            && !assessment.QualityIssues.IssuesBySeverity.ContainsKey(
+                QualityIssueSeverity.Critical
+            );
     }
 
     private double CalculateAssessmentConfidence(ComprehensiveQualityAssessment assessment)
@@ -676,7 +867,12 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         factors.Add(Math.Min(1.0, assessment.CoherenceValidations.Count / 10.0));
 
         // Higher confidence if fewer critical issues
-        var criticalIssues = assessment.QualityIssues.IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.Critical, new List<QualityIssue>()).Count;
+        var criticalIssues = assessment
+            .QualityIssues.IssuesBySeverity.GetValueOrDefault(
+                QualityIssueSeverity.Critical,
+                new List<QualityIssue>()
+            )
+            .Count;
         factors.Add(Math.Max(0.0, 1.0 - criticalIssues / 5.0));
 
         // Higher confidence if quality standards are met
@@ -689,8 +885,12 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
     private double CalculateLexicalCoherence(string content)
     {
-        var sentences = SentencePattern.Split(content).Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
-        if (sentences.Length <= 1) return 1.0;
+        var sentences = SentencePattern
+            .Split(content)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToArray();
+        if (sentences.Length <= 1)
+            return 1.0;
 
         var coherenceScore = 0.0;
         var comparisons = 0;
@@ -707,10 +907,17 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
     private double CalculateLexicalOverlap(string sentence1, string sentence2)
     {
-        var words1 = sentence1.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
-        var words2 = sentence2.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+        var words1 = sentence1
+            .ToLowerInvariant()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet();
+        var words2 = sentence2
+            .ToLowerInvariant()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet();
 
-        if (!words1.Any() || !words2.Any()) return 0.0;
+        if (!words1.Any() || !words2.Any())
+            return 0.0;
 
         var intersection = words1.Intersect(words2).Count();
         var union = words1.Union(words2).Count();
@@ -718,7 +925,10 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return union > 0 ? (double)intersection / union : 0.0;
     }
 
-    private Task<double> CalculateSemanticCoherenceAsync(string content, CancellationToken cancellationToken)
+    private Task<double> CalculateSemanticCoherenceAsync(
+        string content,
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -740,8 +950,12 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
     private double CalculateHeuristicSemanticCoherence(string content)
     {
-        var sentences = SentencePattern.Split(content).Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
-        if (sentences.Length <= 1) return 1.0;
+        var sentences = SentencePattern
+            .Split(content)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToArray();
+        if (sentences.Length <= 1)
+            return 1.0;
 
         var coherenceMarkers = CoherenceMarkerPattern.Matches(content).Count;
         var sentenceCount = sentences.Length;
@@ -758,8 +972,12 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
     private double CalculateStructuralCoherence(string content)
     {
-        var paragraphs = ParagraphPattern.Split(content).Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
-        if (paragraphs.Length <= 1) return 1.0;
+        var paragraphs = ParagraphPattern
+            .Split(content)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToArray();
+        if (paragraphs.Length <= 1)
+            return 1.0;
 
         var transitionMarkers = TransitionPattern.Matches(content).Count;
         var paragraphCount = paragraphs.Length;
@@ -770,50 +988,61 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         // Check paragraph length consistency (more consistent lengths = better structure)
         var paragraphLengths = paragraphs.Select(p => p.Length).ToArray();
         var avgLength = paragraphLengths.Average();
-        var variance = paragraphLengths.Sum(l => Math.Pow(l - avgLength, 2)) / paragraphLengths.Length;
+        var variance =
+            paragraphLengths.Sum(l => Math.Pow(l - avgLength, 2)) / paragraphLengths.Length;
         var consistencyScore = Math.Max(0.0, 1.0 - (variance / (avgLength * avgLength)));
 
         return (transitionRatio * 0.7) + (consistencyScore * 0.3);
     }
 
-    private List<CoherenceIssue> IdentifyCoherenceIssues(string content, SemanticCoherenceValidation validation)
+    private List<CoherenceIssue> IdentifyCoherenceIssues(
+        string content,
+        SemanticCoherenceValidation validation
+    )
     {
         var issues = new List<CoherenceIssue>();
 
         // Check for lexical issues
         if (validation.LexicalCoherenceScore < 0.5)
         {
-            issues.Add(new CoherenceIssue
-            {
-                Type = CoherenceIssueType.LexicalInconsistency,
-                Description = "Low lexical coherence - limited vocabulary overlap between sentences",
-                Severity = 1.0 - validation.LexicalCoherenceScore,
-                Context = "Lexical analysis"
-            });
+            issues.Add(
+                new CoherenceIssue
+                {
+                    Type = CoherenceIssueType.LexicalInconsistency,
+                    Description =
+                        "Low lexical coherence - limited vocabulary overlap between sentences",
+                    Severity = 1.0 - validation.LexicalCoherenceScore,
+                    Context = "Lexical analysis",
+                }
+            );
         }
 
         // Check for semantic issues
         if (validation.SemanticCoherenceScore < 0.5)
         {
-            issues.Add(new CoherenceIssue
-            {
-                Type = CoherenceIssueType.SemanticDisconnection,
-                Description = "Semantic disconnection detected between content parts",
-                Severity = 1.0 - validation.SemanticCoherenceScore,
-                Context = "Semantic analysis"
-            });
+            issues.Add(
+                new CoherenceIssue
+                {
+                    Type = CoherenceIssueType.SemanticDisconnection,
+                    Description = "Semantic disconnection detected between content parts",
+                    Severity = 1.0 - validation.SemanticCoherenceScore,
+                    Context = "Semantic analysis",
+                }
+            );
         }
 
         // Check for structural issues
         if (validation.StructuralCoherenceScore < 0.5)
         {
-            issues.Add(new CoherenceIssue
-            {
-                Type = CoherenceIssueType.StructuralBreak,
-                Description = "Poor structural organization and transitions",
-                Severity = 1.0 - validation.StructuralCoherenceScore,
-                Context = "Structural analysis"
-            });
+            issues.Add(
+                new CoherenceIssue
+                {
+                    Type = CoherenceIssueType.StructuralBreak,
+                    Description = "Poor structural organization and transitions",
+                    Severity = 1.0 - validation.StructuralCoherenceScore,
+                    Context = "Structural analysis",
+                }
+            );
         }
 
         return issues;
@@ -825,12 +1054,14 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         {
             $"Lexical coherence: {validation.LexicalCoherenceScore:F2}",
             $"Semantic coherence: {validation.SemanticCoherenceScore:F2}",
-            $"Structural coherence: {validation.StructuralCoherenceScore:F2}"
+            $"Structural coherence: {validation.StructuralCoherenceScore:F2}",
         };
 
         if (validation.CoherenceIssues.Any())
         {
-            notes.Add($"Issues identified: {string.Join(", ", validation.CoherenceIssues.Select(i => i.Type.ToString()))}");
+            notes.Add(
+                $"Issues identified: {string.Join(", ", validation.CoherenceIssues.Select(i => i.Type.ToString()))}"
+            );
         }
 
         return string.Join("; ", notes);
@@ -841,21 +1072,39 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     private double CalculateSelfContainment(string content)
     {
         // Heuristic: segments with complete sentences, proper context, and minimal dangling references
-        var sentences = SentencePattern.Split(content).Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
-        if (!sentences.Any()) return 0.0;
+        var sentences = SentencePattern
+            .Split(content)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToArray();
+        if (!sentences.Any())
+            return 0.0;
 
-        var completeSentences = sentences.Count(s => s.Trim().EndsWith('.') || s.Trim().EndsWith('!') || s.Trim().EndsWith('?'));
+        var completeSentences = sentences.Count(s =>
+            s.Trim().EndsWith('.') || s.Trim().EndsWith('!') || s.Trim().EndsWith('?')
+        );
         var sentenceCompleteness = (double)completeSentences / sentences.Length;
 
         // Check for incomplete references (pronouns without antecedents)
         var pronouns = new[] { "it", "they", "this", "that", "these", "those" };
         var pronounCount = pronouns.Sum(p => CountOccurrences(content.ToLowerInvariant(), p));
-        var referentialCompleteness = Math.Max(0.0, 1.0 - (pronounCount / (double)content.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length * 10));
+        var referentialCompleteness = Math.Max(
+            0.0,
+            1.0
+                - (
+                    pronounCount
+                    / (double)content.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length
+                    * 10
+                )
+        );
 
         return (sentenceCompleteness * 0.6) + (referentialCompleteness * 0.4);
     }
 
-    private Task<double> CalculateContextDependencyAsync(DocumentSegment segment, List<DocumentSegment> allSegments, CancellationToken cancellationToken)
+    private Task<double> CalculateContextDependencyAsync(
+        DocumentSegment segment,
+        List<DocumentSegment> allSegments,
+        CancellationToken cancellationToken
+    )
     {
         // Calculate how much this segment depends on context from other segments
         var dependencies = IdentifySegmentDependencies(segment, allSegments);
@@ -864,11 +1113,24 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return Task.FromResult(Math.Min(1.0, dependencies.Count / (double)maxDependencies));
     }
 
-    private double CalculateCrossReferenceDependency(DocumentSegment segment, List<DocumentSegment> allSegments)
+    private double CalculateCrossReferenceDependency(
+        DocumentSegment segment,
+        List<DocumentSegment> allSegments
+    )
     {
         // Look for explicit cross-references to other segments
         var referenceCount = 0;
-        var referencePatterns = new[] { "above", "below", "previous", "following", "earlier", "later", "see section", "as mentioned" };
+        var referencePatterns = new[]
+        {
+            "above",
+            "below",
+            "previous",
+            "following",
+            "earlier",
+            "later",
+            "see section",
+            "as mentioned",
+        };
 
         foreach (var pattern in referencePatterns)
         {
@@ -880,7 +1142,10 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return Math.Min(1.0, referenceCount / (double)Math.Max(1, words / 100));
     }
 
-    private List<SegmentDependency> IdentifySegmentDependencies(DocumentSegment segment, List<DocumentSegment> allSegments)
+    private List<SegmentDependency> IdentifySegmentDependencies(
+        DocumentSegment segment,
+        List<DocumentSegment> allSegments
+    )
     {
         var dependencies = new List<SegmentDependency>();
 
@@ -889,14 +1154,16 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             var dependencyStrength = CalculateDependencyStrength(segment, otherSegment);
             if (dependencyStrength > 0.3)
             {
-                dependencies.Add(new SegmentDependency
-                {
-                    DependentSegmentId = segment.Id,
-                    DependsOnSegmentId = otherSegment.Id,
-                    Type = DetermineDependencyType(segment, otherSegment),
-                    Strength = dependencyStrength,
-                    Description = $"Dependency strength: {dependencyStrength:F2}"
-                });
+                dependencies.Add(
+                    new SegmentDependency
+                    {
+                        DependentSegmentId = segment.Id,
+                        DependsOnSegmentId = otherSegment.Id,
+                        Type = DetermineDependencyType(segment, otherSegment),
+                        Strength = dependencyStrength,
+                        Description = $"Dependency strength: {dependencyStrength:F2}",
+                    }
+                );
             }
         }
 
@@ -906,10 +1173,17 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     private double CalculateDependencyStrength(DocumentSegment segment1, DocumentSegment segment2)
     {
         // Calculate shared vocabulary and concepts
-        var words1 = segment1.Content.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
-        var words2 = segment2.Content.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+        var words1 = segment1
+            .Content.ToLowerInvariant()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet();
+        var words2 = segment2
+            .Content.ToLowerInvariant()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet();
 
-        if (!words1.Any() || !words2.Any()) return 0.0;
+        if (!words1.Any() || !words2.Any())
+            return 0.0;
 
         var intersection = words1.Intersect(words2).Count();
         var union = words1.Union(words2).Count();
@@ -917,7 +1191,10 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return union > 0 ? (double)intersection / union : 0.0;
     }
 
-    private DependencyType DetermineDependencyType(DocumentSegment segment1, DocumentSegment segment2)
+    private DependencyType DetermineDependencyType(
+        DocumentSegment segment1,
+        DocumentSegment segment2
+    )
     {
         // Simple heuristic based on sequence numbers
         if (Math.Abs(segment1.SequenceNumber - segment2.SequenceNumber) == 1)
@@ -936,17 +1213,23 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
         if (analysis.SelfContainmentScore < 0.6)
         {
-            recommendations.Add("Improve self-containment by adding more complete context within the segment");
+            recommendations.Add(
+                "Improve self-containment by adding more complete context within the segment"
+            );
         }
 
         if (analysis.ContextDependencyScore > 0.4)
         {
-            recommendations.Add("Reduce dependency on external context by including necessary background information");
+            recommendations.Add(
+                "Reduce dependency on external context by including necessary background information"
+            );
         }
 
         if (analysis.Dependencies.Count > 3)
         {
-            recommendations.Add("Consider merging with related segments to reduce cross-dependencies");
+            recommendations.Add(
+                "Consider merging with related segments to reduce cross-dependencies"
+            );
         }
 
         return recommendations;
@@ -962,11 +1245,15 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
         // Calculate topic focus based on word frequency distribution
         var totalWords = words.Length;
-        var significantWords = wordCounts.Where(kvp => kvp.Value > 1 && kvp.Key.Length > 3).ToList();
+        var significantWords = wordCounts
+            .Where(kvp => kvp.Value > 1 && kvp.Key.Length > 3)
+            .ToList();
 
-        if (!significantWords.Any()) return 0.5;
+        if (!significantWords.Any())
+            return 0.5;
 
-        var topicFocus = significantWords.Sum(kvp => Math.Pow(kvp.Value, 2)) / Math.Pow(totalWords, 2);
+        var topicFocus =
+            significantWords.Sum(kvp => Math.Pow(kvp.Value, 2)) / Math.Pow(totalWords, 2);
         return Math.Min(1.0, topicFocus * 10);
     }
 
@@ -989,7 +1276,10 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return overlaps;
     }
 
-    private TopicOverlapAnalysis CalculateTopicOverlap(DocumentSegment segment1, DocumentSegment segment2)
+    private TopicOverlapAnalysis CalculateTopicOverlap(
+        DocumentSegment segment1,
+        DocumentSegment segment2
+    )
     {
         var words1 = ExtractSignificantWords(segment1.Content);
         var words2 = ExtractSignificantWords(segment2.Content);
@@ -1006,21 +1296,45 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             OverlapPercentage = overlapPercentage,
             SharedTopics = sharedWords,
             IsProblematic = overlapPercentage > 0.5,
-            OverlapReason = overlapPercentage > 0.5 ? "High topic overlap detected" : "Acceptable topic overlap"
+            OverlapReason =
+                overlapPercentage > 0.5
+                    ? "High topic overlap detected"
+                    : "Acceptable topic overlap",
         };
     }
 
     private HashSet<string> ExtractSignificantWords(string content)
     {
-        return content.ToLowerInvariant()
-                     .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                     .Where(w => w.Length > 3 && !IsStopWord(w))
-                     .ToHashSet();
+        return content
+            .ToLowerInvariant()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length > 3 && !IsStopWord(w))
+            .ToHashSet();
     }
 
     private bool IsStopWord(string word)
     {
-        var stopWords = new HashSet<string> { "this", "that", "with", "have", "will", "from", "they", "been", "were", "said", "each", "which", "their", "time", "would", "there", "could", "other" };
+        var stopWords = new HashSet<string>
+        {
+            "this",
+            "that",
+            "with",
+            "have",
+            "will",
+            "from",
+            "they",
+            "been",
+            "were",
+            "said",
+            "each",
+            "which",
+            "their",
+            "time",
+            "would",
+            "there",
+            "could",
+            "other",
+        };
         return stopWords.Contains(word);
     }
 
@@ -1033,21 +1347,25 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             var consistency = CalculateWithinSegmentTopicConsistency(segment.Content);
             if (consistency < 0.5)
             {
-                violations.Add(new TopicViolation
-                {
-                    SegmentId = segment.Id,
-                    Type = TopicViolationType.MultipleTopicsInSegment,
-                    Description = $"Poor topic consistency within segment: {consistency:F2}",
-                    Severity = 1.0 - consistency,
-                    ConflictingTopics = new List<string> { "Multiple topics detected" }
-                });
+                violations.Add(
+                    new TopicViolation
+                    {
+                        SegmentId = segment.Id,
+                        Type = TopicViolationType.MultipleTopicsInSegment,
+                        Description = $"Poor topic consistency within segment: {consistency:F2}",
+                        Severity = 1.0 - consistency,
+                        ConflictingTopics = new List<string> { "Multiple topics detected" },
+                    }
+                );
             }
         }
 
         return violations;
     }
 
-    private Dictionary<string, List<string>> AnalyzeTopicDistribution(List<DocumentSegment> segments)
+    private Dictionary<string, List<string>> AnalyzeTopicDistribution(
+        List<DocumentSegment> segments
+    )
     {
         var distribution = new Dictionary<string, List<string>>();
 
@@ -1070,28 +1388,47 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     private double CalculateContentCoverage(List<DocumentSegment> segments, string originalContent)
     {
         var segmentContent = string.Join(" ", segments.Select(s => s.Content));
-        var originalWords = originalContent.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
-        var segmentWords = segmentContent.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+        var originalWords = originalContent
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet();
+        var segmentWords = segmentContent
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet();
 
-        if (!originalWords.Any()) return 1.0;
+        if (!originalWords.Any())
+            return 1.0;
 
         var coveredWords = originalWords.Intersect(segmentWords).Count();
         return (double)coveredWords / originalWords.Count;
     }
 
-    private Task<double> CalculateInformationPreservationAsync(List<DocumentSegment> segments, string originalContent, CancellationToken cancellationToken)
+    private Task<double> CalculateInformationPreservationAsync(
+        List<DocumentSegment> segments,
+        string originalContent,
+        CancellationToken cancellationToken
+    )
     {
         // Heuristic approach for information preservation
         var segmentContent = string.Join(" ", segments.Select(s => s.Content));
-        var originalSentences = SentencePattern.Split(originalContent).Where(s => !string.IsNullOrWhiteSpace(s)).Count();
-        var segmentSentences = SentencePattern.Split(segmentContent).Where(s => !string.IsNullOrWhiteSpace(s)).Count();
+        var originalSentences = SentencePattern
+            .Split(originalContent)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Count();
+        var segmentSentences = SentencePattern
+            .Split(segmentContent)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Count();
 
-        if (originalSentences == 0) return Task.FromResult(1.0);
+        if (originalSentences == 0)
+            return Task.FromResult(1.0);
 
         return Task.FromResult(Math.Min(1.0, (double)segmentSentences / originalSentences));
     }
 
-    private List<ContentGap> IdentifyContentGaps(List<DocumentSegment> segments, string originalContent)
+    private List<ContentGap> IdentifyContentGaps(
+        List<DocumentSegment> segments,
+        string originalContent
+    )
     {
         var gaps = new List<ContentGap>();
 
@@ -1101,15 +1438,21 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
         if (originalLength > segmentLength * 1.1) // More than 10% difference
         {
-            gaps.Add(new ContentGap
-            {
-                StartPosition = 0,
-                EndPosition = originalLength,
-                MissingContent = $"Approximately {originalLength - segmentLength} characters missing",
-                Type = GapType.ContentMissing,
-                Significance = Math.Min(1.0, (originalLength - segmentLength) / (double)originalLength),
-                PotentialCauses = new List<string> { "Content lost during segmentation" }
-            });
+            gaps.Add(
+                new ContentGap
+                {
+                    StartPosition = 0,
+                    EndPosition = originalLength,
+                    MissingContent =
+                        $"Approximately {originalLength - segmentLength} characters missing",
+                    Type = GapType.ContentMissing,
+                    Significance = Math.Min(
+                        1.0,
+                        (originalLength - segmentLength) / (double)originalLength
+                    ),
+                    PotentialCauses = new List<string> { "Content lost during segmentation" },
+                }
+            );
         }
 
         return gaps;
@@ -1134,7 +1477,10 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return overlaps;
     }
 
-    private ContentOverlap CalculateContentOverlap(DocumentSegment segment1, DocumentSegment segment2)
+    private ContentOverlap CalculateContentOverlap(
+        DocumentSegment segment1,
+        DocumentSegment segment2
+    )
     {
         var words1 = segment1.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
         var words2 = segment2.Content.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
@@ -1148,12 +1494,18 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             Segment2Id = segment2.Id,
             OverlappingContent = string.Join(" ", intersection.Take(10)),
             OverlapPercentage = overlapPercentage,
-            Type = overlapPercentage > 0.5 ? OverlapType.ExactDuplication : OverlapType.ConceptualOverlap,
-            IsProblematic = overlapPercentage > 0.3
+            Type =
+                overlapPercentage > 0.5
+                    ? OverlapType.ExactDuplication
+                    : OverlapType.ConceptualOverlap,
+            IsProblematic = overlapPercentage > 0.3,
         };
     }
 
-    private List<string> AnalyzeMissingContent(List<DocumentSegment> segments, string originalContent)
+    private List<string> AnalyzeMissingContent(
+        List<DocumentSegment> segments,
+        string originalContent
+    )
     {
         var missingAreas = new List<string>();
 
@@ -1164,7 +1516,9 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         var missingWords = originalWords.Except(segmentWords).ToList();
         if (missingWords.Any())
         {
-            missingAreas.Add($"Missing significant terms: {string.Join(", ", missingWords.Take(10))}");
+            missingAreas.Add(
+                $"Missing significant terms: {string.Join(", ", missingWords.Take(10))}"
+            );
         }
 
         return missingAreas;
@@ -1179,20 +1533,21 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             >= 0.8 => QualityIssueSeverity.Critical,
             >= 0.6 => QualityIssueSeverity.High,
             >= 0.4 => QualityIssueSeverity.Medium,
-            _ => QualityIssueSeverity.Low
+            _ => QualityIssueSeverity.Low,
         };
     }
 
     private double CalculateOverallIssueSeverity(List<QualityIssue> issues)
     {
-        if (!issues.Any()) return 0.0;
+        if (!issues.Any())
+            return 0.0;
 
         var severityWeights = new Dictionary<QualityIssueSeverity, double>
         {
             [QualityIssueSeverity.Critical] = 1.0,
             [QualityIssueSeverity.High] = 0.7,
             [QualityIssueSeverity.Medium] = 0.4,
-            [QualityIssueSeverity.Low] = 0.1
+            [QualityIssueSeverity.Low] = 0.1,
         };
 
         var weightedSeverity = issues.Sum(i => severityWeights[i.Severity]);
@@ -1201,23 +1556,30 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
 
     // Recommendation Generation Methods
 
-    private List<QualityRecommendation> GenerateRecommendationsForIssues(List<QualityIssue> issues, RecommendationPriority priority)
+    private List<QualityRecommendation> GenerateRecommendationsForIssues(
+        List<QualityIssue> issues,
+        RecommendationPriority priority
+    )
     {
         var recommendations = new List<QualityRecommendation>();
 
         foreach (var issue in issues)
         {
-            recommendations.Add(new QualityRecommendation
-            {
-                Type = MapIssueTypeToRecommendationType(issue.Type),
-                Priority = priority,
-                Title = $"Address {issue.Type}",
-                Description = issue.Description,
-                AffectedSegmentIds = issue.AffectedSegmentIds,
-                ActionSteps = issue.RecommendedActions.Any() ? issue.RecommendedActions : GenerateDefaultActionSteps(issue),
-                ExpectedImpact = CalculateExpectedImpactForIssue(issue),
-                Implementation = GenerateImplementationGuidanceForIssue(issue)
-            });
+            recommendations.Add(
+                new QualityRecommendation
+                {
+                    Type = MapIssueTypeToRecommendationType(issue.Type),
+                    Priority = priority,
+                    Title = $"Address {issue.Type}",
+                    Description = issue.Description,
+                    AffectedSegmentIds = issue.AffectedSegmentIds,
+                    ActionSteps = issue.RecommendedActions.Any()
+                        ? issue.RecommendedActions
+                        : GenerateDefaultActionSteps(issue),
+                    ExpectedImpact = CalculateExpectedImpactForIssue(issue),
+                    Implementation = GenerateImplementationGuidanceForIssue(issue),
+                }
+            );
         }
 
         return recommendations;
@@ -1233,7 +1595,7 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             QualityIssueType.CompletenessGap => RecommendationType.ContentReorganization,
             QualityIssueType.BoundaryIssue => RecommendationType.BoundaryAdjustment,
             QualityIssueType.ContentOverlap => RecommendationType.SegmentMerge,
-            _ => RecommendationType.QualityImprovement
+            _ => RecommendationType.QualityImprovement,
         };
     }
 
@@ -1241,10 +1603,25 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
     {
         return issue.Type switch
         {
-            QualityIssueType.PoorCoherence => new List<string> { "Review segment content for logical flow", "Add transitional phrases", "Ensure consistent terminology" },
-            QualityIssueType.LowIndependence => new List<string> { "Add necessary context to segment", "Reduce dependencies on other segments", "Include background information" },
-            QualityIssueType.TopicInconsistency => new List<string> { "Split segment by topic", "Ensure single topic per segment", "Realign topic boundaries" },
-            _ => new List<string> { "Review and improve segment quality" }
+            QualityIssueType.PoorCoherence => new List<string>
+            {
+                "Review segment content for logical flow",
+                "Add transitional phrases",
+                "Ensure consistent terminology",
+            },
+            QualityIssueType.LowIndependence => new List<string>
+            {
+                "Add necessary context to segment",
+                "Reduce dependencies on other segments",
+                "Include background information",
+            },
+            QualityIssueType.TopicInconsistency => new List<string>
+            {
+                "Split segment by topic",
+                "Ensure single topic per segment",
+                "Realign topic boundaries",
+            },
+            _ => new List<string> { "Review and improve segment quality" },
         };
     }
 
@@ -1256,7 +1633,7 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             QualityIssueSeverity.High => 0.7,
             QualityIssueSeverity.Medium => 0.5,
             QualityIssueSeverity.Low => 0.3,
-            _ => 0.5
+            _ => 0.5,
         };
     }
 
@@ -1265,86 +1642,141 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
         return $"Address {issue.Type} in affected segments. Priority: {issue.Severity}. Focus on {issue.Context}.";
     }
 
-    private List<QualityRecommendation> GenerateStrategySpecificRecommendations(ComprehensiveQualityAssessment assessment, SegmentationStrategy strategy)
+    private List<QualityRecommendation> GenerateStrategySpecificRecommendations(
+        ComprehensiveQualityAssessment assessment,
+        SegmentationStrategy strategy
+    )
     {
         var recommendations = new List<QualityRecommendation>();
 
         if (assessment.OverallQualityScore < 0.7)
         {
-            recommendations.Add(new QualityRecommendation
-            {
-                Type = RecommendationType.StrategyChange,
-                Priority = RecommendationPriority.Medium,
-                Title = $"Consider alternative to {strategy} strategy",
-                Description = $"Current {strategy} strategy yielding suboptimal results",
-                ActionSteps = new List<string> { "Evaluate alternative segmentation strategies", "Consider hybrid approach", "Adjust strategy parameters" },
-                ExpectedImpact = 0.6
-            });
+            recommendations.Add(
+                new QualityRecommendation
+                {
+                    Type = RecommendationType.StrategyChange,
+                    Priority = RecommendationPriority.Medium,
+                    Title = $"Consider alternative to {strategy} strategy",
+                    Description = $"Current {strategy} strategy yielding suboptimal results",
+                    ActionSteps = new List<string>
+                    {
+                        "Evaluate alternative segmentation strategies",
+                        "Consider hybrid approach",
+                        "Adjust strategy parameters",
+                    },
+                    ExpectedImpact = 0.6,
+                }
+            );
         }
 
         return recommendations;
     }
 
-    private List<ImplementationGuidance> GenerateImplementationGuidance(ImprovementRecommendations recommendations)
+    private List<ImplementationGuidance> GenerateImplementationGuidance(
+        ImprovementRecommendations recommendations
+    )
     {
         var guidance = new List<ImplementationGuidance>();
 
         foreach (var rec in recommendations.HighPriorityRecommendations)
         {
-            guidance.Add(new ImplementationGuidance
-            {
-                RecommendationId = rec.Id,
-                Steps = rec.ActionSteps,
-                EstimatedEffort = TimeSpan.FromHours(2),
-                Prerequisites = new List<string> { "Access to segmentation tools", "Quality assessment results" },
-                Resources = new List<string> { "Segmentation documentation", "Quality guidelines" }
-            });
+            guidance.Add(
+                new ImplementationGuidance
+                {
+                    RecommendationId = rec.Id,
+                    Steps = rec.ActionSteps,
+                    EstimatedEffort = TimeSpan.FromHours(2),
+                    Prerequisites = new List<string>
+                    {
+                        "Access to segmentation tools",
+                        "Quality assessment results",
+                    },
+                    Resources = new List<string>
+                    {
+                        "Segmentation documentation",
+                        "Quality guidelines",
+                    },
+                }
+            );
         }
 
         return guidance;
     }
 
-    private ExpectedImpactAnalysis CalculateExpectedImpact(ImprovementRecommendations recommendations, ComprehensiveQualityAssessment assessment)
+    private ExpectedImpactAnalysis CalculateExpectedImpact(
+        ImprovementRecommendations recommendations,
+        ComprehensiveQualityAssessment assessment
+    )
     {
         var impact = new ExpectedImpactAnalysis();
 
-        var totalImpact = recommendations.HighPriorityRecommendations.Sum(r => r.ExpectedImpact) +
-                         recommendations.MediumPriorityRecommendations.Sum(r => r.ExpectedImpact * 0.7) +
-                         recommendations.LowPriorityRecommendations.Sum(r => r.ExpectedImpact * 0.4);
+        var totalImpact =
+            recommendations.HighPriorityRecommendations.Sum(r => r.ExpectedImpact)
+            + recommendations.MediumPriorityRecommendations.Sum(r => r.ExpectedImpact * 0.7)
+            + recommendations.LowPriorityRecommendations.Sum(r => r.ExpectedImpact * 0.4);
 
         impact.QualityImprovement = Math.Min(0.5, totalImpact * 0.1);
         impact.PerformanceImpact = -0.1; // Small negative impact from additional processing
-        impact.ImpactDescription = $"Expected quality improvement of {impact.QualityImprovement:P0}";
-        impact.BenefitAreas = new List<string> { "Coherence", "Independence", "Topic consistency", "Completeness" };
-        impact.PotentialRisks = new List<string> { "Increased processing time", "Potential over-segmentation" };
+        impact.ImpactDescription =
+            $"Expected quality improvement of {impact.QualityImprovement:P0}";
+        impact.BenefitAreas = new List<string>
+        {
+            "Coherence",
+            "Independence",
+            "Topic consistency",
+            "Completeness",
+        };
+        impact.PotentialRisks = new List<string>
+        {
+            "Increased processing time",
+            "Potential over-segmentation",
+        };
 
         return impact;
     }
 
     // Comparative Analysis Methods
 
-    private string GenerateStrategyStrengths(SegmentationStrategy strategy, QualityMetricScores scores)
+    private string GenerateStrategyStrengths(
+        SegmentationStrategy strategy,
+        QualityMetricScores scores
+    )
     {
         var strengths = new List<string>();
 
-        if (scores.AverageCoherenceScore > 0.8) strengths.Add("high coherence");
-        if (scores.AverageIndependenceScore > 0.8) strengths.Add("good independence");
-        if (scores.AverageTopicConsistencyScore > 0.8) strengths.Add("topic consistency");
-        if (scores.CompletenessScore > 0.8) strengths.Add("completeness");
+        if (scores.AverageCoherenceScore > 0.8)
+            strengths.Add("high coherence");
+        if (scores.AverageIndependenceScore > 0.8)
+            strengths.Add("good independence");
+        if (scores.AverageTopicConsistencyScore > 0.8)
+            strengths.Add("topic consistency");
+        if (scores.CompletenessScore > 0.8)
+            strengths.Add("completeness");
 
-        return strengths.Any() ? string.Join(", ", strengths) : "no significant strengths identified";
+        return strengths.Any()
+            ? string.Join(", ", strengths)
+            : "no significant strengths identified";
     }
 
-    private string GenerateStrategyWeaknesses(SegmentationStrategy strategy, QualityMetricScores scores)
+    private string GenerateStrategyWeaknesses(
+        SegmentationStrategy strategy,
+        QualityMetricScores scores
+    )
     {
         var weaknesses = new List<string>();
 
-        if (scores.AverageCoherenceScore < 0.6) weaknesses.Add("low coherence");
-        if (scores.AverageIndependenceScore < 0.6) weaknesses.Add("poor independence");
-        if (scores.AverageTopicConsistencyScore < 0.6) weaknesses.Add("topic inconsistency");
-        if (scores.CompletenessScore < 0.6) weaknesses.Add("incomplete coverage");
+        if (scores.AverageCoherenceScore < 0.6)
+            weaknesses.Add("low coherence");
+        if (scores.AverageIndependenceScore < 0.6)
+            weaknesses.Add("poor independence");
+        if (scores.AverageTopicConsistencyScore < 0.6)
+            weaknesses.Add("topic inconsistency");
+        if (scores.CompletenessScore < 0.6)
+            weaknesses.Add("incomplete coverage");
 
-        return weaknesses.Any() ? string.Join(", ", weaknesses) : "no significant weaknesses identified";
+        return weaknesses.Any()
+            ? string.Join(", ", weaknesses)
+            : "no significant weaknesses identified";
     }
 
     private List<string> GenerateComparativeInsights(ComparativeQualityAnalysis analysis)
@@ -1358,7 +1790,9 @@ public class SegmentationQualityAssessmentService : ISegmentationQualityAssessme
             insights.Add($"{bestStrategy} strategy performed best with score {bestScore:F2}");
 
             var worstStrategy = analysis.StrategyQualityScores.OrderBy(kvp => kvp.Value).First();
-            insights.Add($"{worstStrategy.Key} strategy had lowest score: {worstStrategy.Value:F2}");
+            insights.Add(
+                $"{worstStrategy.Key} strategy had lowest score: {worstStrategy.Value:F2}"
+            );
         }
 
         return insights;

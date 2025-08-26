@@ -1,14 +1,14 @@
 using System.Collections.Immutable;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.DependencyInjection;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
-using LmConfigLogEventIds = AchieveAi.LmDotnetTools.LmConfig.Logging.LogEventIds;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using LmConfigLogEventIds = AchieveAi.LmDotnetTools.LmConfig.Logging.LogEventIds;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
@@ -129,9 +129,9 @@ public class LoggingIntegrationTests : IDisposable
                 {
                     Name = "input",
                     ParameterType = JsonSchemaObject.String("Test input parameter"),
-                    Description = "Test input"
-                }
-            }
+                    Description = "Test input",
+                },
+            },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -140,14 +140,15 @@ public class LoggingIntegrationTests : IDisposable
             {
                 await Task.Delay(10); // Simulate some work
                 return "Test result";
-            }
+            },
         };
 
         var middleware = new FunctionCallMiddleware(
             new[] { testFunction },
             functionMap,
             "TestMiddleware",
-            _middlewareLogger);
+            _middlewareLogger
+        );
 
         var mockAgent = new Mock<IAgent>();
         var toolCall = new ToolCall("TestFunction", "{\"input\":\"test\"}");
@@ -155,15 +156,26 @@ public class LoggingIntegrationTests : IDisposable
         {
             ToolCalls = ImmutableList.Create(toolCall),
             Role = Role.Assistant,
-            FromAgent = "test-agent"
+            FromAgent = "test-agent",
         };
 
-        mockAgent.Setup(x => x.GenerateReplyAsync(It.IsAny<IEnumerable<IMessage>>(), It.IsAny<GenerateReplyOptions>(), It.IsAny<CancellationToken>()))
+        mockAgent
+            .Setup(x =>
+                x.GenerateReplyAsync(
+                    It.IsAny<IEnumerable<IMessage>>(),
+                    It.IsAny<GenerateReplyOptions>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new[] { toolCallMessage });
 
         var context = new MiddlewareContext(
-            new[] { new TextMessage { Text = "Call test function", Role = Role.User } },
-            new GenerateReplyOptions());
+            new[]
+            {
+                new TextMessage { Text = "Call test function", Role = Role.User },
+            },
+            new GenerateReplyOptions()
+        );
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent.Object);
@@ -172,12 +184,16 @@ public class LoggingIntegrationTests : IDisposable
         var logs = _middlewareLogger.LogEntries.ToList();
 
         // Verify middleware processing started
-        var processingStartedLogs = logs.Where(log => log.Message.Contains("Middleware processing started")).ToList();
+        var processingStartedLogs = logs.Where(log =>
+                log.Message.Contains("Middleware processing started")
+            )
+            .ToList();
         Assert.Single(processingStartedLogs);
         Assert.Contains("TestMiddleware", processingStartedLogs.First().Message);
 
         // Verify function execution logging
-        var functionExecutionLogs = logs.Where(log => log.Message.Contains("Function executed")).ToList();
+        var functionExecutionLogs = logs.Where(log => log.Message.Contains("Function executed"))
+            .ToList();
         Assert.Single(functionExecutionLogs);
 
         var functionLog = functionExecutionLogs.First();
@@ -185,7 +201,10 @@ public class LoggingIntegrationTests : IDisposable
         Assert.Contains("Success=True", functionLog.Message);
 
         // Verify middleware processing completed
-        var processingCompletedLogs = logs.Where(log => log.Message.Contains("Middleware processing completed")).ToList();
+        var processingCompletedLogs = logs.Where(log =>
+                log.Message.Contains("Middleware processing completed")
+            )
+            .ToList();
         Assert.Single(processingCompletedLogs);
 
         // Verify the result contains the expected aggregate message
@@ -330,11 +349,11 @@ public class LoggingIntegrationTests : IDisposable
 
         // Register components with logger factory
         services.AddSingleton<ILoggerFactory>(provider => _loggerFactory);
-        services.AddTransient<UnifiedAgent>(provider =>
-            new UnifiedAgent(
-                Mock.Of<IModelResolver>(),
-                Mock.Of<IProviderAgentFactory>(),
-                provider.GetService<ILogger<UnifiedAgent>>()));
+        services.AddTransient<UnifiedAgent>(provider => new UnifiedAgent(
+            Mock.Of<IModelResolver>(),
+            Mock.Of<IProviderAgentFactory>(),
+            provider.GetService<ILogger<UnifiedAgent>>()
+        ));
 
         var serviceProvider = services.BuildServiceProvider();
 
@@ -346,11 +365,21 @@ public class LoggingIntegrationTests : IDisposable
 
         // Verify that the logger was injected by checking if logging works
         var mockModelResolver = new Mock<IModelResolver>();
-        mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
+        mockModelResolver
+            .Setup(x =>
+                x.ResolveProviderAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<ProviderSelectionCriteria>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ThrowsAsync(new InvalidOperationException("No provider found"));
 
         // This should trigger error logging
-        var messages = new[] { new TextMessage { Text = "Hello", Role = Role.User } };
+        var messages = new[]
+        {
+            new TextMessage { Text = "Hello", Role = Role.User },
+        };
         var options = new GenerateReplyOptions { ModelId = "invalid-model" };
 
         try
@@ -455,7 +484,9 @@ public class LoggingIntegrationTests : IDisposable
         Assert.True(stopwatch.ElapsedMilliseconds < 1000, "Operation took too long, suggesting logging overhead");
     } */
 
-    private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(IEnumerable<IMessage> messages)
+    private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(
+        IEnumerable<IMessage> messages
+    )
     {
         foreach (var message in messages)
         {
@@ -504,6 +535,7 @@ public class TestLoggerFactory : ILoggerFactory
 public class TestLoggerProvider : ILoggerProvider
 {
     public ILogger CreateLogger(string categoryName) => new TestLogger();
+
     public void Dispose() { }
 }
 
@@ -512,25 +544,32 @@ public class TestLogger : ILogger
     public List<LogEntry> LogEntries { get; } = new();
 
     public IDisposable BeginScope<TState>(TState state) => new TestScope();
+
     public bool IsEnabled(LogLevel logLevel) => true;
 
-    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter
+    )
     {
         var message = formatter(state, exception);
-        LogEntries.Add(new LogEntry
-        {
-            LogLevel = logLevel,
-            EventId = eventId,
-            State = state,
-            Exception = exception,
-            Message = message
-        });
+        LogEntries.Add(
+            new LogEntry
+            {
+                LogLevel = logLevel,
+                EventId = eventId,
+                State = state,
+                Exception = exception,
+                Message = message,
+            }
+        );
     }
 }
 
-public class TestLogger<T> : TestLogger, ILogger<T>
-{
-}
+public class TestLogger<T> : TestLogger, ILogger<T> { }
 
 public class LogEntry
 {

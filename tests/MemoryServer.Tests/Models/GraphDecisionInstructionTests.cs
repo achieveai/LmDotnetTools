@@ -1,5 +1,5 @@
-using MemoryServer.Models;
 using System.Text.Json;
+using MemoryServer.Models;
 
 namespace MemoryServer.Tests.Models;
 
@@ -20,7 +20,8 @@ public class GraphDecisionInstructionTests
         Relationship? relationshipData,
         float confidence,
         string reasoning,
-        SessionContext sessionContext)
+        SessionContext sessionContext
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing instruction creation: {testName}");
@@ -35,7 +36,7 @@ public class GraphDecisionInstructionTests
             Confidence = confidence,
             Reasoning = reasoning,
             SessionContext = sessionContext,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
 
         // Assert
@@ -57,7 +58,8 @@ public class GraphDecisionInstructionTests
         GraphDecisionOperation operation,
         float confidence,
         string reasoning,
-        string expectedIssue)
+        string expectedIssue
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing invalid instruction creation: {testName}");
@@ -70,17 +72,23 @@ public class GraphDecisionInstructionTests
             Confidence = confidence,
             Reasoning = reasoning,
             SessionContext = new SessionContext { UserId = "user123" },
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
 
         // Assert - Instruction creation doesn't throw, but we can validate the data
         if (confidence < 0 || confidence > 1)
         {
-            Assert.True(instruction.Confidence < 0 || instruction.Confidence > 1, "Confidence should be out of valid range");
+            Assert.True(
+                instruction.Confidence < 0 || instruction.Confidence > 1,
+                "Confidence should be out of valid range"
+            );
         }
         if (string.IsNullOrWhiteSpace(reasoning))
         {
-            Assert.True(string.IsNullOrWhiteSpace(instruction.Reasoning), "Reasoning should be empty or whitespace");
+            Assert.True(
+                string.IsNullOrWhiteSpace(instruction.Reasoning),
+                "Reasoning should be empty or whitespace"
+            );
         }
 
         Debug.WriteLine($"⚠️ Invalid instruction handled: {expectedIssue}");
@@ -98,7 +106,8 @@ public class GraphDecisionInstructionTests
         Entity? entityData,
         Relationship? relationshipData,
         bool expectedValid,
-        string expectedIssue)
+        string expectedIssue
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing operation validation: {testName}");
@@ -111,7 +120,7 @@ public class GraphDecisionInstructionTests
             RelationshipData = relationshipData,
             Confidence = 0.8f,
             Reasoning = "Test reasoning",
-            SessionContext = new SessionContext { UserId = "user123" }
+            SessionContext = new SessionContext { UserId = "user123" },
         };
 
         // Act & Assert
@@ -167,7 +176,8 @@ public class GraphDecisionInstructionTests
     [MemberData(nameof(SerializationTestCases))]
     public void JsonSerialization_WithComplexData_ShouldPreserveAllFields(
         string testName,
-        GraphDecisionInstruction originalInstruction)
+        GraphDecisionInstruction originalInstruction
+    )
     {
         // Arrange
         Debug.WriteLine($"Testing JSON serialization: {testName}");
@@ -186,9 +196,18 @@ public class GraphDecisionInstructionTests
         Assert.Equal(originalInstruction.Reasoning, deserializedInstruction.Reasoning);
 
         // Compare session context
-        Assert.Equal(originalInstruction.SessionContext.UserId, deserializedInstruction.SessionContext.UserId);
-        Assert.Equal(originalInstruction.SessionContext.AgentId, deserializedInstruction.SessionContext.AgentId);
-        Assert.Equal(originalInstruction.SessionContext.RunId, deserializedInstruction.SessionContext.RunId);
+        Assert.Equal(
+            originalInstruction.SessionContext.UserId,
+            deserializedInstruction.SessionContext.UserId
+        );
+        Assert.Equal(
+            originalInstruction.SessionContext.AgentId,
+            deserializedInstruction.SessionContext.AgentId
+        );
+        Assert.Equal(
+            originalInstruction.SessionContext.RunId,
+            deserializedInstruction.SessionContext.RunId
+        );
 
         // Compare entity data
         if (originalInstruction.EntityData == null)
@@ -198,8 +217,14 @@ public class GraphDecisionInstructionTests
         else
         {
             Assert.NotNull(deserializedInstruction.EntityData);
-            Assert.Equal(originalInstruction.EntityData.Name, deserializedInstruction.EntityData.Name);
-            Assert.Equal(originalInstruction.EntityData.Type, deserializedInstruction.EntityData.Type);
+            Assert.Equal(
+                originalInstruction.EntityData.Name,
+                deserializedInstruction.EntityData.Name
+            );
+            Assert.Equal(
+                originalInstruction.EntityData.Type,
+                deserializedInstruction.EntityData.Type
+            );
         }
 
         // Compare relationship data
@@ -210,9 +235,18 @@ public class GraphDecisionInstructionTests
         else
         {
             Assert.NotNull(deserializedInstruction.RelationshipData);
-            Assert.Equal(originalInstruction.RelationshipData.Source, deserializedInstruction.RelationshipData.Source);
-            Assert.Equal(originalInstruction.RelationshipData.RelationshipType, deserializedInstruction.RelationshipData.RelationshipType);
-            Assert.Equal(originalInstruction.RelationshipData.Target, deserializedInstruction.RelationshipData.Target);
+            Assert.Equal(
+                originalInstruction.RelationshipData.Source,
+                deserializedInstruction.RelationshipData.Source
+            );
+            Assert.Equal(
+                originalInstruction.RelationshipData.RelationshipType,
+                deserializedInstruction.RelationshipData.RelationshipType
+            );
+            Assert.Equal(
+                originalInstruction.RelationshipData.Target,
+                deserializedInstruction.RelationshipData.Target
+            );
         }
 
         Debug.WriteLine($"✅ Serialization successful - all fields preserved");
@@ -222,182 +256,265 @@ public class GraphDecisionInstructionTests
 
     #region Test Data
 
-    public static IEnumerable<object?[]> ValidInstructionTestCases => new List<object?[]>
-    {
-        // Format: testName, operation, entityData, relationshipData, confidence, reasoning, sessionContext
-        new object?[]
+    public static IEnumerable<object?[]> ValidInstructionTestCases =>
+        new List<object?[]>
         {
-            "Add entity instruction",
-            GraphDecisionOperation.ADD,
-            new Entity { Name = "John", Type = "person", UserId = "user123" },
-            null,
-            0.8f,
-            "New entity detected in conversation",
-            new SessionContext { UserId = "user123" }
-        },
-        new object?[]
-        {
-            "Update relationship instruction",
-            GraphDecisionOperation.UPDATE,
-            null,
-            new Relationship { Source = "Alice", RelationshipType = "works_at", Target = "Google", UserId = "user456" },
-            0.9f,
-            "Relationship confidence updated based on new information",
-            new SessionContext { UserId = "user456", AgentId = "agent789" }
-        },
-        new object?[]
-        {
-            "Delete entity instruction",
-            GraphDecisionOperation.DELETE,
-            new Entity { Name = "Obsolete Entity", UserId = "user789" },
-            null,
-            0.7f,
-            "Entity no longer relevant based on conversation context",
-            new SessionContext { UserId = "user789", AgentId = "agent123", RunId = "run456" }
-        },
-        new object?[]
-        {
-            "No operation instruction",
-            GraphDecisionOperation.NONE,
-            null,
-            null,
-            0.5f,
-            "No changes needed to the graph",
-            new SessionContext { UserId = "user000" }
-        }
-    };
-
-    public static IEnumerable<object[]> InvalidInstructionTestCases => new List<object[]>
-    {
-        // Format: testName, operation, confidence, reasoning, expectedIssue
-        new object[] { "Negative confidence", GraphDecisionOperation.ADD, -0.1f, "Valid reasoning", "Confidence below 0" },
-        new object[] { "Confidence above 1", GraphDecisionOperation.UPDATE, 1.1f, "Valid reasoning", "Confidence above 1" },
-        new object[] { "Empty reasoning", GraphDecisionOperation.DELETE, 0.8f, "", "Reasoning is empty" },
-        new object[] { "Whitespace reasoning", GraphDecisionOperation.ADD, 0.8f, "   ", "Reasoning is whitespace" },
-        new object[] { "Extreme negative confidence", GraphDecisionOperation.NONE, -999.0f, "Valid reasoning", "Extreme negative confidence" },
-        new object[] { "Extreme positive confidence", GraphDecisionOperation.UPDATE, 999.0f, "Valid reasoning", "Extreme positive confidence" }
-    };
-
-    public static IEnumerable<object?[]> OperationValidationTestCases => new List<object?[]>
-    {
-        // Format: testName, operation, entityData, relationshipData, expectedValid, expectedIssue
-        new object?[]
-        {
-            "Valid ADD entity",
-            GraphDecisionOperation.ADD,
-            new Entity { Name = "Test", UserId = "user123" },
-            null,
-            true,
-            ""
-        },
-        new object?[]
-        {
-            "Valid UPDATE relationship",
-            GraphDecisionOperation.UPDATE,
-            null,
-            new Relationship { Source = "A", RelationshipType = "rel", Target = "B", UserId = "user123" },
-            true,
-            ""
-        },
-        new object?[]
-        {
-            "Invalid - both entity and relationship",
-            GraphDecisionOperation.ADD,
-            new Entity { Name = "Test", UserId = "user123" },
-            new Relationship { Source = "A", RelationshipType = "rel", Target = "B", UserId = "user123" },
-            false,
-            "both entity and relationship"
-        },
-        new object?[]
-        {
-            "Invalid - no data for ADD",
-            GraphDecisionOperation.ADD,
-            null,
-            null,
-            false,
-            "either entity or relationship"
-        },
-        new object?[]
-        {
-            "Valid NONE operation",
-            GraphDecisionOperation.NONE,
-            null,
-            null,
-            true,
-            ""
-        },
-        new object?[]
-        {
-            "Invalid NONE with data",
-            GraphDecisionOperation.NONE,
-            new Entity { Name = "Test", UserId = "user123" },
-            null,
-            false,
-            "NONE operation should not have data"
-        }
-    };
-
-    public static IEnumerable<object?[]> SerializationTestCases => new List<object?[]>
-    {
-        // Format: testName, instruction
-        new object?[]
-        {
-            "Entity instruction",
-            new GraphDecisionInstruction
+            // Format: testName, operation, entityData, relationshipData, confidence, reasoning, sessionContext
+            new object?[]
             {
-                Operation = GraphDecisionOperation.ADD,
-                EntityData = new Entity
+                "Add entity instruction",
+                GraphDecisionOperation.ADD,
+                new Entity
                 {
-                    Id = 1,
-                    Name = "Test Entity",
-                    Type = "test",
+                    Name = "John",
+                    Type = "person",
                     UserId = "user123",
-                    Confidence = 0.8f
                 },
-                RelationshipData = null,
-                Confidence = 0.9f,
-                Reasoning = "Test entity reasoning",
-                SessionContext = new SessionContext { UserId = "user123" },
-                CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            }
-        },
-        new object?[]
-        {
-            "Relationship instruction",
-            new GraphDecisionInstruction
+                null,
+                0.8f,
+                "New entity detected in conversation",
+                new SessionContext { UserId = "user123" },
+            },
+            new object?[]
             {
-                Operation = GraphDecisionOperation.UPDATE,
-                EntityData = null,
-                RelationshipData = new Relationship
+                "Update relationship instruction",
+                GraphDecisionOperation.UPDATE,
+                null,
+                new Relationship
                 {
-                    Id = 2,
                     Source = "Alice",
                     RelationshipType = "works_at",
                     Target = "Google",
                     UserId = "user456",
-                    Confidence = 0.95f
                 },
-                Confidence = 0.85f,
-                Reasoning = "Relationship update reasoning",
-                SessionContext = new SessionContext { UserId = "user456", AgentId = "agent789" },
-                CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            }
-        },
-        new object?[]
-        {
-            "NONE operation instruction",
-            new GraphDecisionInstruction
+                0.9f,
+                "Relationship confidence updated based on new information",
+                new SessionContext { UserId = "user456", AgentId = "agent789" },
+            },
+            new object?[]
             {
-                Operation = GraphDecisionOperation.NONE,
-                EntityData = null,
-                RelationshipData = null,
-                Confidence = 0.5f,
-                Reasoning = "No changes needed",
-                SessionContext = new SessionContext { UserId = "user789", AgentId = "agent123", RunId = "run456" },
-                CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-            }
-        }
-    };
+                "Delete entity instruction",
+                GraphDecisionOperation.DELETE,
+                new Entity { Name = "Obsolete Entity", UserId = "user789" },
+                null,
+                0.7f,
+                "Entity no longer relevant based on conversation context",
+                new SessionContext
+                {
+                    UserId = "user789",
+                    AgentId = "agent123",
+                    RunId = "run456",
+                },
+            },
+            new object?[]
+            {
+                "No operation instruction",
+                GraphDecisionOperation.NONE,
+                null,
+                null,
+                0.5f,
+                "No changes needed to the graph",
+                new SessionContext { UserId = "user000" },
+            },
+        };
+
+    public static IEnumerable<object[]> InvalidInstructionTestCases =>
+        new List<object[]>
+        {
+            // Format: testName, operation, confidence, reasoning, expectedIssue
+            new object[]
+            {
+                "Negative confidence",
+                GraphDecisionOperation.ADD,
+                -0.1f,
+                "Valid reasoning",
+                "Confidence below 0",
+            },
+            new object[]
+            {
+                "Confidence above 1",
+                GraphDecisionOperation.UPDATE,
+                1.1f,
+                "Valid reasoning",
+                "Confidence above 1",
+            },
+            new object[]
+            {
+                "Empty reasoning",
+                GraphDecisionOperation.DELETE,
+                0.8f,
+                "",
+                "Reasoning is empty",
+            },
+            new object[]
+            {
+                "Whitespace reasoning",
+                GraphDecisionOperation.ADD,
+                0.8f,
+                "   ",
+                "Reasoning is whitespace",
+            },
+            new object[]
+            {
+                "Extreme negative confidence",
+                GraphDecisionOperation.NONE,
+                -999.0f,
+                "Valid reasoning",
+                "Extreme negative confidence",
+            },
+            new object[]
+            {
+                "Extreme positive confidence",
+                GraphDecisionOperation.UPDATE,
+                999.0f,
+                "Valid reasoning",
+                "Extreme positive confidence",
+            },
+        };
+
+    public static IEnumerable<object?[]> OperationValidationTestCases =>
+        new List<object?[]>
+        {
+            // Format: testName, operation, entityData, relationshipData, expectedValid, expectedIssue
+            new object?[]
+            {
+                "Valid ADD entity",
+                GraphDecisionOperation.ADD,
+                new Entity { Name = "Test", UserId = "user123" },
+                null,
+                true,
+                "",
+            },
+            new object?[]
+            {
+                "Valid UPDATE relationship",
+                GraphDecisionOperation.UPDATE,
+                null,
+                new Relationship
+                {
+                    Source = "A",
+                    RelationshipType = "rel",
+                    Target = "B",
+                    UserId = "user123",
+                },
+                true,
+                "",
+            },
+            new object?[]
+            {
+                "Invalid - both entity and relationship",
+                GraphDecisionOperation.ADD,
+                new Entity { Name = "Test", UserId = "user123" },
+                new Relationship
+                {
+                    Source = "A",
+                    RelationshipType = "rel",
+                    Target = "B",
+                    UserId = "user123",
+                },
+                false,
+                "both entity and relationship",
+            },
+            new object?[]
+            {
+                "Invalid - no data for ADD",
+                GraphDecisionOperation.ADD,
+                null,
+                null,
+                false,
+                "either entity or relationship",
+            },
+            new object?[]
+            {
+                "Valid NONE operation",
+                GraphDecisionOperation.NONE,
+                null,
+                null,
+                true,
+                "",
+            },
+            new object?[]
+            {
+                "Invalid NONE with data",
+                GraphDecisionOperation.NONE,
+                new Entity { Name = "Test", UserId = "user123" },
+                null,
+                false,
+                "NONE operation should not have data",
+            },
+        };
+
+    public static IEnumerable<object?[]> SerializationTestCases =>
+        new List<object?[]>
+        {
+            // Format: testName, instruction
+            new object?[]
+            {
+                "Entity instruction",
+                new GraphDecisionInstruction
+                {
+                    Operation = GraphDecisionOperation.ADD,
+                    EntityData = new Entity
+                    {
+                        Id = 1,
+                        Name = "Test Entity",
+                        Type = "test",
+                        UserId = "user123",
+                        Confidence = 0.8f,
+                    },
+                    RelationshipData = null,
+                    Confidence = 0.9f,
+                    Reasoning = "Test entity reasoning",
+                    SessionContext = new SessionContext { UserId = "user123" },
+                    CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
+                },
+            },
+            new object?[]
+            {
+                "Relationship instruction",
+                new GraphDecisionInstruction
+                {
+                    Operation = GraphDecisionOperation.UPDATE,
+                    EntityData = null,
+                    RelationshipData = new Relationship
+                    {
+                        Id = 2,
+                        Source = "Alice",
+                        RelationshipType = "works_at",
+                        Target = "Google",
+                        UserId = "user456",
+                        Confidence = 0.95f,
+                    },
+                    Confidence = 0.85f,
+                    Reasoning = "Relationship update reasoning",
+                    SessionContext = new SessionContext
+                    {
+                        UserId = "user456",
+                        AgentId = "agent789",
+                    },
+                    CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
+                },
+            },
+            new object?[]
+            {
+                "NONE operation instruction",
+                new GraphDecisionInstruction
+                {
+                    Operation = GraphDecisionOperation.NONE,
+                    EntityData = null,
+                    RelationshipData = null,
+                    Confidence = 0.5f,
+                    Reasoning = "No changes needed",
+                    SessionContext = new SessionContext
+                    {
+                        UserId = "user789",
+                        AgentId = "agent123",
+                        RunId = "run456",
+                    },
+                    CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
+                },
+            },
+        };
 
     #endregion
 }

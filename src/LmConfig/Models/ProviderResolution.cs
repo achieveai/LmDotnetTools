@@ -62,7 +62,8 @@ public record ProviderResolution
     /// <returns>A string describing the resolved provider configuration.</returns>
     public override string ToString()
     {
-        var description = $"Model: {Model.Id}, Provider: {EffectiveProviderName}, ModelName: {EffectiveModelName}";
+        var description =
+            $"Model: {Model.Id}, Provider: {EffectiveProviderName}, ModelName: {EffectiveModelName}";
         if (SubProvider != null)
         {
             description += $" (via {Provider.Name})";
@@ -124,26 +125,26 @@ public record ProviderSelectionCriteria
     /// <summary>
     /// Creates criteria that prefers cost-effective providers.
     /// </summary>
-    public static ProviderSelectionCriteria CostOptimized => new()
-    {
-        PreferLowerCost = true,
-        PreferredTags = new[] { "cost-effective", "economical", "cheap" }
-    };
+    public static ProviderSelectionCriteria CostOptimized =>
+        new()
+        {
+            PreferLowerCost = true,
+            PreferredTags = new[] { "cost-effective", "economical", "cheap" },
+        };
 
     /// <summary>
     /// Creates criteria that prefers high-performance providers.
     /// </summary>
-    public static ProviderSelectionCriteria PerformanceOptimized => new()
-    {
-        PreferHigherPerformance = true,
-        PreferredTags = new[] { "fast", "ultra-fast", "high-performance", "speed-optimized" }
-    };
+    public static ProviderSelectionCriteria PerformanceOptimized =>
+        new()
+        {
+            PreferHigherPerformance = true,
+            PreferredTags = new[] { "fast", "ultra-fast", "high-performance", "speed-optimized" },
+        };
 
     /// <summary>
     /// Creates criteria that prefers reliable providers.
     /// </summary>
-    public static ProviderSelectionCriteria ReliabilityOptimized => new()
-    {
-        PreferredTags = new[] { "reliable", "stable", "official", "flagship" }
-    };
+    public static ProviderSelectionCriteria ReliabilityOptimized =>
+        new() { PreferredTags = new[] { "reliable", "stable", "official", "flagship" } };
 }

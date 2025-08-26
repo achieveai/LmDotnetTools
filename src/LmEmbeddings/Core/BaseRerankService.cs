@@ -1,9 +1,9 @@
+using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
-using System.Collections.Immutable;
 
 namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 
@@ -38,7 +38,7 @@ namespace AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 ///     }
 ///
 ///     public override async Task&lt;RerankResponse&gt; RerankAsync(
-///         RerankRequest request, 
+///         RerankRequest request,
 ///         CancellationToken cancellationToken = default)
 ///     {
 ///         // Implementation specific to your provider
@@ -63,9 +63,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// <param name="httpClient">The HTTP client for making API requests</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="logger"/> or <paramref name="httpClient"/> is null</exception>
     protected BaseRerankService(ILogger logger, HttpClient httpClient)
-        : base(logger, httpClient)
-    {
-    }
+        : base(logger, httpClient) { }
 
     /// <inheritdoc />
     /// <remarks>
@@ -83,7 +81,10 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// <item><description>Handle provider-specific errors appropriately</description></item>
     /// </list>
     /// </remarks>
-    public abstract Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default);
+    public abstract Task<RerankResponse> RerankAsync(
+        RerankRequest request,
+        CancellationToken cancellationToken = default
+    );
 
     /// <inheritdoc />
     /// <remarks>
@@ -104,7 +105,13 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// var topDocuments = response.Results.Take(2).ToList();
     /// </code>
     /// </example>
-    public virtual async Task<RerankResponse> RerankAsync(string query, IReadOnlyList<string> documents, string model, int? topK = null, CancellationToken cancellationToken = default)
+    public virtual async Task<RerankResponse> RerankAsync(
+        string query,
+        IReadOnlyList<string> documents,
+        string model,
+        int? topK = null,
+        CancellationToken cancellationToken = default
+    )
     {
         ValidationHelper.ValidateNotNullOrWhiteSpace(query);
         ValidationHelper.ValidateStringCollectionElements(documents);
@@ -120,7 +127,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
             Query = query,
             Documents = documents.ToImmutableList(),
             Model = model,
-            TopN = topK
+            TopN = topK,
         };
 
         return await RerankAsync(request, cancellationToken);
@@ -138,7 +145,9 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// containing that single model identifier.
     /// </para>
     /// </remarks>
-    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
+    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates a rerank request

@@ -168,16 +168,19 @@ public static class MessageExtensions
         catch
         {
             // Graceful fallback - combine text content from messages that support it
-            var textContent = string.Join(Environment.NewLine,
-                messages.Where(m => m is ICanGetText)
-                        .Cast<ICanGetText>()
-                        .Select(m => m.GetText())
-                        .Where(text => !string.IsNullOrEmpty(text)));
+            var textContent = string.Join(
+                Environment.NewLine,
+                messages
+                    .Where(m => m is ICanGetText)
+                    .Cast<ICanGetText>()
+                    .Select(m => m.GetText())
+                    .Where(text => !string.IsNullOrEmpty(text))
+            );
 
             return new TextMessage
             {
                 Text = textContent,
-                Role = messages.FirstOrDefault()?.Role ?? Role.Assistant
+                Role = messages.FirstOrDefault()?.Role ?? Role.Assistant,
             };
         }
     }

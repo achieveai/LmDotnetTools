@@ -30,7 +30,8 @@ public class MemoryIdGeneratorTests : IDisposable
 
     private void InitializeSchemaDirectly()
     {
-        var createTableSql = @"
+        var createTableSql =
+            @"
             CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -46,7 +47,8 @@ public class MemoryIdGeneratorTests : IDisposable
     private void ResetIdSequence()
     {
         using var command = _connection.CreateCommand();
-        command.CommandText = "DELETE FROM memory_id_sequence; DELETE FROM sqlite_sequence WHERE name='memory_id_sequence';";
+        command.CommandText =
+            "DELETE FROM memory_id_sequence; DELETE FROM sqlite_sequence WHERE name='memory_id_sequence';";
         command.ExecuteNonQuery();
         Debug.WriteLine("🔄 Reset ID sequence");
     }
@@ -165,7 +167,8 @@ internal class TestMemoryIdGenerator
                 command.Transaction = transaction;
 
                 // Insert into sequence table and get the generated ID
-                command.CommandText = @"
+                command.CommandText =
+                    @"
                     INSERT INTO memory_id_sequence DEFAULT VALUES;
                     SELECT last_insert_rowid();";
 

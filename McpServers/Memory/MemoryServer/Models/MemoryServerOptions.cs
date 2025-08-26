@@ -15,7 +15,7 @@ public enum TransportMode
     /// <summary>
     /// Standard Input/Output (STDIO) transport.
     /// </summary>
-    STDIO
+    STDIO,
 }
 
 /// <summary>
@@ -112,7 +112,8 @@ public class TransportOptions
     /// <summary>
     /// CORS origins to allow for SSE transport.
     /// </summary>
-    public string[] AllowedOrigins { get; set; } = ["http://localhost:3000", "http://127.0.0.1:3000"];
+    public string[] AllowedOrigins { get; set; } =
+    ["http://localhost:3000", "http://127.0.0.1:3000"];
 }
 
 /// <summary>

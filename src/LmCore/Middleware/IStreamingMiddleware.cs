@@ -14,5 +14,6 @@ public interface IStreamingMiddleware : IMiddleware
     public Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

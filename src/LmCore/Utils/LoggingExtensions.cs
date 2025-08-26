@@ -22,11 +22,17 @@ public static class LoggingExtensions
         string modelId,
         string agentName,
         int messageCount,
-        string requestType)
+        string requestType
+    )
     {
-        logger.LogInformation(LogEventIds.AgentRequestInitiated,
+        logger.LogInformation(
+            LogEventIds.AgentRequestInitiated,
             "LLM request initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}, Type={RequestType}",
-            modelId, agentName, messageCount, requestType);
+            modelId,
+            agentName,
+            messageCount,
+            requestType
+        );
     }
 
     /// <summary>
@@ -46,11 +52,19 @@ public static class LoggingExtensions
         int? promptTokens,
         int? completionTokens,
         decimal? totalCost,
-        long durationMs)
+        long durationMs
+    )
     {
-        logger.LogInformation(LogEventIds.AgentRequestCompleted,
+        logger.LogInformation(
+            LogEventIds.AgentRequestCompleted,
             "LLM request completed: CompletionId={CompletionId}, Model={Model}, PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, TotalCost={TotalCost:F6}, Duration={Duration}ms",
-            completionId, modelId, promptTokens, completionTokens, totalCost, durationMs);
+            completionId,
+            modelId,
+            promptTokens,
+            completionTokens,
+            totalCost,
+            durationMs
+        );
     }
 
     /// <summary>
@@ -66,11 +80,17 @@ public static class LoggingExtensions
         Exception exception,
         string modelId,
         string agentType,
-        int messageCount)
+        int messageCount
+    )
     {
-        logger.LogError(LogEventIds.AgentRequestFailed, exception,
+        logger.LogError(
+            LogEventIds.AgentRequestFailed,
+            exception,
             "LLM request failed: Model={Model}, Agent={AgentType}, MessageCount={MessageCount}",
-            modelId, agentType, messageCount);
+            modelId,
+            agentType,
+            messageCount
+        );
     }
 
     /// <summary>
@@ -84,11 +104,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string modelId,
         string agentName,
-        int messageCount)
+        int messageCount
+    )
     {
-        logger.LogInformation(LogEventIds.AgentStreamingInitiated,
+        logger.LogInformation(
+            LogEventIds.AgentStreamingInitiated,
             "Streaming initiated: Model={Model}, Agent={AgentName}, MessageCount={MessageCount}",
-            modelId, agentName, messageCount);
+            modelId,
+            agentName,
+            messageCount
+        );
     }
 
     /// <summary>
@@ -102,11 +127,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string? completionId,
         int totalChunks,
-        long durationMs)
+        long durationMs
+    )
     {
-        logger.LogInformation(LogEventIds.AgentStreamingCompleted,
+        logger.LogInformation(
+            LogEventIds.AgentStreamingCompleted,
             "Streaming completed: CompletionId={CompletionId}, TotalChunks={TotalChunks}, Duration={Duration}ms",
-            completionId, totalChunks, durationMs);
+            completionId,
+            totalChunks,
+            durationMs
+        );
     }
 
     #endregion
@@ -124,11 +154,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string functionName,
         long durationMs,
-        bool success = true)
+        bool success = true
+    )
     {
-        logger.LogInformation(LogEventIds.FunctionCallExecuted,
+        logger.LogInformation(
+            LogEventIds.FunctionCallExecuted,
             "Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
-            functionName, durationMs, success);
+            functionName,
+            durationMs,
+            success
+        );
     }
 
     /// <summary>
@@ -142,11 +177,16 @@ public static class LoggingExtensions
         this ILogger logger,
         Exception exception,
         string functionName,
-        string? arguments = null)
+        string? arguments = null
+    )
     {
-        logger.LogError(LogEventIds.FunctionCallFailed, exception,
+        logger.LogError(
+            LogEventIds.FunctionCallFailed,
+            exception,
             "Function execution failed: Name={FunctionName}, Args={Args}",
-            functionName, arguments);
+            functionName,
+            arguments
+        );
     }
 
     /// <summary>
@@ -160,11 +200,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string functionName,
         int argumentCount,
-        long processingTimeMs)
+        long processingTimeMs
+    )
     {
-        logger.LogDebug(LogEventIds.FunctionArgumentsProcessed,
+        logger.LogDebug(
+            LogEventIds.FunctionArgumentsProcessed,
             "Function arguments processed: Name={FunctionName}, ArgumentCount={ArgumentCount}, ProcessingTime={ProcessingTime}ms",
-            functionName, argumentCount, processingTimeMs);
+            functionName,
+            argumentCount,
+            processingTimeMs
+        );
     }
 
     /// <summary>
@@ -178,11 +223,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string functionName,
         int resultLength,
-        long transformationTimeMs)
+        long transformationTimeMs
+    )
     {
-        logger.LogDebug(LogEventIds.FunctionResultTransformed,
+        logger.LogDebug(
+            LogEventIds.FunctionResultTransformed,
             "Function result transformed: Name={FunctionName}, ResultLength={ResultLength}, TransformationTime={TransformationTime}ms",
-            functionName, resultLength, transformationTimeMs);
+            functionName,
+            resultLength,
+            transformationTimeMs
+        );
     }
 
     /// <summary>
@@ -198,11 +248,17 @@ public static class LoggingExtensions
         string toolName,
         string clientId,
         long durationMs,
-        bool success = true)
+        bool success = true
+    )
     {
-        logger.LogInformation(LogEventIds.McpToolExecuted,
+        logger.LogInformation(
+            LogEventIds.McpToolExecuted,
             "MCP tool executed: Tool={ToolName}, Client={ClientId}, Duration={Duration}ms, Success={Success}",
-            toolName, clientId, durationMs, success);
+            toolName,
+            clientId,
+            durationMs,
+            success
+        );
     }
 
     /// <summary>
@@ -216,11 +272,16 @@ public static class LoggingExtensions
         this ILogger logger,
         Exception exception,
         string toolName,
-        string clientId)
+        string clientId
+    )
     {
-        logger.LogError(LogEventIds.McpToolExecutionFailed, exception,
+        logger.LogError(
+            LogEventIds.McpToolExecutionFailed,
+            exception,
             "MCP tool execution failed: Tool={ToolName}, Client={ClientId}",
-            toolName, clientId);
+            toolName,
+            clientId
+        );
     }
 
     #endregion
@@ -240,11 +301,17 @@ public static class LoggingExtensions
         string? completionId,
         int totalChunks,
         long? timeToFirstTokenMs,
-        double? tokensPerSecond)
+        double? tokensPerSecond
+    )
     {
-        logger.LogDebug(LogEventIds.StreamingMetrics,
+        logger.LogDebug(
+            LogEventIds.StreamingMetrics,
             "Streaming metrics: CompletionId={CompletionId}, TotalChunks={TotalChunks}, TimeToFirstToken={TimeToFirstToken}ms, TokensPerSecond={TokensPerSecond:F2}",
-            completionId, totalChunks, timeToFirstTokenMs, tokensPerSecond);
+            completionId,
+            totalChunks,
+            timeToFirstTokenMs,
+            tokensPerSecond
+        );
     }
 
     /// <summary>
@@ -260,11 +327,17 @@ public static class LoggingExtensions
         int? promptTokens,
         int? completionTokens,
         int? totalTokens,
-        double? tokensPerSecond)
+        double? tokensPerSecond
+    )
     {
-        logger.LogDebug(LogEventIds.TokenMetrics,
+        logger.LogDebug(
+            LogEventIds.TokenMetrics,
             "Token metrics: PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, TotalTokens={TotalTokens}, TokensPerSecond={TokensPerSecond:F2}",
-            promptTokens, completionTokens, totalTokens, tokensPerSecond);
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            tokensPerSecond
+        );
     }
 
     /// <summary>
@@ -278,12 +351,18 @@ public static class LoggingExtensions
         this ILogger logger,
         string operationName,
         long latencyMs,
-        bool isHighLatency = false)
+        bool isHighLatency = false
+    )
     {
         var logLevel = isHighLatency ? LogLevel.Warning : LogLevel.Debug;
-        logger.Log(logLevel, LogEventIds.LatencyMetrics,
+        logger.Log(
+            logLevel,
+            LogEventIds.LatencyMetrics,
             "Latency metrics: Operation={Operation}, Latency={Latency}ms, HighLatency={HighLatency}",
-            operationName, latencyMs, isHighLatency);
+            operationName,
+            latencyMs,
+            isHighLatency
+        );
     }
 
     /// <summary>
@@ -299,11 +378,17 @@ public static class LoggingExtensions
         string provider,
         string endpoint,
         long responseTimeMs,
-        int? statusCode = null)
+        int? statusCode = null
+    )
     {
-        logger.LogDebug(LogEventIds.ApiResponseTimeMetrics,
+        logger.LogDebug(
+            LogEventIds.ApiResponseTimeMetrics,
             "API response time: Provider={Provider}, Endpoint={Endpoint}, ResponseTime={ResponseTime}ms, StatusCode={StatusCode}",
-            provider, endpoint, responseTimeMs, statusCode);
+            provider,
+            endpoint,
+            responseTimeMs,
+            statusCode
+        );
     }
 
     /// <summary>
@@ -319,11 +404,17 @@ public static class LoggingExtensions
         string cacheType,
         string operation,
         string key,
-        long? durationMs = null)
+        long? durationMs = null
+    )
     {
-        logger.LogDebug(LogEventIds.CacheMetrics,
+        logger.LogDebug(
+            LogEventIds.CacheMetrics,
             "Cache metrics: Type={CacheType}, Operation={Operation}, Key={Key}, Duration={Duration}ms",
-            cacheType, operation, key, durationMs);
+            cacheType,
+            operation,
+            key,
+            durationMs
+        );
     }
 
     /// <summary>
@@ -337,11 +428,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string component,
         long memoryUsageBytes,
-        string operation)
+        string operation
+    )
     {
-        logger.LogDebug(LogEventIds.MemoryMetrics,
+        logger.LogDebug(
+            LogEventIds.MemoryMetrics,
             "Memory metrics: Component={Component}, MemoryUsage={MemoryUsage} bytes, Operation={Operation}",
-            component, memoryUsageBytes, operation);
+            component,
+            memoryUsageBytes,
+            operation
+        );
     }
 
     #endregion
@@ -357,11 +453,15 @@ public static class LoggingExtensions
     public static void LogMiddlewareProcessing(
         this ILogger logger,
         string middlewareName,
-        int messageCount)
+        int messageCount
+    )
     {
-        logger.LogInformation(LogEventIds.MiddlewareProcessing,
+        logger.LogInformation(
+            LogEventIds.MiddlewareProcessing,
             "Middleware processing: Name={MiddlewareName}, MessageCount={MessageCount}",
-            middlewareName, messageCount);
+            middlewareName,
+            messageCount
+        );
     }
 
     /// <summary>
@@ -375,11 +475,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string middlewareName,
         long durationMs,
-        int transformedMessages)
+        int transformedMessages
+    )
     {
-        logger.LogInformation(LogEventIds.MiddlewareProcessingCompleted,
+        logger.LogInformation(
+            LogEventIds.MiddlewareProcessingCompleted,
             "Middleware processing completed: Name={MiddlewareName}, Duration={Duration}ms, TransformedMessages={TransformedMessages}",
-            middlewareName, durationMs, transformedMessages);
+            middlewareName,
+            durationMs,
+            transformedMessages
+        );
     }
 
     /// <summary>
@@ -391,11 +496,15 @@ public static class LoggingExtensions
     public static void LogMiddlewareProcessingFailed(
         this ILogger logger,
         Exception exception,
-        string middlewareName)
+        string middlewareName
+    )
     {
-        logger.LogError(LogEventIds.MiddlewareProcessingFailed, exception,
+        logger.LogError(
+            LogEventIds.MiddlewareProcessingFailed,
+            exception,
             "Middleware processing failed: Name={MiddlewareName}",
-            middlewareName);
+            middlewareName
+        );
     }
 
     /// <summary>
@@ -415,11 +524,19 @@ public static class LoggingExtensions
         int promptTokens,
         int completionTokens,
         decimal totalCost,
-        bool cached = false)
+        bool cached = false
+    )
     {
-        logger.LogInformation(LogEventIds.UsageDataEnriched,
+        logger.LogInformation(
+            LogEventIds.UsageDataEnriched,
             "Usage data enriched: {{completionId: {CompletionId}, model: {Model}, promptTokens: {PromptTokens}, completionTokens: {CompletionTokens}, totalCost: {TotalCost:F6}, cached: {Cached}}}",
-            completionId, model, promptTokens, completionTokens, totalCost, cached);
+            completionId,
+            model,
+            promptTokens,
+            completionTokens,
+            totalCost,
+            cached
+        );
     }
 
     #endregion
@@ -439,11 +556,17 @@ public static class LoggingExtensions
         string modelId,
         string resolvedProvider,
         string resolvedModel,
-        long resolutionTimeMs)
+        long resolutionTimeMs
+    )
     {
-        logger.LogInformation(LogEventIds.ModelResolved,
+        logger.LogInformation(
+            LogEventIds.ModelResolved,
             "Model resolved: RequestedModel={ModelId}, Provider={Provider}, ResolvedModel={ResolvedModel}, ResolutionTime={ResolutionTime}ms",
-            modelId, resolvedProvider, resolvedModel, resolutionTimeMs);
+            modelId,
+            resolvedProvider,
+            resolvedModel,
+            resolutionTimeMs
+        );
     }
 
     /// <summary>
@@ -457,11 +580,16 @@ public static class LoggingExtensions
         this ILogger logger,
         string agentType,
         string modelName,
-        string reason)
+        string reason
+    )
     {
-        logger.LogInformation(LogEventIds.AgentDelegated,
+        logger.LogInformation(
+            LogEventIds.AgentDelegated,
             "Agent delegated: AgentType={AgentType}, Model={ModelName}, Reason={Reason}",
-            agentType, modelName, reason);
+            agentType,
+            modelName,
+            reason
+        );
     }
 
     /// <summary>
@@ -475,11 +603,16 @@ public static class LoggingExtensions
         this ILogger logger,
         Exception exception,
         string modelId,
-        string[] availableProviders)
+        string[] availableProviders
+    )
     {
-        logger.LogError(LogEventIds.ProviderResolutionFailed, exception,
+        logger.LogError(
+            LogEventIds.ProviderResolutionFailed,
+            exception,
             "Provider resolution failed: ModelId={ModelId}, AvailableProviders={AvailableProviders}",
-            modelId, string.Join(", ", availableProviders));
+            modelId,
+            string.Join(", ", availableProviders)
+        );
     }
 
     #endregion

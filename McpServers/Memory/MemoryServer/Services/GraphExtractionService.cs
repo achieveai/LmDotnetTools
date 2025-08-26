@@ -1,12 +1,12 @@
 using System.Text.Json;
-using MemoryServer.Models;
+using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using AchieveAi.LmDotnetTools.LmCore.Prompts;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
+using MemoryServer.Models;
 using Microsoft.Extensions.Options;
-using System.Text.Json.Serialization;
 
 namespace MemoryServer.Services;
 
@@ -23,35 +23,41 @@ public class GraphExtractionService : IGraphExtractionService
     private readonly JsonSerializerOptions _jsonOptions;
 
     public GraphExtractionService(
-      IPromptReader promptReader,
-      ILogger<GraphExtractionService> logger,
-      IOptions<MemoryServerOptions> options,
-      ILmConfigService lmConfigService)
+        IPromptReader promptReader,
+        ILogger<GraphExtractionService> logger,
+        IOptions<MemoryServerOptions> options,
+        ILmConfigService lmConfigService
+    )
     {
         _promptReader = promptReader ?? throw new ArgumentNullException(nameof(promptReader));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
-        _lmConfigService = lmConfigService ?? throw new ArgumentNullException(nameof(lmConfigService));
+        _lmConfigService =
+            lmConfigService ?? throw new ArgumentNullException(nameof(lmConfigService));
 
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             WriteIndented = false,
-            PropertyNameCaseInsensitive = true
+            PropertyNameCaseInsensitive = true,
         };
     }
 
     public async Task<IEnumerable<Entity>> ExtractEntitiesAsync(
-      string content,
-      SessionContext sessionContext,
-      int memoryId,
-      string? modelId = null,
-      CancellationToken cancellationToken = default)
+        string content,
+        SessionContext sessionContext,
+        int memoryId,
+        string? modelId = null,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
-            _logger.LogInformation("Extracting entities from content for memory {MemoryId} in session {SessionContext}",
-              memoryId, sessionContext);
+            _logger.LogInformation(
+                "Extracting entities from content for memory {MemoryId} in session {SessionContext}",
+                memoryId,
+                sessionContext
+            );
 
             // Create agent based on whether a specific model ID is provided
             IAgent agent;
@@ -59,46 +65,76 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation("Using specific model {ModelId} for entity extraction", modelId);
-                agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "entity_extraction", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "entity_extraction", cancellationToken);
+                _logger.LogInformation(
+                    "Using specific model {ModelId} for entity extraction",
+                    modelId
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    modelId,
+                    "entity_extraction",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    modelId,
+                    "entity_extraction",
+                    cancellationToken
+                );
             }
             else
             {
                 _logger.LogInformation("Using gpt-4.1-nano as default model for entity extraction");
-                agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "entity_extraction", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "entity_extraction", cancellationToken);
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    "gpt-4.1-nano",
+                    "entity_extraction",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    "gpt-4.1-nano",
+                    "entity_extraction",
+                    cancellationToken
+                );
             }
 
             var promptChain = _promptReader.GetPromptChain("entity_extraction");
-            var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+            var messages = promptChain.PromptMessages(
+                new Dictionary<string, object> { ["content"] = content }
+            );
+            var response = await agent.GenerateReplyAsync(
+                messages,
+                generateOptions,
+                cancellationToken
+            );
 
             var responseText = ExtractTextFromResponse(response);
             var extractedEntities = ParseEntitiesFromJson(responseText);
 
             // Convert to Entity objects with session context
-            var entities = extractedEntities.Select(e => new Entity
-            {
-                Name = e.Name,
-                Type = e.Type,
-                Aliases = e.Aliases?.ToList(),
-                UserId = sessionContext.UserId,
-                AgentId = sessionContext.AgentId,
-                RunId = sessionContext.RunId,
-                Confidence = e.Confidence,
-                SourceMemoryIds = new List<int> { memoryId },
-                Metadata = new Dictionary<string, object>
+            var entities = extractedEntities
+                .Select(e => new Entity
                 {
-                    ["extraction_reasoning"] = e.Reasoning ?? "",
-                    ["extraction_timestamp"] = DateTime.UtcNow,
-                    ["source_memory_id"] = memoryId,
-                    ["model_used"] = modelId ?? "gpt-4.1-nano"
-                }
-            }).ToList();
+                    Name = e.Name,
+                    Type = e.Type,
+                    Aliases = e.Aliases?.ToList(),
+                    UserId = sessionContext.UserId,
+                    AgentId = sessionContext.AgentId,
+                    RunId = sessionContext.RunId,
+                    Confidence = e.Confidence,
+                    SourceMemoryIds = new List<int> { memoryId },
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["extraction_reasoning"] = e.Reasoning ?? "",
+                        ["extraction_timestamp"] = DateTime.UtcNow,
+                        ["source_memory_id"] = memoryId,
+                        ["model_used"] = modelId ?? "gpt-4.1-nano",
+                    },
+                })
+                .ToList();
 
-            _logger.LogInformation("Extracted {EntityCount} entities from memory {MemoryId}",
-              entities.Count, memoryId);
+            _logger.LogInformation(
+                "Extracted {EntityCount} entities from memory {MemoryId}",
+                entities.Count,
+                memoryId
+            );
 
             return entities;
         }
@@ -109,17 +145,24 @@ public class GraphExtractionService : IGraphExtractionService
         }
     }
 
-    public async Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
-      string content,
-      SessionContext sessionContext,
-      int memoryId,
-      string? modelId = null,
-      CancellationToken cancellationToken = default)
+    public async Task<(
+        IEnumerable<Entity> Entities,
+        IEnumerable<Relationship> Relationships
+    )> ExtractGraphDataAsync(
+        string content,
+        SessionContext sessionContext,
+        int memoryId,
+        string? modelId = null,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
-            _logger.LogInformation("Extracting combined graph data from content for memory {MemoryId} in session {SessionContext}",
-              memoryId, sessionContext);
+            _logger.LogInformation(
+                "Extracting combined graph data from content for memory {MemoryId} in session {SessionContext}",
+                memoryId,
+                sessionContext
+            );
 
             // Create agent based on whether a specific model ID is provided
             IAgent agent;
@@ -127,106 +170,155 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation("Using specific model {ModelId} for graph data extraction", modelId);
-                agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "combined_extraction", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "combined_extraction", cancellationToken);
+                _logger.LogInformation(
+                    "Using specific model {ModelId} for graph data extraction",
+                    modelId
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    modelId,
+                    "combined_extraction",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    modelId,
+                    "combined_extraction",
+                    cancellationToken
+                );
             }
             else
             {
-                _logger.LogInformation("Using gpt-4.1-nano as default model for graph data extraction");
-                agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "combined_extraction", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "combined_extraction", cancellationToken);
+                _logger.LogInformation(
+                    "Using gpt-4.1-nano as default model for graph data extraction"
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    "gpt-4.1-nano",
+                    "combined_extraction",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    "gpt-4.1-nano",
+                    "combined_extraction",
+                    cancellationToken
+                );
             }
 
             var promptChain = _promptReader.GetPromptChain("combined_extraction");
-            var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
-            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+            var messages = promptChain.PromptMessages(
+                new Dictionary<string, object> { ["content"] = content }
+            );
+            var response = await agent.GenerateReplyAsync(
+                messages,
+                generateOptions,
+                cancellationToken
+            );
 
             var responseText = ExtractTextFromResponse(response);
             var extractedData = ParseCombinedExtractionFromJson(responseText);
 
             // Convert entities
-            var entities = extractedData.Entities.Select(e => new Entity
-            {
-                Name = e.Name,
-                Type = e.Type,
-                Aliases = e.Aliases?.ToList(),
-                UserId = sessionContext.UserId,
-                AgentId = sessionContext.AgentId,
-                RunId = sessionContext.RunId,
-                Confidence = e.Confidence,
-                SourceMemoryIds = new List<int> { memoryId },
-                Metadata = new Dictionary<string, object>
+            var entities = extractedData
+                .Entities.Select(e => new Entity
                 {
-                    ["extraction_reasoning"] = e.Reasoning ?? "",
-                    ["extraction_timestamp"] = DateTime.UtcNow,
-                    ["source_memory_id"] = memoryId,
-                    ["model_used"] = modelId ?? "gpt-4.1-nano"
-                }
-            }).ToList();
+                    Name = e.Name,
+                    Type = e.Type,
+                    Aliases = e.Aliases?.ToList(),
+                    UserId = sessionContext.UserId,
+                    AgentId = sessionContext.AgentId,
+                    RunId = sessionContext.RunId,
+                    Confidence = e.Confidence,
+                    SourceMemoryIds = new List<int> { memoryId },
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["extraction_reasoning"] = e.Reasoning ?? "",
+                        ["extraction_timestamp"] = DateTime.UtcNow,
+                        ["source_memory_id"] = memoryId,
+                        ["model_used"] = modelId ?? "gpt-4.1-nano",
+                    },
+                })
+                .ToList();
 
             // Convert relationships
-            var relationships = extractedData.Relationships.Select(r => new Relationship
-            {
-                Source = r.Source,
-                RelationshipType = r.ActualRelationshipType,
-                Target = r.Target,
-                UserId = sessionContext.UserId,
-                AgentId = sessionContext.AgentId,
-                RunId = sessionContext.RunId,
-                Confidence = r.Confidence,
-                SourceMemoryId = memoryId,
-                TemporalContext = r.TemporalContext,
-                Metadata = new Dictionary<string, object>
+            var relationships = extractedData
+                .Relationships.Select(r => new Relationship
                 {
-                    ["extraction_reasoning"] = r.Reasoning ?? "",
-                    ["extraction_timestamp"] = DateTime.UtcNow,
-                    ["source_memory_id"] = memoryId,
-                    ["model_used"] = modelId ?? "gpt-4.1-nano"
-                }
-            }).ToList();
+                    Source = r.Source,
+                    RelationshipType = r.ActualRelationshipType,
+                    Target = r.Target,
+                    UserId = sessionContext.UserId,
+                    AgentId = sessionContext.AgentId,
+                    RunId = sessionContext.RunId,
+                    Confidence = r.Confidence,
+                    SourceMemoryId = memoryId,
+                    TemporalContext = r.TemporalContext,
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["extraction_reasoning"] = r.Reasoning ?? "",
+                        ["extraction_timestamp"] = DateTime.UtcNow,
+                        ["source_memory_id"] = memoryId,
+                        ["model_used"] = modelId ?? "gpt-4.1-nano",
+                    },
+                })
+                .ToList();
 
-            _logger.LogInformation("Extracted {EntityCount} entities and {RelationshipCount} relationships from memory {MemoryId}",
-              entities.Count, relationships.Count, memoryId);
+            _logger.LogInformation(
+                "Extracted {EntityCount} entities and {RelationshipCount} relationships from memory {MemoryId}",
+                entities.Count,
+                relationships.Count,
+                memoryId
+            );
 
             return (entities, relationships);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to extract combined graph data from memory {MemoryId}", memoryId);
+            _logger.LogError(
+                ex,
+                "Failed to extract combined graph data from memory {MemoryId}",
+                memoryId
+            );
             return (Enumerable.Empty<Entity>(), Enumerable.Empty<Relationship>());
         }
     }
 
     public async Task<GraphUpdateInstructions> AnalyzeGraphUpdatesAsync(
-      string content,
-      IEnumerable<Entity> existingEntities,
-      IEnumerable<Relationship> existingRelationships,
-      SessionContext sessionContext,
-      int memoryId,
-      string? modelId = null,
-      CancellationToken cancellationToken = default)
+        string content,
+        IEnumerable<Entity> existingEntities,
+        IEnumerable<Relationship> existingRelationships,
+        SessionContext sessionContext,
+        int memoryId,
+        string? modelId = null,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
-            _logger.LogInformation("Analyzing graph updates for memory {MemoryId} in session {SessionContext}",
-              memoryId, sessionContext);
+            _logger.LogInformation(
+                "Analyzing graph updates for memory {MemoryId} in session {SessionContext}",
+                memoryId,
+                sessionContext
+            );
 
-            var entitiesJson = JsonSerializer.Serialize(existingEntities.Select(e => new
-            {
-                e.Name,
-                e.Type,
-                e.Confidence
-            }), _jsonOptions);
+            var entitiesJson = JsonSerializer.Serialize(
+                existingEntities.Select(e => new
+                {
+                    e.Name,
+                    e.Type,
+                    e.Confidence,
+                }),
+                _jsonOptions
+            );
 
-            var relationshipsJson = JsonSerializer.Serialize(existingRelationships.Select(r => new
-            {
-                r.Source,
-                r.RelationshipType,
-                r.Target,
-                r.Confidence,
-                r.TemporalContext
-            }), _jsonOptions);
+            var relationshipsJson = JsonSerializer.Serialize(
+                existingRelationships.Select(r => new
+                {
+                    r.Source,
+                    r.RelationshipType,
+                    r.Target,
+                    r.Confidence,
+                    r.TemporalContext,
+                }),
+                _jsonOptions
+            );
 
             // Create agent based on whether a specific model ID is provided
             IAgent agent;
@@ -234,31 +326,61 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation("Using specific model {ModelId} for graph update analysis", modelId);
-                agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "graph_update_analysis", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "graph_update_analysis", cancellationToken);
+                _logger.LogInformation(
+                    "Using specific model {ModelId} for graph update analysis",
+                    modelId
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    modelId,
+                    "graph_update_analysis",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    modelId,
+                    "graph_update_analysis",
+                    cancellationToken
+                );
             }
             else
             {
-                _logger.LogInformation("Using gpt-4.1-nano as default model for graph update analysis");
-                agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "graph_update_analysis", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "graph_update_analysis", cancellationToken);
+                _logger.LogInformation(
+                    "Using gpt-4.1-nano as default model for graph update analysis"
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    "gpt-4.1-nano",
+                    "graph_update_analysis",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    "gpt-4.1-nano",
+                    "graph_update_analysis",
+                    cancellationToken
+                );
             }
 
             var promptChain = _promptReader.GetPromptChain("graph_update_analysis");
-            var messages = promptChain.PromptMessages(new Dictionary<string, object>
-            {
-                ["content"] = content,
-                ["existing_entities_json"] = entitiesJson,
-                ["existing_relationships_json"] = relationshipsJson
-            });
+            var messages = promptChain.PromptMessages(
+                new Dictionary<string, object>
+                {
+                    ["content"] = content,
+                    ["existing_entities_json"] = entitiesJson,
+                    ["existing_relationships_json"] = relationshipsJson,
+                }
+            );
 
-            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+            var response = await agent.GenerateReplyAsync(
+                messages,
+                generateOptions,
+                cancellationToken
+            );
             var responseText = ExtractTextFromResponse(response);
             var updateInstructions = ParseUpdateInstructionsFromJson(responseText);
 
-            _logger.LogInformation("Generated {UpdateCount} graph update instructions for memory {MemoryId}",
-              updateInstructions.Updates.Count, memoryId);
+            _logger.LogInformation(
+                "Generated {UpdateCount} graph update instructions for memory {MemoryId}",
+                updateInstructions.Updates.Count,
+                memoryId
+            );
 
             return updateInstructions;
         }
@@ -270,26 +392,33 @@ public class GraphExtractionService : IGraphExtractionService
     }
 
     public async Task<IEnumerable<Entity>> ValidateAndCleanEntitiesAsync(
-      IEnumerable<Entity> entities,
-      SessionContext sessionContext,
-      string? modelId = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<Entity> entities,
+        SessionContext sessionContext,
+        string? modelId = null,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
             if (!entities.Any())
                 return entities;
 
-            _logger.LogInformation("Validating and cleaning {EntityCount} entities for session {SessionContext}",
-              entities.Count(), sessionContext);
+            _logger.LogInformation(
+                "Validating and cleaning {EntityCount} entities for session {SessionContext}",
+                entities.Count(),
+                sessionContext
+            );
 
-            var entitiesJson = JsonSerializer.Serialize(entities.Select(e => new
-            {
-                e.Name,
-                e.Type,
-                e.Aliases,
-                e.Confidence
-            }), _jsonOptions);
+            var entitiesJson = JsonSerializer.Serialize(
+                entities.Select(e => new
+                {
+                    e.Name,
+                    e.Type,
+                    e.Aliases,
+                    e.Confidence,
+                }),
+                _jsonOptions
+            );
 
             // Create agent based on whether a specific model ID is provided
             IAgent agent;
@@ -297,76 +426,120 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation("Using specific model {ModelId} for entity validation", modelId);
-                agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "entity_validation", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "entity_validation", cancellationToken);
+                _logger.LogInformation(
+                    "Using specific model {ModelId} for entity validation",
+                    modelId
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    modelId,
+                    "entity_validation",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    modelId,
+                    "entity_validation",
+                    cancellationToken
+                );
             }
             else
             {
                 _logger.LogInformation("Using gpt-4.1-nano as default model for entity validation");
-                agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "entity_validation", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "entity_validation", cancellationToken);
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    "gpt-4.1-nano",
+                    "entity_validation",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    "gpt-4.1-nano",
+                    "entity_validation",
+                    cancellationToken
+                );
             }
 
             var promptChain = _promptReader.GetPromptChain("entity_validation");
-            var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["entities_json"] = entitiesJson });
-            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+            var messages = promptChain.PromptMessages(
+                new Dictionary<string, object> { ["entities_json"] = entitiesJson }
+            );
+            var response = await agent.GenerateReplyAsync(
+                messages,
+                generateOptions,
+                cancellationToken
+            );
 
             var responseText = ExtractTextFromResponse(response);
             var cleanedEntities = ParseEntitiesFromJson(responseText);
 
             // Convert back to Entity objects, preserving session context
-            var validatedEntities = cleanedEntities.Select(e =>
-            {
-                var originalEntity = entities.FirstOrDefault(orig => orig.Name.Equals(e.Name, StringComparison.OrdinalIgnoreCase));
-                return new Entity
+            var validatedEntities = cleanedEntities
+                .Select(e =>
                 {
-                    Name = e.Name,
-                    Type = e.Type,
-                    Aliases = e.Aliases?.ToList(),
-                    UserId = sessionContext.UserId,
-                    AgentId = sessionContext.AgentId,
-                    RunId = sessionContext.RunId,
-                    Confidence = e.Confidence,
-                    SourceMemoryIds = originalEntity?.SourceMemoryIds ?? new List<int>(),
-                    Metadata = originalEntity?.Metadata ?? new Dictionary<string, object>()
-                };
-            }).ToList();
+                    var originalEntity = entities.FirstOrDefault(orig =>
+                        orig.Name.Equals(e.Name, StringComparison.OrdinalIgnoreCase)
+                    );
+                    return new Entity
+                    {
+                        Name = e.Name,
+                        Type = e.Type,
+                        Aliases = e.Aliases?.ToList(),
+                        UserId = sessionContext.UserId,
+                        AgentId = sessionContext.AgentId,
+                        RunId = sessionContext.RunId,
+                        Confidence = e.Confidence,
+                        SourceMemoryIds = originalEntity?.SourceMemoryIds ?? new List<int>(),
+                        Metadata = originalEntity?.Metadata ?? new Dictionary<string, object>(),
+                    };
+                })
+                .ToList();
 
-            _logger.LogInformation("Validated entities: {OriginalCount} -> {CleanedCount} for session {SessionContext}",
-              entities.Count(), validatedEntities.Count, sessionContext);
+            _logger.LogInformation(
+                "Validated entities: {OriginalCount} -> {CleanedCount} for session {SessionContext}",
+                entities.Count(),
+                validatedEntities.Count,
+                sessionContext
+            );
 
             return validatedEntities;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to validate entities for session {SessionContext}", sessionContext);
+            _logger.LogError(
+                ex,
+                "Failed to validate entities for session {SessionContext}",
+                sessionContext
+            );
             return entities; // Return original entities if validation fails
         }
     }
 
     public async Task<IEnumerable<Relationship>> ValidateAndCleanRelationshipsAsync(
-      IEnumerable<Relationship> relationships,
-      SessionContext sessionContext,
-      string? modelId = null,
-      CancellationToken cancellationToken = default)
+        IEnumerable<Relationship> relationships,
+        SessionContext sessionContext,
+        string? modelId = null,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
             if (!relationships.Any())
                 return relationships;
 
-            _logger.LogInformation("Validating and cleaning {RelationshipCount} relationships for session {SessionContext}",
-              relationships.Count(), sessionContext);
+            _logger.LogInformation(
+                "Validating and cleaning {RelationshipCount} relationships for session {SessionContext}",
+                relationships.Count(),
+                sessionContext
+            );
 
-            var relationshipsJson = JsonSerializer.Serialize(relationships.Select(r => new
-            {
-                r.Source,
-                r.RelationshipType,
-                r.Target,
-                r.Confidence,
-                r.TemporalContext
-            }), _jsonOptions);
+            var relationshipsJson = JsonSerializer.Serialize(
+                relationships.Select(r => new
+                {
+                    r.Source,
+                    r.RelationshipType,
+                    r.Target,
+                    r.Confidence,
+                    r.TemporalContext,
+                }),
+                _jsonOptions
+            );
 
             // Create agent based on whether a specific model ID is provided
             IAgent agent;
@@ -374,54 +547,93 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation("Using specific model {ModelId} for relationship validation", modelId);
-                agent = await _lmConfigService.CreateAgentWithModelAsync(modelId, "relationship_validation", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(modelId, "relationship_validation", cancellationToken);
+                _logger.LogInformation(
+                    "Using specific model {ModelId} for relationship validation",
+                    modelId
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    modelId,
+                    "relationship_validation",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    modelId,
+                    "relationship_validation",
+                    cancellationToken
+                );
             }
             else
             {
-                _logger.LogInformation("Using gpt-4.1-nano as default model for relationship validation");
-                agent = await _lmConfigService.CreateAgentWithModelAsync("gpt-4.1-nano", "relationship_validation", cancellationToken);
-                generateOptions = await CreateGenerateReplyOptionsWithModelAsync("gpt-4.1-nano", "relationship_validation", cancellationToken);
+                _logger.LogInformation(
+                    "Using gpt-4.1-nano as default model for relationship validation"
+                );
+                agent = await _lmConfigService.CreateAgentWithModelAsync(
+                    "gpt-4.1-nano",
+                    "relationship_validation",
+                    cancellationToken
+                );
+                generateOptions = await CreateGenerateReplyOptionsWithModelAsync(
+                    "gpt-4.1-nano",
+                    "relationship_validation",
+                    cancellationToken
+                );
             }
 
             var promptChain = _promptReader.GetPromptChain("relationship_validation");
-            var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["relationships_json"] = relationshipsJson });
-            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
+            var messages = promptChain.PromptMessages(
+                new Dictionary<string, object> { ["relationships_json"] = relationshipsJson }
+            );
+            var response = await agent.GenerateReplyAsync(
+                messages,
+                generateOptions,
+                cancellationToken
+            );
 
             var responseText = ExtractTextFromResponse(response);
             var cleanedRelationships = ParseRelationshipsFromJson(responseText);
 
             // Convert back to Relationship objects, preserving session context
-            var validatedRelationships = cleanedRelationships.Select(r =>
-            {
-                var originalRelationship = relationships.FirstOrDefault(orig =>
-            orig.Source.Equals(r.Source, StringComparison.OrdinalIgnoreCase) &&
-            orig.Target.Equals(r.Target, StringComparison.OrdinalIgnoreCase));
-
-                return new Relationship
+            var validatedRelationships = cleanedRelationships
+                .Select(r =>
                 {
-                    Source = r.Source,
-                    RelationshipType = r.ActualRelationshipType,
-                    Target = r.Target,
-                    UserId = sessionContext.UserId,
-                    AgentId = sessionContext.AgentId,
-                    RunId = sessionContext.RunId,
-                    Confidence = r.Confidence,
-                    SourceMemoryId = originalRelationship?.SourceMemoryId,
-                    TemporalContext = r.TemporalContext,
-                    Metadata = originalRelationship?.Metadata ?? new Dictionary<string, object>()
-                };
-            }).ToList();
+                    var originalRelationship = relationships.FirstOrDefault(orig =>
+                        orig.Source.Equals(r.Source, StringComparison.OrdinalIgnoreCase)
+                        && orig.Target.Equals(r.Target, StringComparison.OrdinalIgnoreCase)
+                    );
 
-            _logger.LogInformation("Validated relationships: {OriginalCount} -> {CleanedCount} for session {SessionContext}",
-              relationships.Count(), validatedRelationships.Count, sessionContext);
+                    return new Relationship
+                    {
+                        Source = r.Source,
+                        RelationshipType = r.ActualRelationshipType,
+                        Target = r.Target,
+                        UserId = sessionContext.UserId,
+                        AgentId = sessionContext.AgentId,
+                        RunId = sessionContext.RunId,
+                        Confidence = r.Confidence,
+                        SourceMemoryId = originalRelationship?.SourceMemoryId,
+                        TemporalContext = r.TemporalContext,
+                        Metadata =
+                            originalRelationship?.Metadata ?? new Dictionary<string, object>(),
+                    };
+                })
+                .ToList();
+
+            _logger.LogInformation(
+                "Validated relationships: {OriginalCount} -> {CleanedCount} for session {SessionContext}",
+                relationships.Count(),
+                validatedRelationships.Count,
+                sessionContext
+            );
 
             return validatedRelationships;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to validate relationships for session {SessionContext}", sessionContext);
+            _logger.LogError(
+                ex,
+                "Failed to validate relationships for session {SessionContext}",
+                sessionContext
+            );
             return relationships; // Return original relationships if validation fails
         }
     }
@@ -432,26 +644,36 @@ public class GraphExtractionService : IGraphExtractionService
     /// Creates GenerateReplyOptions with LmConfig integration and JSON schema support.
     /// </summary>
     private async Task<GenerateReplyOptions> CreateGenerateReplyOptionsAsync(
-      string capability,
-      CancellationToken cancellationToken = default)
+        string capability,
+        CancellationToken cancellationToken = default
+    )
     {
         // Try to use LmConfig for optimal model selection
         if (_lmConfigService != null)
         {
-            var modelConfig = await _lmConfigService.GetOptimalModelAsync(capability, cancellationToken);
+            var modelConfig = await _lmConfigService.GetOptimalModelAsync(
+                capability,
+                cancellationToken
+            );
             if (modelConfig != null)
             {
                 var options = new GenerateReplyOptions
                 {
                     ModelId = modelConfig.Id, // UnifiedAgent will translate this to the effective model name
                     Temperature = 0.0f, // Low temperature for consistent extraction
-                    MaxToken = 2000 // Reasonable limit for graph extraction
+                    MaxToken = 2000, // Reasonable limit for graph extraction
                 };
 
                 // Add JSON schema if model supports structured output
-                if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
+                if (
+                    modelConfig.HasCapability("structured_output")
+                    || modelConfig.HasCapability("json_schema")
+                )
                 {
-                    options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
+                    options = options with
+                    {
+                        ResponseFormat = CreateJsonSchemaForCapability(capability),
+                    };
                 }
                 else if (modelConfig.HasCapability("json_mode"))
                 {
@@ -470,9 +692,10 @@ public class GraphExtractionService : IGraphExtractionService
     /// Creates GenerateReplyOptions for a specific model ID, bypassing automatic model selection.
     /// </summary>
     private Task<GenerateReplyOptions> CreateGenerateReplyOptionsWithModelAsync(
-      string modelId,
-      string capability,
-      CancellationToken cancellationToken = default)
+        string modelId,
+        string capability,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
@@ -482,7 +705,10 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (modelConfig == null)
             {
-                _logger.LogWarning("Model {ModelId} not found, falling back to basic options", modelId);
+                _logger.LogWarning(
+                    "Model {ModelId} not found, falling back to basic options",
+                    modelId
+                );
                 return Task.FromResult(CreateBasicGenerateReplyOptions(capability));
             }
 
@@ -490,25 +716,39 @@ public class GraphExtractionService : IGraphExtractionService
             {
                 ModelId = modelId, // Use the specific model ID directly
                 Temperature = 0.0f, // Low temperature for consistent extraction
-                MaxToken = 2000 // Reasonable limit for graph extraction
+                MaxToken = 2000, // Reasonable limit for graph extraction
             };
 
             // Add JSON schema if model supports structured output
-            if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
+            if (
+                modelConfig.HasCapability("structured_output")
+                || modelConfig.HasCapability("json_schema")
+            )
             {
-                options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
+                options = options with
+                {
+                    ResponseFormat = CreateJsonSchemaForCapability(capability),
+                };
             }
             else if (modelConfig.HasCapability("json_mode"))
             {
                 options = options with { ResponseFormat = ResponseFormat.JSON };
             }
 
-            _logger.LogDebug("Created GenerateReplyOptions for model {ModelId} with capability {Capability}", modelId, capability);
+            _logger.LogDebug(
+                "Created GenerateReplyOptions for model {ModelId} with capability {Capability}",
+                modelId,
+                capability
+            );
             return Task.FromResult(options);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to create options for model {ModelId}, falling back to basic options", modelId);
+            _logger.LogWarning(
+                ex,
+                "Failed to create options for model {ModelId}, falling back to basic options",
+                modelId
+            );
             return Task.FromResult(CreateBasicGenerateReplyOptions(capability));
         }
     }
@@ -526,26 +766,30 @@ public class GraphExtractionService : IGraphExtractionService
             {
                 ModelId = _options.LLM.Anthropic.Model,
                 Temperature = _options.LLM.Anthropic.Temperature,
-                MaxToken = _options.LLM.Anthropic.MaxTokens
+                MaxToken = _options.LLM.Anthropic.MaxTokens,
             },
             "openai" => new GenerateReplyOptions
             {
                 ModelId = _options.LLM.OpenAI.Model,
                 Temperature = _options.LLM.OpenAI.Temperature,
-                MaxToken = _options.LLM.OpenAI.MaxTokens
+                MaxToken = _options.LLM.OpenAI.MaxTokens,
             },
             _ => new GenerateReplyOptions
             {
                 ModelId = "gpt-4.1-nano",
                 Temperature = 0.0f,
-                MaxToken = 1000
-            }
+                MaxToken = 1000,
+            },
         };
 
         // Add basic JSON mode if available
-        if (provider == "openai"
-            && (_options.LLM.OpenAI.Model.Contains("gpt-4")
-                || _options.LLM.OpenAI.Model.Contains("gpt-3.5")))
+        if (
+            provider == "openai"
+            && (
+                _options.LLM.OpenAI.Model.Contains("gpt-4")
+                || _options.LLM.OpenAI.Model.Contains("gpt-3.5")
+            )
+        )
         {
             options = options with { ResponseFormat = ResponseFormat.JSON };
         }
@@ -566,7 +810,7 @@ public class GraphExtractionService : IGraphExtractionService
             "graph_update_analysis" => CreateGraphUpdateSchema(),
             "entity_validation" => CreateEntityExtractionSchema(),
             "relationship_validation" => CreateRelationshipExtractionSchema(),
-            _ => ResponseFormat.JSON
+            _ => ResponseFormat.JSON,
         };
     }
 
@@ -585,7 +829,11 @@ public class GraphExtractionService : IGraphExtractionService
     private static ResponseFormat CreateRelationshipExtractionSchema()
     {
         var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(RelationshipExtractionWrapper));
-        return ResponseFormat.CreateWithSchema("relationship_extraction", schema, strictValidation: true);
+        return ResponseFormat.CreateWithSchema(
+            "relationship_extraction",
+            schema,
+            strictValidation: true
+        );
     }
 
     /// <summary>
@@ -594,7 +842,11 @@ public class GraphExtractionService : IGraphExtractionService
     private static ResponseFormat CreateCombinedExtractionSchema()
     {
         var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(CombinedExtractionResult));
-        return ResponseFormat.CreateWithSchema("combined_extraction", schema, strictValidation: true);
+        return ResponseFormat.CreateWithSchema(
+            "combined_extraction",
+            schema,
+            strictValidation: true
+        );
     }
 
     /// <summary>
@@ -602,21 +854,38 @@ public class GraphExtractionService : IGraphExtractionService
     /// </summary>
     private static ResponseFormat CreateGraphUpdateSchema()
     {
-        var updateSchema = JsonSchemaObject.Create("object")
-          .WithProperty("operation", JsonSchemaObject.String("Type of operation: CREATE, UPDATE, DELETE"), required: true)
-          .WithProperty("entity_type", JsonSchemaObject.String("Type of entity being updated"))
-          .WithProperty("entity_name", JsonSchemaObject.String("Name of entity being updated"))
-          .WithProperty("reasoning", JsonSchemaObject.String("Explanation for the update"))
-          .WithProperty("confidence", JsonSchemaObject.Number("Confidence in the update decision"))
-          .Build();
+        var updateSchema = JsonSchemaObject
+            .Create("object")
+            .WithProperty(
+                "operation",
+                JsonSchemaObject.String("Type of operation: CREATE, UPDATE, DELETE"),
+                required: true
+            )
+            .WithProperty("entity_type", JsonSchemaObject.String("Type of entity being updated"))
+            .WithProperty("entity_name", JsonSchemaObject.String("Name of entity being updated"))
+            .WithProperty("reasoning", JsonSchemaObject.String("Explanation for the update"))
+            .WithProperty(
+                "confidence",
+                JsonSchemaObject.Number("Confidence in the update decision")
+            )
+            .Build();
 
-        var schema = JsonSchemaObject.Create("object")
-          .WithProperty("updates", JsonSchemaObject.Array(updateSchema, "List of graph updates"), required: true)
-          .WithProperty("summary", JsonSchemaObject.String("Summary of all updates"))
-          .WithDescription("Analysis of required graph updates")
-          .Build();
+        var schema = JsonSchemaObject
+            .Create("object")
+            .WithProperty(
+                "updates",
+                JsonSchemaObject.Array(updateSchema, "List of graph updates"),
+                required: true
+            )
+            .WithProperty("summary", JsonSchemaObject.String("Summary of all updates"))
+            .WithDescription("Analysis of required graph updates")
+            .Build();
 
-        return ResponseFormat.CreateWithSchema("graph_update_analysis", schema, strictValidation: true);
+        return ResponseFormat.CreateWithSchema(
+            "graph_update_analysis",
+            schema,
+            strictValidation: true
+        );
     }
 
     private static string ExtractTextFromResponse(IEnumerable<IMessage> response)
@@ -635,18 +904,26 @@ public class GraphExtractionService : IGraphExtractionService
             // First try to parse as direct array (legacy format)
             try
             {
-                return JsonSerializer.Deserialize<List<ExtractedEntity>>(jsonContent, _jsonOptions) ?? new List<ExtractedEntity>();
+                return JsonSerializer.Deserialize<List<ExtractedEntity>>(jsonContent, _jsonOptions)
+                    ?? new List<ExtractedEntity>();
             }
             catch
             {
                 // If that fails, try to parse as wrapped object with "entities" property
-                var wrappedResult = JsonSerializer.Deserialize<EntityExtractionWrapper>(jsonContent, _jsonOptions);
+                var wrappedResult = JsonSerializer.Deserialize<EntityExtractionWrapper>(
+                    jsonContent,
+                    _jsonOptions
+                );
                 return wrappedResult?.Entities ?? new List<ExtractedEntity>();
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to parse entities from JSON response: {Response}", jsonResponse);
+            _logger.LogWarning(
+                ex,
+                "Failed to parse entities from JSON response: {Response}",
+                jsonResponse
+            );
             return new List<ExtractedEntity>();
         }
     }
@@ -660,18 +937,28 @@ public class GraphExtractionService : IGraphExtractionService
             // First try to parse as direct array (legacy format)
             try
             {
-                return JsonSerializer.Deserialize<List<ExtractedRelationship>>(jsonContent, _jsonOptions) ?? new List<ExtractedRelationship>();
+                return JsonSerializer.Deserialize<List<ExtractedRelationship>>(
+                        jsonContent,
+                        _jsonOptions
+                    ) ?? new List<ExtractedRelationship>();
             }
             catch
             {
                 // If that fails, try to parse as wrapped object with "relationships" property
-                var wrappedResult = JsonSerializer.Deserialize<RelationshipExtractionWrapper>(jsonContent, _jsonOptions);
+                var wrappedResult = JsonSerializer.Deserialize<RelationshipExtractionWrapper>(
+                    jsonContent,
+                    _jsonOptions
+                );
                 return wrappedResult?.Relationships ?? new List<ExtractedRelationship>();
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to parse relationships from JSON response: {Response}", jsonResponse);
+            _logger.LogWarning(
+                ex,
+                "Failed to parse relationships from JSON response: {Response}",
+                jsonResponse
+            );
             return new List<ExtractedRelationship>();
         }
     }
@@ -683,23 +970,37 @@ public class GraphExtractionService : IGraphExtractionService
             var jsonContent = ExtractJsonFromResponse(jsonResponse);
             _logger.LogDebug("EXTRACTED JSON CONTENT: {JsonContent}", jsonContent);
 
-            var result = JsonSerializer.Deserialize<CombinedExtractionResult>(jsonContent, _jsonOptions) ?? new CombinedExtractionResult();
+            var result =
+                JsonSerializer.Deserialize<CombinedExtractionResult>(jsonContent, _jsonOptions)
+                ?? new CombinedExtractionResult();
 
-            _logger.LogDebug("PARSED RESULT: {EntityCount} entities, {RelationshipCount} relationships",
-              result.Entities.Count, result.Relationships.Count);
+            _logger.LogDebug(
+                "PARSED RESULT: {EntityCount} entities, {RelationshipCount} relationships",
+                result.Entities.Count,
+                result.Relationships.Count
+            );
 
             // Log relationship details for debugging
             foreach (var rel in result.Relationships.Take(3))
             {
-                _logger.LogDebug("PARSED RELATIONSHIP: Source='{Source}', Type='{Type}', Target='{Target}', Confidence={Confidence}",
-                  rel.Source, rel.RelationshipType, rel.Target, rel.Confidence);
+                _logger.LogDebug(
+                    "PARSED RELATIONSHIP: Source='{Source}', Type='{Type}', Target='{Target}', Confidence={Confidence}",
+                    rel.Source,
+                    rel.RelationshipType,
+                    rel.Target,
+                    rel.Confidence
+                );
             }
 
             return result;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to parse combined extraction from JSON response: {Response}", jsonResponse);
+            _logger.LogWarning(
+                ex,
+                "Failed to parse combined extraction from JSON response: {Response}",
+                jsonResponse
+            );
             return new CombinedExtractionResult();
         }
     }
@@ -709,11 +1010,16 @@ public class GraphExtractionService : IGraphExtractionService
         try
         {
             var jsonContent = ExtractJsonFromResponse(jsonResponse);
-            return JsonSerializer.Deserialize<GraphUpdateInstructions>(jsonContent, _jsonOptions) ?? new GraphUpdateInstructions();
+            return JsonSerializer.Deserialize<GraphUpdateInstructions>(jsonContent, _jsonOptions)
+                ?? new GraphUpdateInstructions();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to parse update instructions from JSON response: {Response}", jsonResponse);
+            _logger.LogWarning(
+                ex,
+                "Failed to parse update instructions from JSON response: {Response}",
+                jsonResponse
+            );
             return new GraphUpdateInstructions();
         }
     }
@@ -802,10 +1108,14 @@ public class GraphExtractionService : IGraphExtractionService
 
                 if (!inString)
                 {
-                    if (c == '{') braceCount++;
-                    else if (c == '}') braceCount--;
-                    else if (c == '[') bracketCount++;
-                    else if (c == ']') bracketCount--;
+                    if (c == '{')
+                        braceCount++;
+                    else if (c == '}')
+                        braceCount--;
+                    else if (c == '[')
+                        bracketCount++;
+                    else if (c == ']')
+                        bracketCount--;
 
                     // Check if we've closed all braces/brackets
                     if (isObject && braceCount == 0 && i > startIndex)
@@ -872,9 +1182,9 @@ public class GraphExtractionService : IGraphExtractionService
         // Property to get the actual relationship type, with fallback logic
         [JsonIgnore]
         public string ActualRelationshipType =>
-          !string.IsNullOrWhiteSpace(RelationshipType) ? RelationshipType :
-          !string.IsNullOrWhiteSpace(Type) ? Type :
-          "related_to"; // Default fallback
+            !string.IsNullOrWhiteSpace(RelationshipType) ? RelationshipType
+            : !string.IsNullOrWhiteSpace(Type) ? Type
+            : "related_to"; // Default fallback
     }
 
     private class CombinedExtractionResult

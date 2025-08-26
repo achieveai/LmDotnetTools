@@ -36,7 +36,8 @@ namespace LmTestUtils.Tests
 
             try
             {
-                var handler = MockHttpHandlerBuilder.Create()
+                var handler = MockHttpHandlerBuilder
+                    .Create()
                     .RespondWithStreamingFile(tempFile)
                     .Build();
 
@@ -71,56 +72,52 @@ namespace LmTestUtils.Tests
             var testRequest1 = new
             {
                 model = "claude-3-sonnet-20240229",
-                messages = new[]
-                {
-                    new { role = "user", content = "Hello" }
-                },
-                max_tokens = 100
+                messages = new[] { new { role = "user", content = "Hello" } },
+                max_tokens = 100,
             };
 
             var testRequest2 = new
             {
                 model = "claude-3-sonnet-20240229",
-                messages = new[]
-                {
-                    new { role = "user", content = "Hello" }
-                },
-                max_tokens = 100
+                messages = new[] { new { role = "user", content = "Hello" } },
+                max_tokens = 100,
             };
 
             var testRequest3 = new
             {
                 model = "claude-3-sonnet-20240229",
-                messages = new[]
-                {
-                    new { role = "user", content = "Different content" }
-                },
-                max_tokens = 100
+                messages = new[] { new { role = "user", content = "Different content" } },
+                max_tokens = 100,
             };
 
             // Create recorded interactions
             var interaction1 = new RecordedInteraction
             {
                 SerializedRequest = JsonSerializer.SerializeToElement(testRequest1),
-                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test1" })
+                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test1" }),
             };
 
             var interaction2 = new RecordedInteraction
             {
                 SerializedRequest = JsonSerializer.SerializeToElement(testRequest2),
-                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test2" })
+                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test2" }),
             };
 
             var interaction3 = new RecordedInteraction
             {
                 SerializedRequest = JsonSerializer.SerializeToElement(testRequest3),
-                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test3" })
+                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test3" }),
             };
 
             // Act - Use reflection to access the private GenerateCacheKey method
-            var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType("AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware");
+            var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType(
+                "AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware"
+            );
             var middleware = Activator.CreateInstance(middlewareType!, "test.json");
-            var method = middlewareType!.GetMethod("GenerateCacheKey", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var method = middlewareType!.GetMethod(
+                "GenerateCacheKey",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+            );
 
             var key1 = (string)method!.Invoke(middleware, new object[] { interaction1 })!;
             var key2 = (string)method!.Invoke(middleware, new object[] { interaction2 })!;
@@ -151,13 +148,18 @@ namespace LmTestUtils.Tests
             var interaction = new RecordedInteraction
             {
                 SerializedRequest = default, // JsonElement with ValueKind.Undefined
-                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test" })
+                SerializedResponse = JsonSerializer.SerializeToElement(new { response = "test" }),
             };
 
             // Act - Use reflection to access the private GenerateCacheKey method
-            var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType("AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware");
+            var middlewareType = typeof(MockHttpHandlerBuilder).Assembly.GetType(
+                "AchieveAi.LmDotnetTools.LmTestUtils.RecordPlaybackMiddleware"
+            );
             var middleware = Activator.CreateInstance(middlewareType!, "test.json");
-            var method = middlewareType!.GetMethod("GenerateCacheKey", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var method = middlewareType!.GetMethod(
+                "GenerateCacheKey",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+            );
 
             var key = (string)method!.Invoke(middleware, new object[] { interaction })!;
 
@@ -205,16 +207,24 @@ namespace LmTestUtils.Tests
 
             // Act & Assert
             // Same content should match exactly
-            Assert.True(RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: true));
+            Assert.True(
+                RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: true)
+            );
 
             // Same content should match flexibly
-            Assert.True(RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: false));
+            Assert.True(
+                RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: false)
+            );
 
             // Different content should not match exactly
-            Assert.False(RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: true));
+            Assert.False(
+                RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: true)
+            );
 
             // Different content should not match flexibly (different message content)
-            Assert.False(RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: false));
+            Assert.False(
+                RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: false)
+            );
         }
 
         [Fact]
@@ -294,7 +304,8 @@ namespace LmTestUtils.Tests
             var matches = RequestMatcher.MatchesRecordedRequest(
                 JsonDocument.Parse($"{{\"messages\": {incomingMessagesJson}}}").RootElement,
                 JsonDocument.Parse($"{{\"messages\": {recordedMessagesJson}}}").RootElement,
-                exactMatch: false);
+                exactMatch: false
+            );
 
             // Assert
             Assert.True(matches);
@@ -336,7 +347,8 @@ namespace LmTestUtils.Tests
             var matches = RequestMatcher.MatchesRecordedRequest(
                 JsonDocument.Parse($"{{\"messages\": {incomingMessagesJson}}}").RootElement,
                 JsonDocument.Parse($"{{\"messages\": {recordedMessagesJson}}}").RootElement,
-                exactMatch: false);
+                exactMatch: false
+            );
 
             // Assert
             Assert.False(matches);
@@ -346,13 +358,18 @@ namespace LmTestUtils.Tests
         public async Task MiddlewareChain_ShouldExecuteInCorrectOrder()
         {
             // Arrange
-            var handler = MockHttpHandlerBuilder.Create()
+            var handler = MockHttpHandlerBuilder
+                .Create()
                 .CaptureRequests(out var capture)
                 .RespondWithJson("""{"test": "response"}""")
                 .Build();
 
             var httpClient = new HttpClient(handler);
-            var content = new StringContent("""{"test": "request"}""", System.Text.Encoding.UTF8, "application/json");
+            var content = new StringContent(
+                """{"test": "request"}""",
+                System.Text.Encoding.UTF8,
+                "application/json"
+            );
 
             // Act
             var response = await httpClient.PostAsync("https://api.test.com/test", content);
@@ -376,12 +393,10 @@ namespace LmTestUtils.Tests
                 new { type = "message_start", id = "msg_1" },
                 new { type = "content_block", text = "Hello" },
                 new { type = "content_block", text = " world!" },
-                new { type = "message_stop", id = "msg_1" }
+                new { type = "message_stop", id = "msg_1" },
             };
 
-            var handler = MockHttpHandlerBuilder.Create()
-                .RespondWithSSEArray(testItems)
-                .Build();
+            var handler = MockHttpHandlerBuilder.Create().RespondWithSSEArray(testItems).Build();
 
             var httpClient = new HttpClient(handler);
 
@@ -409,9 +424,7 @@ namespace LmTestUtils.Tests
             // Arrange
             var jsonArray = """[{"id": 1, "name": "test1"}, {"id": 2, "name": "test2"}]""";
 
-            var handler = MockHttpHandlerBuilder.Create()
-                .RespondWithJsonOrSSE(jsonArray)
-                .Build();
+            var handler = MockHttpHandlerBuilder.Create().RespondWithJsonOrSSE(jsonArray).Build();
 
             var httpClient = new HttpClient(handler);
 
@@ -432,13 +445,10 @@ namespace LmTestUtils.Tests
         public async Task RespondWithSSEArray_WithIndividualItems_ShouldReturnSeparateEvents()
         {
             // Arrange - This is the correct way to get individual SSE events
-            var items = new[]
-            {
-                new { id = 1, name = "test1" },
-                new { id = 2, name = "test2" }
-            };
+            var items = new[] { new { id = 1, name = "test1" }, new { id = 2, name = "test2" } };
 
-            var handler = MockHttpHandlerBuilder.Create()
+            var handler = MockHttpHandlerBuilder
+                .Create()
                 .RespondWithSSEArray<object>(items)
                 .Build();
 
@@ -464,9 +474,7 @@ namespace LmTestUtils.Tests
             // Arrange
             var jsonObject = """{"id": 1, "name": "test"}""";
 
-            var handler = MockHttpHandlerBuilder.Create()
-                .RespondWithJsonOrSSE(jsonObject)
-                .Build();
+            var handler = MockHttpHandlerBuilder.Create().RespondWithJsonOrSSE(jsonObject).Build();
 
             var httpClient = new HttpClient(handler);
 
@@ -480,7 +488,8 @@ namespace LmTestUtils.Tests
 
         private static bool IsValidHexString(string input)
         {
-            if (string.IsNullOrEmpty(input)) return false;
+            if (string.IsNullOrEmpty(input))
+                return false;
 
             foreach (char c in input)
             {

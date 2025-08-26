@@ -46,7 +46,8 @@ public abstract class BaseHttpService : IDisposable
     protected async Task<T> ExecuteWithRetryAsync<T>(
         Func<Task<T>> operation,
         int maxRetries = 3,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         ThrowIfDisposed();
 
@@ -54,7 +55,8 @@ public abstract class BaseHttpService : IDisposable
             operation,
             Logger,
             maxRetries,
-            cancellationToken);
+            cancellationToken
+        );
     }
 
     /// <summary>
@@ -71,7 +73,8 @@ public abstract class BaseHttpService : IDisposable
         Func<Task<HttpResponseMessage>> httpOperation,
         Func<HttpResponseMessage, Task<T>> responseProcessor,
         int maxRetries = 3,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         ThrowIfDisposed();
 
@@ -80,7 +83,8 @@ public abstract class BaseHttpService : IDisposable
             responseProcessor,
             Logger,
             maxRetries,
-            cancellationToken);
+            cancellationToken
+        );
     }
 
     /// <summary>

@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Models;
 
@@ -11,7 +11,7 @@ public sealed record ResponseFormat
     public static readonly ResponseFormat JSON = new ResponseFormat();
 
     /// <summary>
-    /// The type of response format. 
+    /// The type of response format.
     /// - "json_object" (default): Request JSON output without schema validation
     /// - "json_schema": Request JSON output with schema validation
     /// </summary>
@@ -35,7 +35,8 @@ public sealed record ResponseFormat
     public static ResponseFormat CreateWithSchema(
         string schemaName,
         JsonSchemaObject schemaObject,
-        bool strictValidation = true)
+        bool strictValidation = true
+    )
     {
         return new ResponseFormat
         {
@@ -44,8 +45,8 @@ public sealed record ResponseFormat
             {
                 Name = schemaName,
                 Strict = strictValidation,
-                Schema = schemaObject
-            }
+                Schema = schemaObject,
+            },
         };
     }
 }
@@ -83,7 +84,8 @@ public sealed record JsonSchemaObject
     /// The type of the schema object (e.g., "object", "array", "string", etc.)
     /// </summary>
     [JsonPropertyName("type")]
-    public Union<string, IReadOnlyList<string>> Type { get; init; } = new Union<string, IReadOnlyList<string>>(["object", "null"]);
+    public Union<string, IReadOnlyList<string>> Type { get; init; } =
+        new Union<string, IReadOnlyList<string>>(["object", "null"]);
 
     /// <summary>
     /// Property definitions for object type schemas
@@ -219,7 +221,7 @@ public sealed record JsonSchemaObject
         {
             Type = JsonSchemaTypeHelper.ToType(["array", "null"]),
             Description = description,
-            Items = items
+            Items = items,
         };
     }
 
@@ -229,12 +231,15 @@ public sealed record JsonSchemaObject
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
     /// <returns>A schema object of type array with string items</returns>
-    public static JsonSchemaObject StringArray(string? description = null, string? itemDescription = null)
+    public static JsonSchemaObject StringArray(
+        string? description = null,
+        string? itemDescription = null
+    )
     {
         var items = new JsonSchemaObject
         {
             Type = JsonSchemaTypeHelper.ToType(["string", "null"]),
-            Description = itemDescription
+            Description = itemDescription,
         };
 
         return Array(items, description);
@@ -246,20 +251,20 @@ public sealed record JsonSchemaObject
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
     /// <returns>A schema object of type array with number items</returns>
-    public static JsonSchemaObject NumberArray(string? description = null, string? itemDescription = null)
+    public static JsonSchemaObject NumberArray(
+        string? description = null,
+        string? itemDescription = null
+    )
     {
-        var items = new JsonSchemaObject
-        {
-            Type = "number",
-            Description = itemDescription
-        };
+        var items = new JsonSchemaObject { Type = "number", Description = itemDescription };
 
         return Array(items, description);
     }
 
     public static string GetJsonPrimaryType(JsonSchemaObject schemaObject)
     {
-        if (schemaObject == null) return "string";
+        if (schemaObject == null)
+            return "string";
 
         // Handle both single string and list of strings
         if (schemaObject.Type.Is<string>())
@@ -277,8 +282,6 @@ public sealed record JsonSchemaObject
         return "string";
     }
 }
-
-
 
 /// <summary>
 /// Builder class for constructing JSON Schema objects in a fluent manner
@@ -302,7 +305,11 @@ public class JsonSchemaObjectBuilder
     /// <summary>
     /// Adds a property to the schema
     /// </summary>
-    public JsonSchemaObjectBuilder WithProperty(string name, JsonSchemaObject property, bool required = false)
+    public JsonSchemaObjectBuilder WithProperty(
+        string name,
+        JsonSchemaObject property,
+        bool required = false
+    )
     {
         _properties.Add(name, property);
         if (required)
@@ -341,7 +348,7 @@ public class JsonSchemaObjectBuilder
             Properties = _properties,
             Required = _required.Count > 0 ? _required : null,
             AdditionalProperties = _additionalProperties,
-            Description = _description
+            Description = _description,
         };
     }
 }
@@ -374,10 +381,8 @@ public static class JsonSchemaTypeHelper
     {
         return type.Is<string>()
             ? type.Get<string>()
-            : type.Get<IReadOnlyList<string>>()
-                .Where(x => x != "null")
-                .FirstOrDefault()
-                ?? "object";
+            : type.Get<IReadOnlyList<string>>().Where(x => x != "null").FirstOrDefault()
+            ?? "object";
     }
 
     public static Union<string, IReadOnlyList<string>> ToType(string typeString)

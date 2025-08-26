@@ -15,9 +15,7 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
     /// </summary>
     /// <param name="options">The options to override with.</param>
     /// <param name="name">Optional name for the middleware.</param>
-    public OptionsOverridingMiddleware(
-        GenerateReplyOptions options,
-        string? name = null)
+    public OptionsOverridingMiddleware(GenerateReplyOptions options, string? name = null)
     {
         Name = name ?? nameof(OptionsOverridingMiddleware);
         _options = options;
@@ -34,14 +32,19 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // Create a new context with overridden options
         var overriddenOptions = OverrideOptions(context.Options);
         var newContext = new MiddlewareContext(context.Messages, overriddenOptions);
 
         // Forward to the next agent
-        return await agent.GenerateReplyAsync(newContext.Messages, overriddenOptions, cancellationToken);
+        return await agent.GenerateReplyAsync(
+            newContext.Messages,
+            overriddenOptions,
+            cancellationToken
+        );
     }
 
     /// <summary>
@@ -50,14 +53,19 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // Create a new context with overridden options
         var overriddenOptions = OverrideOptions(context.Options);
         var newContext = new MiddlewareContext(context.Messages, overriddenOptions);
 
         // Forward to the next agent
-        return await agent.GenerateReplyStreamingAsync(newContext.Messages, overriddenOptions, cancellationToken);
+        return await agent.GenerateReplyStreamingAsync(
+            newContext.Messages,
+            overriddenOptions,
+            cancellationToken
+        );
     }
 
     private GenerateReplyOptions OverrideOptions(GenerateReplyOptions? currentOptions)

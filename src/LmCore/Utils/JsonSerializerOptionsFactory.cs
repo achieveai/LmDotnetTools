@@ -23,14 +23,15 @@ public static class JsonSerializerOptionsFactory
         bool writeIndented = false,
         JsonNamingPolicy? namingPolicy = null,
         bool caseInsensitive = false,
-        bool allowTrailingCommas = true)
+        bool allowTrailingCommas = true
+    )
     {
         var options = new JsonSerializerOptions
         {
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             WriteIndented = writeIndented,
             PropertyNameCaseInsensitive = caseInsensitive,
-            AllowTrailingCommas = allowTrailingCommas
+            AllowTrailingCommas = allowTrailingCommas,
         };
 
         if (namingPolicy != null)
@@ -80,36 +81,34 @@ public static class JsonSerializerOptionsFactory
     /// Creates JsonSerializerOptions optimized for production use.
     /// Uses compact formatting and standard settings.
     /// </summary>
-    public static JsonSerializerOptions CreateForProduction()
-        => CreateBase(writeIndented: false);
+    public static JsonSerializerOptions CreateForProduction() => CreateBase(writeIndented: false);
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for testing and debugging.
     /// Uses indented formatting for better readability.
     /// </summary>
-    public static JsonSerializerOptions CreateForTesting()
-        => CreateBase(writeIndented: true);
+    public static JsonSerializerOptions CreateForTesting() => CreateBase(writeIndented: true);
 
     /// <summary>
     /// Creates JsonSerializerOptions with case-insensitive property matching.
     /// Useful for scenarios where JSON property casing might vary.
     /// </summary>
-    public static JsonSerializerOptions CreateCaseInsensitive()
-        => CreateBase(caseInsensitive: true);
+    public static JsonSerializerOptions CreateCaseInsensitive() =>
+        CreateBase(caseInsensitive: true);
 
     /// <summary>
     /// Creates JsonSerializerOptions with camelCase property naming.
     /// Commonly used for web APIs and JavaScript interop.
     /// </summary>
-    public static JsonSerializerOptions CreateWithCamelCase()
-        => CreateBase(namingPolicy: JsonNamingPolicy.CamelCase);
+    public static JsonSerializerOptions CreateWithCamelCase() =>
+        CreateBase(namingPolicy: JsonNamingPolicy.CamelCase);
 
     /// <summary>
     /// Creates JsonSerializerOptions with snake_case property naming.
     /// Commonly used for Python APIs and some REST services.
     /// </summary>
-    public static JsonSerializerOptions CreateWithSnakeCase()
-        => CreateBase(namingPolicy: JsonNamingPolicy.SnakeCaseLower);
+    public static JsonSerializerOptions CreateWithSnakeCase() =>
+        CreateBase(namingPolicy: JsonNamingPolicy.SnakeCaseLower);
 
     /// <summary>
     /// Creates minimal JsonSerializerOptions with only basic settings.
@@ -117,13 +116,14 @@ public static class JsonSerializerOptionsFactory
     /// </summary>
     public static JsonSerializerOptions CreateMinimal(
         bool writeIndented = false,
-        JsonNamingPolicy? namingPolicy = null)
+        JsonNamingPolicy? namingPolicy = null
+    )
     {
         var options = new JsonSerializerOptions
         {
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             WriteIndented = writeIndented,
-            AllowTrailingCommas = true
+            AllowTrailingCommas = true,
         };
 
         if (namingPolicy != null)

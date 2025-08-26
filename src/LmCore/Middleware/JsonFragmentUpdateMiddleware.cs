@@ -11,7 +11,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 {
-    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators = new();
+    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators =
+        new();
 
     public string? Name => throw new NotImplementedException();
 
@@ -56,7 +57,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
             Role = message.Role,
             Metadata = message.Metadata,
             GenerationId = message.GenerationId,
-            ToolCallUpdates = updatedToolCallUpdates.ToImmutableList()
+            ToolCallUpdates = updatedToolCallUpdates.ToImmutableList(),
         };
     }
 
@@ -79,12 +80,16 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         // Get or create generator for this tool call
         if (!_generators.TryGetValue(generatorKey, out var generator))
         {
-            generator = new JsonFragmentToStructuredUpdateGenerator(toolCallUpdate.FunctionName ?? "unknown");
+            generator = new JsonFragmentToStructuredUpdateGenerator(
+                toolCallUpdate.FunctionName ?? "unknown"
+            );
             _generators[generatorKey] = generator;
         }
 
         // Process the function args fragment and get updates
-        var jsonFragmentUpdates = generator.AddFragment(toolCallUpdate.FunctionArgs).ToImmutableList();
+        var jsonFragmentUpdates = generator
+            .AddFragment(toolCallUpdate.FunctionArgs)
+            .ToImmutableList();
 
         // Return updated ToolCallUpdate with JsonFragmentUpdates
         return new ToolCallUpdate
@@ -93,7 +98,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
             Index = toolCallUpdate.Index,
             FunctionName = toolCallUpdate.FunctionName,
             FunctionArgs = toolCallUpdate.FunctionArgs,
-            JsonFragmentUpdates = jsonFragmentUpdates
+            JsonFragmentUpdates = jsonFragmentUpdates,
         };
     }
 
@@ -126,16 +131,25 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         _generators.Clear();
     }
 
-    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(MiddlewareContext context, IStreamingAgent agent, CancellationToken cancellationToken = default)
+    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken cancellationToken = default
+    )
     {
         var stream = await agent.GenerateReplyStreamingAsync(
             context.Messages,
             context.Options,
-            cancellationToken);
+            cancellationToken
+        );
         return ProcessAsync(stream);
     }
 
-    public Task<IEnumerable<IMessage>> InvokeAsync(MiddlewareContext context, IAgent agent, CancellationToken cancellationToken = default)
+    public Task<IEnumerable<IMessage>> InvokeAsync(
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken cancellationToken = default
+    )
     {
         return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }

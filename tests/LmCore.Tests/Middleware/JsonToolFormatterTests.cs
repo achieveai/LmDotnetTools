@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.Misc.Utils;
 using AchieveAi.LmDotnetTools.Misc.Middleware;
+using AchieveAi.LmDotnetTools.Misc.Utils;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -38,8 +38,14 @@ public class JsonToolFormatterTests
         Assert.Contains(updates, u => u.Text == "}");
 
         // Verify colors
-        Assert.Contains(updates, u => u.Text == "\"name\"" && u.Color.Foreground == ConsoleColor.Green);
-        Assert.Contains(updates, u => u.Text == "\"John" && u.Color.Foreground == ConsoleColor.Magenta);
+        Assert.Contains(
+            updates,
+            u => u.Text == "\"name\"" && u.Color.Foreground == ConsoleColor.Green
+        );
+        Assert.Contains(
+            updates,
+            u => u.Text == "\"John" && u.Color.Foreground == ConsoleColor.Magenta
+        );
         Assert.Contains(updates, u => u.Text == "\"" && u.Color.Foreground == ConsoleColor.Magenta);
         Assert.Contains(updates, u => u.Text == "30" && u.Color.Foreground == ConsoleColor.Cyan);
     }
@@ -60,7 +66,10 @@ public class JsonToolFormatterTests
 
         // Verify indentation and structure
         Assert.Contains(updates, u => u.Text.Contains("\n  ")); // Check for indentation
-        Assert.Contains(updates, u => u.Text == "\"user\"" && u.Color.Foreground == ConsoleColor.Green);
+        Assert.Contains(
+            updates,
+            u => u.Text == "\"user\"" && u.Color.Foreground == ConsoleColor.Green
+        );
         Assert.Contains(updates, u => u.Text == "[" && u.Color.Foreground == ConsoleColor.White);
         Assert.Contains(updates, u => u.Text == "10" && u.Color.Foreground == ConsoleColor.Cyan);
     }
@@ -87,8 +96,14 @@ public class JsonToolFormatterTests
         PrintUpdates(updates3, "Fragment 3");
 
         // Verify partial string handling
-        Assert.Contains(updates1, u => u.Text == "\"status\"" && u.Color.Foreground == ConsoleColor.Green);
-        Assert.Contains(updates2, u => u.Text == "ing" && u.Color.Foreground == ConsoleColor.Magenta);
+        Assert.Contains(
+            updates1,
+            u => u.Text == "\"status\"" && u.Color.Foreground == ConsoleColor.Green
+        );
+        Assert.Contains(
+            updates2,
+            u => u.Text == "ing" && u.Color.Foreground == ConsoleColor.Magenta
+        );
         Assert.Contains(updates3, u => u.Text == "50" && u.Color.Foreground == ConsoleColor.Cyan);
     }
 
@@ -101,7 +116,10 @@ public class JsonToolFormatterTests
         return generator.AddFragment(json);
     }
 
-    private void PrintUpdates(List<(ConsoleColorPair Color, string Text)> updates, string? header = null)
+    private void PrintUpdates(
+        List<(ConsoleColorPair Color, string Text)> updates,
+        string? header = null
+    )
     {
         if (header != null)
         {

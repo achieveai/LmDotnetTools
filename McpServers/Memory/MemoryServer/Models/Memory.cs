@@ -84,7 +84,7 @@ public class Memory
             CreatedAt = this.CreatedAt,
             UpdatedAt = DateTime.UtcNow,
             Version = this.Version + 1,
-            Embedding = this.Embedding
+            Embedding = this.Embedding,
         };
         return copy;
     }
@@ -106,7 +106,7 @@ public class Memory
             UpdatedAt = this.UpdatedAt,
             Version = this.Version,
             Score = score,
-            Embedding = this.Embedding
+            Embedding = this.Embedding,
         };
         return copy;
     }
@@ -120,7 +120,7 @@ public class Memory
         {
             UserId = UserId,
             AgentId = AgentId,
-            RunId = RunId
+            RunId = RunId,
         };
     }
 }

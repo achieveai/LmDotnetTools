@@ -14,11 +14,17 @@ public static class ValidationHelper
     /// <param name="value">The string value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentException">Thrown when the value is null, empty, or whitespace</exception>
-    public static void ValidateNotNullOrWhiteSpace(string? value, [CallerArgumentExpression(nameof(value))] string? parameterName = null)
+    public static void ValidateNotNullOrWhiteSpace(
+        string? value,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            throw new ArgumentException("Value cannot be null, empty, or whitespace", parameterName);
+            throw new ArgumentException(
+                "Value cannot be null, empty, or whitespace",
+                parameterName
+            );
         }
     }
 
@@ -29,7 +35,11 @@ public static class ValidationHelper
     /// <param name="value">The object to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentNullException">Thrown when the value is null</exception>
-    public static void ValidateNotNull<T>(T? value, [CallerArgumentExpression(nameof(value))] string? parameterName = null) where T : class
+    public static void ValidateNotNull<T>(
+        T? value,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
+        where T : class
     {
         if (value == null)
         {
@@ -45,7 +55,10 @@ public static class ValidationHelper
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentNullException">Thrown when the collection is null</exception>
     /// <exception cref="ArgumentException">Thrown when the collection is empty</exception>
-    public static void ValidateNotNullOrEmpty<T>(IEnumerable<T>? collection, [CallerArgumentExpression(nameof(collection))] string? parameterName = null)
+    public static void ValidateNotNullOrEmpty<T>(
+        IEnumerable<T>? collection,
+        [CallerArgumentExpression(nameof(collection))] string? parameterName = null
+    )
     {
         if (collection == null)
         {
@@ -64,13 +77,19 @@ public static class ValidationHelper
     /// <param name="collection">The collection of strings to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentException">Thrown when any element is null or empty</exception>
-    public static void ValidateStringCollectionElements(IEnumerable<string>? collection, [CallerArgumentExpression(nameof(collection))] string? parameterName = null)
+    public static void ValidateStringCollectionElements(
+        IEnumerable<string>? collection,
+        [CallerArgumentExpression(nameof(collection))] string? parameterName = null
+    )
     {
         ValidateNotNullOrEmpty(collection, parameterName);
 
         if (collection!.Any(string.IsNullOrWhiteSpace))
         {
-            throw new ArgumentException("Collection cannot contain null, empty, or whitespace elements", parameterName);
+            throw new ArgumentException(
+                "Collection cannot contain null, empty, or whitespace elements",
+                parameterName
+            );
         }
     }
 
@@ -80,7 +99,10 @@ public static class ValidationHelper
     /// <param name="value">The numeric value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentException">Thrown when the value is not positive</exception>
-    public static void ValidatePositive(int value, [CallerArgumentExpression(nameof(value))] string? parameterName = null)
+    public static void ValidatePositive(
+        int value,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
     {
         if (value <= 0)
         {
@@ -94,7 +116,10 @@ public static class ValidationHelper
     /// <param name="value">The numeric value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentException">Thrown when the value is not positive</exception>
-    public static void ValidatePositive(double value, [CallerArgumentExpression(nameof(value))] string? parameterName = null)
+    public static void ValidatePositive(
+        double value,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
     {
         if (value <= 0)
         {
@@ -108,7 +133,10 @@ public static class ValidationHelper
     /// <param name="value">The numeric value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentException">Thrown when the value is negative</exception>
-    public static void ValidateNonNegative(int value, [CallerArgumentExpression(nameof(value))] string? parameterName = null)
+    public static void ValidateNonNegative(
+        int value,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
     {
         if (value < 0)
         {
@@ -124,11 +152,20 @@ public static class ValidationHelper
     /// <param name="max">The maximum allowed value (inclusive)</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is outside the specified range</exception>
-    public static void ValidateRange(int value, int min, int max, [CallerArgumentExpression(nameof(value))] string? parameterName = null)
+    public static void ValidateRange(
+        int value,
+        int min,
+        int max,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
     {
         if (value < min || value > max)
         {
-            throw new ArgumentOutOfRangeException(parameterName, value, $"Value must be between {min} and {max} (inclusive)");
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                value,
+                $"Value must be between {min} and {max} (inclusive)"
+            );
         }
     }
 
@@ -140,11 +177,20 @@ public static class ValidationHelper
     /// <param name="max">The maximum allowed value (inclusive)</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is outside the specified range</exception>
-    public static void ValidateRange(double value, double min, double max, [CallerArgumentExpression(nameof(value))] string? parameterName = null)
+    public static void ValidateRange(
+        double value,
+        double min,
+        double max,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
     {
         if (value < min || value > max)
         {
-            throw new ArgumentOutOfRangeException(parameterName, value, $"Value must be between {min} and {max} (inclusive)");
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                value,
+                $"Value must be between {min} and {max} (inclusive)"
+            );
         }
     }
 
@@ -155,11 +201,18 @@ public static class ValidationHelper
     /// <param name="value">The enum value to validate</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentException">Thrown when the enum value is not defined</exception>
-    public static void ValidateEnumDefined<TEnum>(TEnum value, [CallerArgumentExpression(nameof(value))] string? parameterName = null) where TEnum : struct, Enum
+    public static void ValidateEnumDefined<TEnum>(
+        TEnum value,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
+        where TEnum : struct, Enum
     {
         if (!Enum.IsDefined(typeof(TEnum), value))
         {
-            throw new ArgumentException($"Invalid {typeof(TEnum).Name} value: {value}", parameterName);
+            throw new ArgumentException(
+                $"Invalid {typeof(TEnum).Name} value: {value}",
+                parameterName
+            );
         }
     }
 
@@ -170,7 +223,11 @@ public static class ValidationHelper
     /// <param name="allowedValues">The collection of allowed values</param>
     /// <param name="parameterName">The name of the parameter being validated</param>
     /// <exception cref="ArgumentException">Thrown when the value is not in the allowed values</exception>
-    public static void ValidateAllowedValues(string? value, IEnumerable<string> allowedValues, [CallerArgumentExpression(nameof(value))] string? parameterName = null)
+    public static void ValidateAllowedValues(
+        string? value,
+        IEnumerable<string> allowedValues,
+        [CallerArgumentExpression(nameof(value))] string? parameterName = null
+    )
     {
         ValidateNotNullOrWhiteSpace(value, parameterName);
         ValidateNotNullOrEmpty(allowedValues, nameof(allowedValues));
@@ -178,7 +235,10 @@ public static class ValidationHelper
         var allowedList = allowedValues.ToList();
         if (!allowedList.Contains(value!, StringComparer.OrdinalIgnoreCase))
         {
-            throw new ArgumentException($"Invalid value '{value}'. Allowed values: {string.Join(", ", allowedList)}", parameterName);
+            throw new ArgumentException(
+                $"Invalid value '{value}'. Allowed values: {string.Join(", ", allowedList)}",
+                parameterName
+            );
         }
     }
 
@@ -202,7 +262,10 @@ public static class ValidationHelper
     /// </summary>
     /// <param name="apiKey">The API key to validate</param>
     /// <param name="parameterName">The parameter name for exception</param>
-    public static void ValidateApiKey(string? apiKey, [CallerArgumentExpression(nameof(apiKey))] string? parameterName = null)
+    public static void ValidateApiKey(
+        string? apiKey,
+        [CallerArgumentExpression(nameof(apiKey))] string? parameterName = null
+    )
     {
         ValidateNotNullOrWhiteSpace(apiKey, parameterName);
 
@@ -218,14 +281,22 @@ public static class ValidationHelper
     /// </summary>
     /// <param name="baseUrl">The base URL to validate</param>
     /// <param name="parameterName">The parameter name for exception</param>
-    public static void ValidateBaseUrl(string? baseUrl, [CallerArgumentExpression(nameof(baseUrl))] string? parameterName = null)
+    public static void ValidateBaseUrl(
+        string? baseUrl,
+        [CallerArgumentExpression(nameof(baseUrl))] string? parameterName = null
+    )
     {
         ValidateNotNullOrWhiteSpace(baseUrl, parameterName);
 
-        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != "http" && uri.Scheme != "https"))
+        if (
+            !Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != "http" && uri.Scheme != "https")
+        )
         {
-            throw new ArgumentException("Base URL must be a valid HTTP or HTTPS URL", parameterName);
+            throw new ArgumentException(
+                "Base URL must be a valid HTTP or HTTPS URL",
+                parameterName
+            );
         }
     }
 
@@ -235,7 +306,10 @@ public static class ValidationHelper
     /// </summary>
     /// <param name="messages">The messages to validate</param>
     /// <param name="parameterName">The parameter name for exception</param>
-    public static void ValidateMessages<T>(IEnumerable<T>? messages, [CallerArgumentExpression(nameof(messages))] string? parameterName = null)
+    public static void ValidateMessages<T>(
+        IEnumerable<T>? messages,
+        [CallerArgumentExpression(nameof(messages))] string? parameterName = null
+    )
         where T : class
     {
         ValidateNotNullOrEmpty(messages, parameterName);
@@ -254,10 +328,18 @@ public static class ValidationHelper
     /// <param name="parameterValue">The invalid parameter value</param>
     /// <param name="allowedValues">The allowed values for this parameter</param>
     /// <returns>A standardized ArgumentException</returns>
-    public static ArgumentException CreateApiValidationException(string apiType, string parameterName, string? parameterValue, IEnumerable<string> allowedValues)
+    public static ArgumentException CreateApiValidationException(
+        string apiType,
+        string parameterName,
+        string? parameterValue,
+        IEnumerable<string> allowedValues
+    )
     {
         var allowedList = string.Join(", ", allowedValues);
-        return new ArgumentException($"Invalid {parameterName} for {apiType} API: '{parameterValue}'. Valid values: {allowedList}", parameterName);
+        return new ArgumentException(
+            $"Invalid {parameterName} for {apiType} API: '{parameterValue}'. Valid values: {allowedList}",
+            parameterName
+        );
     }
 
     /// <summary>
@@ -298,9 +380,12 @@ public static class ValidationHelper
             {
                 ValidatePositive(dimensions, "Dimensions");
             }
-            else if (dimensionsValue != null && dimensionsValue.GetType().IsGenericType &&
-                     dimensionsValue.GetType().GetGenericTypeDefinition() == typeof(Nullable<>) &&
-                     dimensionsValue.GetType().GetGenericArguments()[0] == typeof(int))
+            else if (
+                dimensionsValue != null
+                && dimensionsValue.GetType().IsGenericType
+                && dimensionsValue.GetType().GetGenericTypeDefinition() == typeof(Nullable<>)
+                && dimensionsValue.GetType().GetGenericArguments()[0] == typeof(int)
+            )
             {
                 var nullableInt = (int?)dimensionsValue;
                 if (nullableInt.HasValue)
@@ -357,9 +442,12 @@ public static class ValidationHelper
             {
                 ValidatePositive(topN, "TopN");
             }
-            else if (topNValue != null && topNValue.GetType().IsGenericType &&
-                     topNValue.GetType().GetGenericTypeDefinition() == typeof(Nullable<>) &&
-                     topNValue.GetType().GetGenericArguments()[0] == typeof(int))
+            else if (
+                topNValue != null
+                && topNValue.GetType().IsGenericType
+                && topNValue.GetType().GetGenericTypeDefinition() == typeof(Nullable<>)
+                && topNValue.GetType().GetGenericArguments()[0] == typeof(int)
+            )
             {
                 var nullableInt = (int?)topNValue;
                 if (nullableInt.HasValue)

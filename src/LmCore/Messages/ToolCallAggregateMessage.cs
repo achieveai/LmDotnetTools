@@ -48,7 +48,11 @@ public record ToolsCallAggregateMessage : IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId => ToolsCallMessage.GenerationId;
 
-    public ToolsCallAggregateMessage(ToolsCallMessage toolCallMessage, ToolsCallResultMessage toolCallResult, string? fromAgent = null)
+    public ToolsCallAggregateMessage(
+        ToolsCallMessage toolCallMessage,
+        ToolsCallResultMessage toolCallResult,
+        string? fromAgent = null
+    )
     {
         ToolsCallMessage = toolCallMessage;
         ToolsCallResult = toolCallResult;
@@ -110,7 +114,8 @@ public record ToolsCallAggregateMessage : IMessage
     }
 }
 
-public class ToolsCallAggregateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallAggregateMessage>
+public class ToolsCallAggregateMessageJsonConverter
+    : ShadowPropertiesJsonConverter<ToolsCallAggregateMessage>
 {
     protected override ToolsCallAggregateMessage CreateInstance()
     {

@@ -10,7 +10,8 @@ public class RequestCaptureTests
     public async Task RequestCapture_GetRequestAs_WorksWithOpenAIChatCompletionRequest()
     {
         // Arrange - Create a realistic OpenAI ChatCompletionRequest
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithOpenAIMessage("Test response")
             .CaptureRequests(out var requestCapture)
             .Build();
@@ -23,16 +24,8 @@ public class RequestCaptureTests
             model = "gpt-4",
             messages = new object[]
             {
-                new
-                {
-                    role = "system",
-                    content = "You are a helpful assistant."
-                },
-                new
-                {
-                    role = "user",
-                    content = "Hello, world!"
-                }
+                new { role = "system", content = "You are a helpful assistant." },
+                new { role = "user", content = "Hello, world!" },
             },
             temperature = 0.7,
             max_tokens = 1000,
@@ -48,21 +41,21 @@ public class RequestCaptureTests
                         parameters = new
                         {
                             type = "object",
-                            properties = new
-                            {
-                                location = new { type = "string" }
-                            }
-                        }
-                    }
-                }
-            }
+                            properties = new { location = new { type = "string" } },
+                        },
+                    },
+                },
+            },
         };
 
         var jsonContent = JsonSerializer.Serialize(requestData);
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
         // Act - Make HTTP request to trigger capture
-        var response = await httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+        var response = await httpClient.PostAsync(
+            "https://api.openai.com/v1/chat/completions",
+            content
+        );
 
         // Assert - Test that GetRequestAs<ChatCompletionRequest>() works
         Assert.Equal(1, requestCapture.RequestCount);
@@ -99,7 +92,8 @@ public class RequestCaptureTests
     public async Task ToolCapture_ShouldProvideStructuredAccessToToolData()
     {
         // Arrange - Use MockHttpHandlerBuilder to create proper request capture
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithAnthropicMessage("Test response")
             .CaptureRequests(out var requestCapture)
             .Build();
@@ -123,10 +117,14 @@ public class RequestCaptureTests
                         properties = new
                         {
                             location = new { type = "string", description = "City name" },
-                                                         units = new { type = "string", @enum = new string[] { "celsius", "fahrenheit" } }
+                            units = new
+                            {
+                                type = "string",
+                                @enum = new string[] { "celsius", "fahrenheit" },
+                            },
                         },
-                                                 required = new string[] { "location" }
-                    }
+                        required = new string[] { "location" },
+                    },
                 },
                 new
                 {
@@ -137,13 +135,13 @@ public class RequestCaptureTests
                         type = "object",
                         properties = new
                         {
-                            code = new { type = "string", description = "Python code to execute" }
+                            code = new { type = "string", description = "Python code to execute" },
                         },
-                                                 required = new string[] { "code" }
-                    }
-                }
+                        required = new string[] { "code" },
+                    },
+                },
             },
-            messages = new object[] { new { role = "user", content = "What's the weather like?" } }
+            messages = new object[] { new { role = "user", content = "What's the weather like?" } },
         };
 
         var jsonContent = JsonSerializer.Serialize(requestData);
@@ -152,7 +150,7 @@ public class RequestCaptureTests
         // Act - Make HTTP request to trigger capture
         var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages", content);
 
-        // Assert - Test structured tool access  
+        // Assert - Test structured tool access
         Assert.Equal(1, requestCapture.RequestCount);
         var anthropicRequest = requestCapture.GetAnthropicRequest()!;
         var tools = anthropicRequest.Tools.ToList();
@@ -188,7 +186,8 @@ public class RequestCaptureTests
     {
         // This test demonstrates why structured assertions are better than string-based ones
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithAnthropicMessage("Test response")
             .CaptureRequests(out var requestCapture)
             .Build();
@@ -210,12 +209,12 @@ public class RequestCaptureTests
                         properties = new
                         {
                             a = new { type = "number" },
-                            b = new { type = "number" }
-                        }
-                    }
-                }
+                            b = new { type = "number" },
+                        },
+                    },
+                },
             },
-            messages = new object[] { new { role = "user", content = "Calculate 2+3" } }
+            messages = new object[] { new { role = "user", content = "Calculate 2+3" } },
         };
 
         var jsonContent = JsonSerializer.Serialize(requestData);
@@ -233,8 +232,8 @@ public class RequestCaptureTests
         Assert.Single(tools);
 
         var calcTool = tools[0];
-        Assert.Equal("calculator_add", calcTool.Name);  // Exact name match
-        Assert.Equal("Add two numbers", calcTool.Description);  // Exact description
+        Assert.Equal("calculator_add", calcTool.Name); // Exact name match
+        Assert.Equal("Add two numbers", calcTool.Description); // Exact description
 
         // Precise type checking for specific properties
         Assert.Equal("number", calcTool.GetInputPropertyType("a"));

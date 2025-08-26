@@ -1,10 +1,10 @@
+using System.IO;
+using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
-using FluentAssertions;
-using System.IO;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -33,8 +33,8 @@ public class SegmentationPromptManagerTests : IDisposable
                 FilePath = _testPromptsPath,
                 DefaultLanguage = "en",
                 EnableHotReload = false,
-                CacheExpiration = TimeSpan.FromMinutes(30)
-            }
+                CacheExpiration = TimeSpan.FromMinutes(30),
+            },
         };
 
         var optionsWrapper = Options.Create(_options);
@@ -88,7 +88,8 @@ public class SegmentationPromptManagerTests : IDisposable
     [InlineData(DocumentType.Email)]
     [InlineData(DocumentType.Chat)]
     public async Task GetDomainInstructionsAsync_WithValidDocumentType_ReturnsInstructions(
-      DocumentType documentType)
+        DocumentType documentType
+    )
     {
         // Act
         var result = await _promptManager.GetDomainInstructionsAsync(documentType);
@@ -124,7 +125,8 @@ public class SegmentationPromptManagerTests : IDisposable
     [InlineData(SegmentationStrategy.NarrativeBased)]
     [InlineData(SegmentationStrategy.Hybrid)]
     public async Task GetPromptAsync_WithAllMainStrategies_ReturnsValidPrompts(
-      SegmentationStrategy strategy)
+        SegmentationStrategy strategy
+    )
     {
         // Act
         var result = await _promptManager.GetPromptAsync(strategy);
@@ -139,7 +141,8 @@ public class SegmentationPromptManagerTests : IDisposable
 
     private void CreateTestPromptsFile()
     {
-        var testYamlContent = @"
+        var testYamlContent =
+            @"
 # Test prompts configuration
 topic_based:
   system_prompt: |

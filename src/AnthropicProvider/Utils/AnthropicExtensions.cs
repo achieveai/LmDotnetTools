@@ -31,7 +31,7 @@ public static class AnthropicExtensions
         {
             Text = textContent,
             Role = Role.Assistant,
-            FromAgent = agentName
+            FromAgent = agentName,
         };
 
         // Note: In a full implementation, we would add usage information
@@ -80,7 +80,7 @@ public static class AnthropicExtensions
             {
                 Text = textContent.Text,
                 Role = Role.Assistant,
-                GenerationId = responseId
+                GenerationId = responseId,
             };
         }
         // Handle tool use content
@@ -92,9 +92,10 @@ public static class AnthropicExtensions
             return new ToolsCallMessage
             {
                 ToolCalls = System.Collections.Immutable.ImmutableList.Create(
-                new ToolCall(functionName, arguments) { ToolCallId = toolUseContent.Id }),
+                    new ToolCall(functionName, arguments) { ToolCallId = toolUseContent.Id }
+                ),
                 Role = Role.Assistant,
-                GenerationId = responseId
+                GenerationId = responseId,
             };
         }
 
@@ -131,7 +132,10 @@ public static class AnthropicExtensions
     {
         foreach (var content in response.Content)
         {
-            if (content.Type == "tool_use" && content is AnthropicResponseToolUseContent toolUseContent)
+            if (
+                content.Type == "tool_use"
+                && content is AnthropicResponseToolUseContent toolUseContent
+            )
             {
                 try
                 {
@@ -143,7 +147,7 @@ public static class AnthropicExtensions
                     return new TextMessage
                     {
                         Text = $"Tool call: {functionName} with arguments: {arguments}",
-                        Role = Role.Assistant
+                        Role = Role.Assistant,
                     };
                 }
                 catch (Exception)

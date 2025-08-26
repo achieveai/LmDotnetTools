@@ -24,10 +24,15 @@ public static class OpenAIJsonSerializerOptionsFactory
         bool writeIndented = false,
         JsonNamingPolicy? namingPolicy = null,
         bool caseInsensitive = false,
-        bool allowTrailingCommas = true)
+        bool allowTrailingCommas = true
+    )
     {
         var options = JsonSerializerOptionsFactory.CreateBase(
-            writeIndented, namingPolicy, caseInsensitive, allowTrailingCommas);
+            writeIndented,
+            namingPolicy,
+            caseInsensitive,
+            allowTrailingCommas
+        );
 
         AddOpenAIConverters(options);
         return options;
@@ -42,7 +47,9 @@ public static class OpenAIJsonSerializerOptionsFactory
     public static void AddOpenAIConverters(JsonSerializerOptions options)
     {
         // OpenAI-specific Union converters for content types (not in LmCore)
-        options.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
+        options.Converters.Add(
+            new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>()
+        );
         options.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
 
         // Note: UnionJsonConverter<string, IReadOnlyList<string>> is already registered in LmCore
@@ -54,20 +61,18 @@ public static class OpenAIJsonSerializerOptionsFactory
     /// Creates JsonSerializerOptions optimized for OpenAI API production use.
     /// Uses the standard OpenAI configuration with compact formatting.
     /// </summary>
-    public static JsonSerializerOptions CreateForProduction()
-        => CreateForOpenAI(writeIndented: false);
+    public static JsonSerializerOptions CreateForProduction() =>
+        CreateForOpenAI(writeIndented: false);
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for OpenAI testing and debugging.
     /// Uses indented formatting for better readability.
     /// </summary>
-    public static JsonSerializerOptions CreateForTesting()
-        => CreateForOpenAI(writeIndented: true);
+    public static JsonSerializerOptions CreateForTesting() => CreateForOpenAI(writeIndented: true);
 
     /// <summary>
     /// Creates JsonSerializerOptions for cross-provider scenarios.
     /// Uses case-insensitive matching for robustness across different providers.
     /// </summary>
-    public static JsonSerializerOptions CreateUniversal()
-        => CreateForOpenAI(caseInsensitive: true);
+    public static JsonSerializerOptions CreateUniversal() => CreateForOpenAI(caseInsensitive: true);
 }

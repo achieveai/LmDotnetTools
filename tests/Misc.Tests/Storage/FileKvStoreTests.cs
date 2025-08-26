@@ -15,7 +15,11 @@ public class FileKvStoreTests
     public void Setup()
     {
         // Create a unique test directory for each test
-        _testCacheDirectory = Path.Combine(Path.GetTempPath(), "FileKvStoreTests", Guid.NewGuid().ToString());
+        _testCacheDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "FileKvStoreTests",
+            Guid.NewGuid().ToString()
+        );
         _store = new FileKvStore(_testCacheDirectory);
     }
 
@@ -23,7 +27,7 @@ public class FileKvStoreTests
     public void Cleanup()
     {
         _store?.Dispose();
-        
+
         // Clean up test directory
         if (Directory.Exists(_testCacheDirectory))
         {
@@ -44,15 +48,19 @@ public class FileKvStoreTests
     public void Constructor_WithValidDirectory_CreatesDirectory()
     {
         // Arrange
-        var testDir = Path.Combine(Path.GetTempPath(), "FileKvStoreTest_New", Guid.NewGuid().ToString());
-        
+        var testDir = Path.Combine(
+            Path.GetTempPath(),
+            "FileKvStoreTest_New",
+            Guid.NewGuid().ToString()
+        );
+
         // Act
         using var store = new FileKvStore(testDir);
-        
+
         // Assert
         Assert.IsTrue(Directory.Exists(testDir));
         Assert.AreEqual(Path.GetFullPath(testDir), store.CacheDirectory);
-        
+
         // Cleanup
         Directory.Delete(testDir, recursive: true);
     }
@@ -85,16 +93,20 @@ public class FileKvStoreTests
     public void Constructor_WithCustomJsonOptions_UsesOptions()
     {
         // Arrange
-        var customOptions = new JsonSerializerOptions 
-        { 
+        var customOptions = new JsonSerializerOptions
+        {
             WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         };
-        var testDir = Path.Combine(Path.GetTempPath(), "FileKvStoreTest_CustomJson", Guid.NewGuid().ToString());
-        
+        var testDir = Path.Combine(
+            Path.GetTempPath(),
+            "FileKvStoreTest_CustomJson",
+            Guid.NewGuid().ToString()
+        );
+
         // Act & Assert (no exception should be thrown)
         using var store = new FileKvStore(testDir, customOptions);
-        
+
         // Cleanup
         Directory.Delete(testDir, recursive: true);
     }
@@ -140,7 +152,7 @@ public class FileKvStoreTests
             Id = 123,
             Name = "Test Object",
             Values = new List<string> { "value1", "value2", "value3" },
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
 
         // Act
@@ -152,7 +164,10 @@ public class FileKvStoreTests
         Assert.AreEqual(testObject.Id, retrievedObject.Id);
         Assert.AreEqual(testObject.Name, retrievedObject.Name);
         CollectionAssert.AreEqual(testObject.Values, retrievedObject.Values);
-        Assert.AreEqual(testObject.CreatedAt.ToString("O"), retrievedObject.CreatedAt.ToString("O"));
+        Assert.AreEqual(
+            testObject.CreatedAt.ToString("O"),
+            retrievedObject.CreatedAt.ToString("O")
+        );
     }
 
     [TestMethod]
@@ -214,7 +229,7 @@ public class FileKvStoreTests
         // Arrange
         const string key = "corrupted_test";
         var filePath = GetExpectedFilePath(key);
-        
+
         // Create a corrupted JSON file
         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
         await File.WriteAllTextAsync(filePath, "{ invalid json content");
@@ -244,7 +259,7 @@ public class FileKvStoreTests
 
         // Assert
         Assert.IsTrue(File.Exists(expectedFilePath), "File should exist at expected SHA256 path");
-        
+
         var fileContent = await File.ReadAllTextAsync(expectedFilePath);
         Assert.IsFalse(string.IsNullOrEmpty(fileContent));
     }
@@ -293,7 +308,7 @@ public class FileKvStoreTests
         {
             { "key1", "value1" },
             { "key2", "value2" },
-            { "key3", "value3" }
+            { "key3", "value3" },
         };
 
         foreach (var item in testItems)
@@ -310,12 +325,15 @@ public class FileKvStoreTests
 
         // Assert
         Assert.AreEqual(testItems.Count, keys.Count);
-        
+
         // Verify each key maps to correct SHA256 hash
         foreach (var originalKey in testItems.Keys)
         {
             var expectedHash = GetSHA256Hash(originalKey);
-            Assert.IsTrue(keys.Contains(expectedHash), $"Expected hash {expectedHash} for key {originalKey}");
+            Assert.IsTrue(
+                keys.Contains(expectedHash),
+                $"Expected hash {expectedHash} for key {originalKey}"
+            );
         }
     }
 
@@ -337,11 +355,11 @@ public class FileKvStoreTests
         // Assert
         var count = await _store.GetCountAsync();
         Assert.AreEqual(0, count);
-        
+
         var key1Result = await _store.GetAsync<string>("key1");
         var key2Result = await _store.GetAsync<string>("key2");
         var key3Result = await _store.GetAsync<string>("key3");
-        
+
         Assert.IsNull(key1Result);
         Assert.IsNull(key2Result);
         Assert.IsNull(key3Result);
@@ -352,10 +370,10 @@ public class FileKvStoreTests
     {
         // Arrange & Act
         var initialCount = await _store.GetCountAsync();
-        
+
         await _store.SetAsync("key1", "value1");
         var countAfterOne = await _store.GetCountAsync();
-        
+
         await _store.SetAsync("key2", "value2");
         await _store.SetAsync("key3", "value3");
         var countAfterThree = await _store.GetCountAsync();
@@ -426,21 +444,24 @@ public class FileKvStoreTests
         const int operationsPerTask = 20;
 
         // Act
-        var tasks = Enumerable.Range(0, numberOfTasks).Select(taskId =>
-            Task.Run(async () =>
-            {
-                for (int i = 0; i < operationsPerTask; i++)
+        var tasks = Enumerable
+            .Range(0, numberOfTasks)
+            .Select(taskId =>
+                Task.Run(async () =>
                 {
-                    var key = $"task_{taskId}_item_{i}";
-                    var value = $"value_{taskId}_{i}";
-                    
-                    await _store.SetAsync(key, value);
-                    var retrievedValue = await _store.GetAsync<string>(key);
-                    
-                    Assert.AreEqual(value, retrievedValue);
-                }
-            })
-        ).ToArray();
+                    for (int i = 0; i < operationsPerTask; i++)
+                    {
+                        var key = $"task_{taskId}_item_{i}";
+                        var value = $"value_{taskId}_{i}";
+
+                        await _store.SetAsync(key, value);
+                        var retrievedValue = await _store.GetAsync<string>(key);
+
+                        Assert.AreEqual(value, retrievedValue);
+                    }
+                })
+            )
+            .ToArray();
 
         await Task.WhenAll(tasks);
 
@@ -470,7 +491,7 @@ public class FileKvStoreTests
         {
             // Expected - TaskCanceledException inherits from OperationCanceledException
         }
-        
+
         try
         {
             await _store.SetAsync("test", "value", cts.Token);
@@ -512,4 +533,4 @@ public class FileKvStoreTests
     }
 
     #endregion
-} 
+}

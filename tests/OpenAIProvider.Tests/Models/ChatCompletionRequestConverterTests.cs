@@ -18,14 +18,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var messages = new List<IMessage>
             {
                 new TextMessage { Role = Role.System, Text = "You are a helpful assistant" },
-                new TextMessage { Role = Role.User, Text = "Hello, how are you?" }
+                new TextMessage { Role = Role.User, Text = "Hello, how are you?" },
             };
 
             var options = new GenerateReplyOptions
             {
                 ModelId = "gpt-4",
                 Temperature = 0.5f,
-                MaxToken = 2000
+                MaxToken = 2000,
             };
 
             // Act
@@ -50,7 +50,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "Generate something creative" }
+                new TextMessage { Role = Role.User, Text = "Generate something creative" },
             };
 
             var options = new GenerateReplyOptions
@@ -60,7 +60,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 MaxToken = 1000,
                 TopP = 0.95f,
                 StopSequence = new[] { "stop1", "stop2" },
-                RandomSeed = 42
+                RandomSeed = 42,
             };
 
             // Act
@@ -85,14 +85,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "What's the weather like?" }
+                new TextMessage { Role = Role.User, Text = "What's the weather like?" },
             };
 
             // Create a function using the proper schema
             var function = new FunctionContract
             {
                 Name = "get_weather",
-                Description = "Get the current weather"
+                Description = "Get the current weather",
             };
 
             // Set parameters as an array of FunctionParameterContract
@@ -103,14 +103,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                     Name = "location",
                     Description = "The city name",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = true
-                }
+                    IsRequired = true,
+                },
             };
 
             var options = new GenerateReplyOptions
             {
                 ModelId = "gpt-4",
-                Functions = new[] { function }
+                Functions = new[] { function },
             };
 
             // Act
@@ -132,7 +132,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var toolCall = new ToolCall("get_weather", "{\"location\":\"New York\"}")
             {
-                ToolCallId = "call_123"
+                ToolCallId = "call_123",
             };
 
             var messages = new List<IMessage>
@@ -142,15 +142,19 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 new ToolsCallMessage
                 {
                     Role = Role.Assistant,
-                    ToolCalls = new[] { toolCall }.ToImmutableList()
+                    ToolCalls = new[] { toolCall }.ToImmutableList(),
                 },
                 new TextMessage
                 {
                     Role = Role.Tool,
                     Text = "{\"temp\":72,\"condition\":\"sunny\"}",
-                    FromAgent = "get_weather"
+                    FromAgent = "get_weather",
                 },
-                new TextMessage { Role = Role.Assistant, Text = "It's 72 degrees and sunny in New York." }
+                new TextMessage
+                {
+                    Role = Role.Assistant,
+                    Text = "It's 72 degrees and sunny in New York.",
+                },
             };
 
             var options = new GenerateReplyOptions { ModelId = "gpt-4" };
@@ -185,7 +189,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "Hello" }
+                new TextMessage { Role = Role.User, Text = "Hello" },
             };
 
             // Act - passing null options

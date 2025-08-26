@@ -28,7 +28,8 @@ public class NarrativeBasedSegmentationServiceTests
         _service = new NarrativeBasedSegmentationService(
             _mockLlmService.Object,
             _mockPromptManager.Object,
-            _logger);
+            _logger
+        );
 
         SetupDefaultMocks();
     }
@@ -36,24 +37,32 @@ public class NarrativeBasedSegmentationServiceTests
     private void SetupDefaultMocks()
     {
         // Setup default prompt manager response
-        _mockPromptManager.Setup(x => x.GetPromptAsync(
-                It.IsAny<SegmentationStrategy>(),
-                It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PromptTemplate
-            {
-                SystemPrompt = "You are a narrative analysis expert.",
-                UserPrompt = "Analyze the following content for narrative flow: {DocumentContent}",
-                ExpectedFormat = "json",
-                Metadata = new Dictionary<string, object>
+        _mockPromptManager
+            .Setup(x =>
+                x.GetPromptAsync(
+                    It.IsAny<SegmentationStrategy>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                new PromptTemplate
                 {
-                    ["strategy"] = SegmentationStrategy.NarrativeBased.ToString(),
-                    ["language"] = "en"
+                    SystemPrompt = "You are a narrative analysis expert.",
+                    UserPrompt =
+                        "Analyze the following content for narrative flow: {DocumentContent}",
+                    ExpectedFormat = "json",
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["strategy"] = SegmentationStrategy.NarrativeBased.ToString(),
+                        ["language"] = "en",
+                    },
                 }
-            });
+            );
 
         // Setup default LLM service responses
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
+        _mockLlmService
+            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
     }
 
@@ -67,7 +76,7 @@ public class NarrativeBasedSegmentationServiceTests
         var options = new NarrativeSegmentationOptions
         {
             MinSegmentSize = 50,
-            UseLlmEnhancement = false // Disable for simpler testing
+            UseLlmEnhancement = false, // Disable for simpler testing
         };
 
         // Act
@@ -81,7 +90,10 @@ public class NarrativeBasedSegmentationServiceTests
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
             segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.NarrativeBased.ToString());
+            segment
+                .Metadata["segmentation_strategy"]
+                .Should()
+                .Be(SegmentationStrategy.NarrativeBased.ToString());
         }
     }
 
@@ -89,7 +101,8 @@ public class NarrativeBasedSegmentationServiceTests
     public async Task SegmentByNarrativeAsync_WithTemporalMarkers_DetectsNarrativeBoundaries()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 First, we need to understand the problem. The issue began last month when users started reporting errors.
 
 Then, we investigated the root cause. After careful analysis, we discovered the problem was in the database connection.
@@ -100,11 +113,15 @@ Finally, we implemented a solution. The fix involved updating the connection str
         var options = new NarrativeSegmentationOptions
         {
             MinSegmentSize = 20,
-            DetectTemporalSequences = true
+            DetectTemporalSequences = true,
         };
 
         // Act
-        var result = await _service.SegmentByNarrativeAsync(content, DocumentType.Documentation, options);
+        var result = await _service.SegmentByNarrativeAsync(
+            content,
+            DocumentType.Documentation,
+            options
+        );
 
         // Assert
         result.Should().NotBeEmpty();
@@ -122,7 +139,8 @@ Finally, we implemented a solution. The fix involved updating the connection str
     public async Task SegmentByNarrativeAsync_WithCausalRelationships_DetectsCausalBoundaries()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 The server was running slowly because the database queries were inefficient.
 
 As a result, users experienced long loading times and timeouts.
@@ -135,19 +153,24 @@ Consequently, the performance improved significantly after the changes.
         var options = new NarrativeSegmentationOptions
         {
             MinSegmentSize = 20,
-            AnalyzeCausalRelationships = true
+            AnalyzeCausalRelationships = true,
         };
 
         // Act
-        var result = await _service.SegmentByNarrativeAsync(content, DocumentType.Documentation, options);
+        var result = await _service.SegmentByNarrativeAsync(
+            content,
+            DocumentType.Documentation,
+            options
+        );
 
         // Assert
         result.Should().NotBeEmpty();
 
         // Check for causal relationship metadata
         var segmentWithCausal = result.FirstOrDefault(s =>
-            s.Metadata.ContainsKey("transition_type") &&
-            s.Metadata["transition_type"].ToString() == "Causal");
+            s.Metadata.ContainsKey("transition_type")
+            && s.Metadata["transition_type"].ToString() == "Causal"
+        );
 
         segmentWithCausal.Should().NotBeNull();
     }
@@ -160,7 +183,8 @@ Consequently, the performance improved significantly after the changes.
     public async Task DetectNarrativeTransitionsAsync_WithTemporalMarkers_DetectsTemporalBoundaries()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 Initially, the project was just an idea. Then, we started planning the implementation.
 Next, we began coding the solution. Finally, we tested and deployed the application.
 ";
@@ -171,29 +195,53 @@ Next, we began coding the solution. Finally, we tested and deployed the applicat
         // Assert
         result.Should().NotBeEmpty();
         result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Temporal);
-        result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("initially", StringComparison.OrdinalIgnoreCase)));
-        result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("then", StringComparison.OrdinalIgnoreCase)));
-        result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("finally", StringComparison.OrdinalIgnoreCase)));
+        result
+            .Should()
+            .Contain(b =>
+                b.TriggerPhrases.Any(p => p.Equals("initially", StringComparison.OrdinalIgnoreCase))
+            );
+        result
+            .Should()
+            .Contain(b =>
+                b.TriggerPhrases.Any(p => p.Equals("then", StringComparison.OrdinalIgnoreCase))
+            );
+        result
+            .Should()
+            .Contain(b =>
+                b.TriggerPhrases.Any(p => p.Equals("finally", StringComparison.OrdinalIgnoreCase))
+            );
     }
 
     [Fact]
     public async Task DetectNarrativeTransitionsAsync_WithCausalMarkers_DetectsCausalBoundaries()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 The application crashed because of a memory leak.
 Therefore, we had to restart the server.
 As a result, all user sessions were lost.
 ";
 
         // Act
-        var result = await _service.DetectNarrativeTransitionsAsync(content, DocumentType.Documentation);
+        var result = await _service.DetectNarrativeTransitionsAsync(
+            content,
+            DocumentType.Documentation
+        );
 
         // Assert
         result.Should().NotBeEmpty();
         result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Causal);
-        result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("because", StringComparison.OrdinalIgnoreCase)));
-        result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("therefore", StringComparison.OrdinalIgnoreCase)));
+        result
+            .Should()
+            .Contain(b =>
+                b.TriggerPhrases.Any(p => p.Equals("because", StringComparison.OrdinalIgnoreCase))
+            );
+        result
+            .Should()
+            .Contain(b =>
+                b.TriggerPhrases.Any(p => p.Equals("therefore", StringComparison.OrdinalIgnoreCase))
+            );
     }
 
     #endregion
@@ -204,7 +252,8 @@ As a result, all user sessions were lost.
     public async Task AnalyzeLogicalFlowAsync_WithSequentialContent_ReturnsSequentialNarrativeType()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 First, we analyze the requirements.
 Then, we design the solution.
 Next, we implement the code.
@@ -225,7 +274,8 @@ Finally, we test and deploy.
     public async Task AnalyzeLogicalFlowAsync_WithCausalContent_ReturnsCausalNarrativeType()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 The bug occurred because of invalid input validation.
 This caused the application to crash unexpectedly.
 As a result, users lost their work.
@@ -250,7 +300,8 @@ Therefore, we need to improve error handling.
     public async Task IdentifyTemporalSequencesAsync_WithTemporalMarkers_ReturnsTemporalSequences()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 First, we gather requirements. Then, we create designs.
 Next, we write code. Finally, we perform testing.
 ";
@@ -277,7 +328,8 @@ Next, we write code. Finally, we perform testing.
     public async Task DetectCausalRelationshipsAsync_WithCausalMarkers_ReturnsCausalRelations()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 The server failed because of insufficient memory.
 Therefore, the application became unresponsive.
 As a result, users experienced timeouts.
@@ -288,9 +340,19 @@ As a result, users experienced timeouts.
 
         // Assert
         result.Should().NotBeEmpty();
-        result.Should().Contain(r => r.CausalIndicator.Equals("because", StringComparison.OrdinalIgnoreCase));
-        result.Should().Contain(r => r.CausalIndicator.Equals("therefore", StringComparison.OrdinalIgnoreCase));
-        result.Should().Contain(r => r.CausalIndicator.Equals("as a result", StringComparison.OrdinalIgnoreCase));
+        result
+            .Should()
+            .Contain(r => r.CausalIndicator.Equals("because", StringComparison.OrdinalIgnoreCase));
+        result
+            .Should()
+            .Contain(r =>
+                r.CausalIndicator.Equals("therefore", StringComparison.OrdinalIgnoreCase)
+            );
+        result
+            .Should()
+            .Contain(r =>
+                r.CausalIndicator.Equals("as a result", StringComparison.OrdinalIgnoreCase)
+            );
 
         foreach (var relation in result)
         {
@@ -307,7 +369,8 @@ As a result, users experienced timeouts.
     public async Task IdentifyNarrativeArcElementsAsync_WithNarrativeStructure_ReturnsArcElements()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 Introduction: This document explains the problem we faced.
 Background: The issue started when our server capacity reached its limits.
 Development: We explored several solutions to address the scaling challenges.
@@ -315,7 +378,10 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
 ";
 
         // Act
-        var result = await _service.IdentifyNarrativeArcElementsAsync(content, DocumentType.Documentation);
+        var result = await _service.IdentifyNarrativeArcElementsAsync(
+            content,
+            DocumentType.Documentation
+        );
 
         // Assert
         result.Should().NotBeEmpty();
@@ -343,25 +409,27 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
             new DocumentSegment
             {
                 Id = "seg1",
-                Content = "First, we need to understand the problem. The issue began when users started reporting errors.",
+                Content =
+                    "First, we need to understand the problem. The issue began when users started reporting errors.",
                 SequenceNumber = 0,
                 Metadata = new Dictionary<string, object>
                 {
                     ["transition_type"] = NarrativeTransitionType.Temporal.ToString(),
-                    ["narrative_function"] = NarrativeFunction.Setup.ToString()
-                }
+                    ["narrative_function"] = NarrativeFunction.Setup.ToString(),
+                },
             },
             new DocumentSegment
             {
                 Id = "seg2",
-                Content = "Then, we investigated the cause. After analysis, we found the root issue was in the database.",
+                Content =
+                    "Then, we investigated the cause. After analysis, we found the root issue was in the database.",
                 SequenceNumber = 1,
                 Metadata = new Dictionary<string, object>
                 {
                     ["transition_type"] = NarrativeTransitionType.Temporal.ToString(),
-                    ["narrative_function"] = NarrativeFunction.Development.ToString()
-                }
-            }
+                    ["narrative_function"] = NarrativeFunction.Development.ToString(),
+                },
+            },
         };
 
         // Act

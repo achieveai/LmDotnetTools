@@ -121,7 +121,7 @@ public class ProviderFilterConfigTests
             Enabled = true,
             CustomPrefix = "valid_prefix",
             AllowedFunctions = new System.Collections.Generic.List<string> { "func1", "func2" },
-            BlockedFunctions = new System.Collections.Generic.List<string> { "dangerous*" }
+            BlockedFunctions = new System.Collections.Generic.List<string> { "dangerous*" },
         };
 
         // Act & Assert (should not throw)
@@ -132,14 +132,13 @@ public class ProviderFilterConfigTests
     public void Validate_WithInvalidCustomPrefix_ThrowsArgumentException()
     {
         // Arrange
-        var config = new ProviderFilterConfig
-        {
-            Enabled = true
-        };
+        var config = new ProviderFilterConfig { Enabled = true };
 
         // Force set an invalid prefix using reflection (simulating deserialization)
-        var field = typeof(ProviderFilterConfig).GetField("_customPrefix",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var field = typeof(ProviderFilterConfig).GetField(
+            "_customPrefix",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
+        );
         field?.SetValue(config, "invalid prefix");
 
         // Act & Assert
@@ -152,11 +151,7 @@ public class ProviderFilterConfigTests
     public void Validate_WithNullCustomPrefix_DoesNotThrow()
     {
         // Arrange
-        var config = new ProviderFilterConfig
-        {
-            Enabled = true,
-            CustomPrefix = null
-        };
+        var config = new ProviderFilterConfig { Enabled = true, CustomPrefix = null };
 
         // Act & Assert (should not throw)
         config.Validate();

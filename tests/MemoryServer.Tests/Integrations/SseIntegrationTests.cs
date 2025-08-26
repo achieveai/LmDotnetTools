@@ -1,16 +1,16 @@
+using System.ComponentModel;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 using Xunit.Abstractions;
-using Microsoft.AspNetCore.TestHost;
-using System.ComponentModel;
 
 namespace MemoryServer.Tests.Integrations;
 
 /// <summary>
 /// Integration tests for the Memory MCP Server using SSE transport.
 /// These tests verify that the SSE infrastructure is in place and working.
-/// 
+///
 /// NOTE: Full SSE client testing is pending SDK updates with proper SSE support.
 /// Currently testing the server-side SSE endpoint availability and basic functionality.
 /// </summary>
@@ -35,9 +35,11 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         var response = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/sse"));
 
         // Assert - SSE endpoint should exist (even if it returns method not allowed for HEAD)
-        Assert.True(response.StatusCode == System.Net.HttpStatusCode.OK ||
-                   response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed ||
-                   response.StatusCode == System.Net.HttpStatusCode.BadRequest);
+        Assert.True(
+            response.StatusCode == System.Net.HttpStatusCode.OK
+                || response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed
+                || response.StatusCode == System.Net.HttpStatusCode.BadRequest
+        );
         _output.WriteLine($"✅ SSE endpoint exists and responds: {response.StatusCode}");
     }
 
@@ -80,7 +82,9 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         Assert.True(sseExists, $"SSE endpoint should exist. Status: {sseResponse.StatusCode}");
 
         _output.WriteLine($"✅ SSE infrastructure in place - SSE: {sseResponse.StatusCode}");
-        _output.WriteLine("📝 Note: SSE endpoints are designed for persistent connections, not simple HTTP requests");
+        _output.WriteLine(
+            "📝 Note: SSE endpoints are designed for persistent connections, not simple HTTP requests"
+        );
     }
 
     [Fact]
@@ -122,9 +126,7 @@ public class SseTestServerFixture : IDisposable
 
     public SseTestServerFixture()
     {
-        var builder = new WebHostBuilder()
-            .UseEnvironment("Testing")
-            .UseStartup<Startup>(); // Use MemoryServer's actual Startup class
+        var builder = new WebHostBuilder().UseEnvironment("Testing").UseStartup<Startup>(); // Use MemoryServer's actual Startup class
 
         _server = new TestServer(builder);
         _services = _server.Services;

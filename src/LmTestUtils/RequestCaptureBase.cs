@@ -1,8 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
@@ -19,7 +19,8 @@ public abstract class RequestCaptureBase
     /// <summary>
     /// Shared JsonSerializerOptions that can handle both OpenAI and Anthropic provider types
     /// </summary>
-    private static readonly JsonSerializerOptions s_jsonSerializerOptions = CreateUniversalOptions();
+    private static readonly JsonSerializerOptions s_jsonSerializerOptions =
+        CreateUniversalOptions();
 
     /// <summary>
     /// Gets all captured HTTP requests
@@ -75,7 +76,8 @@ public abstract class RequestCaptureBase
     /// <summary>
     /// Gets the most recent request deserialized as the specified type
     /// </summary>
-    public T? GetRequestAs<T>() where T : class
+    public T? GetRequestAs<T>()
+        where T : class
     {
         var body = LastRequestBody;
         if (string.IsNullOrEmpty(body))
@@ -94,7 +96,8 @@ public abstract class RequestCaptureBase
     /// <summary>
     /// Gets the most recent response as the specified type (for non-streaming responses)
     /// </summary>
-    public T? GetResponseAs<T>() where T : class
+    public T? GetResponseAs<T>()
+        where T : class
     {
         var response = _capturedResponses.LastOrDefault();
         if (response is T typedResponse)
@@ -118,7 +121,8 @@ public abstract class RequestCaptureBase
     /// <summary>
     /// Gets all responses as the specified type (for streaming responses)
     /// </summary>
-    public IEnumerable<T> GetResponsesAs<T>() where T : class
+    public IEnumerable<T> GetResponsesAs<T>()
+        where T : class
     {
         foreach (var response in _capturedResponses)
         {
@@ -136,7 +140,10 @@ public abstract class RequestCaptureBase
                 T? deserialized = null;
                 try
                 {
-                    deserialized = JsonSerializer.Deserialize<T>(jsonResponse, s_jsonSerializerOptions);
+                    deserialized = JsonSerializer.Deserialize<T>(
+                        jsonResponse,
+                        s_jsonSerializerOptions
+                    );
                 }
                 catch (JsonException)
                 {
@@ -201,7 +208,9 @@ public abstract class RequestCaptureBase
         // Add OpenAI-specific Union converters for cross-provider compatibility
         // Note: These require OpenAI types, but LmTestUtils already references OpenAI Provider
         options.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
-        options.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
+        options.Converters.Add(
+            new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>()
+        );
 
         // Anthropic polymorphic types are handled automatically by the [JsonPolymorphic] attributes
         // No additional converters needed for AnthropicResponseContent and AnthropicStreamEvent

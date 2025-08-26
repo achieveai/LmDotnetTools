@@ -23,7 +23,8 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         string operationName,
         Func<T> operation,
-        LogLevel logLevel = LogLevel.Debug)
+        LogLevel logLevel = LogLevel.Debug
+    )
     {
         var stopwatch = Stopwatch.StartNew();
         try
@@ -31,18 +32,25 @@ public static class PerformanceLoggingUtilities
             var result = operation();
             stopwatch.Stop();
 
-            logger.Log(logLevel, LogEventIds.OperationDurationMetrics,
+            logger.Log(
+                logLevel,
+                LogEventIds.OperationDurationMetrics,
                 "Operation completed: Name={OperationName}, Duration={Duration}ms",
-                operationName, stopwatch.ElapsedMilliseconds);
+                operationName,
+                stopwatch.ElapsedMilliseconds
+            );
 
             return result;
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            logger.LogError(ex,
+            logger.LogError(
+                ex,
                 "Operation failed: Name={OperationName}, Duration={Duration}ms",
-                operationName, stopwatch.ElapsedMilliseconds);
+                operationName,
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -60,7 +68,8 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         string operationName,
         Func<Task<T>> operation,
-        LogLevel logLevel = LogLevel.Debug)
+        LogLevel logLevel = LogLevel.Debug
+    )
     {
         var stopwatch = Stopwatch.StartNew();
         try
@@ -68,18 +77,25 @@ public static class PerformanceLoggingUtilities
             var result = await operation();
             stopwatch.Stop();
 
-            logger.Log(logLevel, LogEventIds.OperationDurationMetrics,
+            logger.Log(
+                logLevel,
+                LogEventIds.OperationDurationMetrics,
                 "Async operation completed: Name={OperationName}, Duration={Duration}ms",
-                operationName, stopwatch.ElapsedMilliseconds);
+                operationName,
+                stopwatch.ElapsedMilliseconds
+            );
 
             return result;
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            logger.LogError(ex,
+            logger.LogError(
+                ex,
                 "Async operation failed: Name={OperationName}, Duration={Duration}ms",
-                operationName, stopwatch.ElapsedMilliseconds);
+                operationName,
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -95,7 +111,8 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         string operationName,
         Func<Task> operation,
-        LogLevel logLevel = LogLevel.Debug)
+        LogLevel logLevel = LogLevel.Debug
+    )
     {
         var stopwatch = Stopwatch.StartNew();
         try
@@ -103,16 +120,23 @@ public static class PerformanceLoggingUtilities
             await operation();
             stopwatch.Stop();
 
-            logger.Log(logLevel, LogEventIds.OperationDurationMetrics,
+            logger.Log(
+                logLevel,
+                LogEventIds.OperationDurationMetrics,
                 "Async operation completed: Name={OperationName}, Duration={Duration}ms",
-                operationName, stopwatch.ElapsedMilliseconds);
+                operationName,
+                stopwatch.ElapsedMilliseconds
+            );
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            logger.LogError(ex,
+            logger.LogError(
+                ex,
                 "Async operation failed: Name={OperationName}, Duration={Duration}ms",
-                operationName, stopwatch.ElapsedMilliseconds);
+                operationName,
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -127,7 +151,8 @@ public static class PerformanceLoggingUtilities
     public static IDisposable CreateOperationTimer(
         ILogger logger,
         string operationName,
-        LogLevel logLevel = LogLevel.Debug)
+        LogLevel logLevel = LogLevel.Debug
+    )
     {
         return new OperationTimer(logger, operationName, logLevel);
     }
@@ -148,19 +173,28 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         int totalTokens,
         long durationMs,
-        string? operationName = null)
+        string? operationName = null
+    )
     {
         if (durationMs <= 0)
         {
-            logger.LogWarning("Invalid duration for tokens per second calculation: {Duration}ms", durationMs);
+            logger.LogWarning(
+                "Invalid duration for tokens per second calculation: {Duration}ms",
+                durationMs
+            );
             return 0;
         }
 
         var tokensPerSecond = (totalTokens * 1000.0) / durationMs;
 
-        logger.LogDebug(LogEventIds.TokensPerSecondMetrics,
+        logger.LogDebug(
+            LogEventIds.TokensPerSecondMetrics,
             "Tokens per second calculated: Operation={Operation}, TotalTokens={TotalTokens}, Duration={Duration}ms, TokensPerSecond={TokensPerSecond:F2}",
-            operationName ?? "Unknown", totalTokens, durationMs, tokensPerSecond);
+            operationName ?? "Unknown",
+            totalTokens,
+            durationMs,
+            tokensPerSecond
+        );
 
         return tokensPerSecond;
     }
@@ -173,7 +207,8 @@ public static class PerformanceLoggingUtilities
     /// <returns>The calculated tokens per second rate.</returns>
     public static double CalculateTokensPerSecond(int totalTokens, long durationMs)
     {
-        if (durationMs <= 0) return 0;
+        if (durationMs <= 0)
+            return 0;
         return (totalTokens * 1000.0) / durationMs;
     }
 
@@ -192,14 +227,24 @@ public static class PerformanceLoggingUtilities
         int? completionTokens,
         long totalDurationMs,
         long? timeToFirstTokenMs = null,
-        string? operationName = null)
+        string? operationName = null
+    )
     {
         var totalTokens = (promptTokens ?? 0) + (completionTokens ?? 0);
-        var tokensPerSecond = totalTokens > 0 ? CalculateTokensPerSecond(totalTokens, totalDurationMs) : 0;
+        var tokensPerSecond =
+            totalTokens > 0 ? CalculateTokensPerSecond(totalTokens, totalDurationMs) : 0;
 
-        logger.LogDebug(LogEventIds.TokenMetrics,
+        logger.LogDebug(
+            LogEventIds.TokenMetrics,
             "Comprehensive token metrics: Operation={Operation}, PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, TotalTokens={TotalTokens}, Duration={Duration}ms, TimeToFirstToken={TimeToFirstToken}ms, TokensPerSecond={TokensPerSecond:F2}",
-            operationName ?? "Unknown", promptTokens, completionTokens, totalTokens, totalDurationMs, timeToFirstTokenMs, tokensPerSecond);
+            operationName ?? "Unknown",
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            totalDurationMs,
+            timeToFirstTokenMs,
+            tokensPerSecond
+        );
     }
 
     #endregion
@@ -216,13 +261,19 @@ public static class PerformanceLoggingUtilities
     public static long MeasureAndLogMemoryUsage(
         ILogger logger,
         string componentName,
-        string operation)
+        string operation
+    )
     {
         var memoryUsage = GC.GetTotalMemory(false);
 
-        logger.LogDebug(LogEventIds.MemoryMetrics,
+        logger.LogDebug(
+            LogEventIds.MemoryMetrics,
             "Memory usage measured: Component={Component}, Operation={Operation}, MemoryUsage={MemoryUsage} bytes ({MemoryUsageMB:F2} MB)",
-            componentName, operation, memoryUsage, memoryUsage / (1024.0 * 1024.0));
+            componentName,
+            operation,
+            memoryUsage,
+            memoryUsage / (1024.0 * 1024.0)
+        );
 
         return memoryUsage;
     }
@@ -242,7 +293,8 @@ public static class PerformanceLoggingUtilities
         string componentName,
         string operationName,
         Func<T> operation,
-        bool forceGC = false)
+        bool forceGC = false
+    )
     {
         if (forceGC)
         {
@@ -256,9 +308,16 @@ public static class PerformanceLoggingUtilities
         var memoryAfter = GC.GetTotalMemory(false);
         var memoryDelta = memoryAfter - memoryBefore;
 
-        logger.LogDebug(LogEventIds.MemoryMetrics,
+        logger.LogDebug(
+            LogEventIds.MemoryMetrics,
             "Memory impact measured: Component={Component}, Operation={Operation}, MemoryBefore={MemoryBefore} bytes, MemoryAfter={MemoryAfter} bytes, MemoryDelta={MemoryDelta} bytes ({MemoryDeltaMB:F2} MB)",
-            componentName, operationName, memoryBefore, memoryAfter, memoryDelta, memoryDelta / (1024.0 * 1024.0));
+            componentName,
+            operationName,
+            memoryBefore,
+            memoryAfter,
+            memoryDelta,
+            memoryDelta / (1024.0 * 1024.0)
+        );
 
         return result;
     }
@@ -278,11 +337,16 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         string cacheType,
         string key,
-        long? retrievalTimeMs = null)
+        long? retrievalTimeMs = null
+    )
     {
-        logger.LogDebug(LogEventIds.CacheMetrics,
+        logger.LogDebug(
+            LogEventIds.CacheMetrics,
             "Cache hit: Type={CacheType}, Key={Key}, RetrievalTime={RetrievalTime}ms",
-            cacheType, key, retrievalTimeMs);
+            cacheType,
+            key,
+            retrievalTimeMs
+        );
     }
 
     /// <summary>
@@ -296,11 +360,16 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         string cacheType,
         string key,
-        string? reason = null)
+        string? reason = null
+    )
     {
-        logger.LogDebug(LogEventIds.CacheMetrics,
+        logger.LogDebug(
+            LogEventIds.CacheMetrics,
             "Cache miss: Type={CacheType}, Key={Key}, Reason={Reason}",
-            cacheType, key, reason ?? "Not found");
+            cacheType,
+            key,
+            reason ?? "Not found"
+        );
     }
 
     /// <summary>
@@ -316,11 +385,17 @@ public static class PerformanceLoggingUtilities
         string cacheType,
         string key,
         long? valueSize = null,
-        long? setTimeMs = null)
+        long? setTimeMs = null
+    )
     {
-        logger.LogDebug(LogEventIds.CacheMetrics,
+        logger.LogDebug(
+            LogEventIds.CacheMetrics,
             "Cache set: Type={CacheType}, Key={Key}, ValueSize={ValueSize} bytes, SetTime={SetTime}ms",
-            cacheType, key, valueSize, setTimeMs);
+            cacheType,
+            key,
+            valueSize,
+            setTimeMs
+        );
     }
 
     /// <summary>
@@ -338,13 +413,21 @@ public static class PerformanceLoggingUtilities
         int totalRequests,
         int hits,
         int misses,
-        double? averageRetrievalTimeMs = null)
+        double? averageRetrievalTimeMs = null
+    )
     {
         var hitRate = totalRequests > 0 ? (hits * 100.0) / totalRequests : 0;
 
-        logger.LogInformation(LogEventIds.CacheMetrics,
+        logger.LogInformation(
+            LogEventIds.CacheMetrics,
             "Cache statistics: Type={CacheType}, TotalRequests={TotalRequests}, Hits={Hits}, Misses={Misses}, HitRate={HitRate:F1}%, AverageRetrievalTime={AverageRetrievalTime:F2}ms",
-            cacheType, totalRequests, hits, misses, hitRate, averageRetrievalTimeMs);
+            cacheType,
+            totalRequests,
+            hits,
+            misses,
+            hitRate,
+            averageRetrievalTimeMs
+        );
     }
 
     #endregion
@@ -403,18 +486,29 @@ public static class PerformanceLoggingUtilities
 
         public void Dispose()
         {
-            if (_disposed) return;
+            if (_disposed)
+                return;
 
             _totalStopwatch.Stop();
 
-            var timeToFirstToken = _firstTokenReceived ? _firstTokenStopwatch.ElapsedMilliseconds : (long?)null;
-            var tokensPerSecond = _totalTokens > 0 && _totalStopwatch.ElapsedMilliseconds > 0
-                ? CalculateTokensPerSecond(_totalTokens, _totalStopwatch.ElapsedMilliseconds)
-                : (double?)null;
+            var timeToFirstToken = _firstTokenReceived
+                ? _firstTokenStopwatch.ElapsedMilliseconds
+                : (long?)null;
+            var tokensPerSecond =
+                _totalTokens > 0 && _totalStopwatch.ElapsedMilliseconds > 0
+                    ? CalculateTokensPerSecond(_totalTokens, _totalStopwatch.ElapsedMilliseconds)
+                    : (double?)null;
 
-            _logger.LogDebug(LogEventIds.StreamingMetrics,
+            _logger.LogDebug(
+                LogEventIds.StreamingMetrics,
                 "Streaming completed: Operation={Operation}, TotalChunks={TotalChunks}, TotalTokens={TotalTokens}, TotalDuration={TotalDuration}ms, TimeToFirstToken={TimeToFirstToken}ms, TokensPerSecond={TokensPerSecond:F2}",
-                _operationName, _chunkCount, _totalTokens, _totalStopwatch.ElapsedMilliseconds, timeToFirstToken, tokensPerSecond);
+                _operationName,
+                _chunkCount,
+                _totalTokens,
+                _totalStopwatch.ElapsedMilliseconds,
+                timeToFirstToken,
+                tokensPerSecond
+            );
 
             _disposed = true;
         }
@@ -426,7 +520,10 @@ public static class PerformanceLoggingUtilities
     /// <param name="logger">The logger instance.</param>
     /// <param name="operationName">The name of the streaming operation.</param>
     /// <returns>A disposable streaming metrics tracker.</returns>
-    public static StreamingMetricsTracker CreateStreamingTracker(ILogger logger, string operationName)
+    public static StreamingMetricsTracker CreateStreamingTracker(
+        ILogger logger,
+        string operationName
+    )
     {
         return new StreamingMetricsTracker(logger, operationName);
     }
@@ -448,7 +545,8 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         string objectType,
         Func<T, string> serializer,
-        T obj)
+        T obj
+    )
     {
         var stopwatch = Stopwatch.StartNew();
         try
@@ -456,18 +554,25 @@ public static class PerformanceLoggingUtilities
             var result = serializer(obj);
             stopwatch.Stop();
 
-            logger.LogDebug(LogEventIds.SerializationMetrics,
+            logger.LogDebug(
+                LogEventIds.SerializationMetrics,
                 "Serialization completed: Type={ObjectType}, Duration={Duration}ms, ResultSize={ResultSize} chars",
-                objectType, stopwatch.ElapsedMilliseconds, result.Length);
+                objectType,
+                stopwatch.ElapsedMilliseconds,
+                result.Length
+            );
 
             return result;
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            logger.LogError(ex,
+            logger.LogError(
+                ex,
                 "Serialization failed: Type={ObjectType}, Duration={Duration}ms",
-                objectType, stopwatch.ElapsedMilliseconds);
+                objectType,
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -485,7 +590,8 @@ public static class PerformanceLoggingUtilities
         ILogger logger,
         string objectType,
         Func<string, T> deserializer,
-        string data)
+        string data
+    )
     {
         var stopwatch = Stopwatch.StartNew();
         try
@@ -493,18 +599,26 @@ public static class PerformanceLoggingUtilities
             var result = deserializer(data);
             stopwatch.Stop();
 
-            logger.LogDebug(LogEventIds.SerializationMetrics,
+            logger.LogDebug(
+                LogEventIds.SerializationMetrics,
                 "Deserialization completed: Type={ObjectType}, Duration={Duration}ms, InputSize={InputSize} chars",
-                objectType, stopwatch.ElapsedMilliseconds, data.Length);
+                objectType,
+                stopwatch.ElapsedMilliseconds,
+                data.Length
+            );
 
             return result;
         }
         catch (Exception ex)
         {
             stopwatch.Stop();
-            logger.LogError(ex,
+            logger.LogError(
+                ex,
                 "Deserialization failed: Type={ObjectType}, Duration={Duration}ms, InputSize={InputSize} chars",
-                objectType, stopwatch.ElapsedMilliseconds, data.Length);
+                objectType,
+                stopwatch.ElapsedMilliseconds,
+                data.Length
+            );
             throw;
         }
     }
@@ -531,12 +645,17 @@ public static class PerformanceLoggingUtilities
 
         public void Dispose()
         {
-            if (_disposed) return;
+            if (_disposed)
+                return;
 
             _stopwatch.Stop();
-            _logger.Log(_logLevel, LogEventIds.OperationDurationMetrics,
+            _logger.Log(
+                _logLevel,
+                LogEventIds.OperationDurationMetrics,
                 "Operation timer completed: Name={OperationName}, Duration={Duration}ms",
-                _operationName, _stopwatch.ElapsedMilliseconds);
+                _operationName,
+                _stopwatch.ElapsedMilliseconds
+            );
 
             _disposed = true;
         }

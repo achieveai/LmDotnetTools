@@ -31,7 +31,8 @@ public static class HttpClientFactory
         TimeSpan? timeout = null,
         IReadOnlyDictionary<string, string>? headers = null,
         string apiKeyHeaderName = "Authorization",
-        string apiKeyPrefix = "Bearer ")
+        string apiKeyPrefix = "Bearer "
+    )
     {
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
@@ -39,7 +40,7 @@ public static class HttpClientFactory
         var httpClient = new HttpClient
         {
             BaseAddress = new Uri(baseUrl.TrimEnd('/')),
-            Timeout = timeout ?? DefaultTimeout
+            Timeout = timeout ?? DefaultTimeout,
         };
 
         // Add API key header
@@ -69,15 +70,10 @@ public static class HttpClientFactory
         string apiKey,
         string baseUrl,
         TimeSpan? timeout = null,
-        IReadOnlyDictionary<string, string>? headers = null)
+        IReadOnlyDictionary<string, string>? headers = null
+    )
     {
-        return CreateWithApiKey(
-            apiKey,
-            baseUrl,
-            timeout,
-            headers,
-            "Authorization",
-            "Bearer ");
+        return CreateWithApiKey(apiKey, baseUrl, timeout, headers, "Authorization", "Bearer ");
     }
 
     /// <summary>
@@ -92,16 +88,11 @@ public static class HttpClientFactory
         string apiKey,
         string baseUrl = "https://api.anthropic.com",
         TimeSpan? timeout = null,
-        IReadOnlyDictionary<string, string>? headers = null)
+        IReadOnlyDictionary<string, string>? headers = null
+    )
     {
         // Anthropic uses x-api-key header
-        return CreateWithApiKey(
-            apiKey,
-            baseUrl,
-            timeout,
-            headers,
-            "x-api-key",
-            "");
+        return CreateWithApiKey(apiKey, baseUrl, timeout, headers, "x-api-key", "");
     }
 
     /// <summary>
@@ -120,7 +111,8 @@ public static class HttpClientFactory
         HttpConfiguration configuration,
         IReadOnlyDictionary<string, string>? headers = null,
         string apiKeyHeaderName = "Authorization",
-        string apiKeyPrefix = "Bearer ")
+        string apiKeyPrefix = "Bearer "
+    )
     {
         configuration.Validate();
 
@@ -130,7 +122,8 @@ public static class HttpClientFactory
             configuration.Timeout,
             headers,
             apiKeyHeaderName,
-            apiKeyPrefix);
+            apiKeyPrefix
+        );
     }
 
     /// <summary>
@@ -147,12 +140,13 @@ public static class HttpClientFactory
         string endpointUrl,
         IReadOnlyDictionary<string, string>? connectionHeaders = null,
         TimeSpan? timeout = null,
-        string compatibility = "OpenAI")
+        string compatibility = "OpenAI"
+    )
     {
         return compatibility.ToUpperInvariant() switch
         {
             "ANTHROPIC" => CreateForAnthropic(apiKey, endpointUrl, timeout, connectionHeaders),
-            "OPENAI" or _ => CreateForOpenAI(apiKey, endpointUrl, timeout, connectionHeaders)
+            "OPENAI" or _ => CreateForOpenAI(apiKey, endpointUrl, timeout, connectionHeaders),
         };
     }
 }

@@ -120,7 +120,7 @@ public enum TopicTransitionType
     /// <summary>
     /// Conclusion or summary of the current topic.
     /// </summary>
-    Conclusion
+    Conclusion,
 }
 
 /// <summary>
@@ -315,7 +315,7 @@ public enum ValidationIssueType
     /// <summary>
     /// Topic duplication across segments.
     /// </summary>
-    TopicDuplication
+    TopicDuplication,
 }
 
 /// <summary>
@@ -341,7 +341,7 @@ public enum ValidationSeverity
     /// <summary>
     /// Critical - severe issue affecting usability.
     /// </summary>
-    Critical
+    Critical,
 }
 
 /// <summary>
@@ -423,7 +423,7 @@ public enum TopicAnalysisMethod
     /// <summary>
     /// Rule-based topic detection.
     /// </summary>
-    RuleBased
+    RuleBased,
 }
 
 /// <summary>
@@ -572,7 +572,7 @@ public enum TopicCoherenceIssueType
     /// <summary>
     /// Unclear topic focus.
     /// </summary>
-    UnclearFocus
+    UnclearFocus,
 }
 
 /// <summary>

@@ -1,11 +1,11 @@
+using System.Net;
+using System.Text.Json;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using Microsoft.Extensions.Logging;
-using System.Net;
-using System.Text.Json;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -28,11 +28,15 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_WithRetryOnTransientFailure_ShouldSucceed()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponse("Test response from Claude", "claude-3-sonnet-20240229");
+        var successResponse = CreateAnthropicSuccessResponse(
+            "Test response from Claude",
+            "claude-3-sonnet-20240229"
+        );
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount: 2,
             successResponse: successResponse,
-            failureStatus: HttpStatusCode.ServiceUnavailable);
+            failureStatus: HttpStatusCode.ServiceUnavailable
+        );
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
@@ -48,10 +52,10 @@ public class AnthropicClientHttpTests
                     Role = "user",
                     Content = new List<AnthropicContent>
                     {
-                        new AnthropicContent { Type = "text", Text = "Hello Claude" }
-                    }
-                }
-            }
+                        new AnthropicContent { Type = "text", Text = "Hello Claude" },
+                    },
+                },
+            },
         };
 
         // Act
@@ -76,8 +80,7 @@ public class AnthropicClientHttpTests
     public void CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            new AnthropicClient(""));
+        var exception = Assert.Throws<ArgumentException>(() => new AnthropicClient(""));
 
         Assert.Contains("Value cannot be null, empty, or whitespace", exception.Message);
     }
@@ -94,25 +97,28 @@ public class AnthropicClientHttpTests
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>() // Empty messages
+            Messages = new List<AnthropicMessage>(), // Empty messages
         };
 
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            client.CreateChatCompletionsAsync(request));
+            client.CreateChatCompletionsAsync(request)
+        );
     }
 
     [Theory]
     [MemberData(nameof(GetRetryScenarios))]
     public async Task CreateChatCompletionsAsync_RetryScenarios_ShouldHandleCorrectly(
         HttpStatusCode[] statusCodes,
-        bool shouldSucceed)
+        bool shouldSucceed
+    )
     {
         // Arrange
         var successResponse = CreateAnthropicSuccessResponse("Success", "claude-3-sonnet-20240229");
         var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(
             statusCodes,
-            successResponse);
+            successResponse
+        );
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
@@ -128,10 +134,10 @@ public class AnthropicClientHttpTests
                     Role = "user",
                     Content = new List<AnthropicContent>
                     {
-                        new AnthropicContent { Type = "text", Text = "Test" }
-                    }
-                }
-            }
+                        new AnthropicContent { Type = "text", Text = "Test" },
+                    },
+                },
+            },
         };
 
         // Act & Assert
@@ -143,7 +149,8 @@ public class AnthropicClientHttpTests
         else
         {
             await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
-                client.CreateChatCompletionsAsync(request));
+                client.CreateChatCompletionsAsync(request)
+            );
         }
 
         // Verify performance tracking captured the metrics
@@ -156,10 +163,14 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_AnthropicUsageMapping_ShouldMapTokensCorrectly()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 50, outputTokens: 25);
+        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(
+            inputTokens: 50,
+            outputTokens: 25
+        );
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             successResponse,
-            HttpStatusCode.OK);
+            HttpStatusCode.OK
+        );
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
@@ -175,10 +186,10 @@ public class AnthropicClientHttpTests
                     Role = "user",
                     Content = new List<AnthropicContent>
                     {
-                        new AnthropicContent { Type = "text", Text = "Hello" }
-                    }
-                }
-            }
+                        new AnthropicContent { Type = "text", Text = "Hello" },
+                    },
+                },
+            },
         };
 
         // Act
@@ -205,7 +216,8 @@ public class AnthropicClientHttpTests
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount: 1,
             successResponse: string.Join("", streamingEvents),
-            failureStatus: HttpStatusCode.ServiceUnavailable);
+            failureStatus: HttpStatusCode.ServiceUnavailable
+        );
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
@@ -222,10 +234,10 @@ public class AnthropicClientHttpTests
                     Role = "user",
                     Content = new List<AnthropicContent>
                     {
-                        new AnthropicContent { Type = "text", Text = "Hello" }
-                    }
-                }
-            }
+                        new AnthropicContent { Type = "text", Text = "Hello" },
+                    },
+                },
+            },
         };
 
         // Act
@@ -251,10 +263,14 @@ public class AnthropicClientHttpTests
     public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordDetailedMetrics()
     {
         // Arrange
-        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(inputTokens: 100, outputTokens: 50);
+        var successResponse = CreateAnthropicSuccessResponseWithSpecificUsage(
+            inputTokens: 100,
+            outputTokens: 50
+        );
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             successResponse,
-            HttpStatusCode.OK);
+            HttpStatusCode.OK
+        );
 
         var httpClient = new HttpClient(fakeHandler);
         var client = new AnthropicClient(httpClient, _performanceTracker, _logger);
@@ -270,10 +286,10 @@ public class AnthropicClientHttpTests
                     Role = "user",
                     Content = new List<AnthropicContent>
                     {
-                        new AnthropicContent { Type = "text", Text = "Complex reasoning task" }
-                    }
-                }
-            }
+                        new AnthropicContent { Type = "text", Text = "Complex reasoning task" },
+                    },
+                },
+            },
         };
 
         // Act
@@ -308,18 +324,17 @@ public class AnthropicClientHttpTests
                 new AnthropicResponseTextContent
                 {
                     Type = "text",
-                    Text = "Test response from Claude"
-                }
+                    Text = "Test response from Claude",
+                },
             },
-            Usage = new AnthropicUsage
-            {
-                InputTokens = 10,
-                OutputTokens = 5
-            }
+            Usage = new AnthropicUsage { InputTokens = 10, OutputTokens = 5 },
         };
     }
 
-    private static AnthropicResponse CreateAnthropicSuccessResponseWithUsage(int inputTokens, int outputTokens)
+    private static AnthropicResponse CreateAnthropicSuccessResponseWithUsage(
+        int inputTokens,
+        int outputTokens
+    )
     {
         return new AnthropicResponse
         {
@@ -332,14 +347,10 @@ public class AnthropicClientHttpTests
                 new AnthropicResponseTextContent
                 {
                     Type = "text",
-                    Text = "Test response with specific usage"
-                }
+                    Text = "Test response with specific usage",
+                },
             },
-            Usage = new AnthropicUsage
-            {
-                InputTokens = inputTokens,
-                OutputTokens = outputTokens
-            }
+            Usage = new AnthropicUsage { InputTokens = inputTokens, OutputTokens = outputTokens },
         };
     }
 
@@ -359,63 +370,68 @@ public class AnthropicClientHttpTests
         // Scenario: Transient failures that should retry and eventually succeed
         yield return new object[]
         {
-            new[] { HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests, HttpStatusCode.OK },
-            true // should succeed
+            new[]
+            {
+                HttpStatusCode.ServiceUnavailable,
+                HttpStatusCode.TooManyRequests,
+                HttpStatusCode.OK,
+            },
+            true, // should succeed
         };
 
         // Scenario: Non-retryable error (Bad Request)
         yield return new object[]
         {
             new[] { HttpStatusCode.BadRequest },
-            false // should fail
+            false, // should fail
         };
 
         // Scenario: Max retries exceeded
         yield return new object[]
         {
-            new[] {
+            new[]
+            {
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
                 HttpStatusCode.ServiceUnavailable,
-                HttpStatusCode.ServiceUnavailable
+                HttpStatusCode.ServiceUnavailable,
             },
-            false // should fail after max retries
+            false, // should fail after max retries
         };
 
         // Scenario: Success on first try
         yield return new object[]
         {
             new[] { HttpStatusCode.OK },
-            true // should succeed
+            true, // should succeed
         };
     }
 
     /// <summary>
     /// Creates an Anthropic-specific successful response JSON
     /// </summary>
-    private static string CreateAnthropicSuccessResponse(string content = "Hello! How can I help you today?", string model = "claude-3-sonnet-20240229")
+    private static string CreateAnthropicSuccessResponse(
+        string content = "Hello! How can I help you today?",
+        string model = "claude-3-sonnet-20240229"
+    )
     {
         var response = new
         {
-            type = "message",  // Must be first property for polymorphic deserialization
+            type = "message", // Must be first property for polymorphic deserialization
             id = "msg_test123",
             role = "assistant",
             content = new[]
             {
                 new
                 {
-                    type = "text",  // Must be first property for polymorphic deserialization
-                    text = content
-                }
+                    type = "text", // Must be first property for polymorphic deserialization
+                    text = content,
+                },
             },
             model = model,
             stop_reason = "end_turn",
             stop_sequence = (string?)null,
-            usage = new
-            {
-                input_tokens = 10,
-                output_tokens = 20
-            }
+            usage = new { input_tokens = 10, output_tokens = 20 },
         };
 
         return System.Text.Json.JsonSerializer.Serialize(response);
@@ -424,29 +440,28 @@ public class AnthropicClientHttpTests
     /// <summary>
     /// Creates an Anthropic-specific successful response JSON with specific usage
     /// </summary>
-    private static string CreateAnthropicSuccessResponseWithSpecificUsage(int inputTokens, int outputTokens)
+    private static string CreateAnthropicSuccessResponseWithSpecificUsage(
+        int inputTokens,
+        int outputTokens
+    )
     {
         var response = new
         {
-            type = "message",  // Must be first property for polymorphic deserialization
+            type = "message", // Must be first property for polymorphic deserialization
             id = "msg_test123",
             role = "assistant",
             content = new[]
             {
                 new
                 {
-                    type = "text",  // Must be first property for polymorphic deserialization
-                    text = "Test response with specific usage"
-                }
+                    type = "text", // Must be first property for polymorphic deserialization
+                    text = "Test response with specific usage",
+                },
             },
             model = "claude-3-sonnet-20240229",
             stop_reason = "end_turn",
             stop_sequence = (string?)null,
-            usage = new
-            {
-                input_tokens = inputTokens,
-                output_tokens = outputTokens
-            }
+            usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
         };
 
         return System.Text.Json.JsonSerializer.Serialize(response);

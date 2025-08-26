@@ -17,5 +17,6 @@ public interface IStreamingAgent : IAgent
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

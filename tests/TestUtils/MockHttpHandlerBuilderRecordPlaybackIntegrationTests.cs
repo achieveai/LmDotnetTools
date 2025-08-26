@@ -4,12 +4,12 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using AchieveAi.LmDotnetTools.LmTestUtils;
 using dotenv.net;
-using Xunit;
 using Microsoft.VisualStudio.TestPlatform.CoreUtilities.Helpers;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.TestUtils.Tests;
 
@@ -22,11 +22,13 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
         string testDataPath = Path.Combine(Path.GetTempPath(), $"test_data_{Guid.NewGuid()}.json");
 
         // Create MockHttpHandlerBuilder with record/playback and OpenAI response
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataPath, allowAdditional: true)
             .ForwardToApi(
                 LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL"),
-                LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY"))
+                LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY")
+            )
             .Build();
 
         // Create HttpClient with our mock handler
@@ -36,18 +38,14 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
         // Create a simple request
         var messages = new IMessage[]
         {
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "test message"
-            }
+            new TextMessage { Role = Role.User, Text = "test message" },
         };
 
         var options = new GenerateReplyOptions
         {
             ModelId = "meta-llama/llama-4-maverick:free",
             Temperature = 0.7f,
-            MaxToken = 100
+            MaxToken = 100,
         };
 
         var request = ChatCompletionRequest.FromMessages(messages, options);
@@ -82,9 +80,11 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY",
+        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv(
+            "OPENAI_API_KEY",
             new[] { "LLM_API_KEY" },
-            "test-api-key");
+            "test-api-key"
+        );
     }
 
     /// <summary>
@@ -92,8 +92,10 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL",
+        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv(
+            "OPENAI_API_URL",
             new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1");
+            "https://api.openai.com/v1"
+        );
     }
 }

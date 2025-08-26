@@ -1,8 +1,8 @@
-using Microsoft.Extensions.Options;
-using MemoryServer.Models;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using MemoryServer.Models;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Infrastructure;
 
@@ -27,18 +27,24 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     public SqliteSessionFactory(IOptions<DatabaseOptions> options, ILoggerFactory loggerFactory)
     {
         var databaseOptions = options?.Value ?? throw new ArgumentNullException(nameof(options));
-        _connectionString = databaseOptions.ConnectionString ?? throw new ArgumentException("Connection string is required");
+        _connectionString =
+            databaseOptions.ConnectionString
+            ?? throw new ArgumentException("Connection string is required");
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = _loggerFactory.CreateLogger<SqliteSessionFactory>();
 
         _initializationSemaphore = new SemaphoreSlim(1, 1);
         _activeSessions = new ConcurrentDictionary<string, DateTime>();
 
-        _logger.LogDebug("SQLite session factory created with connection string: {ConnectionString}",
-            MaskConnectionString(_connectionString));
+        _logger.LogDebug(
+            "SQLite session factory created with connection string: {ConnectionString}",
+            MaskConnectionString(_connectionString)
+        );
     }
 
-    public async Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default)
+    public async Task<ISqliteSession> CreateSessionAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -46,7 +52,10 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         {
             await EnsureInitializedAsync(cancellationToken);
 
-            var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
+            var session = new SqliteSession(
+                _connectionString,
+                _loggerFactory.CreateLogger<SqliteSession>()
+            );
 
             // Track session for metrics
             _activeSessions[session.SessionId] = DateTime.UtcNow;
@@ -64,8 +73,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug("Created session {SessionId} in {ElapsedMs}ms",
-                session.SessionId, stopwatch.ElapsedMilliseconds);
+            _logger.LogDebug(
+                "Created session {SessionId} in {ElapsedMs}ms",
+                session.SessionId,
+                stopwatch.ElapsedMilliseconds
+            );
 
             // Wrap session to track disposal
             return new TrackedSqliteSession(session, this);
@@ -77,21 +89,34 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 _failedSessionCreations++;
             }
 
-            _logger.LogError(ex, "Failed to create session after {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
+            _logger.LogError(
+                ex,
+                "Failed to create session after {ElapsedMs}ms",
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
 
-    public Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default)
+    public Task<ISqliteSession> CreateSessionAsync(
+        string connectionString,
+        CancellationToken cancellationToken = default
+    )
     {
         if (string.IsNullOrEmpty(connectionString))
-            throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
+            throw new ArgumentException(
+                "Connection string cannot be null or empty",
+                nameof(connectionString)
+            );
 
         var stopwatch = Stopwatch.StartNew();
 
         try
         {
-            var session = new SqliteSession(connectionString, _loggerFactory.CreateLogger<SqliteSession>());
+            var session = new SqliteSession(
+                connectionString,
+                _loggerFactory.CreateLogger<SqliteSession>()
+            );
 
             // Track session for metrics
             _activeSessions[session.SessionId] = DateTime.UtcNow;
@@ -107,8 +132,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug("Created session {SessionId} with custom connection string in {ElapsedMs}ms",
-                session.SessionId, stopwatch.ElapsedMilliseconds);
+            _logger.LogDebug(
+                "Created session {SessionId} with custom connection string in {ElapsedMs}ms",
+                session.SessionId,
+                stopwatch.ElapsedMilliseconds
+            );
 
             return Task.FromResult<ISqliteSession>(new TrackedSqliteSession(session, this));
         }
@@ -119,8 +147,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 _failedSessionCreations++;
             }
 
-            _logger.LogError(ex, "Failed to create session with custom connection string after {ElapsedMs}ms",
-                stopwatch.ElapsedMilliseconds);
+            _logger.LogError(
+                ex,
+                "Failed to create session with custom connection string after {ElapsedMs}ms",
+                stopwatch.ElapsedMilliseconds
+            );
             throw;
         }
     }
@@ -133,27 +164,34 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         await _initializationSemaphore.WaitAsync(cancellationToken);
         try
         {
-            if (_isInitialized) return;
+            if (_isInitialized)
+                return;
 
             _logger.LogInformation("Initializing database schema...");
 
             // Create session directly without going through EnsureInitializedAsync to avoid circular dependency
-            var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
+            var session = new SqliteSession(
+                _connectionString,
+                _loggerFactory.CreateLogger<SqliteSession>()
+            );
             await using var _ = session;
 
-            await session.ExecuteAsync(async connection =>
-            {
-                // Create all tables first
-                foreach (var script in GetSchemaScripts())
+            await session.ExecuteAsync(
+                async connection =>
                 {
-                    using var command = connection.CreateCommand();
-                    command.CommandText = script;
-                    await command.ExecuteNonQueryAsync(cancellationToken);
-                }
+                    // Create all tables first
+                    foreach (var script in GetSchemaScripts())
+                    {
+                        using var command = connection.CreateCommand();
+                        command.CommandText = script;
+                        await command.ExecuteNonQueryAsync(cancellationToken);
+                    }
 
-                // Apply migrations for existing databases
-                await ApplyMigrationsAsync(connection, cancellationToken);
-            }, cancellationToken);
+                    // Apply migrations for existing databases
+                    await ApplyMigrationsAsync(connection, cancellationToken);
+                },
+                cancellationToken
+            );
 
             _isInitialized = true;
             _logger.LogInformation("Database schema initialized successfully");
@@ -167,13 +205,18 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     /// <summary>
     /// Applies database migrations for schema updates.
     /// </summary>
-    private Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    private Task ApplyMigrationsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken
+    )
     {
         // No migrations needed after removing session_defaults table
         return Task.CompletedTask;
     }
 
-    public Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
+    public Task<SessionPerformanceMetrics> GetMetricsAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         lock (_metricsLock)
         {
@@ -183,7 +226,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 ActiveSessions = _activeSessions.Count,
                 FailedSessionCreations = _failedSessionCreations,
                 ConnectionLeaksDetected = 0, // TODO: Implement leak detection
-                LastUpdated = DateTime.UtcNow
+                LastUpdated = DateTime.UtcNow,
             };
 
             if (_sessionCreationTimes.Count > 0)
@@ -233,7 +276,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug("Session {SessionId} disposed after {LifetimeMs}ms", sessionId, lifetime);
+            _logger.LogDebug(
+                "Session {SessionId} disposed after {LifetimeMs}ms",
+                sessionId,
+                lifetime
+            );
         }
     }
 
@@ -245,7 +292,10 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         }
     }
 
-    private async Task ExecuteSchemaScriptsAsync(Microsoft.Data.Sqlite.SqliteConnection connection, CancellationToken cancellationToken)
+    private async Task ExecuteSchemaScriptsAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        CancellationToken cancellationToken
+    )
     {
         var schemaScripts = GetSchemaScripts();
 
@@ -267,7 +317,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             @"CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
             )",
-
             // Main memories table with integer primary key
             @"CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY,
@@ -282,13 +331,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 CONSTRAINT chk_content_length CHECK (length(content) <= 10000),
                 CONSTRAINT chk_user_id_format CHECK (length(user_id) > 0 AND length(user_id) <= 100)
             )",
-
             // Vector embeddings using sqlite-vec (primary approach)
             @"                CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
                     memory_id INTEGER PRIMARY KEY,
                     embedding FLOAT[1024]
                 );",
-
             // FTS5 virtual table for full-text search
             @"CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 content,
@@ -296,7 +343,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 content='memories',
                 content_rowid='id'
             )",
-
             // Graph entities table
             @"CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY,
@@ -313,7 +359,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 metadata TEXT, -- JSON
                 version INTEGER DEFAULT 1
             )",
-
             // Graph relationships table
             @"CREATE TABLE IF NOT EXISTS relationships (
                 id INTEGER PRIMARY KEY,
@@ -331,7 +376,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 metadata TEXT, -- JSON
                 version INTEGER DEFAULT 1
             )",
-
             // Performance indexes
             @"CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC)",
@@ -339,20 +383,16 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             @"CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)",
             @"CREATE INDEX IF NOT EXISTS idx_relationships_session ON relationships(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_relationships_entities ON relationships(source_entity_name, target_entity_name)",
-
             // FTS5 triggers for automatic content indexing
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
                 INSERT INTO memory_fts(rowid, content, metadata) VALUES (new.id, new.content, new.metadata);
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
                 UPDATE memory_fts SET content = new.content, metadata = new.metadata WHERE rowid = new.id;
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.id;
             END",
-
             // Document Segmentation tables (Phase 1)
             @"CREATE TABLE IF NOT EXISTS document_segments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -377,7 +417,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 CONSTRAINT chk_document_segments_topic_consistency_score CHECK (topic_consistency_score >= 0.0 AND topic_consistency_score <= 1.0),
                 FOREIGN KEY (parent_document_id) REFERENCES memories(id) ON DELETE CASCADE
             )",
-
             @"CREATE TABLE IF NOT EXISTS segment_relationships (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_segment_id TEXT NOT NULL,
@@ -395,7 +434,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 FOREIGN KEY (source_segment_id) REFERENCES document_segments(segment_id) ON DELETE CASCADE,
                 FOREIGN KEY (target_segment_id) REFERENCES document_segments(segment_id) ON DELETE CASCADE
             )",
-
             // Document segmentation indexes
             @"CREATE INDEX IF NOT EXISTS idx_document_segments_parent ON document_segments(parent_document_id)",
             @"CREATE INDEX IF NOT EXISTS idx_document_segments_session ON document_segments(user_id, agent_id, run_id)",
@@ -405,7 +443,6 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             @"CREATE INDEX IF NOT EXISTS idx_segment_relationships_target ON segment_relationships(target_segment_id)",
             @"CREATE INDEX IF NOT EXISTS idx_segment_relationships_session ON segment_relationships(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_segment_relationships_type ON segment_relationships(relationship_type)",
-
             // FTS5 virtual table for segment content search
             @"CREATE VIRTUAL TABLE IF NOT EXISTS document_segments_fts USING fts5(
                 content,
@@ -415,13 +452,11 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 content='document_segments',
                 content_rowid='id'
             )",
-
             // FTS5 triggers for document segments
             @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_insert AFTER INSERT ON document_segments BEGIN
                 INSERT INTO document_segments_fts(rowid, content, title, summary, metadata) 
                 VALUES (new.id, new.content, new.title, new.summary, new.metadata);
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_update AFTER UPDATE ON document_segments BEGIN
                 UPDATE document_segments_fts SET 
                     content = new.content, 
@@ -430,10 +465,9 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                     metadata = new.metadata 
                 WHERE rowid = new.id;
             END",
-
             @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_delete AFTER DELETE ON document_segments BEGIN
                 DELETE FROM document_segments_fts WHERE rowid = old.id;
-            END"
+            END",
         };
     }
 
@@ -442,8 +476,13 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         // Simple masking for logging - hide sensitive parts
         if (connectionString.Contains("Password", StringComparison.OrdinalIgnoreCase))
         {
-            return connectionString.Split(';')
-                .Select(part => part.Contains("Password", StringComparison.OrdinalIgnoreCase) ? "Password=***" : part)
+            return connectionString
+                .Split(';')
+                .Select(part =>
+                    part.Contains("Password", StringComparison.OrdinalIgnoreCase)
+                        ? "Password=***"
+                        : part
+                )
                 .Aggregate((a, b) => $"{a};{b}");
         }
         return connectionString;
@@ -468,20 +507,37 @@ internal class TrackedSqliteSession : ISqliteSession
     public string SessionId => _innerSession.SessionId;
     public bool IsDisposed => _disposed || _innerSession.IsDisposed;
 
-    public Task<T> ExecuteAsync<T>(Func<Microsoft.Data.Sqlite.SqliteConnection, Task<T>> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteAsync(operation, cancellationToken);
+    public Task<T> ExecuteAsync<T>(
+        Func<Microsoft.Data.Sqlite.SqliteConnection, Task<T>> operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
 
-    public Task<T> ExecuteInTransactionAsync<T>(Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task<T>> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    public Task<T> ExecuteInTransactionAsync<T>(
+        Func<
+            Microsoft.Data.Sqlite.SqliteConnection,
+            Microsoft.Data.Sqlite.SqliteTransaction,
+            Task<T>
+        > operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
-    public Task ExecuteAsync(Func<Microsoft.Data.Sqlite.SqliteConnection, Task> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteAsync(operation, cancellationToken);
+    public Task ExecuteAsync(
+        Func<Microsoft.Data.Sqlite.SqliteConnection, Task> operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
 
-    public Task ExecuteInTransactionAsync(Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task> operation, CancellationToken cancellationToken = default)
-        => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    public Task ExecuteInTransactionAsync(
+        Func<
+            Microsoft.Data.Sqlite.SqliteConnection,
+            Microsoft.Data.Sqlite.SqliteTransaction,
+            Task
+        > operation,
+        CancellationToken cancellationToken = default
+    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
-    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
-        => _innerSession.GetHealthAsync(cancellationToken);
+    public Task<SessionHealthStatus> GetHealthAsync(
+        CancellationToken cancellationToken = default
+    ) => _innerSession.GetHealthAsync(cancellationToken);
 
     public async ValueTask DisposeAsync()
     {

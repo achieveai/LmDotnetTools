@@ -2,11 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Xunit;
-using Microsoft.Extensions.Logging;
-using Moq;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -26,17 +26,18 @@ public class FunctionFilterTests
 
     private static FunctionDescriptor CreateTestDescriptor(
         string functionName,
-        string providerName = "TestProvider")
+        string providerName = "TestProvider"
+    )
     {
         return new FunctionDescriptor
         {
             Contract = new FunctionContract
             {
                 Name = functionName,
-                Description = $"Test function {functionName} from {providerName}"
+                Description = $"Test function {functionName} from {providerName}",
             },
             Handler = _ => Task.FromResult($"Result from {functionName}"),
-            ProviderName = providerName
+            ProviderName = providerName,
         };
     }
 
@@ -90,8 +91,8 @@ public class FunctionFilterTests
             EnableFiltering = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
-                ["TestProvider"] = new ProviderFilterConfig { Enabled = false }
-            }
+                ["TestProvider"] = new ProviderFilterConfig { Enabled = false },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("testFunction", "TestProvider");
@@ -122,9 +123,9 @@ public class FunctionFilterTests
                 ["TestProvider"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    BlockedFunctions = new List<string> { "blockedFunc", "anotherBlocked" }
-                }
-            }
+                    BlockedFunctions = new List<string> { "blockedFunc", "anotherBlocked" },
+                },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("blockedFunc", "TestProvider");
@@ -152,9 +153,9 @@ public class FunctionFilterTests
                 ["TestProvider"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    BlockedFunctions = new List<string> { "blocked*" }
-                }
-            }
+                    BlockedFunctions = new List<string> { "blocked*" },
+                },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("blockedFunction", "TestProvider");
@@ -184,9 +185,9 @@ public class FunctionFilterTests
                 ["TestProvider"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    AllowedFunctions = new List<string> { "allowedFunc", "anotherAllowed" }
-                }
-            }
+                    AllowedFunctions = new List<string> { "allowedFunc", "anotherAllowed" },
+                },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("notAllowed", "TestProvider");
@@ -213,9 +214,9 @@ public class FunctionFilterTests
                 ["TestProvider"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    AllowedFunctions = new List<string> { "allowedFunc", "anotherAllowed" }
-                }
-            }
+                    AllowedFunctions = new List<string> { "allowedFunc", "anotherAllowed" },
+                },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("allowedFunc", "TestProvider");
@@ -240,7 +241,7 @@ public class FunctionFilterTests
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "globalBlocked", "anotherBlocked" }
+            GlobalBlockedFunctions = new List<string> { "globalBlocked", "anotherBlocked" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("globalBlocked");
@@ -263,7 +264,7 @@ public class FunctionFilterTests
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "TestProvider__*" }
+            GlobalBlockedFunctions = new List<string> { "TestProvider__*" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("anyFunction", "TestProvider");
@@ -288,7 +289,7 @@ public class FunctionFilterTests
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalAllowedFunctions = new List<string> { "globalAllowed", "anotherAllowed" }
+            GlobalAllowedFunctions = new List<string> { "globalAllowed", "anotherAllowed" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("notAllowed");
@@ -310,7 +311,7 @@ public class FunctionFilterTests
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalAllowedFunctions = new List<string> { "globalAllowed", "anotherAllowed" }
+            GlobalAllowedFunctions = new List<string> { "globalAllowed", "anotherAllowed" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("globalAllowed");
@@ -341,9 +342,9 @@ public class FunctionFilterTests
                 ["TestProvider"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    BlockedFunctions = new List<string> { "testFunc" }
-                }
-            }
+                    BlockedFunctions = new List<string> { "testFunc" },
+                },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("testFunc", "TestProvider");
@@ -369,9 +370,9 @@ public class FunctionFilterTests
                 ["TestProvider"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    AllowedFunctions = new List<string> { "testFunc" }
-                }
-            }
+                    AllowedFunctions = new List<string> { "testFunc" },
+                },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("testFunc", "TestProvider");
@@ -404,13 +405,14 @@ public class FunctionFilterTests
     public void MatchesPattern_VariousPatterns_ReturnsExpectedResult(
         string pattern,
         string text,
-        bool expectedMatch)
+        bool expectedMatch
+    )
     {
         // Arrange
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { pattern }
+            GlobalBlockedFunctions = new List<string> { pattern },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor(text);
@@ -438,10 +440,7 @@ public class FunctionFilterTests
         {
             EnableFiltering = true,
             GlobalBlockedFunctions = new List<string> { "blocked*" },
-            GlobalAllowedFunctions = new List<string>
-            {
-                "*", "!blockedSpecial"
-            }
+            GlobalAllowedFunctions = new List<string> { "*", "!blockedSpecial" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
 
@@ -450,7 +449,7 @@ public class FunctionFilterTests
             CreateTestDescriptor("allowedFunc"),
             CreateTestDescriptor("blockedFunc"),
             CreateTestDescriptor("blockedSpecial"),
-            CreateTestDescriptor("anotherAllowed")
+            CreateTestDescriptor("anotherAllowed"),
         };
 
         // Act
@@ -470,7 +469,7 @@ public class FunctionFilterTests
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "prefixed-*" }
+            GlobalBlockedFunctions = new List<string> { "prefixed-*" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
 
@@ -478,7 +477,7 @@ public class FunctionFilterTests
         var descriptors = new[] { descriptor };
         var namingMap = new Dictionary<string, string>
         {
-            [descriptor.Key] = "prefixed-originalName"
+            [descriptor.Key] = "prefixed-originalName",
         };
 
         // Act
@@ -500,7 +499,7 @@ public class FunctionFilterTests
         {
             EnableFiltering = true,
             GlobalBlockedFunctions = new List<string>(),
-            GlobalAllowedFunctions = new List<string>()
+            GlobalAllowedFunctions = new List<string>(),
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("anyFunction");
@@ -520,14 +519,14 @@ public class FunctionFilterTests
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "blocked" }
+            GlobalBlockedFunctions = new List<string> { "blocked" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = new FunctionDescriptor
         {
             Contract = new FunctionContract { Name = "blocked" },
             Handler = _ => Task.FromResult("result"),
-            ProviderName = null
+            ProviderName = null,
         };
 
         // Act
@@ -553,13 +552,10 @@ public class FunctionFilterTests
                 {
                     Enabled = true,
                     BlockedFunctions = new List<string> { "createDangerous" },
-                    AllowedFunctions = new List<string> { "get*", "list*", "create*", "special" }
+                    AllowedFunctions = new List<string> { "get*", "list*", "create*", "special" },
                 },
-                ["Provider2"] = new ProviderFilterConfig
-                {
-                    Enabled = false
-                }
-            }
+                ["Provider2"] = new ProviderFilterConfig { Enabled = false },
+            },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
 
@@ -571,7 +567,7 @@ public class FunctionFilterTests
             (CreateTestDescriptor("special", "Provider1"), "special", false),
             (CreateTestDescriptor("debugFunction", "Provider1"), "debugFunction", true),
             (CreateTestDescriptor("anything", "Provider2"), "anything", true),
-            (CreateTestDescriptor("unauthorized", "Provider3"), "unauthorized", true)
+            (CreateTestDescriptor("unauthorized", "Provider3"), "unauthorized", true),
         };
 
         // Act & Assert
@@ -593,7 +589,7 @@ public class FunctionFilterTests
         var config = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "blocked" }
+            GlobalBlockedFunctions = new List<string> { "blocked" },
         };
         var filter = new FunctionFilter(config, _mockLogger.Object);
         var descriptor = CreateTestDescriptor("blocked");

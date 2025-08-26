@@ -1,10 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using Microsoft.Extensions.Logging;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.ModelConfigGenerator.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
 
@@ -17,13 +17,18 @@ public class ModelConfigGeneratorService
     private readonly ILogger<ModelConfigGeneratorService> _logger;
 
     // Model family patterns for filtering
-    private static readonly Dictionary<string, Regex> ModelFamilyPatterns = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, Regex> ModelFamilyPatterns = new(
+        StringComparer.OrdinalIgnoreCase
+    )
     {
         ["llama"] = new Regex(@"llama|meta-llama", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         ["qwen"] = new Regex(@"qwen|alibaba", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         ["kimi"] = new Regex(@"kimi|moonshot", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         ["deepseek"] = new Regex(@"deepseek", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["claude"] = new Regex(@"claude|anthropic", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        ["claude"] = new Regex(
+            @"claude|anthropic",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled
+        ),
         ["gpt"] = new Regex(@"gpt|openai", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         ["gemini"] = new Regex(@"gemini|google", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         ["mistral"] = new Regex(@"mistral", RegexOptions.IgnoreCase | RegexOptions.Compiled),
@@ -34,41 +39,53 @@ public class ModelConfigGeneratorService
         ["wizardlm"] = new Regex(@"wizard", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         ["vicuna"] = new Regex(@"vicuna", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         ["alpaca"] = new Regex(@"alpaca", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["nous"] = new Regex(@"nous|hermes", RegexOptions.IgnoreCase | RegexOptions.Compiled)
+        ["nous"] = new Regex(@"nous|hermes", RegexOptions.IgnoreCase | RegexOptions.Compiled),
     };
 
     // Known problematic models that consistently return 404 or cause issues
-    private static readonly HashSet<string> ProblematicModels = new(StringComparer.OrdinalIgnoreCase)
-  {
-    "qwen/qwen3-coder",
-    "qwen/qwen3-235b-a22b-2507",
-    "qwen/qwen3-30b-a3b",
-    "qwen/qwen3-8b",
-    "qwen/qwen3-235b-a22b",
-    "thudm/glm-4-32b",
-    "thudm/glm-z1-32b",
-    "anthropic/claude-opus-4",
-    "sentientagi/dobby-mini-unhinged-plus-llama-3.1-8b",
-    "mistralai/mistral-small-3.2-24b-instruct"
-  };
+    private static readonly HashSet<string> ProblematicModels = new(
+        StringComparer.OrdinalIgnoreCase
+    )
+    {
+        "qwen/qwen3-coder",
+        "qwen/qwen3-235b-a22b-2507",
+        "qwen/qwen3-30b-a3b",
+        "qwen/qwen3-8b",
+        "qwen/qwen3-235b-a22b",
+        "thudm/glm-4-32b",
+        "thudm/glm-z1-32b",
+        "anthropic/claude-opus-4",
+        "sentientagi/dobby-mini-unhinged-plus-llama-3.1-8b",
+        "mistralai/mistral-small-3.2-24b-instruct",
+    };
 
     public ModelConfigGeneratorService(
-      OpenRouterModelService openRouterService,
-      ILogger<ModelConfigGeneratorService> logger)
+        OpenRouterModelService openRouterService,
+        ILogger<ModelConfigGeneratorService> logger
+    )
     {
-        _openRouterService = openRouterService ?? throw new ArgumentNullException(nameof(openRouterService));
+        _openRouterService =
+            openRouterService ?? throw new ArgumentNullException(nameof(openRouterService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>
     /// Generates a Models.config file based on the provided options.
     /// </summary>
-    public async Task<bool> GenerateConfigAsync(GeneratorOptions options, CancellationToken cancellationToken = default)
+    public async Task<bool> GenerateConfigAsync(
+        GeneratorOptions options,
+        CancellationToken cancellationToken = default
+    )
     {
         try
         {
-            _logger.LogInformation("Starting model config generation with options: {Options}",
-              JsonSerializer.Serialize(options, new JsonSerializerOptions { WriteIndented = true }));
+            _logger.LogInformation(
+                "Starting model config generation with options: {Options}",
+                JsonSerializer.Serialize(
+                    options,
+                    new JsonSerializerOptions { WriteIndented = true }
+                )
+            );
 
             // Fetch all models from OpenRouter
             _logger.LogInformation("Fetching models from OpenRouter API...");
@@ -77,11 +94,16 @@ public class ModelConfigGeneratorService
 
             // Apply filters
             var filteredModels = ApplyFilters(allModels, options);
-            _logger.LogInformation("After filtering: {Count} models remaining", filteredModels.Count);
+            _logger.LogInformation(
+                "After filtering: {Count} models remaining",
+                filteredModels.Count
+            );
 
             if (!filteredModels.Any())
             {
-                _logger.LogWarning("No models match the specified criteria. No config file will be generated.");
+                _logger.LogWarning(
+                    "No models match the specified criteria. No config file will be generated."
+                );
                 return false;
             }
 
@@ -91,8 +113,11 @@ public class ModelConfigGeneratorService
             // Serialize and save
             await SaveConfigAsync(appConfig, options, cancellationToken);
 
-            _logger.LogInformation("Successfully generated Models.config at {Path} with {Count} models",
-              options.OutputPath, filteredModels.Count);
+            _logger.LogInformation(
+                "Successfully generated Models.config at {Path} with {Count} models",
+                options.OutputPath,
+                filteredModels.Count
+            );
 
             // Log statistics
             LogGenerationStatistics(filteredModels, options);
@@ -109,7 +134,10 @@ public class ModelConfigGeneratorService
     /// <summary>
     /// Applies all configured filters to the model list.
     /// </summary>
-    private IReadOnlyList<ModelConfig> ApplyFilters(IReadOnlyList<ModelConfig> models, GeneratorOptions options)
+    private IReadOnlyList<ModelConfig> ApplyFilters(
+        IReadOnlyList<ModelConfig> models,
+        GeneratorOptions options
+    )
     {
         var filtered = models.AsEnumerable();
 
@@ -117,40 +145,61 @@ public class ModelConfigGeneratorService
         if (options.ModelFamilies.Any())
         {
             filtered = filtered.Where(model => MatchesAnyFamily(model, options.ModelFamilies));
-            _logger.LogDebug("Filtered by families {Families}: {Count} models remaining",
-              string.Join(", ", options.ModelFamilies), filtered.Count());
+            _logger.LogDebug(
+                "Filtered by families {Families}: {Count} models remaining",
+                string.Join(", ", options.ModelFamilies),
+                filtered.Count()
+            );
         }
 
         // Filter by reasoning capability
         if (options.ReasoningOnly)
         {
-            filtered = filtered.Where(model => model.IsReasoning || model.HasCapability("thinking"));
-            _logger.LogDebug("Filtered by reasoning only: {Count} models remaining", filtered.Count());
+            filtered = filtered.Where(model =>
+                model.IsReasoning || model.HasCapability("thinking")
+            );
+            _logger.LogDebug(
+                "Filtered by reasoning only: {Count} models remaining",
+                filtered.Count()
+            );
         }
 
         // Filter by multimodal capability
         if (options.MultimodalOnly)
         {
             filtered = filtered.Where(model => model.HasCapability("multimodal"));
-            _logger.LogDebug("Filtered by multimodal only: {Count} models remaining", filtered.Count());
+            _logger.LogDebug(
+                "Filtered by multimodal only: {Count} models remaining",
+                filtered.Count()
+            );
         }
 
         // Filter by minimum context length
         if (options.MinContextLength > 0)
         {
             filtered = filtered.Where(model =>
-              model.Capabilities?.TokenLimits?.MaxContextTokens >= options.MinContextLength);
-            _logger.LogDebug("Filtered by min context length {MinContext}: {Count} models remaining",
-              options.MinContextLength, filtered.Count());
+                model.Capabilities?.TokenLimits?.MaxContextTokens >= options.MinContextLength
+            );
+            _logger.LogDebug(
+                "Filtered by min context length {MinContext}: {Count} models remaining",
+                options.MinContextLength,
+                filtered.Count()
+            );
         }
 
         // Filter by maximum cost
         if (options.MaxCostPerMillion > 0)
         {
             filtered = filtered.Where(model =>
-              model.Providers.Any(p => (decimal)p.Pricing.PromptPerMillion <= options.MaxCostPerMillion));
-            _logger.LogDebug("Filtered by max cost {MaxCost}: {Count} models remaining",
-              options.MaxCostPerMillion, filtered.Count());
+                model.Providers.Any(p =>
+                    (decimal)p.Pricing.PromptPerMillion <= options.MaxCostPerMillion
+                )
+            );
+            _logger.LogDebug(
+                "Filtered by max cost {MaxCost}: {Count} models remaining",
+                options.MaxCostPerMillion,
+                filtered.Count()
+            );
         }
 
         // Filter by model update date
@@ -158,11 +207,16 @@ public class ModelConfigGeneratorService
         {
             var beforeCount = filtered.Count();
             filtered = filtered.Where(model =>
-              model.CreatedDate.HasValue &&
-              model.CreatedDate.Value.Date >= options.ModelUpdatedSince.Value.Date);
+                model.CreatedDate.HasValue
+                && model.CreatedDate.Value.Date >= options.ModelUpdatedSince.Value.Date
+            );
             var afterCount = filtered.Count();
-            _logger.LogDebug("Filtered by models updated since {Date}: {Count} models remaining ({ExcludedCount} excluded)",
-              options.ModelUpdatedSince.Value.ToShortDateString(), afterCount, beforeCount - afterCount);
+            _logger.LogDebug(
+                "Filtered by models updated since {Date}: {Count} models remaining ({ExcludedCount} excluded)",
+                options.ModelUpdatedSince.Value.ToShortDateString(),
+                afterCount,
+                beforeCount - afterCount
+            );
         }
 
         // Apply max models limit
@@ -213,7 +267,7 @@ public class ModelConfigGeneratorService
                 Headers = null,
                 Timeout = TimeSpan.FromMinutes(1),
                 MaxRetries = 3,
-                Description = "Official OpenAI API endpoint"
+                Description = "Official OpenAI API endpoint",
             },
             ["Anthropic"] = new()
             {
@@ -223,7 +277,7 @@ public class ModelConfigGeneratorService
                 Headers = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" },
                 Timeout = TimeSpan.FromMinutes(2),
                 MaxRetries = 3,
-                Description = "Official Anthropic API endpoint"
+                Description = "Official Anthropic API endpoint",
             },
             ["OpenRouter"] = new()
             {
@@ -233,11 +287,11 @@ public class ModelConfigGeneratorService
                 Headers = new Dictionary<string, string>
                 {
                     ["HTTP-Referer"] = "https://github.com/achieveai/LmDotnetTools",
-                    ["X-Title"] = "LmDotnetTools"
+                    ["X-Title"] = "LmDotnetTools",
                 },
                 Timeout = TimeSpan.FromMinutes(2),
                 MaxRetries = 3,
-                Description = "OpenRouter API providing access to multiple LLM providers"
+                Description = "OpenRouter API providing access to multiple LLM providers",
             },
             ["Google"] = new()
             {
@@ -247,7 +301,7 @@ public class ModelConfigGeneratorService
                 Headers = null,
                 Timeout = TimeSpan.FromMinutes(1),
                 MaxRetries = 3,
-                Description = "Google Generative AI API"
+                Description = "Google Generative AI API",
             },
             ["Cohere"] = new()
             {
@@ -257,28 +311,28 @@ public class ModelConfigGeneratorService
                 Headers = null,
                 Timeout = TimeSpan.FromMinutes(1),
                 MaxRetries = 3,
-                Description = "Cohere API endpoint"
-            }
+                Description = "Cohere API endpoint",
+            },
         };
 
-        return new AppConfig
-        {
-            Models = models,
-            ProviderRegistry = providerRegistry
-        };
+        return new AppConfig { Models = models, ProviderRegistry = providerRegistry };
     }
 
     /// <summary>
     /// Serializes and saves the AppConfig to the specified file.
     /// </summary>
-    private async Task SaveConfigAsync(AppConfig appConfig, GeneratorOptions options, CancellationToken cancellationToken)
+    private async Task SaveConfigAsync(
+        AppConfig appConfig,
+        GeneratorOptions options,
+        CancellationToken cancellationToken
+    )
     {
         var jsonOptions = new JsonSerializerOptions
         {
             WriteIndented = options.FormatJson,
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
 
         // Ensure output directory exists
@@ -291,14 +345,20 @@ public class ModelConfigGeneratorService
         var json = JsonSerializer.Serialize(appConfig, jsonOptions);
         await File.WriteAllTextAsync(options.OutputPath, json, cancellationToken);
 
-        _logger.LogInformation("Saved config to {Path} ({Size} bytes)",
-          Path.GetFullPath(options.OutputPath), json.Length);
+        _logger.LogInformation(
+            "Saved config to {Path} ({Size} bytes)",
+            Path.GetFullPath(options.OutputPath),
+            json.Length
+        );
     }
 
     /// <summary>
     /// Logs detailed statistics about the generated configuration.
     /// </summary>
-    private void LogGenerationStatistics(IReadOnlyList<ModelConfig> models, GeneratorOptions options)
+    private void LogGenerationStatistics(
+        IReadOnlyList<ModelConfig> models,
+        GeneratorOptions options
+    )
     {
         _logger.LogInformation("=== Generation Statistics ===");
 
@@ -316,70 +376,87 @@ public class ModelConfigGeneratorService
             }
         }
 
-        _logger.LogInformation("Models by family: {@FamilyCounts}", familyCounts.OrderByDescending(x => x.Value));
+        _logger.LogInformation(
+            "Models by family: {@FamilyCounts}",
+            familyCounts.OrderByDescending(x => x.Value)
+        );
 
         // Count by capabilities
         var reasoningCount = models.Count(m => m.IsReasoning || m.HasCapability("thinking"));
         var multimodalCount = models.Count(m => m.HasCapability("multimodal"));
         var functionCallingCount = models.Count(m => m.HasCapability("function_calling"));
 
-        _logger.LogInformation("Model capabilities: {@Capabilities}", new
-        {
-            Reasoning = reasoningCount,
-            Multimodal = multimodalCount,
-            FunctionCalling = functionCallingCount,
-            Total = models.Count
-        });
+        _logger.LogInformation(
+            "Model capabilities: {@Capabilities}",
+            new
+            {
+                Reasoning = reasoningCount,
+                Multimodal = multimodalCount,
+                FunctionCalling = functionCallingCount,
+                Total = models.Count,
+            }
+        );
 
         // Provider distribution
         var providerCounts = models
-          .SelectMany(m => m.Providers.Select(p => p.Name))
-          .GroupBy(name => name)
-          .ToDictionary(g => g.Key, g => g.Count());
+            .SelectMany(m => m.Providers.Select(p => p.Name))
+            .GroupBy(name => name)
+            .ToDictionary(g => g.Key, g => g.Count());
 
-        _logger.LogInformation("Provider distribution: {@ProviderCounts}", providerCounts.OrderByDescending(x => x.Value));
+        _logger.LogInformation(
+            "Provider distribution: {@ProviderCounts}",
+            providerCounts.OrderByDescending(x => x.Value)
+        );
 
         // Cost and context analysis
-        var costs = models.SelectMany(m => m.Providers.Select(p => p.Pricing.PromptPerMillion)).ToList();
+        var costs = models
+            .SelectMany(m => m.Providers.Select(p => p.Pricing.PromptPerMillion))
+            .ToList();
         var contexts = models
-          .Where(m => m.Capabilities?.TokenLimits?.MaxContextTokens > 0)
-          .Select(m => m.Capabilities!.TokenLimits!.MaxContextTokens)
-          .ToList();
+            .Where(m => m.Capabilities?.TokenLimits?.MaxContextTokens > 0)
+            .Select(m => m.Capabilities!.TokenLimits!.MaxContextTokens)
+            .ToList();
 
         if (costs.Any() && contexts.Any())
         {
-            _logger.LogInformation("Cost and context analysis: {@Analysis}", new
-            {
-                CostStats = new
+            _logger.LogInformation(
+                "Cost and context analysis: {@Analysis}",
+                new
                 {
-                    Average = Math.Round(costs.Average(), 4),
-                    Min = costs.Min(),
-                    Max = costs.Max(),
-                    Median = costs.OrderBy(x => x).Skip(costs.Count / 2).First()
-                },
-                ContextStats = new
-                {
-                    Average = Math.Round(contexts.Average()),
-                    Min = contexts.Min(),
-                    Max = contexts.Max(),
-                    Median = contexts.OrderBy(x => x).Skip(contexts.Count / 2).First()
+                    CostStats = new
+                    {
+                        Average = Math.Round(costs.Average(), 4),
+                        Min = costs.Min(),
+                        Max = costs.Max(),
+                        Median = costs.OrderBy(x => x).Skip(costs.Count / 2).First(),
+                    },
+                    ContextStats = new
+                    {
+                        Average = Math.Round(contexts.Average()),
+                        Min = contexts.Min(),
+                        Max = contexts.Max(),
+                        Median = contexts.OrderBy(x => x).Skip(contexts.Count / 2).First(),
+                    },
                 }
-            });
+            );
         }
 
         // Detailed model list for debugging
         if (options.Verbose)
         {
-            _logger.LogDebug("Generated models: {@ModelDetails}", models.Select(m => new
-            {
-                m.Id,
-                Family = GetModelFamily(m.Id),
-                IsReasoning = m.IsReasoning,
-                HasMultimodal = m.HasCapability("multimodal"),
-                ContextLength = m.Capabilities?.TokenLimits?.MaxContextTokens,
-                ProviderCount = m.Providers.Count,
-                MinCost = m.Providers.Min(p => p.Pricing.PromptPerMillion)
-            }));
+            _logger.LogDebug(
+                "Generated models: {@ModelDetails}",
+                models.Select(m => new
+                {
+                    m.Id,
+                    Family = GetModelFamily(m.Id),
+                    IsReasoning = m.IsReasoning,
+                    HasMultimodal = m.HasCapability("multimodal"),
+                    ContextLength = m.Capabilities?.TokenLimits?.MaxContextTokens,
+                    ProviderCount = m.Providers.Count,
+                    MinCost = m.Providers.Min(p => p.Pricing.PromptPerMillion),
+                })
+            );
         }
     }
 

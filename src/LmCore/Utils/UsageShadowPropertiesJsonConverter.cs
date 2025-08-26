@@ -1,5 +1,5 @@
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
@@ -10,7 +10,12 @@ public class UsageShadowPropertiesJsonConverter : ShadowPropertiesJsonConverter<
         return new Usage();
     }
 
-    protected override (bool handled, Usage instance) ReadProperty(ref Utf8JsonReader reader, Usage instance, string propertyName, JsonSerializerOptions options)
+    protected override (bool handled, Usage instance) ReadProperty(
+        ref Utf8JsonReader reader,
+        Usage instance,
+        string propertyName,
+        JsonSerializerOptions options
+    )
     {
         switch (propertyName)
         {

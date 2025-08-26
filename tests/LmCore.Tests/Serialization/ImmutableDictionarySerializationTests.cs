@@ -17,7 +17,8 @@ public class ImmutableDictionarySerializationTests
         _output = output;
     }
 
-    private class TestClassWithExtensionDataConverter : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
+    private class TestClassWithExtensionDataConverter
+        : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
     {
         protected override TestClassWithExtensionData CreateInstance()
         {
@@ -43,16 +44,23 @@ public class ImmutableDictionarySerializationTests
         }
 
         [JsonIgnore]
-        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
+        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
+            ImmutableDictionary<string, object?>.Empty;
 
         public TestClassWithExtensionData SetExtraProperty<T>(string key, T value)
         {
             if (ExtraProperties == null)
             {
-                return this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) };
+                return this with
+                {
+                    ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value),
+                };
             }
 
-            return this with { ExtraProperties = ExtraProperties.Add(key, value) };
+            return this with
+            {
+                ExtraProperties = ExtraProperties.Add(key, value),
+            };
         }
 
         public T? GetExtraProperty<T>(string key)
@@ -82,16 +90,23 @@ public class ImmutableDictionarySerializationTests
 
         [JsonPropertyName("extra_properties")]
         [JsonConverter(typeof(ExtraPropertiesConverter))]
-        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } = ImmutableDictionary<string, object?>.Empty;
+        public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =
+            ImmutableDictionary<string, object?>.Empty;
 
         public TestClassWithNestedProperties SetExtraProperty<T>(string key, T value)
         {
             if (ExtraProperties == null)
             {
-                return this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) };
+                return this with
+                {
+                    ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value),
+                };
             }
 
-            return this with { ExtraProperties = ExtraProperties.Add(key, value) };
+            return this with
+            {
+                ExtraProperties = ExtraProperties.Add(key, value),
+            };
         }
 
         public T? GetExtraProperty<T>(string key)
@@ -114,15 +129,12 @@ public class ImmutableDictionarySerializationTests
     public void BasicDictionarySerialization_WorksCorrectly()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
         var dictionary = new Dictionary<string, string>
         {
             ["key1"] = "value1",
-            ["key2"] = "value2"
+            ["key2"] = "value2",
         };
 
         // Act
@@ -144,17 +156,20 @@ public class ImmutableDictionarySerializationTests
         var options = new JsonSerializerOptions
         {
             WriteIndented = true,
-            Converters = { new ImmutableDictionaryJsonConverterFactory() }
+            Converters = { new ImmutableDictionaryJsonConverterFactory() },
         };
 
-        var dictionary = ImmutableDictionary<string, string>.Empty
-          .Add("key1", "value1")
-          .Add("key2", "value2");
+        var dictionary = ImmutableDictionary<string, string>
+            .Empty.Add("key1", "value1")
+            .Add("key2", "value2");
 
         // Act
         var json = JsonSerializer.Serialize(dictionary, options);
         _output.WriteLine($"Serialized JSON: {json}");
-        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, string>>(json, options);
+        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, string>>(
+            json,
+            options
+        );
 
         // Assert
         Assert.NotNull(deserialized);
@@ -170,7 +185,7 @@ public class ImmutableDictionarySerializationTests
         var options = new JsonSerializerOptions
         {
             WriteIndented = true,
-            Converters = { new ExtraPropertiesConverter() }
+            Converters = { new ExtraPropertiesConverter() },
         };
 
         var dictionary = new Dictionary<string, object?>
@@ -178,13 +193,16 @@ public class ImmutableDictionarySerializationTests
             ["string"] = "value",
             ["int"] = 42,
             ["bool"] = true,
-            ["null"] = null
+            ["null"] = null,
         }.ToImmutableDictionary();
 
         // Act
         var json = JsonSerializer.Serialize(dictionary, options);
         _output.WriteLine($"Serialized JSON: {json}");
-        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(json, options);
+        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(
+            json,
+            options
+        );
 
         // Assert
         Assert.NotNull(deserialized);
@@ -243,7 +261,7 @@ public class ImmutableDictionarySerializationTests
         var options = new JsonSerializerOptions
         {
             WriteIndented = true,
-            Converters = { new ExtraPropertiesConverter() }
+            Converters = { new ExtraPropertiesConverter() },
         };
 
         var dictionary = new Dictionary<string, object?>
@@ -251,13 +269,16 @@ public class ImmutableDictionarySerializationTests
             ["string"] = "value",
             ["int"] = 42,
             ["bool"] = true,
-            ["null"] = null
+            ["null"] = null,
         }.ToImmutableDictionary();
 
         // Act
         var json = JsonSerializer.Serialize(dictionary, options);
         _output.WriteLine($"Serialized JSON: {json}");
-        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(json, options);
+        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(
+            json,
+            options
+        );
 
         // Assert
         Assert.NotNull(deserialized);
@@ -313,20 +334,14 @@ public class ImmutableDictionarySerializationTests
     public void UsageClass_SerializesAndDeserializes_WithExtraProperties()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
-        var usage = new TestClassWithExtensionData
-        {
-            Name = "Test",
-            Value = 10
-        };
+        var usage = new TestClassWithExtensionData { Name = "Test", Value = 10 };
 
         // Add extra properties
-        var withExtras = usage.SetExtraProperty("estimated_cost", 0.05)
-                              .SetExtraProperty("cached", true);
+        var withExtras = usage
+            .SetExtraProperty("estimated_cost", 0.05)
+            .SetExtraProperty("cached", true);
 
         // Act
         var json = JsonSerializer.Serialize(withExtras, options);
@@ -359,7 +374,9 @@ public class ImmutableDictionarySerializationTests
         {
             foreach (var prop in deserialized.ExtraProperties)
             {
-                _output.WriteLine($"Property: {prop.Key}, Type: {prop.Value?.GetType().FullName ?? "null"}, Value: {prop.Value}");
+                _output.WriteLine(
+                    $"Property: {prop.Key}, Type: {prop.Value?.GetType().FullName ?? "null"}, Value: {prop.Value}"
+                );
             }
         }
 
@@ -378,16 +395,9 @@ public class ImmutableDictionarySerializationTests
     public void GenerateReplyOptions_SerializesAndDeserializes_WithExtraProperties()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
-        var replyOptions = new TestClassWithNestedProperties
-        {
-            Name = "Test",
-            Value = 10
-        };
+        var replyOptions = new TestClassWithNestedProperties { Name = "Test", Value = 10 };
 
         // Add extra properties
         var withExtras = replyOptions.SetExtraProperty("function_call", "auto");
@@ -402,8 +412,12 @@ public class ImmutableDictionarySerializationTests
         PrintJsonElement(_output, doc.RootElement, 0);
 
         // Verify that the extra properties are in the JSON directly
-        Assert.True(doc.RootElement.TryGetProperty("extra_properties", out var extraPropertiesElement));
-        Assert.True(extraPropertiesElement.TryGetProperty("function_call", out var functionCallElement));
+        Assert.True(
+            doc.RootElement.TryGetProperty("extra_properties", out var extraPropertiesElement)
+        );
+        Assert.True(
+            extraPropertiesElement.TryGetProperty("function_call", out var functionCallElement)
+        );
         Assert.Equal("auto", functionCallElement.GetString());
 
         var deserialized = JsonSerializer.Deserialize<TestClassWithNestedProperties>(json, options);
@@ -419,11 +433,16 @@ public class ImmutableDictionarySerializationTests
 
         foreach (var prop in deserialized.ExtraProperties)
         {
-            _output.WriteLine($"Property: {prop.Key}, Type: {prop.Value?.GetType().FullName ?? "null"}, Value: {prop.Value}");
+            _output.WriteLine(
+                $"Property: {prop.Key}, Type: {prop.Value?.GetType().FullName ?? "null"}, Value: {prop.Value}"
+            );
         }
 
         // Check function_call property
-        Assert.True(deserialized.ExtraProperties.ContainsKey("function_call"), "ExtraProperties should contain 'function_call'");
+        Assert.True(
+            deserialized.ExtraProperties.ContainsKey("function_call"),
+            "ExtraProperties should contain 'function_call'"
+        );
         var functionCall = deserialized.ExtraProperties["function_call"];
         _output.WriteLine($"Function call type: {functionCall?.GetType().FullName ?? "null"}");
 

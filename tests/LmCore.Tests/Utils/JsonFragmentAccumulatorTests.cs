@@ -33,7 +33,10 @@ public class JsonFragmentAccumulatorTests
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.EndObject);
 
         // Path assertions - we'll do more basic path checks for now
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.StartObject && u.Path.Contains("root"));
+        Assert.Contains(
+            updates,
+            u => u.Kind == JsonFragmentKind.StartObject && u.Path.Contains("root")
+        );
 
         // Print updates for debugging
         PrintUpdates(updates, "All Updates");
@@ -55,9 +58,21 @@ public class JsonFragmentAccumulatorTests
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.StartObject);
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"items\"");
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.StartArray);
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.CompleteNumber && u.TextValue == "1");
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.CompleteNumber && u.TextValue == "2");
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.CompleteString && u.TextValue != null && u.TextValue.Contains("three"));
+        Assert.Contains(
+            updates,
+            u => u.Kind == JsonFragmentKind.CompleteNumber && u.TextValue == "1"
+        );
+        Assert.Contains(
+            updates,
+            u => u.Kind == JsonFragmentKind.CompleteNumber && u.TextValue == "2"
+        );
+        Assert.Contains(
+            updates,
+            u =>
+                u.Kind == JsonFragmentKind.CompleteString
+                && u.TextValue != null
+                && u.TextValue.Contains("three")
+        );
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.EndArray);
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.EndObject);
 
@@ -81,7 +96,10 @@ public class JsonFragmentAccumulatorTests
 
         // Assert - First fragment
         Assert.Contains(updates1, u => u.Kind == JsonFragmentKind.StartObject);
-        Assert.Contains(updates1, u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"description\"");
+        Assert.Contains(
+            updates1,
+            u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"description\""
+        );
         Assert.Contains(updates1, u => u.Kind == JsonFragmentKind.StartString);
         Assert.Contains(updates1, u => u.Kind == JsonFragmentKind.PartialString);
 
@@ -94,7 +112,10 @@ public class JsonFragmentAccumulatorTests
         Assert.Contains(updates3, u => u.Kind == JsonFragmentKind.EndObject);
 
         // Verify the accumulated JSON
-        Assert.Equal("{\"description\":\"This is a long string that spans multiple fragments\"}", accumulator.CurrentJson);
+        Assert.Equal(
+            "{\"description\":\"This is a long string that spans multiple fragments\"}",
+            accumulator.CurrentJson
+        );
 
         // Print updates for debugging
         PrintUpdates(updates1, "Fragment 1");
@@ -119,7 +140,10 @@ public class JsonFragmentAccumulatorTests
         Assert.DoesNotContain(updates1, u => u.Kind == JsonFragmentKind.PartialString);
 
         // Assert - Full key is emitted once complete
-        Assert.Contains(updates2, u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"userName\"");
+        Assert.Contains(
+            updates2,
+            u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"userName\""
+        );
         Assert.Contains(updates2, u => u.Kind == JsonFragmentKind.CompleteString);
 
         // Act 2 - Test with escaped characters in key
@@ -127,7 +151,10 @@ public class JsonFragmentAccumulatorTests
         var updates3 = accumulator.AddFragment("{\"escaped\\\"Key\":\"value\"}").ToList();
 
         // Assert 2 - Just check that we get a Key event
-        Assert.Contains(updates3, u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"escaped\\\"Key\"");
+        Assert.Contains(
+            updates3,
+            u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"escaped\\\"Key\""
+        );
 
         // Print updates for debugging
         PrintUpdates(updates1, "Fragment 1");
@@ -145,9 +172,11 @@ public class JsonFragmentAccumulatorTests
         var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
-        var updates = accumulator.AddFragment(
-            "{\"integer\":42,\"decimal\":3.14,\"boolean\":true,\"nullValue\":null,\"scientificNotation\":1.23e-4}"
-        ).ToList();
+        var updates = accumulator
+            .AddFragment(
+                "{\"integer\":42,\"decimal\":3.14,\"boolean\":true,\"nullValue\":null,\"scientificNotation\":1.23e-4}"
+            )
+            .ToList();
 
         PrintUpdates(updates);
 
@@ -156,7 +185,12 @@ public class JsonFragmentAccumulatorTests
         AssertHasUpdate(updates, JsonFragmentKind.CompleteNumber, "root.decimal", "3.14");
         AssertHasUpdate(updates, JsonFragmentKind.CompleteBoolean, "root.boolean", "true");
         AssertHasUpdate(updates, JsonFragmentKind.CompleteNull, "root.nullValue", "null");
-        AssertHasUpdate(updates, JsonFragmentKind.CompleteNumber, "root.scientificNotation", "1.23e-4");
+        AssertHasUpdate(
+            updates,
+            JsonFragmentKind.CompleteNumber,
+            "root.scientificNotation",
+            "1.23e-4"
+        );
     }
 
     /// <summary>
@@ -169,19 +203,29 @@ public class JsonFragmentAccumulatorTests
         var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
-        var updates = accumulator.AddFragment(
-            "{\"user\":{\"name\":\"John\",\"address\":{\"city\":\"New York\"}},\"scores\":[10,[20,30],{\"final\":100}]}"
-        ).ToList();
+        var updates = accumulator
+            .AddFragment(
+                "{\"user\":{\"name\":\"John\",\"address\":{\"city\":\"New York\"}},\"scores\":[10,[20,30],{\"final\":100}]}"
+            )
+            .ToList();
 
         PrintUpdates(updates);
 
-        Assert.DoesNotContain(updates, u => u.Kind == JsonFragmentKind.PartialString && u.TextValue == "\"New Y");
+        Assert.DoesNotContain(
+            updates,
+            u => u.Kind == JsonFragmentKind.PartialString && u.TextValue == "\"New Y"
+        );
 
         // Test each path
         AssertHasUpdate(updates, JsonFragmentKind.Key, "root.user", "\"name\"");
         AssertHasUpdate(updates, JsonFragmentKind.CompleteString, "root.user.name", "\"John\"");
         AssertHasUpdate(updates, JsonFragmentKind.Key, "root.user.address", "\"city\"");
-        AssertHasUpdate(updates, JsonFragmentKind.CompleteString, "root.user.address.city", "\"New York\"");
+        AssertHasUpdate(
+            updates,
+            JsonFragmentKind.CompleteString,
+            "root.user.address.city",
+            "\"New York\""
+        );
         AssertHasUpdate(updates, JsonFragmentKind.CompleteNumber, "root.scores[0]", "10");
         AssertHasUpdate(updates, JsonFragmentKind.CompleteNumber, "root.scores[1][0]", "20");
         AssertHasUpdate(updates, JsonFragmentKind.CompleteNumber, "root.scores[1][1]", "30");
@@ -196,9 +240,9 @@ public class JsonFragmentAccumulatorTests
         var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
-        var updates = accumulator.AddFragment(
-            "{\"user\":{\"name\":\"John\",\"address\":{\"city\":\"New York\"}}}"
-        ).ToList();
+        var updates = accumulator
+            .AddFragment("{\"user\":{\"name\":\"John\",\"address\":{\"city\":\"New York\"}}}")
+            .ToList();
 
         // Print updates for debugging
         PrintUpdates(updates, "All Updates");
@@ -210,7 +254,12 @@ public class JsonFragmentAccumulatorTests
 
         // Validate value paths
         AssertHasUpdate(updates, JsonFragmentKind.CompleteString, "root.user.name", "\"John\"");
-        AssertHasUpdate(updates, JsonFragmentKind.CompleteString, "root.user.address.city", "\"New York\"");
+        AssertHasUpdate(
+            updates,
+            JsonFragmentKind.CompleteString,
+            "root.user.address.city",
+            "\"New York\""
+        );
     }
 
     [Fact]
@@ -220,9 +269,7 @@ public class JsonFragmentAccumulatorTests
         var accumulator = new JsonFragmentToStructuredUpdateGenerator("testTool");
 
         // Act
-        var updates = accumulator.AddFragment(
-            "{\"scores\":[10,[20,30],{\"final\":100}]}"
-        ).ToList();
+        var updates = accumulator.AddFragment("{\"scores\":[10,[20,30],{\"final\":100}]}").ToList();
 
         // Print updates for debugging
         PrintUpdates(updates, "All Updates");
@@ -249,8 +296,17 @@ public class JsonFragmentAccumulatorTests
 
         // Assert
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.StartObject && u.Path == "root");
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"name\"" && u.Path == "root");
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.CompleteString && u.TextValue == "\"John\"" && u.Path == "root.name");
+        Assert.Contains(
+            updates,
+            u => u.Kind == JsonFragmentKind.Key && u.TextValue == "\"name\"" && u.Path == "root"
+        );
+        Assert.Contains(
+            updates,
+            u =>
+                u.Kind == JsonFragmentKind.CompleteString
+                && u.TextValue == "\"John\""
+                && u.Path == "root.name"
+        );
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.EndObject && u.Path == "root");
     }
 
@@ -268,9 +324,27 @@ public class JsonFragmentAccumulatorTests
 
         // Assert
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.StartArray && u.Path == "root");
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.CompleteNumber && u.TextValue == "1" && u.Path == "root[0]");
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.CompleteNumber && u.TextValue == "2" && u.Path == "root[1]");
-        Assert.Contains(updates, u => u.Kind == JsonFragmentKind.CompleteNumber && u.TextValue == "3" && u.Path == "root[2]");
+        Assert.Contains(
+            updates,
+            u =>
+                u.Kind == JsonFragmentKind.CompleteNumber
+                && u.TextValue == "1"
+                && u.Path == "root[0]"
+        );
+        Assert.Contains(
+            updates,
+            u =>
+                u.Kind == JsonFragmentKind.CompleteNumber
+                && u.TextValue == "2"
+                && u.Path == "root[1]"
+        );
+        Assert.Contains(
+            updates,
+            u =>
+                u.Kind == JsonFragmentKind.CompleteNumber
+                && u.TextValue == "3"
+                && u.Path == "root[2]"
+        );
         Assert.Contains(updates, u => u.Kind == JsonFragmentKind.EndArray && u.Path == "root");
     }
 
@@ -332,50 +406,57 @@ public class JsonFragmentAccumulatorTests
         AssertSingleStringUpdate(updates1, JsonFragmentKind.PartialString, "before");
 
         // Fragment 2 should have PartialString with the content after the escape sequence
-        var partialStrings2 = updates2.Where(u => u.Kind == JsonFragmentKind.PartialString).ToList();
+        var partialStrings2 = updates2
+            .Where(u => u.Kind == JsonFragmentKind.PartialString)
+            .ToList();
         Assert.Contains(partialStrings2, u => u.TextValue == "after");
 
         // And verify the complete string at the end includes the proper escape sequence
-        var completeString = Assert.Single(updates2, u => u.Kind == JsonFragmentKind.CompleteString);
+        var completeString = Assert.Single(
+            updates2,
+            u => u.Kind == JsonFragmentKind.CompleteString
+        );
         Assert.Equal("\"before\\\"after\"", completeString.TextValue);
 
-        // Verify the final JSON is correct 
+        // Verify the final JSON is correct
         Assert.Equal("{\"escaped\":\"before\\\"after\"}", accumulator.CurrentJson);
     }
 
     /// <summary>
     /// Test data for JSON completion event testing
     /// </summary>
-    public static IEnumerable<object[]> JsonCompletionTestCases => new List<object[]>
-    {
-        // Simple object completion
-        new object[] {
-            "test_tool",
-            new[] { "{\"key\":", " \"value\"}" },
-            "Simple object should emit JsonComplete event when closed"
-        },
-        
-        // Simple array completion
-        new object[] {
-            "test_tool",
-            new[] { "[1,", " 2, 3]" },
-            "Simple array should emit JsonComplete event when closed"
-        },
-        
-        // Nested object completion
-        new object[] {
-            "test_tool",
-            new[] { "{\"outer\": {\"inner\":", " \"value\"}}" },
-            "Nested object should emit JsonComplete event when fully closed"
-        },
-        
-        // Single value completion
-        new object[] {
-            "test_tool",
-            new[] { "\"simple", "_string\"" },
-            "Simple string should emit JsonComplete event when closed"
-        }
-    };
+    public static IEnumerable<object[]> JsonCompletionTestCases =>
+        new List<object[]>
+        {
+            // Simple object completion
+            new object[]
+            {
+                "test_tool",
+                new[] { "{\"key\":", " \"value\"}" },
+                "Simple object should emit JsonComplete event when closed",
+            },
+            // Simple array completion
+            new object[]
+            {
+                "test_tool",
+                new[] { "[1,", " 2, 3]" },
+                "Simple array should emit JsonComplete event when closed",
+            },
+            // Nested object completion
+            new object[]
+            {
+                "test_tool",
+                new[] { "{\"outer\": {\"inner\":", " \"value\"}}" },
+                "Nested object should emit JsonComplete event when fully closed",
+            },
+            // Single value completion
+            new object[]
+            {
+                "test_tool",
+                new[] { "\"simple", "_string\"" },
+                "Simple string should emit JsonComplete event when closed",
+            },
+        };
 
     [Theory]
     [MemberData(nameof(JsonCompletionTestCases))]
@@ -392,10 +473,14 @@ public class JsonFragmentAccumulatorTests
             var updates = generator.AddFragment(fragment).ToList();
             allUpdates.AddRange(updates);
 
-            System.Diagnostics.Debug.WriteLine($"Fragment: '{fragment}' -> {updates.Count} updates");
+            System.Diagnostics.Debug.WriteLine(
+                $"Fragment: '{fragment}' -> {updates.Count} updates"
+            );
             foreach (var update in updates)
             {
-                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: {update.Path} = {update.TextValue}");
+                System.Diagnostics.Debug.WriteLine(
+                    $"  {update.Kind}: {update.Path} = {update.TextValue}"
+                );
             }
         }
 
@@ -403,7 +488,9 @@ public class JsonFragmentAccumulatorTests
         Assert.True(generator.IsComplete, "Generator should report JSON as complete");
 
         // Verify that we got exactly one JsonComplete event
-        var completionEvents = allUpdates.Where(u => u.Kind == JsonFragmentKind.JsonComplete).ToList();
+        var completionEvents = allUpdates
+            .Where(u => u.Kind == JsonFragmentKind.JsonComplete)
+            .ToList();
         Assert.Single(completionEvents);
 
         var completionEvent = completionEvents.First();
@@ -411,7 +498,9 @@ public class JsonFragmentAccumulatorTests
         Assert.NotNull(completionEvent.TextValue);
         Assert.True(completionEvent.TextValue!.Length > 0);
 
-        System.Diagnostics.Debug.WriteLine($"✓ JsonComplete event emitted with JSON: {completionEvent.TextValue}");
+        System.Diagnostics.Debug.WriteLine(
+            $"✓ JsonComplete event emitted with JSON: {completionEvent.TextValue}"
+        );
     }
 
     #region Helper Methods
@@ -419,7 +508,11 @@ public class JsonFragmentAccumulatorTests
     /// <summary>
     /// Asserts that exactly one string update of the specified kind exists with the expected value
     /// </summary>
-    private void AssertSingleStringUpdate(List<JsonFragmentUpdate> updates, JsonFragmentKind kind, string expectedValue)
+    private void AssertSingleStringUpdate(
+        List<JsonFragmentUpdate> updates,
+        JsonFragmentKind kind,
+        string expectedValue
+    )
     {
         var stringUpdate = Assert.Single(updates, u => u.Kind == kind);
         Assert.Equal(expectedValue, stringUpdate.TextValue);
@@ -428,10 +521,16 @@ public class JsonFragmentAccumulatorTests
     /// <summary>
     /// Asserts that an update with the specified kind, path and value exists
     /// </summary>
-    private void AssertHasUpdate(List<JsonFragmentUpdate> updates, JsonFragmentKind kind, string expectedPath, string? expectedValue = null)
+    private void AssertHasUpdate(
+        List<JsonFragmentUpdate> updates,
+        JsonFragmentKind kind,
+        string expectedPath,
+        string? expectedValue = null
+    )
     {
-        var matches = updates.Where(u => u.Kind == kind &&
-            (expectedValue == null || u.TextValue == expectedValue)).ToList();
+        var matches = updates
+            .Where(u => u.Kind == kind && (expectedValue == null || u.TextValue == expectedValue))
+            .ToList();
 
         output.WriteLine($"\nTesting {kind} with expected path '{expectedPath}':");
         foreach (var match in matches)
@@ -439,8 +538,13 @@ public class JsonFragmentAccumulatorTests
             output.WriteLine($"  Found: Path='{match.Path}' Value='{match.TextValue}'");
         }
 
-        Assert.Contains(updates, u => u.Kind == kind && u.Path == expectedPath &&
-            (expectedValue == null || u.TextValue == expectedValue));
+        Assert.Contains(
+            updates,
+            u =>
+                u.Kind == kind
+                && u.Path == expectedPath
+                && (expectedValue == null || u.TextValue == expectedValue)
+        );
     }
 
     /// <summary>
@@ -459,7 +563,9 @@ public class JsonFragmentAccumulatorTests
 
         foreach (var update in updates)
         {
-            output.WriteLine($"{update.Kind,-15}: Path='{update.Path,-30}' Value='{update.TextValue ?? "null"}'");
+            output.WriteLine(
+                $"{update.Kind, -15}: Path='{update.Path, -30}' Value='{update.TextValue ?? "null"}'"
+            );
         }
     }
 

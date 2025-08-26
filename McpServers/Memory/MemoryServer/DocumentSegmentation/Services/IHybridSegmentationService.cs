@@ -21,7 +21,8 @@ public interface IHybridSegmentationService
         string content,
         DocumentType documentType = DocumentType.Generic,
         HybridSegmentationOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Determines optimal strategy weights for a specific document.
@@ -33,7 +34,8 @@ public interface IHybridSegmentationService
     Task<StrategyWeights> DetermineStrategyWeightsAsync(
         string content,
         DocumentType documentType = DocumentType.Generic,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Combines segmentation results from multiple strategies using intelligent merging.
@@ -49,7 +51,8 @@ public interface IHybridSegmentationService
         List<DocumentSegment> narrativeSegments,
         List<DocumentSegment> topicSegments,
         StrategyWeights weights,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates hybrid segmentation quality and provides improvement suggestions.
@@ -63,7 +66,8 @@ public interface IHybridSegmentationService
         List<DocumentSegment> segments,
         string originalContent,
         StrategyWeights weights,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Adapts segmentation strategy based on document characteristics and feedback.
@@ -77,5 +81,6 @@ public interface IHybridSegmentationService
         string content,
         List<DocumentSegmentationResult>? previousResults = null,
         List<string>? feedback = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

@@ -10,46 +10,71 @@
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageReleaseNotes>See CHANGELOG.md for detailed release notes.</PackageReleaseNotes>
-    
     <!-- Centralized Versioning - UPDATE ONLY THIS SECTION FOR NEW RELEASES -->
     <MajorVersion>1</MajorVersion>
     <MinorVersion>0</MinorVersion>
     <PatchVersion>20</PatchVersion>
-    <PreReleaseLabel></PreReleaseLabel> <!-- Use values like 'alpha', 'beta', 'rc.1' or leave empty for stable -->
-    
+    <PreReleaseLabel></PreReleaseLabel>
+    <!-- Use values like 'alpha', 'beta', 'rc.1' or leave empty for stable -->
     <!-- Computed Version Properties (DO NOT MODIFY) -->
-    <Version Condition="'$(PreReleaseLabel)' == ''">$(MajorVersion).$(MinorVersion).$(PatchVersion)</Version>
-    <Version Condition="'$(PreReleaseLabel)' != ''">$(MajorVersion).$(MinorVersion).$(PatchVersion)-$(PreReleaseLabel)</Version>
+    <Version Condition="'$(PreReleaseLabel)' == ''"
+      >$(MajorVersion).$(MinorVersion).$(PatchVersion)</Version
+    >
+    <Version Condition="'$(PreReleaseLabel)' != ''"
+      >$(MajorVersion).$(MinorVersion).$(PatchVersion)-$(PreReleaseLabel)</Version
+    >
     <AssemblyVersion>$(MajorVersion).$(MinorVersion).0.0</AssemblyVersion>
     <FileVersion>$(MajorVersion).$(MinorVersion).$(PatchVersion).0</FileVersion>
     <PackageVersion>$(Version)</PackageVersion>
-    
     <!-- Package Generation -->
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    
     <!-- Common Tags -->
     <PackageTags>dotnet;ai;llm;language-model;achieve-ai</PackageTags>
   </PropertyGroup>
-  
   <!-- Include documentation files in packages -->
   <ItemGroup>
     <!-- Main README -->
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)README.md')" />
-    
+    <None
+      Include="$(MSBuildThisFileDirectory)README.md"
+      Pack="true"
+      PackagePath="\"
+      Condition="Exists('$(MSBuildThisFileDirectory)README.md')"
+    />
     <!-- CHANGELOG -->
-    <None Include="$(MSBuildThisFileDirectory)CHANGELOG.md" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)CHANGELOG.md')" />
-    
+    <None
+      Include="$(MSBuildThisFileDirectory)CHANGELOG.md"
+      Pack="true"
+      PackagePath="\"
+      Condition="Exists('$(MSBuildThisFileDirectory)CHANGELOG.md')"
+    />
     <!-- LICENSE -->
-    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)LICENSE')" />
-    <None Include="$(MSBuildThisFileDirectory)LICENSE.md" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)LICENSE.md')" />
-    <None Include="$(MSBuildThisFileDirectory)LICENSE.txt" Pack="true" PackagePath="\" Condition="Exists('$(MSBuildThisFileDirectory)LICENSE.txt')" />
-    
+    <None
+      Include="$(MSBuildThisFileDirectory)LICENSE"
+      Pack="true"
+      PackagePath="\"
+      Condition="Exists('$(MSBuildThisFileDirectory)LICENSE')"
+    />
+    <None
+      Include="$(MSBuildThisFileDirectory)LICENSE.md"
+      Pack="true"
+      PackagePath="\"
+      Condition="Exists('$(MSBuildThisFileDirectory)LICENSE.md')"
+    />
+    <None
+      Include="$(MSBuildThisFileDirectory)LICENSE.txt"
+      Pack="true"
+      PackagePath="\"
+      Condition="Exists('$(MSBuildThisFileDirectory)LICENSE.txt')"
+    />
     <!-- Component-specific documentation -->
-    <None Include="$(MSBuildProjectDirectory)\README.md" Pack="true" PackagePath="docs\" Condition="Exists('$(MSBuildProjectDirectory)\README.md')" />
+    <None
+      Include="$(MSBuildProjectDirectory)\README.md"
+      Pack="true"
+      PackagePath="docs\"
+      Condition="Exists('$(MSBuildProjectDirectory)\README.md')"
+    />
   </ItemGroup>
 </Project>
-
-

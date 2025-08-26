@@ -1,10 +1,10 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Collections.Generic;
 using System.Linq;
-using Json.Schema;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Models;
+using Json.Schema;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 
@@ -16,17 +16,13 @@ public class JsonSchemaValidator : IJsonSchemaValidator
     // JsonSerializerOptions with Union converter for proper serialization
     public static readonly JsonSerializerOptions SchemaSerializationOptions = new()
     {
-        Converters =
-        {
-            new UnionJsonConverter<string, IReadOnlyList<string>>()
-        }
+        Converters = { new UnionJsonConverter<string, IReadOnlyList<string>>() },
     };
 
     // --- Implementation using JsonSchema.Net (simplified) -------------------------
 
     /// <inheritdoc />
-    public bool Validate(string json, object schema)
-        => ValidateDetailed(json, schema).IsValid;
+    public bool Validate(string json, object schema) => ValidateDetailed(json, schema).IsValid;
 
     /// <inheritdoc />
     public SchemaValidationResult ValidateDetailed(string json, object schema)
@@ -34,7 +30,10 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         // Basic checks
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new SchemaValidationResult(false, new List<string> { "Input json is null or empty" });
+            return new SchemaValidationResult(
+                false,
+                new List<string> { "Input json is null or empty" }
+            );
         }
 
         if (schema is null)
@@ -59,14 +58,21 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             jsonSchema = schema switch
             {
                 string schemaText => Json.Schema.JsonSchema.FromText(schemaText),
-                Models.JsonSchemaObject schemaObj => Json.Schema.JsonSchema.FromText(JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)),
+                Models.JsonSchemaObject schemaObj => Json.Schema.JsonSchema.FromText(
+                    JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)
+                ),
                 FunctionContract funcContract => BuildSchemaFromFunctionContract(funcContract),
-                _ => throw new InvalidOperationException($"Unsupported schema type: {schema.GetType().Name}")
+                _ => throw new InvalidOperationException(
+                    $"Unsupported schema type: {schema.GetType().Name}"
+                ),
             };
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(false, new List<string> { $"Failed to parse schema: {ex.Message}" });
+            return new SchemaValidationResult(
+                false,
+                new List<string> { $"Failed to parse schema: {ex.Message}" }
+            );
         }
 
         Console.WriteLine($"[DEBUG] Validating JSON: {json}");
@@ -75,29 +81,31 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         {
             var evaluationOptions = new EvaluationOptions
             {
-                OutputFormat = OutputFormat.Hierarchical
+                OutputFormat = OutputFormat.Hierarchical,
             };
 
             var result = jsonSchema.Evaluate(dataNode, evaluationOptions);
             var isValid = result.IsValid;
             var errors = ExtractValidationErrors(result);
 
-            Console.WriteLine($"[DEBUG] Validation result: IsValid={isValid}, HasErrors={errors.Count > 0}");
+            Console.WriteLine(
+                $"[DEBUG] Validation result: IsValid={isValid}, HasErrors={errors.Count > 0}"
+            );
 
             return new SchemaValidationResult(isValid, errors);
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(false, new List<string> { $"Validation error: {ex.Message}" });
+            return new SchemaValidationResult(
+                false,
+                new List<string> { $"Validation error: {ex.Message}" }
+            );
         }
     }
 
     private Json.Schema.JsonSchema BuildSchemaFromFunctionContract(FunctionContract contract)
     {
-        var root = new JsonObject
-        {
-            ["type"] = "object"
-        };
+        var root = new JsonObject { ["type"] = "object" };
 
         var properties = new JsonObject();
         var required = new JsonArray();
@@ -107,7 +115,10 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             foreach (var param in contract.Parameters)
             {
                 // Create a simple schema node with just the type
-                var paramSchemaNode = JsonSerializer.SerializeToNode(param.ParameterType, SchemaSerializationOptions);
+                var paramSchemaNode = JsonSerializer.SerializeToNode(
+                    param.ParameterType,
+                    SchemaSerializationOptions
+                );
                 properties[param.Name] = paramSchemaNode;
 
                 if (param.IsRequired)

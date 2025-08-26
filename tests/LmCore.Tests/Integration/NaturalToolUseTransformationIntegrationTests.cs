@@ -14,10 +14,14 @@ public class NaturalToolUseTransformationIntegrationTests
     public void FullPipeline_SingleToolCall_TransformsCorrectly()
     {
         // Arrange - Create a realistic scenario with weather tool call
-        var weatherToolCall = new ToolCall("GetWeather",
-            "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\",\"include_forecast\":true}");
-        var weatherResult = new ToolCallResult("weather-call-1",
-            "{\"temperature\":22,\"condition\":\"partly_cloudy\",\"humidity\":65,\"wind_speed\":12,\"forecast\":[{\"day\":\"today\",\"high\":24,\"low\":18},{\"day\":\"tomorrow\",\"high\":26,\"low\":19}]}");
+        var weatherToolCall = new ToolCall(
+            "GetWeather",
+            "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\",\"include_forecast\":true}"
+        );
+        var weatherResult = new ToolCallResult(
+            "weather-call-1",
+            "{\"temperature\":22,\"condition\":\"partly_cloudy\",\"humidity\":65,\"wind_speed\":12,\"forecast\":[{\"day\":\"today\",\"high\":24,\"low\":18},{\"day\":\"tomorrow\",\"high\":26,\"low\":19}]}"
+        );
 
         var toolCallMessage = new ToolsCallMessage
         {
@@ -25,21 +29,27 @@ public class NaturalToolUseTransformationIntegrationTests
             Role = Role.Assistant,
             FromAgent = "weather-assistant",
             GenerationId = "gen-weather-123",
-            Metadata = ImmutableDictionary.Create<string, object>()
+            Metadata = ImmutableDictionary
+                .Create<string, object>()
                 .Add("model", "claude-3-sonnet")
-                .Add("temperature", 0.7)
+                .Add("temperature", 0.7),
         };
 
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(weatherResult),
             Role = Role.User,
-            Metadata = ImmutableDictionary.Create<string, object>()
+            Metadata = ImmutableDictionary
+                .Create<string, object>()
                 .Add("execution_time", 1250)
-                .Add("tool_version", "1.2.0")
+                .Add("tool_version", "1.2.0"),
         };
 
-        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "weather-agent");
+        var aggregateMessage = new ToolsCallAggregateMessage(
+            toolCallMessage,
+            toolResultMessage,
+            "weather-agent"
+        );
 
         // Act - Transform using the core transformer
         var transformed = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
@@ -81,29 +91,41 @@ public class NaturalToolUseTransformationIntegrationTests
     public void FullPipeline_MultipleToolCalls_WithSeparators()
     {
         // Arrange - Create a scenario with multiple tool calls
-        var searchCall = new ToolCall("SearchDatabase",
-            "{\"query\":\"customers in California\",\"limit\":5}");
-        var analysisCall = new ToolCall("AnalyzeResults",
-            "{\"data_source\":\"customer_search\",\"metrics\":[\"count\",\"revenue\"]}");
+        var searchCall = new ToolCall(
+            "SearchDatabase",
+            "{\"query\":\"customers in California\",\"limit\":5}"
+        );
+        var analysisCall = new ToolCall(
+            "AnalyzeResults",
+            "{\"data_source\":\"customer_search\",\"metrics\":[\"count\",\"revenue\"]}"
+        );
 
-        var searchResult = new ToolCallResult("search-1",
-            "[{\"id\":1,\"name\":\"John Doe\",\"city\":\"San Francisco\",\"revenue\":50000},{\"id\":2,\"name\":\"Jane Smith\",\"city\":\"Los Angeles\",\"revenue\":75000}]");
-        var analysisResult = new ToolCallResult("analysis-1",
-            "Total customers: 2, Total revenue: $125,000, Average revenue: $62,500");
+        var searchResult = new ToolCallResult(
+            "search-1",
+            "[{\"id\":1,\"name\":\"John Doe\",\"city\":\"San Francisco\",\"revenue\":50000},{\"id\":2,\"name\":\"Jane Smith\",\"city\":\"Los Angeles\",\"revenue\":75000}]"
+        );
+        var analysisResult = new ToolCallResult(
+            "analysis-1",
+            "Total customers: 2, Total revenue: $125,000, Average revenue: $62,500"
+        );
 
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(searchCall, analysisCall),
             Role = Role.Assistant,
-            GenerationId = "gen-multi-456"
+            GenerationId = "gen-multi-456",
         };
 
         var toolResultMessage = new ToolsCallResultMessage
         {
-            ToolCallResults = ImmutableList.Create(searchResult, analysisResult)
+            ToolCallResults = ImmutableList.Create(searchResult, analysisResult),
         };
 
-        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "data-agent");
+        var aggregateMessage = new ToolsCallAggregateMessage(
+            toolCallMessage,
+            toolResultMessage,
+            "data-agent"
+        );
 
         // Act
         var transformed = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
@@ -135,27 +157,36 @@ public class NaturalToolUseTransformationIntegrationTests
         // Arrange - Create a realistic conversation flow
         var prefixMessage = new TextMessage
         {
-            Text = "I'll help you analyze your customer data. Let me start by searching for customers in specific regions.",
+            Text =
+                "I'll help you analyze your customer data. Let me start by searching for customers in specific regions.",
             Role = Role.Assistant,
             FromAgent = "data-assistant",
-            GenerationId = "gen-conv-001"
+            GenerationId = "gen-conv-001",
         };
 
-        var toolCall = new ToolCall("GetCustomersByRegion",
-            "{\"region\":\"West Coast\",\"status\":\"active\",\"sort_by\":\"revenue\"}");
-        var toolResult = new ToolCallResult("customer-search-1",
-            "{\"count\":42,\"total_revenue\":2500000,\"top_customers\":[{\"name\":\"TechCorp\",\"revenue\":500000},{\"name\":\"StartupXYZ\",\"revenue\":350000}]}");
+        var toolCall = new ToolCall(
+            "GetCustomersByRegion",
+            "{\"region\":\"West Coast\",\"status\":\"active\",\"sort_by\":\"revenue\"}"
+        );
+        var toolResult = new ToolCallResult(
+            "customer-search-1",
+            "{\"count\":42,\"total_revenue\":2500000,\"top_customers\":[{\"name\":\"TechCorp\",\"revenue\":500000},{\"name\":\"StartupXYZ\",\"revenue\":350000}]}"
+        );
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult),
+        };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var suffixMessage = new TextMessage
         {
-            Text = "Excellent! Your West Coast region is performing very well with 42 active customers generating $2.5M in total revenue. TechCorp and StartupXYZ are your top performers.",
+            Text =
+                "Excellent! Your West Coast region is performing very well with 42 active customers generating $2.5M in total revenue. TechCorp and StartupXYZ are your top performers.",
             Role = Role.Assistant,
             FromAgent = "data-assistant",
-            GenerationId = "gen-conv-002"
+            GenerationId = "gen-conv-002",
         };
 
         var messageSequence = new IMessage[] { prefixMessage, aggregateMessage, suffixMessage };
@@ -193,18 +224,35 @@ public class NaturalToolUseTransformationIntegrationTests
     public void ExtensionMethods_Integration_WorksSeamlessly()
     {
         // Arrange - Test the extension methods in a realistic scenario
-        var toolCall = new ToolCall("ProcessPayment", "{\"amount\":99.99,\"currency\":\"USD\",\"payment_method\":\"credit_card\"}");
-        var toolResult = new ToolCallResult("payment-123", "{\"status\":\"success\",\"transaction_id\":\"txn_abc123\",\"confirmation_code\":\"CONF789\"}");
+        var toolCall = new ToolCall(
+            "ProcessPayment",
+            "{\"amount\":99.99,\"currency\":\"USD\",\"payment_method\":\"credit_card\"}"
+        );
+        var toolResult = new ToolCallResult(
+            "payment-123",
+            "{\"status\":\"success\",\"transaction_id\":\"txn_abc123\",\"confirmation_code\":\"CONF789\"}"
+        );
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
-        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "payment-processor");
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult),
+        };
+        var aggregateMessage = new ToolsCallAggregateMessage(
+            toolCallMessage,
+            toolResultMessage,
+            "payment-processor"
+        );
 
         var conversationMessages = new IMessage[]
         {
             new TextMessage { Text = "Processing your payment now...", Role = Role.Assistant },
             aggregateMessage,
-            new TextMessage { Text = "Payment completed successfully! Your confirmation code is CONF789.", Role = Role.Assistant }
+            new TextMessage
+            {
+                Text = "Payment completed successfully! Your confirmation code is CONF789.",
+                Role = Role.Assistant,
+            },
         };
 
         // Act - Test the extension methods
@@ -225,7 +273,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var textOnlyMessages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            new TextMessage { Text = "Hi there", Role = Role.Assistant }
+            new TextMessage { Text = "Hi there", Role = Role.Assistant },
         };
         Assert.False(textOnlyMessages.ContainsTransformableToolCalls());
 
@@ -253,9 +301,18 @@ public class NaturalToolUseTransformationIntegrationTests
         var problematicToolCall = new ToolCall(null, "invalid json {"); // Null name, invalid JSON
         var problematicToolResult = new ToolCallResult(null, "simple text result");
 
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(problematicToolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(problematicToolResult) };
-        var problematicAggregate = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
+        var toolCallMessage = new ToolsCallMessage
+        {
+            ToolCalls = ImmutableList.Create(problematicToolCall),
+        };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(problematicToolResult),
+        };
+        var problematicAggregate = new ToolsCallAggregateMessage(
+            toolCallMessage,
+            toolResultMessage
+        );
 
         // Act & Assert - Test graceful handling
 
@@ -290,53 +347,77 @@ public class NaturalToolUseTransformationIntegrationTests
         var userMessage = new TextMessage
         {
             Text = "Can you help me find the total sales for Q1 and create a summary report?",
-            Role = Role.User
+            Role = Role.User,
         };
 
         var assistantReply = new TextMessage
         {
-            Text = "I'll help you get the Q1 sales data and create a summary report. Let me start by retrieving the sales data.",
+            Text =
+                "I'll help you get the Q1 sales data and create a summary report. Let me start by retrieving the sales data.",
             Role = Role.Assistant,
-            FromAgent = "sales-assistant"
+            FromAgent = "sales-assistant",
         };
 
         // First tool call - get sales data
-        var salesCall = new ToolCall("GetSalesData",
-            "{\"period\":\"Q1 2024\",\"include_breakdown\":true,\"currency\":\"USD\"}");
-        var salesResult = new ToolCallResult("sales-001",
-            "{\"total_sales\":1750000,\"breakdown\":{\"January\":580000,\"February\":620000,\"March\":550000},\"transactions\":156,\"average_order\":11218}");
+        var salesCall = new ToolCall(
+            "GetSalesData",
+            "{\"period\":\"Q1 2024\",\"include_breakdown\":true,\"currency\":\"USD\"}"
+        );
+        var salesResult = new ToolCallResult(
+            "sales-001",
+            "{\"total_sales\":1750000,\"breakdown\":{\"January\":580000,\"February\":620000,\"March\":550000},\"transactions\":156,\"average_order\":11218}"
+        );
 
         var salesCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(salesCall) };
-        var salesResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(salesResult) };
+        var salesResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(salesResult),
+        };
         var salesAggregate = new ToolsCallAggregateMessage(salesCallMessage, salesResultMessage);
 
         var analysisMessage = new TextMessage
         {
             Text = "Great! Now let me analyze this data and create a summary report for you.",
             Role = Role.Assistant,
-            FromAgent = "sales-assistant"
+            FromAgent = "sales-assistant",
         };
 
         // Second tool call - create report
-        var reportCall = new ToolCall("CreateSummaryReport",
-            "{\"data_source\":\"Q1_sales\",\"format\":\"executive_summary\",\"include_charts\":false}");
-        var reportResult = new ToolCallResult("report-001",
-            "Q1 2024 Sales Summary:\\n\\nTotal Revenue: $1,750,000\\nTransactions: 156\\nAverage Order Value: $11,218\\n\\nMonthly Breakdown:\\n- January: $580,000 (33.1%)\\n- February: $620,000 (35.4%)\\n- March: $550,000 (31.4%)\\n\\nKey Insights:\\n- February was the strongest month\\n- Consistent performance across the quarter\\n- High average order value indicates quality customer base");
+        var reportCall = new ToolCall(
+            "CreateSummaryReport",
+            "{\"data_source\":\"Q1_sales\",\"format\":\"executive_summary\",\"include_charts\":false}"
+        );
+        var reportResult = new ToolCallResult(
+            "report-001",
+            "Q1 2024 Sales Summary:\\n\\nTotal Revenue: $1,750,000\\nTransactions: 156\\nAverage Order Value: $11,218\\n\\nMonthly Breakdown:\\n- January: $580,000 (33.1%)\\n- February: $620,000 (35.4%)\\n- March: $550,000 (31.4%)\\n\\nKey Insights:\\n- February was the strongest month\\n- Consistent performance across the quarter\\n- High average order value indicates quality customer base"
+        );
 
-        var reportCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(reportCall) };
-        var reportResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(reportResult) };
+        var reportCallMessage = new ToolsCallMessage
+        {
+            ToolCalls = ImmutableList.Create(reportCall),
+        };
+        var reportResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(reportResult),
+        };
         var reportAggregate = new ToolsCallAggregateMessage(reportCallMessage, reportResultMessage);
 
         var finalMessage = new TextMessage
         {
-            Text = "Perfect! I've compiled your Q1 sales summary. The quarter shows strong performance with $1.75M in total revenue and consistent monthly results.",
+            Text =
+                "Perfect! I've compiled your Q1 sales summary. The quarter shows strong performance with $1.75M in total revenue and consistent monthly results.",
             Role = Role.Assistant,
-            FromAgent = "sales-assistant"
+            FromAgent = "sales-assistant",
         };
 
         var fullConversation = new IMessage[]
         {
-            userMessage, assistantReply, salesAggregate, analysisMessage, reportAggregate, finalMessage
+            userMessage,
+            assistantReply,
+            salesAggregate,
+            analysisMessage,
+            reportAggregate,
+            finalMessage,
         };
 
         // Act - Transform the entire conversation
@@ -377,7 +458,9 @@ public class NaturalToolUseTransformationIntegrationTests
         var helpIndex = combinedResponse.Text.IndexOf("I'll help you get");
         var firstToolCallIndex = combinedResponse.Text.IndexOf("<tool_call name=\"GetSalesData\">");
         var greatIndex = combinedResponse.Text.IndexOf("Great! Now let me");
-        var secondToolCallIndex = combinedResponse.Text.IndexOf("<tool_call name=\"CreateSummaryReport\">");
+        var secondToolCallIndex = combinedResponse.Text.IndexOf(
+            "<tool_call name=\"CreateSummaryReport\">"
+        );
         var perfectIndex = combinedResponse.Text.IndexOf("Perfect! I've compiled");
 
         Assert.True(helpIndex < firstToolCallIndex);

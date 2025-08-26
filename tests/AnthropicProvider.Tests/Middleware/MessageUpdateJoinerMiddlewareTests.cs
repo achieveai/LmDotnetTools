@@ -1,11 +1,11 @@
+using System.Collections.Immutable;
+using System.Reflection;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using System.Collections.Immutable;
-using System.Reflection;
-using System.Text.Json;
 using Xunit;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
@@ -54,16 +54,21 @@ public class MessageUpdateJoinerMiddlewareTests
         // Verify files exist
         if (!File.Exists(streamingResponsePath))
         {
-            throw new FileNotFoundException($"Streaming response file not found: {streamingResponsePath}");
+            throw new FileNotFoundException(
+                $"Streaming response file not found: {streamingResponsePath}"
+            );
         }
 
         if (!File.Exists(expectedOutputPath))
         {
-            throw new FileNotFoundException($"Expected output file not found: {expectedOutputPath}");
+            throw new FileNotFoundException(
+                $"Expected output file not found: {expectedOutputPath}"
+            );
         }
 
         // Create the mock HTTP handler that reads from the file using MockHttpHandlerBuilder
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithStreamingFile(streamingResponsePath)
             .Build();
 
@@ -120,13 +125,22 @@ public class MessageUpdateJoinerMiddlewareTests
             {
                 Assert.Equal(expectedText.Text, actualText.Text);
             }
-            else if (expected is ToolsCallMessage expectedTool && actual is ToolsCallMessage actualTool)
+            else if (
+                expected is ToolsCallMessage expectedTool
+                && actual is ToolsCallMessage actualTool
+            )
             {
                 Assert.Equal(expectedTool.ToolCalls.Count, actualTool.ToolCalls.Count);
-                Assert.Equal(expectedTool.ToolCalls[0].FunctionName, actualTool.ToolCalls[0].FunctionName);
+                Assert.Equal(
+                    expectedTool.ToolCalls[0].FunctionName,
+                    actualTool.ToolCalls[0].FunctionName
+                );
 
                 // Handle possible null FunctionArgs
-                if (expectedTool.ToolCalls[0].FunctionArgs != null && actualTool.ToolCalls[0].FunctionArgs != null)
+                if (
+                    expectedTool.ToolCalls[0].FunctionArgs != null
+                    && actualTool.ToolCalls[0].FunctionArgs != null
+                )
                 {
                     // Use null-forgiving operator at assignment to indicate we've verified non-null
                     var expectedArgs = expectedTool.ToolCalls[0].FunctionArgs!;
@@ -160,16 +174,22 @@ public class MessageUpdateJoinerMiddlewareTests
                 var role = GetRoleFromElement(element);
                 var fromAgent = GetStringProperty(element, "from_agent");
 
-                result.Add(new TextMessage
-                {
-                    Text = text,
-                    Role = role,
-                    FromAgent = fromAgent
-                });
+                result.Add(
+                    new TextMessage
+                    {
+                        Text = text,
+                        Role = role,
+                        FromAgent = fromAgent,
+                    }
+                );
             }
-            else if (element.TryGetProperty("tool_calls", out var _) ||
-                    (element.TryGetProperty("source", out var sourceElement) &&
-                     sourceElement.GetString() == "tool-call"))
+            else if (
+                element.TryGetProperty("tool_calls", out var _)
+                || (
+                    element.TryGetProperty("source", out var sourceElement)
+                    && sourceElement.GetString() == "tool-call"
+                )
+            )
             {
                 // It's a ToolsCallMessage
                 var role = GetRoleFromElement(element);
@@ -187,20 +207,21 @@ public class MessageUpdateJoinerMiddlewareTests
                         var functionArgs = GetStringProperty(toolCallElement, "function_args");
                         var toolCallId = GetStringProperty(toolCallElement, "tool_call_id");
 
-                        toolCalls.Add(new ToolCall(functionName, functionArgs)
-                        {
-                            ToolCallId = toolCallId
-                        });
+                        toolCalls.Add(
+                            new ToolCall(functionName, functionArgs) { ToolCallId = toolCallId }
+                        );
                     }
                 }
 
-                result.Add(new ToolsCallMessage
-                {
-                    Role = role,
-                    FromAgent = fromAgent,
-                    GenerationId = generationId,
-                    ToolCalls = toolCalls.ToImmutableList()
-                });
+                result.Add(
+                    new ToolsCallMessage
+                    {
+                        Role = role,
+                        FromAgent = fromAgent,
+                        GenerationId = generationId,
+                        ToolCalls = toolCalls.ToImmutableList(),
+                    }
+                );
             }
         }
 
@@ -218,7 +239,7 @@ public class MessageUpdateJoinerMiddlewareTests
                 "user" => Role.User,
                 "system" => Role.System,
                 "tool" => Role.Tool,
-                _ => Role.None
+                _ => Role.None,
             };
         }
 

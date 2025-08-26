@@ -27,7 +27,8 @@ public record ChatCompletionRequest
         IEnumerable<ChatMessage> messages,
         double temperature = 0.7,
         int maxTokens = 4096,
-        IDictionary<string, object>? additionalParameters = null)
+        IDictionary<string, object>? additionalParameters = null
+    )
     {
         Model = model;
         Messages = messages.ToList();
@@ -98,7 +99,8 @@ public record ChatCompletionRequest
     }
 
     [JsonIgnore]
-    public ImmutableDictionary<string, object> AdditionalParameters { get; init; } = ImmutableDictionary<string, object>.Empty;
+    public ImmutableDictionary<string, object> AdditionalParameters { get; init; } =
+        ImmutableDictionary<string, object>.Empty;
 
     [JsonPropertyName("messages")]
     public List<ChatMessage> Messages { get; set; }
@@ -106,24 +108,30 @@ public record ChatCompletionRequest
     public static ChatCompletionRequest FromMessages(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options,
-        string? model = null)
+        string? model = null
+    )
     {
         // Translate with reasoning merge logic
-        messages = messages.Select(m => m switch
-        {
-            CompositeMessage cm => cm.Messages.Any(mm => mm is UsageMessage)
-                ? new CompositeMessage
+        messages = messages
+            .Select(m =>
+                m switch
                 {
-                    Role = cm.Role,
-                    Messages = cm.Messages.Where(mm => mm is not UsageMessage).ToImmutableList()
+                    CompositeMessage cm => cm.Messages.Any(mm => mm is UsageMessage)
+                        ? new CompositeMessage
+                        {
+                            Role = cm.Role,
+                            Messages = cm
+                                .Messages.Where(mm => mm is not UsageMessage)
+                                .ToImmutableList(),
+                        }
+                        : m,
+                    UsageMessage _ => null, // skip usage messages
+                    _ => m,
                 }
-                : m,
-            UsageMessage _ => null, // skip usage messages
-            _ => m
-        })
-        .Where(m => m is not null)
-        .Select(m => m!)
-        .ToList();
+            )
+            .Where(m => m is not null)
+            .Select(m => m!)
+            .ToList();
 
         var chatMessages = MergeReasoningIntoAssistant(messages).ToList();
         if (options != null)
@@ -137,19 +145,23 @@ public record ChatCompletionRequest
             )
             {
                 TopP = options.TopP,
-                Stream = options.ExtraProperties
-                    .TryGetValue("stream", out var stream) && stream is bool ? (bool)stream : false,
-                SafePrompt = options.ExtraProperties
-                    .TryGetValue("safe_prompt", out var safePrompt) && safePrompt is bool
-                    ? (bool)safePrompt : null,
+                Stream =
+                    options.ExtraProperties.TryGetValue("stream", out var stream) && stream is bool
+                        ? (bool)stream
+                        : false,
+                SafePrompt =
+                    options.ExtraProperties.TryGetValue("safe_prompt", out var safePrompt)
+                    && safePrompt is bool
+                        ? (bool)safePrompt
+                        : null,
                 RandomSeed = options.RandomSeed,
                 ResponseFormat = options.ResponseFormat,
                 Temperature = options.Temperature ?? 0.0,
                 MaxTokens = options.MaxToken ?? 4096,
                 Stop = options.StopSequence ?? Array.Empty<string>(),
-                Tools = options.Functions?
-                    .Select(fc => new FunctionTool(fc.ToOpenFunctionDefinition()))
-                    .ToList()
+                Tools = options
+                    .Functions?.Select(fc => new FunctionTool(fc.ToOpenFunctionDefinition()))
+                    .ToList(),
             };
         }
 
@@ -157,7 +169,8 @@ public record ChatCompletionRequest
             model ?? "",
             chatMessages,
             temperature: 0.7f,
-            maxTokens: 1024);
+            maxTokens: 1024
+        );
     }
 
     public static IEnumerable<ChatMessage> FromMessage(IMessage message)
@@ -165,45 +178,76 @@ public record ChatCompletionRequest
         switch (message)
         {
             case CompositeMessage compositeMsg:
-                if (compositeMsg.Messages.Any(m => m is ToolsCallAggregateMessage || m is ToolsCallMessage || m is ToolsCallResultMessage))
+                if (
+                    compositeMsg.Messages.Any(m =>
+                        m is ToolsCallAggregateMessage
+                        || m is ToolsCallMessage
+                        || m is ToolsCallResultMessage
+                    )
+                )
                 {
                     return compositeMsg.Messages.SelectMany(m => FromMessage(m));
                 }
                 else
                 {
-                    List<ChatMessage> chatMessages = [new ChatMessage {
-                        Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
-                        Content = new Union<string, Union<TextContent, ImageContent>[]>(compositeMsg.Messages
-                            .Where(m => m is not ReasoningMessage)
-                            .Select(m => m switch {
-                                TextMessage textMessage => new Union<TextContent, ImageContent>(new TextContent(textMessage.Text)),
-                                ImageMessage imageMessage => new Union<TextContent, ImageContent>(new ImageContent(imageMessage.ImageData.ToDataUrl()!)),
-                                _ => throw new ArgumentException("Unsupported message type")
-                            })
-                            .ToArray()
-                        )
-                    }];
+                    List<ChatMessage> chatMessages =
+                    [
+                        new ChatMessage
+                        {
+                            Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
+                            Content = new Union<string, Union<TextContent, ImageContent>[]>(
+                                compositeMsg
+                                    .Messages.Where(m => m is not ReasoningMessage)
+                                    .Select(m =>
+                                        m switch
+                                        {
+                                            TextMessage textMessage => new Union<
+                                                TextContent,
+                                                ImageContent
+                                            >(new TextContent(textMessage.Text)),
+                                            ImageMessage imageMessage => new Union<
+                                                TextContent,
+                                                ImageContent
+                                            >(
+                                                new ImageContent(
+                                                    imageMessage.ImageData.ToDataUrl()!
+                                                )
+                                            ),
+                                            _ => throw new ArgumentException(
+                                                "Unsupported message type"
+                                            ),
+                                        }
+                                    )
+                                    .ToArray()
+                            ),
+                        },
+                    ];
 
-                    var hasEncryptedReasoning = compositeMsg.Messages
-                        .OfType<ReasoningMessage>()
+                    var hasEncryptedReasoning = compositeMsg
+                        .Messages.OfType<ReasoningMessage>()
                         .Any(r => r.Visibility == ReasoningVisibility.Encrypted);
 
-                    var reasoningMessage = compositeMsg.Messages
-                        .OfType<ReasoningMessage>()
-                        .Where(r => hasEncryptedReasoning
-                            ? r.Visibility == ReasoningVisibility.Encrypted
-                            : r.Visibility == ReasoningVisibility.Plain)
+                    var reasoningMessage = compositeMsg
+                        .Messages.OfType<ReasoningMessage>()
+                        .Where(r =>
+                            hasEncryptedReasoning
+                                ? r.Visibility == ReasoningVisibility.Encrypted
+                                : r.Visibility == ReasoningVisibility.Plain
+                        )
                         .FirstOrDefault();
 
                     if (reasoningMessage != null)
                     {
                         if (hasEncryptedReasoning)
                         {
-                            chatMessages[0].ReasoningDetails = [new ChatMessage.ReasoningDetail
-                            {
-                                Type = "reasoning.encrypted",
-                                Data = reasoningMessage.Reasoning
-                            }];
+                            chatMessages[0].ReasoningDetails =
+                            [
+                                new ChatMessage.ReasoningDetail
+                                {
+                                    Type = "reasoning.encrypted",
+                                    Data = reasoningMessage.Reasoning,
+                                },
+                            ];
                         }
                         else
                         {
@@ -214,72 +258,101 @@ public record ChatCompletionRequest
                     return chatMessages;
                 }
             case ImageMessage imageMessage:
-                return [new ChatMessage {
-                    Role = ChatMessage.ToRoleEnum(imageMessage.Role),
-                    Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                        [new Union<TextContent, ImageContent>(
-                            new ImageContent(imageMessage.ImageData.ToDataUrl()!))])
-                }];
+                return
+                [
+                    new ChatMessage
+                    {
+                        Role = ChatMessage.ToRoleEnum(imageMessage.Role),
+                        Content = new Union<string, Union<TextContent, ImageContent>[]>(
+                            [
+                                new Union<TextContent, ImageContent>(
+                                    new ImageContent(imageMessage.ImageData.ToDataUrl()!)
+                                ),
+                            ]
+                        ),
+                    },
+                ];
             case ToolsCallResultMessage toolCallResultMessage:
-                return toolCallResultMessage.ToolCallResults
-                    .Where(tc => tc.Result != null)
+                return toolCallResultMessage
+                    .ToolCallResults.Where(tc => tc.Result != null)
                     .Select(tc =>
                     {
                         var toolCallId = tc.ToolCallId;
-                        return
-                            new ChatMessage
-                            {
-                                Role = RoleEnum.Tool,
-                                ToolCallId = toolCallId,
-                                Content = new Union<string, Union<TextContent, ImageContent>[]>(tc.Result!)
-                            };
+                        return new ChatMessage
+                        {
+                            Role = RoleEnum.Tool,
+                            ToolCallId = toolCallId,
+                            Content = new Union<string, Union<TextContent, ImageContent>[]>(
+                                tc.Result!
+                            ),
+                        };
                     });
             case ToolsCallAggregateMessage toolCallAggregateMessage:
                 return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
+            {
+                var cm = new ChatMessage
                 {
-                    var cm = new ChatMessage
-                    {
-                        Role = ChatMessage.ToRoleEnum(textMessage.Role),
-                        Content = textMessage.GetText() != null
-                            ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
-                            : null
-                    };
+                    Role = ChatMessage.ToRoleEnum(textMessage.Role),
+                    Content =
+                        textMessage.GetText() != null
+                            ? new Union<string, Union<TextContent, ImageContent>[]>(
+                                textMessage.GetText()!
+                            )
+                            : null,
+                };
 
-                    if (textMessage.Metadata != null && textMessage.Metadata.TryGetValue("reasoning", out var rVal) && rVal is string rStr)
-                    {
-                        cm.Reasoning = rStr;
-                    }
-                    else if (textMessage.Metadata != null && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal) && dVal is List<ChatMessage.ReasoningDetail> details)
-                    {
-                        cm.ReasoningDetails = details;
-                    }
-
-                    return [cm];
+                if (
+                    textMessage.Metadata != null
+                    && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
+                    && rVal is string rStr
+                )
+                {
+                    cm.Reasoning = rStr;
                 }
+                else if (
+                    textMessage.Metadata != null
+                    && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
+                    && dVal is List<ChatMessage.ReasoningDetail> details
+                )
+                {
+                    cm.ReasoningDetails = details;
+                }
+
+                return [cm];
+            }
             case ICanGetToolCalls toolCallMessage:
                 var toolChat = new ChatMessage
                 {
                     Role = RoleEnum.Assistant,
-                    ToolCalls = toolCallMessage.GetToolCalls()!.Select(tc =>
-                        new FunctionContent(
-                            tc.ToolCallId ?? "call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
-                            new FunctionCall(
-                                tc.FunctionName!,
-                                tc.FunctionArgs!
-                            ))
+                    ToolCalls = toolCallMessage
+                        .GetToolCalls()!
+                        .Select(tc => new FunctionContent(
+                            tc.ToolCallId
+                                ?? "call_"
+                                    + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
+                            new FunctionCall(tc.FunctionName!, tc.FunctionArgs!)
+                        )
                         {
-                            Index = tc.Index
-                        }
-                        ).ToList()
+                            Index = tc.Index,
+                        })
+                        .ToList(),
                 };
 
-                if (toolCallMessage.Metadata != null && toolCallMessage.Metadata.TryGetValue("reasoning", out var tr) && tr is string rs)
+                if (
+                    toolCallMessage.Metadata != null
+                    && toolCallMessage.Metadata.TryGetValue("reasoning", out var tr)
+                    && tr is string rs
+                )
                 {
                     toolChat.Reasoning = rs;
                 }
-                else if (toolCallMessage.Metadata != null && toolCallMessage.Metadata.TryGetValue("reasoning_details", out var rd) && rd is List<ChatMessage.ReasoningDetail> list)
+                else if (
+                    toolCallMessage.Metadata != null
+                    && toolCallMessage.Metadata.TryGetValue("reasoning_details", out var rd)
+                    && rd is List<ChatMessage.ReasoningDetail> list
+                )
                 {
                     toolChat.ReasoningDetails = list;
                 }
@@ -292,7 +365,9 @@ public record ChatCompletionRequest
         }
     }
 
-    private static IEnumerable<ChatMessage> MergeReasoningIntoAssistant(IEnumerable<IMessage> source)
+    private static IEnumerable<ChatMessage> MergeReasoningIntoAssistant(
+        IEnumerable<IMessage> source
+    )
     {
         var reasoningBuffer = new List<ReasoningMessage>();
 
@@ -304,32 +379,38 @@ public record ChatCompletionRequest
                     reasoningBuffer.Add(r);
                     continue;
                 case ReasoningUpdateMessage u:
-                    reasoningBuffer.Add(new ReasoningMessage
-                    {
-                        Role = u.Role,
-                        Reasoning = u.Reasoning,
-                        FromAgent = u.FromAgent,
-                        GenerationId = u.GenerationId,
-                        Visibility = ReasoningVisibility.Plain
-                    });
+                    reasoningBuffer.Add(
+                        new ReasoningMessage
+                        {
+                            Role = u.Role,
+                            Reasoning = u.Reasoning,
+                            FromAgent = u.FromAgent,
+                            GenerationId = u.GenerationId,
+                            Visibility = ReasoningVisibility.Plain,
+                        }
+                    );
                     continue;
 
                 case TextMessage txt:
                 case ToolsCallMessage tc:
                 case ToolsCallAggregateMessage agg:
+                {
+                    var produced = FromMessage(m).ToList();
+                    foreach (var ch in produced)
                     {
-                        var produced = FromMessage(m).ToList();
-                        foreach (var ch in produced)
-                        {
-                            MergeReasoning(reasoningBuffer, ch);
-                            yield return ch;
-                        }
-                        break;
+                        MergeReasoning(reasoningBuffer, ch);
+                        yield return ch;
                     }
+                    break;
+                }
 
                 default:
                     // For other message types (system/user/tool etc.) just forward conversion without merging
-                    if (m is TextUpdateMessage || m is ToolsCallUpdateMessage || m is ReasoningUpdateMessage)
+                    if (
+                        m is TextUpdateMessage
+                        || m is ToolsCallUpdateMessage
+                        || m is ReasoningUpdateMessage
+                    )
                     {
                         // never send update messages in ChatCompletionRequest
                         continue;
@@ -346,7 +427,7 @@ public record ChatCompletionRequest
             var chatMessage = new ChatMessage
             {
                 Role = RoleEnum.Assistant,
-                Content = new Union<string, Union<TextContent, ImageContent>[]>("\n\n")
+                Content = new Union<string, Union<TextContent, ImageContent>[]>("\n\n"),
             };
 
             MergeReasoning(reasoningBuffer, chatMessage);
@@ -354,7 +435,7 @@ public record ChatCompletionRequest
         }
     }
 
-    static private void MergeReasoning(List<ReasoningMessage> reasoningBuffer, ChatMessage? ch)
+    private static void MergeReasoning(List<ReasoningMessage> reasoningBuffer, ChatMessage? ch)
     {
         if (reasoningBuffer.Count > 0)
         {
@@ -362,11 +443,15 @@ public record ChatCompletionRequest
             List<ReasoningMessage> selected;
             if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted))
             {
-                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted).ToList();
+                selected = reasoningBuffer
+                    .Where(p => p.Visibility == ReasoningVisibility.Encrypted)
+                    .ToList();
             }
             else if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary))
             {
-                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary).ToList();
+                selected = reasoningBuffer
+                    .Where(p => p.Visibility == ReasoningVisibility.Summary)
+                    .ToList();
             }
             else
             {
@@ -381,25 +466,29 @@ public record ChatCompletionRequest
             else
             {
                 // Multiple or encrypted ⇒ use reasoning_details array
-                ch.ReasoningDetails = selected.Select(p => new ChatMessage.ReasoningDetail
-                {
-                    Type = p.Visibility == ReasoningVisibility.Encrypted
-                            ? "reasoning.encrypted"
-                            : p.Visibility == ReasoningVisibility.Summary
-                                ? "reasoning.summary"
-                                : "reasoning",
-                    Data = p.Reasoning
-                }).ToList();
+                ch.ReasoningDetails = selected
+                    .Select(p => new ChatMessage.ReasoningDetail
+                    {
+                        Type =
+                            p.Visibility == ReasoningVisibility.Encrypted ? "reasoning.encrypted"
+                            : p.Visibility == ReasoningVisibility.Summary ? "reasoning.summary"
+                            : "reasoning",
+                        Data = p.Reasoning,
+                    })
+                    .ToList();
             }
             reasoningBuffer.Clear();
         }
     }
 
-    private static Dictionary<string, object>? CreateAdditionalParameters(GenerateReplyOptions options)
+    private static Dictionary<string, object>? CreateAdditionalParameters(
+        GenerateReplyOptions options
+    )
     {
         // Only create JsonObject if there are actual parameters to add
         bool hasExtraProperties = options.ExtraProperties.Count > 0;
-        bool hasProviders = options.ExtraProperties.TryGetValue("providers", out var providers)
+        bool hasProviders =
+            options.ExtraProperties.TryGetValue("providers", out var providers)
             && providers is IEnumerable<string> providerList
             && providerList.Any();
 
@@ -414,8 +503,10 @@ public record ChatCompletionRequest
         {
             parameters["provider"] = new JsonObject
             {
-                ["order"] = new JsonArray(((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p)).ToArray()),
-                ["allow_fallbacks"] = false
+                ["order"] = new JsonArray(
+                    ((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p)).ToArray()
+                ),
+                ["allow_fallbacks"] = false,
             };
         }
 
@@ -434,7 +525,9 @@ public record ChatCompletionRequest
                 else
                 {
                     // Use JsonSerializer to convert arbitrary objects (including dictionaries/arrays) into JsonNode
-                    parameters[kvp.Key] = System.Text.Json.JsonSerializer.SerializeToNode(kvp.Value);
+                    parameters[kvp.Key] = System.Text.Json.JsonSerializer.SerializeToNode(
+                        kvp.Value
+                    );
                 }
             }
         }

@@ -22,7 +22,8 @@ public interface IGraphExtractionService
         SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Extracts both entities and relationships from conversation content in a single operation.
@@ -34,12 +35,16 @@ public interface IGraphExtractionService
     /// <param name="modelId">Optional specific model ID to use instead of automatic selection.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Tuple containing extracted entities and relationships.</returns>
-    Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
+    Task<(
+        IEnumerable<Entity> Entities,
+        IEnumerable<Relationship> Relationships
+    )> ExtractGraphDataAsync(
         string content,
         SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Analyzes existing graph data and suggests updates based on new conversation content.
@@ -59,7 +64,8 @@ public interface IGraphExtractionService
         SessionContext sessionContext,
         int memoryId,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates and cleans extracted entities to ensure consistency.
@@ -73,7 +79,8 @@ public interface IGraphExtractionService
         IEnumerable<Entity> entities,
         SessionContext sessionContext,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Validates and cleans extracted relationships to ensure consistency.
@@ -87,5 +94,6 @@ public interface IGraphExtractionService
         IEnumerable<Relationship> relationships,
         SessionContext sessionContext,
         string? modelId = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 }

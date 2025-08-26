@@ -1,7 +1,8 @@
 using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -10,13 +11,18 @@ using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.TestUtils;
 using dotenv.net;
 using Xunit;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class OpenAiAgentTests
 {
-    private static string EnvTestPath => Path.Combine(AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory), ".env.test");
+    private static string EnvTestPath =>
+        Path.Combine(
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            ".env.test"
+        );
 
     [Fact]
     public async Task SimpleConversation_ShouldReturnResponse()
@@ -24,10 +30,18 @@ public class OpenAiAgentTests
         // Create HTTP client with record/playback functionality
         string testCaseName = "SimpleConversation_ShouldReturnResponse";
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", $"{testCaseName}.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "OpenAIProvider.Tests",
+            "TestData",
+            "OpenAI",
+            $"{testCaseName}.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: false)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
@@ -40,23 +54,16 @@ public class OpenAiAgentTests
         var systemMessage = new TextMessage
         {
             Role = Role.System,
-            Text = "You're a helpful AI Agent"
+            Text = "You're a helpful AI Agent",
         };
 
         // Create a user message
-        var userMessage = new TextMessage
-        {
-            Role = Role.User,
-            Text = "Hello Bot"
-        };
+        var userMessage = new TextMessage { Role = Role.User, Text = "Hello Bot" };
 
         // Act
         var response = await agent.GenerateReplyAsync(
-          [systemMessage, userMessage],
-          new()
-          {
-              ModelId = "microsoft/phi-4-multimodal-instruct"
-          }
+            [systemMessage, userMessage],
+            new() { ModelId = "microsoft/phi-4-multimodal-instruct" }
         );
 
         // Assert
@@ -76,8 +83,12 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-            new TextMessage { Role = Role.System, Text = "You will always respond in JSON as `{\"response\": \"...\"}`" },
-            new TextMessage { Role = Role.User, Text = "Hello Bot!!!" }
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You will always respond in JSON as `{\"response\": \"...\"}`",
+            },
+            new TextMessage { Role = Role.User, Text = "Hello Bot!!!" },
         };
 
         var options = new GenerateReplyOptions
@@ -95,9 +106,11 @@ public class OpenAiAgentTests
             "OpenAIProvider.Tests",
             "TestData",
             "OpenAI",
-            "ChatCompletionRequest_SerializesToCorrectJson.json");
+            "ChatCompletionRequest_SerializesToCorrectJson.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: false)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
@@ -108,9 +121,7 @@ public class OpenAiAgentTests
 
         // Act
         var request = ChatCompletionRequest.FromMessages(messages, options);
-        var response = await agent.GenerateReplyAsync(
-          messages,
-          options);
+        var response = await agent.GenerateReplyAsync(messages, options);
         var json = JsonNode.Parse(((ICanGetText)response.First())!.GetText()!);
         Assert.NotNull(json);
         Assert.NotNull(json["response"]);
@@ -122,46 +133,58 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-        new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-        new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
-    };
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You're a helpful AI Agent that can use tools",
+            },
+            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
+        };
 
         var options = new GenerateReplyOptions
         {
             ModelId = "gpt-4",
             Functions = new[]
             {
-            new FunctionContract
-            {
-                Name = "getWeather",
-                Description = "Get current weather for a location",
-                Parameters = new List<FunctionParameterContract>
+                new FunctionContract
                 {
-                    new FunctionParameterContract
+                    Name = "getWeather",
+                    Description = "Get current weather for a location",
+                    Parameters = new List<FunctionParameterContract>
                     {
-                        Name = "location",
-                        Description = "City name",
-                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = true
+                        new FunctionParameterContract
+                        {
+                            Name = "location",
+                            Description = "City name",
+                            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                            IsRequired = true,
+                        },
+                        new FunctionParameterContract
+                        {
+                            Name = "unit",
+                            Description = "Temperature unit (celsius or fahrenheit)",
+                            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                            IsRequired = false,
+                        },
                     },
-                    new FunctionParameterContract
-                    {
-                        Name = "unit",
-                        Description = "Temperature unit (celsius or fahrenheit)",
-                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                        IsRequired = false
-                    }
-                }
-            }
-        }
+                },
+            },
         };
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", "FunctionToolCall_ShouldReturnToolMessage.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "OpenAIProvider.Tests",
+            "TestData",
+            "OpenAI",
+            "FunctionToolCall_ShouldReturnToolMessage.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: false)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
@@ -171,9 +194,7 @@ public class OpenAiAgentTests
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Act
-        var response = (await agent.GenerateReplyAsync(
-          messages,
-          options)).First();
+        var response = (await agent.GenerateReplyAsync(messages, options)).First();
 
         // Assert
         Assert.NotNull(response);
@@ -204,8 +225,12 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You're a helpful AI Agent that can use tools",
+            },
+            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
         var options = new GenerateReplyOptions
@@ -224,39 +249,44 @@ public class OpenAiAgentTests
                             Name = "location",
                             Description = "City name",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                            IsRequired = true
+                            IsRequired = true,
                         },
                         new FunctionParameterContract
                         {
                             Name = "unit",
                             Description = "Temperature unit (celsius or fahrenheit)",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                            IsRequired = false
-                        }
-                    }
-                }
-            }
+                            IsRequired = false,
+                        },
+                    },
+                },
+            },
         };
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "TestData", "FunctionToolCall_ShouldReturnToolMessage_streaming.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "TestData",
+            "FunctionToolCall_ShouldReturnToolMessage_streaming.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: false)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
 
         var httpClient = new HttpClient(handler);
         var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv());
-        var agent = new OpenClientAgent("TestAgent", client)
-                .WithMiddleware(new MessageUpdateJoinerMiddleware("Message Joiner"));
+        var agent = new OpenClientAgent("TestAgent", client).WithMiddleware(
+            new MessageUpdateJoinerMiddleware("Message Joiner")
+        );
 
         // Act
-        var responseStream = await agent.GenerateReplyStreamingAsync(
-          messages,
-          options);
+        var responseStream = await agent.GenerateReplyStreamingAsync(messages, options);
 
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
@@ -267,10 +297,10 @@ public class OpenAiAgentTests
         // Assert
         Assert.NotEmpty(responses);
 
-        var firstResponse = responses.First(
-            m => m is ToolsCallMessage
-                || (m is TextMessage textMessage
-                    && !string.IsNullOrEmpty(textMessage.Text)));
+        var firstResponse = responses.First(m =>
+            m is ToolsCallMessage
+            || (m is TextMessage textMessage && !string.IsNullOrEmpty(textMessage.Text))
+        );
         Assert.NotNull(firstResponse);
 
         // Since the response type may vary depending on the implementation,
@@ -299,8 +329,12 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
-            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" }
+            new TextMessage
+            {
+                Role = Role.System,
+                Text = "You're a helpful AI Agent that can use tools",
+            },
+            new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
         var options = new GenerateReplyOptions
@@ -319,26 +353,34 @@ public class OpenAiAgentTests
                             Name = "location",
                             Description = "City name",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                            IsRequired = true
+                            IsRequired = true,
                         },
                         new FunctionParameterContract
                         {
                             Name = "unit",
                             Description = "Temperature unit (celsius or fahrenheit)",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                            IsRequired = false
-                        }
-                    }
-                }
-            }
+                            IsRequired = false,
+                        },
+                    },
+                },
+            },
         };
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
-            "tests", "OpenAIProvider.Tests", "TestData", "OpenAI", "FunctionToolCall_ShouldReturnToolMessage_Streaming_WithJoin.json");
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
+                AppDomain.CurrentDomain.BaseDirectory
+            ),
+            "tests",
+            "OpenAIProvider.Tests",
+            "TestData",
+            "OpenAI",
+            "FunctionToolCall_ShouldReturnToolMessage_Streaming_WithJoin.json"
+        );
 
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithRecordPlayback(testDataFilePath, allowAdditional: false)
             .ForwardToApi(GetApiBaseUrlFromEnv(), GetApiKeyFromEnv())
             .Build();
@@ -348,9 +390,7 @@ public class OpenAiAgentTests
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Act
-        var response = await agent.GenerateReplyAsync(
-          messages,
-          options);
+        var response = await agent.GenerateReplyAsync(messages, options);
 
         // Assert
         Assert.NotNull(response);
@@ -383,9 +423,11 @@ public class OpenAiAgentTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY",
+        return EnvironmentHelper.GetApiKeyFromEnv(
+            "OPENAI_API_KEY",
             new[] { "LLM_API_KEY" },
-            "test-api-key");
+            "test-api-key"
+        );
     }
 
     /// <summary>
@@ -393,8 +435,10 @@ public class OpenAiAgentTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL",
+        return EnvironmentHelper.GetApiBaseUrlFromEnv(
+            "OPENAI_API_URL",
             new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1");
+            "https://api.openai.com/v1"
+        );
     }
 }

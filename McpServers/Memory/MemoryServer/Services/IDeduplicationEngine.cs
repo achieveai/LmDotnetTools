@@ -21,7 +21,8 @@ public interface IDeduplicationEngine
         List<UnifiedSearchResult> results,
         SessionContext sessionContext,
         DeduplicationOptions? options = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Checks if the deduplication service is available and configured.

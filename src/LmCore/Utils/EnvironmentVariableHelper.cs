@@ -14,7 +14,11 @@ public static class EnvironmentVariableHelper
     /// <param name="fallbackKeys">Fallback environment variable names</param>
     /// <param name="defaultValue">Default value if no keys found</param>
     /// <returns>API key value</returns>
-    public static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "")
+    public static string GetApiKeyFromEnv(
+        string primaryKey,
+        string[]? fallbackKeys = null,
+        string defaultValue = ""
+    )
     {
         var apiKey = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(apiKey))
@@ -47,7 +51,8 @@ public static class EnvironmentVariableHelper
     public static string GetApiBaseUrlFromEnv(
         string primaryKey,
         string[]? fallbackKeys = null,
-        string defaultValue = "https://api.openai.com/v1")
+        string defaultValue = "https://api.openai.com/v1"
+    )
     {
         var baseUrl = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(baseUrl))
@@ -80,7 +85,8 @@ public static class EnvironmentVariableHelper
     public static string GetEnvironmentVariableWithFallback(
         string primaryKey,
         string[]? fallbackKeys = null,
-        string defaultValue = "")
+        string defaultValue = ""
+    )
     {
         var value = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(value))

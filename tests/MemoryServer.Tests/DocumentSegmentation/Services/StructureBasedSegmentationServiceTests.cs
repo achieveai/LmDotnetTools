@@ -28,7 +28,8 @@ public class StructureBasedSegmentationServiceTests
         _service = new StructureBasedSegmentationService(
             _mockLlmService.Object,
             _mockPromptManager.Object,
-            _logger);
+            _logger
+        );
 
         SetupDefaultMocks();
     }
@@ -36,37 +37,51 @@ public class StructureBasedSegmentationServiceTests
     private void SetupDefaultMocks()
     {
         // Setup default prompt manager response
-        _mockPromptManager.Setup(x => x.GetPromptAsync(
-                It.IsAny<SegmentationStrategy>(),
-                It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PromptTemplate
-            {
-                SystemPrompt = "You are a structure analysis expert.",
-                UserPrompt = "Analyze the following content for structural boundaries: {DocumentContent}",
-                ExpectedFormat = "json",
-                Metadata = new Dictionary<string, object>
+        _mockPromptManager
+            .Setup(x =>
+                x.GetPromptAsync(
+                    It.IsAny<SegmentationStrategy>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                new PromptTemplate
                 {
-                    ["strategy"] = SegmentationStrategy.StructureBased.ToString(),
-                    ["language"] = "en"
+                    SystemPrompt = "You are a structure analysis expert.",
+                    UserPrompt =
+                        "Analyze the following content for structural boundaries: {DocumentContent}",
+                    ExpectedFormat = "json",
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["strategy"] = SegmentationStrategy.StructureBased.ToString(),
+                        ["language"] = "en",
+                    },
                 }
-            });
+            );
 
         // Setup default LLM service responses
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
+        _mockLlmService
+            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         // Setup strategy analysis mock
-        _mockLlmService.Setup(x => x.AnalyzeOptimalStrategyAsync(
-                It.IsAny<string>(),
-                It.IsAny<DocumentType>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new StrategyRecommendation
-            {
-                Strategy = SegmentationStrategy.StructureBased,
-                Confidence = 0.8,
-                Reasoning = "Mock reasoning"
-            });
+        _mockLlmService
+            .Setup(x =>
+                x.AnalyzeOptimalStrategyAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<DocumentType>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(
+                new StrategyRecommendation
+                {
+                    Strategy = SegmentationStrategy.StructureBased,
+                    Confidence = 0.8,
+                    Reasoning = "Mock reasoning",
+                }
+            );
     }
 
     #region SegmentByStructureAsync Tests
@@ -80,7 +95,7 @@ public class StructureBasedSegmentationServiceTests
         {
             MinSegmentSize = 50,
             MaxHeadingDepth = 3,
-            UseLlmEnhancement = false // Disable for simpler testing
+            UseLlmEnhancement = false, // Disable for simpler testing
         };
 
         // Act
@@ -94,7 +109,10 @@ public class StructureBasedSegmentationServiceTests
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
             segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.StructureBased.ToString());
+            segment
+                .Metadata["segmentation_strategy"]
+                .Should()
+                .Be(SegmentationStrategy.StructureBased.ToString());
         }
     }
 
@@ -102,7 +120,8 @@ public class StructureBasedSegmentationServiceTests
     public async Task SegmentByStructureAsync_WithMarkdownHeadings_DetectsStructuralBoundaries()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 # Introduction
 This is the introduction section with some content.
 
@@ -124,11 +143,15 @@ This is the conclusion section.
             MinSegmentSize = 20,
             MaxHeadingDepth = 3,
             UseLlmEnhancement = false,
-            MergeSmallSections = false  // Disable merging to test pure structural detection
+            MergeSmallSections = false, // Disable merging to test pure structural detection
         };
 
         // Act
-        var result = await _service.SegmentByStructureAsync(content, DocumentType.ResearchPaper, options);
+        var result = await _service.SegmentByStructureAsync(
+            content,
+            DocumentType.ResearchPaper,
+            options
+        );
 
         // Assert
         result.Should().NotBeEmpty();
@@ -146,7 +169,8 @@ This is the conclusion section.
     public async Task SegmentByStructureAsync_WithSmallSections_MergesSections()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 # Title
 Short.
 
@@ -164,7 +188,7 @@ This is a longer section with substantial content that should remain as its own 
         {
             MinSegmentSize = 50,
             MergeSmallSections = true,
-            MinSectionSizeForMerging = 30
+            MinSectionSizeForMerging = 30,
         };
 
         // Act
@@ -188,7 +212,8 @@ This is a longer section with substantial content that should remain as its own 
     public async Task DetectStructuralBoundariesAsync_WithMarkdownHeadings_DetectsHeadingBoundaries()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 # Level 1 Heading
 Content here.
 
@@ -214,7 +239,8 @@ Even more content.
     public async Task DetectStructuralBoundariesAsync_WithSectionBreaks_DetectsSectionBreaks()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 First section content here.
 
 ---
@@ -242,7 +268,8 @@ Third section content here.
     public async Task AnalyzeHierarchicalStructureAsync_WithWellStructuredDocument_ReturnsAccurateAnalysis()
     {
         // Arrange
-        var content = @"
+        var content =
+            @"
 # Introduction
 This document is well structured.
 
@@ -290,25 +317,27 @@ Final thoughts.
             new DocumentSegment
             {
                 Id = "seg1",
-                Content = "# Introduction\nThis is a well-structured introduction section with clear heading and substantial content.",
+                Content =
+                    "# Introduction\nThis is a well-structured introduction section with clear heading and substantial content.",
                 SequenceNumber = 0,
                 Metadata = new Dictionary<string, object>
                 {
                     ["structural_element_type"] = StructuralElementType.Heading.ToString(),
-                    ["heading_level"] = 1
-                }
+                    ["heading_level"] = 1,
+                },
             },
             new DocumentSegment
             {
                 Id = "seg2",
-                Content = "## Methodology\nThis section describes the methodology used in detail with proper structure and formatting.",
+                Content =
+                    "## Methodology\nThis section describes the methodology used in detail with proper structure and formatting.",
                 SequenceNumber = 1,
                 Metadata = new Dictionary<string, object>
                 {
                     ["structural_element_type"] = StructuralElementType.Heading.ToString(),
-                    ["heading_level"] = 2
-                }
-            }
+                    ["heading_level"] = 2,
+                },
+            },
         };
 
         // Act

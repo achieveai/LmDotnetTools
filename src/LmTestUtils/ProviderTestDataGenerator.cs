@@ -61,7 +61,7 @@ public static class ProviderTestDataGenerator
             new object[] { ApiKeys.Empty, false, "Empty API key should fail" },
             new object[] { ApiKeys.WhitespaceOnly, false, "Whitespace-only API key should fail" },
             new object[] { ApiKeys.TooShort, false, "Too short API key should fail" },
-            new object[] { null!, false, "Null API key should fail" }
+            new object[] { null!, false, "Null API key should fail" },
         };
     }
 
@@ -76,11 +76,16 @@ public static class ProviderTestDataGenerator
             new object[] { BaseUrls.ValidHttps, true, "Valid HTTPS URL should pass" },
             new object[] { BaseUrls.ValidHttp, true, "Valid HTTP URL should pass" },
             new object[] { BaseUrls.ValidWithPath, true, "Valid URL with path should pass" },
-            new object[] { BaseUrls.ValidWithTrailingSlash, true, "Valid URL with trailing slash should pass" },
+            new object[]
+            {
+                BaseUrls.ValidWithTrailingSlash,
+                true,
+                "Valid URL with trailing slash should pass",
+            },
             new object[] { BaseUrls.Invalid, false, "Invalid URL should fail" },
             new object[] { BaseUrls.Empty, false, "Empty URL should fail" },
             new object[] { BaseUrls.WhitespaceOnly, false, "Whitespace-only URL should fail" },
-            new object[] { null!, false, "Null URL should fail" }
+            new object[] { null!, false, "Null URL should fail" },
         };
     }
 
@@ -97,7 +102,7 @@ public static class ProviderTestDataGenerator
             new object[] { Models.ValidClaude, true, "Valid Claude model name should pass" },
             new object[] { Models.Empty, false, "Empty model name should fail" },
             new object[] { Models.WhitespaceOnly, false, "Whitespace-only model name should fail" },
-            new object[] { null!, false, "Null model name should fail" }
+            new object[] { null!, false, "Null model name should fail" },
         };
     }
 
@@ -121,7 +126,7 @@ public static class ProviderTestDataGenerator
             new object[] { 0, "Should succeed immediately with no retries" },
             new object[] { 1, "Should succeed after 1 retry" },
             new object[] { 2, "Should succeed after 2 retries" },
-            new object[] { 3, "Should succeed after 3 retries (max retries)" }
+            new object[] { 3, "Should succeed after 3 retries (max retries)" },
         };
     }
 
@@ -136,7 +141,7 @@ public static class ProviderTestDataGenerator
             new object[] { TimeSpan.FromMilliseconds(100), "Short timeout" },
             new object[] { TimeSpan.FromSeconds(1), "Medium timeout" },
             new object[] { TimeSpan.FromSeconds(5), "Long timeout" },
-            new object[] { TimeSpan.FromMinutes(1), "Very long timeout" }
+            new object[] { TimeSpan.FromMinutes(1), "Very long timeout" },
         };
     }
 
@@ -148,11 +153,7 @@ public static class ProviderTestDataGenerator
     /// <returns>Generic message object</returns>
     public static object CreateTestMessage(string role, string content)
     {
-        return new
-        {
-            role = role,
-            content = content
-        };
+        return new { role = role, content = content };
     }
 
     /// <summary>
@@ -165,7 +166,7 @@ public static class ProviderTestDataGenerator
         {
             CreateTestMessage("system", "You are a helpful assistant."),
             CreateTestMessage("user", "Hello, how are you?"),
-            CreateTestMessage("assistant", "I'm doing well, thank you for asking!")
+            CreateTestMessage("assistant", "I'm doing well, thank you for asking!"),
         };
     }
 
@@ -181,7 +182,7 @@ public static class ProviderTestDataGenerator
         {
             prompt_tokens = promptTokens,
             completion_tokens = completionTokens,
-            total_tokens = promptTokens + completionTokens
+            total_tokens = promptTokens + completionTokens,
         };
     }
 }

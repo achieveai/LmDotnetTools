@@ -9,7 +9,7 @@ public enum UnifiedResultType
 {
     Memory,
     Entity,
-    Relationship
+    Relationship,
 }
 
 /// <summary>
@@ -263,12 +263,13 @@ public class UnifiedSearchOptions
     /// <summary>
     /// Type-based weights for different result types.
     /// </summary>
-    public Dictionary<UnifiedResultType, float> TypeWeights { get; set; } = new()
-    {
-        { UnifiedResultType.Memory, 1.0f },
-        { UnifiedResultType.Entity, 0.8f },
-        { UnifiedResultType.Relationship, 0.7f }
-    };
+    public Dictionary<UnifiedResultType, float> TypeWeights { get; set; } =
+        new()
+        {
+            { UnifiedResultType.Memory, 1.0f },
+            { UnifiedResultType.Entity, 0.8f },
+            { UnifiedResultType.Relationship, 0.7f },
+        };
 
     /// <summary>
     /// Whether to enable graceful fallback on errors.
@@ -339,12 +340,13 @@ public class RerankingOptions
     /// <summary>
     /// Source-specific weights for hierarchical scoring.
     /// </summary>
-    public Dictionary<UnifiedResultType, float> SourceWeights { get; set; } = new()
-    {
-        { UnifiedResultType.Memory, 1.0f },
-        { UnifiedResultType.Entity, 0.8f },
-        { UnifiedResultType.Relationship, 0.7f }
-    };
+    public Dictionary<UnifiedResultType, float> SourceWeights { get; set; } =
+        new()
+        {
+            { UnifiedResultType.Memory, 1.0f },
+            { UnifiedResultType.Entity, 0.8f },
+            { UnifiedResultType.Relationship, 0.7f },
+        };
 
     /// <summary>
     /// Whether to boost scores for recent content.

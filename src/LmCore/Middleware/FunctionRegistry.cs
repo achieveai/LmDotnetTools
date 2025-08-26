@@ -9,21 +9,24 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
 /// Builder for combining functions from multiple sources with conflict resolution.
-/// 
-/// IMPORTANT: This class is NOT thread-safe. It is designed to be used in a single-threaded 
-/// context during application initialization. The registry should be built once during startup 
+///
+/// IMPORTANT: This class is NOT thread-safe. It is designed to be used in a single-threaded
+/// context during application initialization. The registry should be built once during startup
 /// and the resulting function collections should be treated as read-only.
-/// 
+///
 /// Typical usage pattern:
 /// 1. Create a FunctionRegistry instance during initialization
 /// 2. Configure it with providers and settings
 /// 3. Call Build() once to generate the final function collections
 /// 4. Use the built collections (which are immutable) throughout the application lifetime
-/// 
+///
 /// Do not modify the registry after calling Build(), and do not share a FunctionRegistry
 /// instance across multiple threads during configuration.
 /// </summary>
-public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithProviders, IConfiguredFunctionRegistry
+public class FunctionRegistry
+    : IFunctionRegistryBuilder,
+        IFunctionRegistryWithProviders,
+        IConfiguredFunctionRegistry
 {
     private readonly List<IFunctionProvider> _providers = new();
     private readonly Dictionary<string, FunctionDescriptor> _explicitFunctions = new();
@@ -52,13 +55,17 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <summary>
     /// Add a single function explicitly
     /// </summary>
-    public FunctionRegistry AddFunction(FunctionContract contract, Func<string, Task<string>> handler, string? providerName = null)
+    public FunctionRegistry AddFunction(
+        FunctionContract contract,
+        Func<string, Task<string>> handler,
+        string? providerName = null
+    )
     {
         var descriptor = new FunctionDescriptor
         {
             Contract = contract,
             Handler = handler,
-            ProviderName = providerName ?? "Explicit"
+            ProviderName = providerName ?? "Explicit",
         };
         _explicitFunctions[descriptor.Key] = descriptor;
         return this;
@@ -67,7 +74,11 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <summary>
     /// Add a single function explicitly - Explicit interface implementation
     /// </summary>
-    IFunctionRegistryBuilder IFunctionRegistryBuilder.AddFunction(FunctionContract contract, Func<string, Task<string>> handler, string? providerName)
+    IFunctionRegistryBuilder IFunctionRegistryBuilder.AddFunction(
+        FunctionContract contract,
+        Func<string, Task<string>> handler,
+        string? providerName
+    )
     {
         return AddFunction(contract, handler, providerName);
     }
@@ -84,7 +95,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <summary>
     /// Set conflict resolution strategy - Explicit interface implementation
     /// </summary>
-    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictResolution(ConflictResolution strategy)
+    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictResolution(
+        ConflictResolution strategy
+    )
     {
         return WithConflictResolution(strategy);
     }
@@ -92,7 +105,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <summary>
     /// Set custom conflict resolution handler
     /// </summary>
-    public FunctionRegistry WithConflictHandler(Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler)
+    public FunctionRegistry WithConflictHandler(
+        Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler
+    )
     {
         _conflictHandler = handler;
         return this;
@@ -101,7 +116,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <summary>
     /// Set custom conflict resolution handler - Explicit interface implementation
     /// </summary>
-    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictHandler(Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler)
+    IFunctionRegistryWithProviders IFunctionRegistryWithProviders.WithConflictHandler(
+        Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor> handler
+    )
     {
         return WithConflictHandler(handler);
     }
@@ -118,7 +135,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     /// <summary>
     /// Configure function filtering for all providers - Explicit interface implementation
     /// </summary>
-    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.WithFilterConfig(FunctionFilterConfig? filterConfig)
+    IConfiguredFunctionRegistry IFunctionRegistryWithProviders.WithFilterConfig(
+        FunctionFilterConfig? filterConfig
+    )
     {
         return WithFilterConfig(filterConfig);
     }
@@ -188,7 +207,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
                     {
                         if (!FunctionNameValidator.IsValidPrefix(config.CustomPrefix))
                         {
-                            issues.Add($"Provider '{providerName}': {FunctionNameValidator.GetPrefixValidationError(config.CustomPrefix)}");
+                            issues.Add(
+                                $"Provider '{providerName}': {FunctionNameValidator.GetPrefixValidationError(config.CustomPrefix)}"
+                            );
                         }
                     }
                 }
@@ -203,7 +224,9 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             {
                 if (!FunctionNameValidator.IsValidPrefix(provider.ProviderName))
                 {
-                    issues.Add($"Provider name '{provider.ProviderName}' is not a valid prefix: {FunctionNameValidator.GetPrefixValidationError(provider.ProviderName)}");
+                    issues.Add(
+                        $"Provider name '{provider.ProviderName}' is not a valid prefix: {FunctionNameValidator.GetPrefixValidationError(provider.ProviderName)}"
+                    );
                 }
             }
         }
@@ -217,7 +240,10 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     public (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) Build()
     {
         var logger = _logger ?? NullLogger.Instance;
-        logger.LogDebug("Building function registry with {ProviderCount} providers", _providers.Count);
+        logger.LogDebug(
+            "Building function registry with {ProviderCount} providers",
+            _providers.Count
+        );
 
         // Step 1: Collect all functions from providers
         var allDescriptors = new List<FunctionDescriptor>();
@@ -226,8 +252,11 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         foreach (var provider in _providers.OrderBy(p => p.Priority))
         {
             var providerFunctions = provider.GetFunctions().ToList();
-            logger.LogDebug("Provider {ProviderName} contributed {FunctionCount} functions",
-                provider.ProviderName, providerFunctions.Count);
+            logger.LogDebug(
+                "Provider {ProviderName} contributed {FunctionCount} functions",
+                provider.ProviderName,
+                providerFunctions.Count
+            );
             allDescriptors.AddRange(providerFunctions);
         }
 
@@ -270,7 +299,10 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
 
         // Step 5: Detect and resolve collisions (after conflict resolution)
         var collisionDetector = new FunctionCollisionDetector(logger);
-        var namingMap = collisionDetector.DetectAndResolveCollisions(resolvedFunctions, _filterConfig);
+        var namingMap = collisionDetector.DetectAndResolveCollisions(
+            resolvedFunctions,
+            _filterConfig
+        );
 
         // Step 6: Build final collections
         var finalContracts = new List<FunctionContract>();
@@ -295,7 +327,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
                     ClassName = resolved.Contract.ClassName,
                     Parameters = resolved.Contract.Parameters,
                     ReturnType = resolved.Contract.ReturnType,
-                    ReturnDescription = resolved.Contract.ReturnDescription
+                    ReturnDescription = resolved.Contract.ReturnDescription,
                 };
                 finalContracts.Add(contract);
             }
@@ -307,8 +339,10 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             finalHandlers[registeredName] = resolved.Handler;
         }
 
-        logger.LogInformation("Function registry built: {ContractCount} functions registered",
-            finalContracts.Count);
+        logger.LogInformation(
+            "Function registry built: {ContractCount} functions registered",
+            finalContracts.Count
+        );
 
         return (finalContracts, finalHandlers);
     }
@@ -319,7 +353,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     public FunctionCallMiddleware BuildMiddleware(
         string? name = null,
         ILogger<FunctionCallMiddleware>? logger = null,
-        IToolResultCallback? resultCallback = null)
+        IToolResultCallback? resultCallback = null
+    )
     {
         var (contracts, handlers) = Build();
         return new FunctionCallMiddleware(
@@ -327,7 +362,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             handlers,
             name,
             logger: logger,
-            resultCallback: resultCallback);
+            resultCallback: resultCallback
+        );
     }
 
     private FunctionDescriptor ResolveConflict(string key, List<FunctionDescriptor> candidates)
@@ -345,15 +381,19 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         {
             ConflictResolution.TakeFirst => candidates.First(),
             ConflictResolution.TakeLast => candidates.Last(),
-            ConflictResolution.PreferMcp => candidates.FirstOrDefault(c => IsMcpProvider(c)) ?? candidates.First(),
-            ConflictResolution.PreferNatural => candidates.FirstOrDefault(c => IsNaturalProvider(c)) ?? candidates.First(),
+            ConflictResolution.PreferMcp => candidates.FirstOrDefault(c => IsMcpProvider(c))
+                ?? candidates.First(),
+            ConflictResolution.PreferNatural => candidates.FirstOrDefault(c => IsNaturalProvider(c))
+                ?? candidates.First(),
             ConflictResolution.RequireExplicit => throw new InvalidOperationException(
-                $"Function '{key}' has conflicts from multiple providers. " +
-                $"Providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}. " +
-                $"Use WithConflictHandler() to resolve explicitly."),
+                $"Function '{key}' has conflicts from multiple providers. "
+                    + $"Providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}. "
+                    + $"Use WithConflictHandler() to resolve explicitly."
+            ),
             ConflictResolution.Throw => throw new InvalidOperationException(
-                $"Function '{key}' is defined by multiple providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}"),
-            _ => throw new ArgumentOutOfRangeException()
+                $"Function '{key}' is defined by multiple providers: {string.Join(", ", candidates.Select(c => c.ProviderName))}"
+            ),
+            _ => throw new ArgumentOutOfRangeException(),
         };
     }
 
@@ -421,11 +461,14 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         return sb.ToString();
     }
 
-    private void GenerateSummarySection(StringBuilder sb, Dictionary<string, FunctionDescriptor> resolvedFunctions)
+    private void GenerateSummarySection(
+        StringBuilder sb,
+        Dictionary<string, FunctionDescriptor> resolvedFunctions
+    )
     {
         var totalFunctions = resolvedFunctions.Count;
-        var totalProviders = resolvedFunctions.Values
-            .Select(f => f.ProviderName)
+        var totalProviders = resolvedFunctions
+            .Values.Select(f => f.ProviderName)
             .Distinct()
             .Count();
 
@@ -436,17 +479,20 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         sb.AppendLine();
     }
 
-    private void GenerateProvidersSection(StringBuilder sb, Dictionary<string, FunctionDescriptor> resolvedFunctions)
+    private void GenerateProvidersSection(
+        StringBuilder sb,
+        Dictionary<string, FunctionDescriptor> resolvedFunctions
+    )
     {
         sb.AppendLine("## Providers");
 
-        var providerStats = resolvedFunctions.Values
-            .GroupBy(f => f.ProviderName)
+        var providerStats = resolvedFunctions
+            .Values.GroupBy(f => f.ProviderName)
             .Select(g => new
             {
                 Name = g.Key,
                 Count = g.Count(),
-                Priority = _providers.FirstOrDefault(p => p.ProviderName == g.Key)?.Priority ?? -1
+                Priority = _providers.FirstOrDefault(p => p.ProviderName == g.Key)?.Priority ?? -1,
             })
             .OrderBy(p => p.Priority)
             .ThenBy(p => p.Name);
@@ -454,18 +500,23 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         foreach (var provider in providerStats)
         {
             var priorityText = provider.Priority >= 0 ? $" (Priority: {provider.Priority})" : "";
-            sb.AppendLine($"- **{provider.Name}**{priorityText}: {provider.Count} function{(provider.Count == 1 ? "" : "s")}");
+            sb.AppendLine(
+                $"- **{provider.Name}**{priorityText}: {provider.Count} function{(provider.Count == 1 ? "" : "s")}"
+            );
         }
         sb.AppendLine();
     }
 
-    private void GenerateFunctionsSection(StringBuilder sb, Dictionary<string, FunctionDescriptor> resolvedFunctions)
+    private void GenerateFunctionsSection(
+        StringBuilder sb,
+        Dictionary<string, FunctionDescriptor> resolvedFunctions
+    )
     {
         sb.AppendLine("## Functions");
         sb.AppendLine();
 
-        var sortedFunctions = resolvedFunctions.Values
-            .OrderBy(f => f.ProviderName)
+        var sortedFunctions = resolvedFunctions
+            .Values.OrderBy(f => f.ProviderName)
             .ThenBy(f => f.DisplayName);
 
         foreach (var function in sortedFunctions)
@@ -506,7 +557,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             {
                 var paramType = FormatParameterType(param.ParameterType);
                 var requiredText = param.IsRequired ? " (required)" : " (optional)";
-                var defaultText = param.DefaultValue != null ? $", default: {param.DefaultValue}" : "";
+                var defaultText =
+                    param.DefaultValue != null ? $", default: {param.DefaultValue}" : "";
 
                 sb.AppendLine($"- **{param.Name}** ({paramType}{requiredText}{defaultText})");
                 if (!string.IsNullOrWhiteSpace(param.Description))
@@ -524,7 +576,10 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         }
 
         // Return section
-        if (function.Contract.ReturnType != null || !string.IsNullOrWhiteSpace(function.Contract.ReturnDescription))
+        if (
+            function.Contract.ReturnType != null
+            || !string.IsNullOrWhiteSpace(function.Contract.ReturnDescription)
+        )
         {
             sb.AppendLine("Returns:");
             if (function.Contract.ReturnType != null)
@@ -545,7 +600,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     private static string FormatParameterType(object parameterType)
     {
         // Handle JsonSchemaObject formatting
-        if (parameterType == null) return "unknown";
+        if (parameterType == null)
+            return "unknown";
 
         if (parameterType is JsonSchemaObject schema)
         {
@@ -581,9 +637,12 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
 
             // Handle basic types with constraints
             var constraints = new List<string>();
-            if (schema.Minimum.HasValue) constraints.Add($"min: {schema.Minimum}");
-            if (schema.Maximum.HasValue) constraints.Add($"max: {schema.Maximum}");
-            if (schema.MinItems.HasValue) constraints.Add($"minItems: {schema.MinItems}");
+            if (schema.Minimum.HasValue)
+                constraints.Add($"min: {schema.Minimum}");
+            if (schema.Maximum.HasValue)
+                constraints.Add($"max: {schema.Maximum}");
+            if (schema.MinItems.HasValue)
+                constraints.Add($"minItems: {schema.MinItems}");
 
             var constraintText = constraints.Any() ? $" ({string.Join(", ", constraints)})" : "";
             return $"`{baseType}`{constraintText}";

@@ -35,8 +35,7 @@ public class UsageCacheTests : IDisposable
             CompletionTokens = 50,
             TotalTokens = 150,
             TotalCost = 0.01,
-            ExtraProperties = ImmutableDictionary<string, object?>.Empty
-                .Add("model", "gpt-4")
+            ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("model", "gpt-4"),
         };
 
         // Act
@@ -66,7 +65,7 @@ public class UsageCacheTests : IDisposable
         {
             PromptTokens = 100,
             CompletionTokens = 50,
-            TotalTokens = 150
+            TotalTokens = 150,
         };
 
         // Act
@@ -94,7 +93,7 @@ public class UsageCacheTests : IDisposable
         {
             PromptTokens = 100,
             CompletionTokens = 50,
-            TotalTokens = 150
+            TotalTokens = 150,
         };
 
         // Act & Assert - should not crash
@@ -115,7 +114,7 @@ public class UsageCacheTests : IDisposable
         {
             PromptTokens = 100,
             CompletionTokens = 50,
-            TotalTokens = 150
+            TotalTokens = 150,
         };
 
         // Act

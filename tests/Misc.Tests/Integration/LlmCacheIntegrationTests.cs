@@ -24,8 +24,12 @@ public class LlmCacheIntegrationTests
     public void Setup()
     {
         // Create a unique test directory for each test
-        _testCacheDirectory = Path.Combine(Path.GetTempPath(), "LlmCacheIntegrationTests", Guid.NewGuid().ToString());
-        
+        _testCacheDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "LlmCacheIntegrationTests",
+            Guid.NewGuid().ToString()
+        );
+
         _services = new ServiceCollection();
     }
 
@@ -33,7 +37,7 @@ public class LlmCacheIntegrationTests
     public void Cleanup()
     {
         (_serviceProvider as IDisposable)?.Dispose();
-        
+
         // Clean up test directory
         if (Directory.Exists(_testCacheDirectory))
         {
@@ -58,7 +62,7 @@ public class LlmCacheIntegrationTests
         {
             CacheDirectory = _testCacheDirectory,
             EnableCaching = true,
-            CacheExpiration = TimeSpan.FromHours(2)
+            CacheExpiration = TimeSpan.FromHours(2),
         };
 
         // Act
@@ -86,12 +90,10 @@ public class LlmCacheIntegrationTests
             { "LlmCache:CacheDirectory", _testCacheDirectory },
             { "LlmCache:EnableCaching", "true" },
             { "LlmCache:CacheExpiration", "03:00:00" }, // 3 hours
-            { "LlmCache:MaxCacheItems", "5000" }
+            { "LlmCache:MaxCacheItems", "5000" },
         };
 
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(configDict)
-            .Build();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(configDict).Build();
 
         // Act
         _services.AddLlmFileCache(configuration);
@@ -111,13 +113,15 @@ public class LlmCacheIntegrationTests
     public void AddLlmFileCache_WithDirectOptions_RegistersServicesCorrectly()
     {
         // Act
-        _services.AddLlmFileCache(new LlmCacheOptions
-        {
-            CacheDirectory = _testCacheDirectory,
-            EnableCaching = true,
-            CacheExpiration = TimeSpan.FromMinutes(30),
-            MaxCacheItems = 1000
-        });
+        _services.AddLlmFileCache(
+            new LlmCacheOptions
+            {
+                CacheDirectory = _testCacheDirectory,
+                EnableCaching = true,
+                CacheExpiration = TimeSpan.FromMinutes(30),
+                MaxCacheItems = 1000,
+            }
+        );
         _serviceProvider = _services.BuildServiceProvider();
 
         // Assert
@@ -175,7 +179,7 @@ public class LlmCacheIntegrationTests
         var invalidOptions = new LlmCacheOptions
         {
             CacheDirectory = "", // Invalid
-            EnableCaching = true
+            EnableCaching = true,
         };
 
         // Act & Assert
@@ -196,7 +200,7 @@ public class LlmCacheIntegrationTests
             EnableCaching = true,
             CacheExpiration = TimeSpan.FromHours(1),
             MaxCacheItems = 500,
-            MaxCacheSizeBytes = 1024 * 1024 * 10 // 10 MB
+            MaxCacheSizeBytes = 1024 * 1024 * 10, // 10 MB
         };
 
         _services.AddLlmFileCache(options);
@@ -241,7 +245,7 @@ public class LlmCacheIntegrationTests
         var options = new LlmCacheOptions
         {
             CacheDirectory = _testCacheDirectory,
-            EnableCaching = true
+            EnableCaching = true,
         };
 
         _services.AddLlmFileCache(options);
@@ -284,7 +288,7 @@ public class LlmCacheIntegrationTests
         var options = new LlmCacheOptions
         {
             CacheDirectory = _testCacheDirectory,
-            EnableCaching = true
+            EnableCaching = true,
         };
 
         _services.AddLlmFileCache(options);
@@ -314,7 +318,7 @@ public class LlmCacheIntegrationTests
             EnableCaching = true,
             CacheExpiration = TimeSpan.FromHours(1),
             MaxCacheItems = 1000,
-            MaxCacheSizeBytes = 1024 * 1024
+            MaxCacheSizeBytes = 1024 * 1024,
         };
 
         var validErrors = validOptions.Validate();
@@ -326,7 +330,7 @@ public class LlmCacheIntegrationTests
             CacheDirectory = "", // Invalid
             CacheExpiration = TimeSpan.FromMilliseconds(-1), // Invalid
             MaxCacheItems = -1, // Invalid
-            MaxCacheSizeBytes = -1 // Invalid
+            MaxCacheSizeBytes = -1, // Invalid
         };
 
         var invalidErrors = invalidOptions.Validate();
@@ -383,7 +387,7 @@ public class LlmCacheIntegrationTests
         Assert.IsFalse(string.IsNullOrEmpty(defaultDir));
         Assert.IsTrue(defaultDir.Contains("LLM_CACHE"));
         Assert.IsTrue(Path.IsPathRooted(defaultDir)); // Should be an absolute path
-        
+
         // Should be a valid path
         var validationOptions = new LlmCacheOptions { CacheDirectory = defaultDir };
         var errors = validationOptions.Validate();
@@ -400,30 +404,33 @@ public class LlmCacheIntegrationTests
     private class MockOpenClient : IOpenClient
     {
         public Task<AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionResponse> CreateChatCompletionsAsync(
-            AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionRequest chatCompletionRequest, 
-            CancellationToken cancellationToken = default)
+            AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionRequest chatCompletionRequest,
+            CancellationToken cancellationToken = default
+        )
         {
             var response = new AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionResponse
             {
                 Id = "mock-response",
                 VarObject = "chat.completion",
                 Created = (int)DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                Model = "mock-model"
+                Model = "mock-model",
             };
-            
+
             return Task.FromResult(response);
         }
 
         public async IAsyncEnumerable<AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionResponse> StreamingChatCompletionsAsync(
-            AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionRequest chatCompletionRequest, 
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionRequest chatCompletionRequest,
+            [System.Runtime.CompilerServices.EnumeratorCancellation]
+                CancellationToken cancellationToken = default
+        )
         {
             var response = new AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionResponse
             {
                 Id = "mock-streaming-response",
                 VarObject = "chat.completion.chunk",
                 Created = (int)DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                Model = "mock-model"
+                Model = "mock-model",
             };
 
             await Task.Delay(10, cancellationToken);
@@ -447,14 +454,14 @@ public class LlmCacheIntegrationTests
             CacheDirectory = "./OriginalCache",
             EnableCaching = true,
             CacheExpiration = TimeSpan.FromHours(24),
-            MaxCacheItems = 1000
+            MaxCacheItems = 1000,
         };
 
         // Act - Create a variation using 'with' expression
-        var modifiedOptions = originalOptions with 
-        { 
+        var modifiedOptions = originalOptions with
+        {
             CacheDirectory = "./ModifiedCache",
-            CacheExpiration = TimeSpan.FromHours(48)
+            CacheExpiration = TimeSpan.FromHours(48),
         };
 
         // Assert - Original is unchanged
@@ -473,8 +480,8 @@ public class LlmCacheIntegrationTests
             CacheDirectory = "./OriginalCache",
             EnableCaching = true,
             CacheExpiration = TimeSpan.FromHours(24),
-            MaxCacheItems = 1000
+            MaxCacheItems = 1000,
         };
         Assert.AreEqual(originalOptions, duplicateOptions);
     }
-} 
+}

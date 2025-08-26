@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
 
@@ -17,10 +17,13 @@ public static class ServerEmbeddingsExtensions
     /// <param name="texts">Texts to embed</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Structured result with embeddings, performance metrics, and error details</returns>
-    public static async Task<EmbeddingServiceResult<List<List<float>>>> GenerateEmbeddingsWithMetricsAsync(
+    public static async Task<
+        EmbeddingServiceResult<List<List<float>>>
+    > GenerateEmbeddingsWithMetricsAsync(
         this ServerEmbeddings service,
         IEnumerable<string> texts,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         var requestId = Guid.NewGuid().ToString();
         var stopwatch = Stopwatch.StartNew();
@@ -34,13 +37,21 @@ public static class ServerEmbeddingsExtensions
             if (!textList.Any())
             {
                 return EmbeddingResults.ValidationError<List<List<float>>>(
-                    "texts", "Cannot be empty", textList, requestId);
+                    "texts",
+                    "Cannot be empty",
+                    textList,
+                    requestId
+                );
             }
 
             if (textList.Any(string.IsNullOrWhiteSpace))
             {
                 return EmbeddingResults.ValidationError<List<List<float>>>(
-                    "texts", "Cannot contain null or empty strings", textList, requestId);
+                    "texts",
+                    "Cannot contain null or empty strings",
+                    textList,
+                    requestId
+                );
             }
 
             // Create embedding request using the service's configured model
@@ -48,7 +59,7 @@ public static class ServerEmbeddingsExtensions
             {
                 Inputs = textList.ToArray(),
                 Model = "nomic-embed-text-v1.5", // Use the configured model
-                ApiType = EmbeddingApiType.Default
+                ApiType = EmbeddingApiType.Default,
             };
 
             // Generate embeddings using the correct method
@@ -57,7 +68,9 @@ public static class ServerEmbeddingsExtensions
             stopwatch.Stop();
 
             // Convert embeddings to the expected format
-            var embeddings = response.Embeddings?.Select(e => e.Vector?.ToList() ?? new List<float>()).ToList() ?? new List<List<float>>();
+            var embeddings =
+                response.Embeddings?.Select(e => e.Vector?.ToList() ?? new List<float>()).ToList()
+                ?? new List<List<float>>();
 
             // Create performance metrics
             var metrics = new RequestMetrics
@@ -75,8 +88,8 @@ public static class ServerEmbeddingsExtensions
                 TimingBreakdown = new TimingBreakdown
                 {
                     ValidationMs = 1.0, // Minimal validation time
-                    ServerProcessingMs = stopwatch.Elapsed.TotalMilliseconds - 1.0
-                }
+                    ServerProcessingMs = stopwatch.Elapsed.TotalMilliseconds - 1.0,
+                },
             };
 
             return EmbeddingServiceResult<List<List<float>>>.CreateSuccess(embeddings, metrics);
@@ -96,7 +109,7 @@ public static class ServerEmbeddingsExtensions
                 DurationMs = stopwatch.Elapsed.TotalMilliseconds,
                 InputCount = texts.Count(),
                 Success = false,
-                Error = ex.Message
+                Error = ex.Message,
             };
 
             return EmbeddingServiceResult<List<List<float>>>.FromException(ex, requestId, metrics);
@@ -118,21 +131,31 @@ public static class ServerEmbeddingsExtensions
             // Test basic connectivity with a simple text
             var testEmbedding = await service.GetEmbeddingAsync("health check test");
 
-            checks.Add(new ComponentHealth
-            {
-                Component = "API Connectivity",
-                Status = HealthStatus.Healthy,
-                Details = ImmutableDictionary<string, object>.Empty.Add("embedding_size", testEmbedding.Length)
-            });
+            checks.Add(
+                new ComponentHealth
+                {
+                    Component = "API Connectivity",
+                    Status = HealthStatus.Healthy,
+                    Details = ImmutableDictionary<string, object>.Empty.Add(
+                        "embedding_size",
+                        testEmbedding.Length
+                    ),
+                }
+            );
 
             // Validate configuration
             var embeddingSize = service.EmbeddingSize;
-            checks.Add(new ComponentHealth
-            {
-                Component = "Configuration",
-                Status = embeddingSize > 0 ? HealthStatus.Healthy : HealthStatus.Unhealthy,
-                Details = ImmutableDictionary<string, object>.Empty.Add("embedding_size", embeddingSize)
-            });
+            checks.Add(
+                new ComponentHealth
+                {
+                    Component = "Configuration",
+                    Status = embeddingSize > 0 ? HealthStatus.Healthy : HealthStatus.Unhealthy,
+                    Details = ImmutableDictionary<string, object>.Empty.Add(
+                        "embedding_size",
+                        embeddingSize
+                    ),
+                }
+            );
 
             stopwatch.Stop();
 
@@ -145,7 +168,7 @@ public static class ServerEmbeddingsExtensions
                 Service = "ServerEmbeddings",
                 Status = overallStatus,
                 ResponseTimeMs = stopwatch.Elapsed.TotalMilliseconds,
-                Checks = checks.ToImmutableList()
+                Checks = checks.ToImmutableList(),
             };
         }
         catch (Exception ex)
@@ -158,7 +181,7 @@ public static class ServerEmbeddingsExtensions
                 Status = HealthStatus.Unhealthy,
                 ResponseTimeMs = stopwatch.Elapsed.TotalMilliseconds,
                 Error = ex.Message,
-                Checks = checks.ToImmutableList()
+                Checks = checks.ToImmutableList(),
             };
         }
     }
@@ -171,7 +194,8 @@ public static class ServerEmbeddingsExtensions
     /// <returns>Performance profile with detailed statistics</returns>
     public static async Task<PerformanceProfile> AnalyzePerformanceAsync(
         this ServerEmbeddings service,
-        IEnumerable<string> testCases)
+        IEnumerable<string> testCases
+    )
     {
         var testList = testCases.ToList();
         var results = new List<RequestMetrics>();
@@ -187,7 +211,10 @@ public static class ServerEmbeddingsExtensions
         }
 
         var endTime = DateTime.UtcNow;
-        var responseTimes = results.Where(r => r.DurationMs.HasValue).Select(r => r.DurationMs!.Value).ToList();
+        var responseTimes = results
+            .Where(r => r.DurationMs.HasValue)
+            .Select(r => r.DurationMs!.Value)
+            .ToList();
 
         return new PerformanceProfile
         {
@@ -197,26 +224,42 @@ public static class ServerEmbeddingsExtensions
             ResponseTimes = new ResponseTimeStats
             {
                 AverageMs = responseTimes.Any() ? responseTimes.Average() : 0,
-                MedianMs = responseTimes.Any() ? responseTimes.OrderBy(x => x).Skip(responseTimes.Count / 2).FirstOrDefault() : 0,
-                P95Ms = responseTimes.Any() ? responseTimes.OrderBy(x => x).Skip((int)(responseTimes.Count * 0.95)).FirstOrDefault() : 0,
-                P99Ms = responseTimes.Any() ? responseTimes.OrderBy(x => x).Skip((int)(responseTimes.Count * 0.99)).FirstOrDefault() : 0,
+                MedianMs = responseTimes.Any()
+                    ? responseTimes.OrderBy(x => x).Skip(responseTimes.Count / 2).FirstOrDefault()
+                    : 0,
+                P95Ms = responseTimes.Any()
+                    ? responseTimes
+                        .OrderBy(x => x)
+                        .Skip((int)(responseTimes.Count * 0.95))
+                        .FirstOrDefault()
+                    : 0,
+                P99Ms = responseTimes.Any()
+                    ? responseTimes
+                        .OrderBy(x => x)
+                        .Skip((int)(responseTimes.Count * 0.99))
+                        .FirstOrDefault()
+                    : 0,
                 MinMs = responseTimes.Any() ? responseTimes.Min() : 0,
                 MaxMs = responseTimes.Any() ? responseTimes.Max() : 0,
-                StdDevMs = responseTimes.Any() ? CalculateStandardDeviation(responseTimes) : 0
+                StdDevMs = responseTimes.Any() ? CalculateStandardDeviation(responseTimes) : 0,
             },
             Throughput = new ThroughputStats
             {
                 RequestsPerSecond = results.Count / Math.Max((endTime - startTime).TotalSeconds, 1),
                 TotalRequests = results.Count,
-                TotalTokens = results.Sum(r => r.TotalTokens ?? 0)
+                TotalTokens = results.Sum(r => r.TotalTokens ?? 0),
             },
             ErrorRates = new ErrorRateStats
             {
-                ErrorRatePercent = results.Any() ? (results.Count(r => !r.Success) / (double)results.Count) * 100 : 0,
+                ErrorRatePercent = results.Any()
+                    ? (results.Count(r => !r.Success) / (double)results.Count) * 100
+                    : 0,
                 TotalErrors = results.Count(r => !r.Success),
                 AverageRetries = results.Any() ? results.Average(r => r.RetryCount) : 0,
-                SuccessRateAfterRetriesPercent = results.Any() ? (results.Count(r => r.Success) / (double)results.Count) * 100 : 0
-            }
+                SuccessRateAfterRetriesPercent = results.Any()
+                    ? (results.Count(r => r.Success) / (double)results.Count) * 100
+                    : 0,
+            },
         };
     }
 
@@ -229,7 +272,8 @@ public static class ServerEmbeddingsExtensions
     private static double CalculateStandardDeviation(IEnumerable<double> values)
     {
         var valueList = values.ToList();
-        if (!valueList.Any()) return 0;
+        if (!valueList.Any())
+            return 0;
 
         var average = valueList.Average();
         var sumOfSquares = valueList.Sum(v => Math.Pow(v - average, 2));

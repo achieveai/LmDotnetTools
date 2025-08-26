@@ -128,5 +128,5 @@ public enum ProfileType
     /// <summary>
     /// Performance profile for a specific feature
     /// </summary>
-    Feature
+    Feature,
 }

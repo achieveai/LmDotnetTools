@@ -13,7 +13,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "Hello" }
+                new TextMessage { Role = Role.User, Text = "Hello" },
             };
 
             var options = new GenerateReplyOptions
@@ -21,8 +21,8 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 ModelId = "anthropic/claude-3-opus",
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["transforms"] = new[] { "trim" }
-                }.ToImmutableDictionary()
+                    ["transforms"] = new[] { "trim" },
+                }.ToImmutableDictionary(),
             };
 
             // Act - use the create method to test detection logic
@@ -39,7 +39,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "Hello" }
+                new TextMessage { Role = Role.User, Text = "Hello" },
             };
 
             var options = new GenerateReplyOptions
@@ -61,19 +61,15 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "Hello" }
+                new TextMessage { Role = Role.User, Text = "Hello" },
             };
 
             var options = new GenerateReplyOptions
             {
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["models"] = new[]
-                    {
-                        "openai/gpt-4-turbo",
-                        "anthropic/claude-3-opus"
-                    }
-                }.ToImmutableDictionary()
+                    ["models"] = new[] { "openai/gpt-4-turbo", "anthropic/claude-3-opus" },
+                }.ToImmutableDictionary(),
             };
 
             // Act
@@ -90,7 +86,11 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "Return a JSON object with name and age" }
+                new TextMessage
+                {
+                    Role = Role.User,
+                    Text = "Return a JSON object with name and age",
+                },
             };
 
             var options = new GenerateReplyOptions
@@ -100,9 +100,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 {
                     ["response_format"] = new Dictionary<string, object?>
                     {
-                        ["type"] = "json_object"
-                    }
-                }.ToImmutableDictionary()
+                        ["type"] = "json_object",
+                    },
+                }.ToImmutableDictionary(),
             };
 
             // Act
@@ -119,7 +119,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage { Role = Role.User, Text = "Hello" }
+                new TextMessage { Role = Role.User, Text = "Hello" },
             };
 
             var options = new GenerateReplyOptions
@@ -130,9 +130,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                     ["http_headers"] = new Dictionary<string, string>
                     {
                         ["Anthropic-Version"] = "2023-06-01",
-                        ["X-Custom-Header"] = "value"
-                    }
-                }.ToImmutableDictionary()
+                        ["X-Custom-Header"] = "value",
+                    },
+                }.ToImmutableDictionary(),
             };
 
             // Act

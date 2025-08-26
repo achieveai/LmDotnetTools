@@ -23,10 +23,11 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     /// <param name="tryDefaultLast">If true, the default agent will be tried as a last resort after all mapped agents fail.</param>
     /// <param name="name">Optional name for the middleware.</param>
     public ModelFallbackMiddleware(
-      Dictionary<string, IAgent[]> modelAgentMap,
-      IAgent defaultAgent,
-      bool tryDefaultLast = true,
-      string? name = null)
+        Dictionary<string, IAgent[]> modelAgentMap,
+        IAgent defaultAgent,
+        bool tryDefaultLast = true,
+        string? name = null
+    )
     {
         _modelAgentMap = modelAgentMap ?? throw new ArgumentNullException(nameof(modelAgentMap));
         _defaultAgent = defaultAgent ?? throw new ArgumentNullException(nameof(defaultAgent));
@@ -43,14 +44,19 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
     /// Invokes the middleware, attempting agents based on the model name in the options.
     /// </summary>
     public async Task<IEnumerable<IMessage>> InvokeAsync(
-      MiddlewareContext context,
-      IAgent agent,
-      CancellationToken cancellationToken = default)
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken cancellationToken = default
+    )
     {
         // Check if options is null or doesn't contain ModelId
         if (context.Options?.ModelId == null)
         {
-            return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+            return await agent.GenerateReplyAsync(
+                context.Messages,
+                context.Options,
+                cancellationToken
+            );
         }
 
         // Get the model name from options
@@ -66,7 +72,11 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
             {
                 try
                 {
-                    return await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                    return await mappedAgent.GenerateReplyAsync(
+                        context.Messages,
+                        context.Options,
+                        cancellationToken
+                    );
                 }
                 catch (Exception ex)
                 {
@@ -80,7 +90,11 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
             {
                 try
                 {
-                    return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                    return await _defaultAgent.GenerateReplyAsync(
+                        context.Messages,
+                        context.Options,
+                        cancellationToken
+                    );
                 }
                 catch (Exception) when (lastException != null)
                 {
@@ -97,21 +111,30 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
 
         // If no mapping was found for the model, use the default agent
-        return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+        return await _defaultAgent.GenerateReplyAsync(
+            context.Messages,
+            context.Options,
+            cancellationToken
+        );
     }
 
     /// <summary>
     /// Invokes the middleware for streaming scenarios, attempting agents based on the model name in the options.
     /// </summary>
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
-      MiddlewareContext context,
-      IStreamingAgent agent,
-      CancellationToken cancellationToken = default)
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken cancellationToken = default
+    )
     {
         // Check if options is null or doesn't contain ModelId
         if (context.Options?.ModelId == null)
         {
-            return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+            return await agent.GenerateReplyStreamingAsync(
+                context.Messages,
+                context.Options,
+                cancellationToken
+            );
         }
 
         // Get the model name from options
@@ -129,13 +152,21 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
                 {
                     if (mappedAgent is IStreamingAgent streamingAgent)
                     {
-                        return await streamingAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+                        return await streamingAgent.GenerateReplyStreamingAsync(
+                            context.Messages,
+                            context.Options,
+                            cancellationToken
+                        );
                     }
                     else
                     {
                         // If the agent doesn't support streaming, fall back to non-streaming
                         // and convert to an async enumerable
-                        var result = await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                        var result = await mappedAgent.GenerateReplyAsync(
+                            context.Messages,
+                            context.Options,
+                            cancellationToken
+                        );
                         return ToAsyncEnumerableInternal(result, cancellationToken);
                     }
                 }
@@ -153,13 +184,21 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
                 {
                     if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
                     {
-                        return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+                        return await streamingDefaultAgent.GenerateReplyStreamingAsync(
+                            context.Messages,
+                            context.Options,
+                            cancellationToken
+                        );
                     }
                     else
                     {
                         // If the agent doesn't support streaming, fall back to non-streaming
                         // and convert to an async enumerable
-                        var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                        var result = await _defaultAgent.GenerateReplyAsync(
+                            context.Messages,
+                            context.Options,
+                            cancellationToken
+                        );
                         return ToAsyncEnumerableInternal(result, cancellationToken);
                     }
                 }
@@ -182,27 +221,40 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         {
             if (_defaultAgent is IStreamingAgent streamingDefaultAgent)
             {
-                return await streamingDefaultAgent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+                return await streamingDefaultAgent.GenerateReplyStreamingAsync(
+                    context.Messages,
+                    context.Options,
+                    cancellationToken
+                );
             }
             else
             {
                 // If the agent doesn't support streaming, fall back to non-streaming
                 // and convert to an async enumerable
-                var result = await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+                var result = await _defaultAgent.GenerateReplyAsync(
+                    context.Messages,
+                    context.Options,
+                    cancellationToken
+                );
                 return ToAsyncEnumerableInternal(result, cancellationToken);
             }
         }
 
         // Fall back to using the provided agent if all else fails
-        return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
+        return await agent.GenerateReplyStreamingAsync(
+            context.Messages,
+            context.Options,
+            cancellationToken
+        );
     }
 
     /// <summary>
     /// Helper method to convert IEnumerable to IAsyncEnumerable
     /// </summary>
     private static async IAsyncEnumerable<IMessage> ToAsyncEnumerableInternal(
-      IEnumerable<IMessage> messages,
-      [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        IEnumerable<IMessage> messages,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         foreach (var message in messages)
         {

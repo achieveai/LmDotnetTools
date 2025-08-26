@@ -20,7 +20,10 @@ public static class TestLogger
 
         try
         {
-            var json = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+            var json = JsonSerializer.Serialize(
+                obj,
+                new JsonSerializerOptions { WriteIndented = true }
+            );
             Log($"{name}: {json}");
         }
         catch (Exception ex)

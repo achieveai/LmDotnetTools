@@ -1,9 +1,9 @@
+using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
-using FluentAssertions;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -27,8 +27,8 @@ public class DocumentSizeAnalyzerTests
                 MaxDocumentSizeWords = 50000,
                 TargetSegmentSizeWords = 1000,
                 MaxSegmentSizeWords = 2000,
-                MinSegmentSizeWords = 100
-            }
+                MinSegmentSizeWords = 100,
+            },
         };
 
         var optionsWrapper = Options.Create(_options);
@@ -39,12 +39,13 @@ public class DocumentSizeAnalyzerTests
     public async Task AnalyzeDocumentAsync_WithValidContent_ReturnsCorrectStatistics()
     {
         // Arrange
-        var content = "This is a test document with multiple sentences. " +
-                     "It contains several words and punctuation marks! " +
-                     "We want to verify that our analysis works correctly? " +
-                     "This should provide good test coverage for the analyzer.\n\n" +
-                     "Here is a second paragraph to test paragraph counting. " +
-                     "It also has multiple sentences for testing.";
+        var content =
+            "This is a test document with multiple sentences. "
+            + "It contains several words and punctuation marks! "
+            + "We want to verify that our analysis works correctly? "
+            + "This should provide good test coverage for the analyzer.\n\n"
+            + "Here is a second paragraph to test paragraph counting. "
+            + "It also has multiple sentences for testing.";
 
         // Act
         var result = await _analyzer.AnalyzeDocumentAsync(content);
@@ -104,7 +105,10 @@ public class DocumentSizeAnalyzerTests
     [InlineData(200, DocumentType.Chat, true)] // Chat has even lower threshold
     [InlineData(1000, DocumentType.ResearchPaper, false)] // Research paper has higher threshold
     public void ShouldSegmentDocument_WithVariousWordCounts_ReturnsExpectedResult(
-      int wordCount, DocumentType documentType, bool expectedResult)
+        int wordCount,
+        DocumentType documentType,
+        bool expectedResult
+    )
     {
         // Arrange
         var statistics = new DocumentStatistics { WordCount = wordCount };
@@ -122,7 +126,11 @@ public class DocumentSizeAnalyzerTests
     [InlineData(5000, 1000, 2000, 5)] // Large document
     [InlineData(1500, 1000, 2000, 2)] // Edge case
     public void CalculateOptimalSegmentCount_WithVariousInputs_ReturnsValidCount(
-      int wordCount, int targetSize, int maxSize, int expectedCount)
+        int wordCount,
+        int targetSize,
+        int maxSize,
+        int expectedCount
+    )
     {
         // Arrange
         var statistics = new DocumentStatistics { WordCount = wordCount };
@@ -142,7 +150,8 @@ public class DocumentSizeAnalyzerTests
     [InlineData(SegmentationStrategy.Hybrid)]
     [InlineData(SegmentationStrategy.Custom)]
     public void EstimateProcessingTime_WithDifferentStrategies_ReturnsPositiveTime(
-      SegmentationStrategy strategy)
+        SegmentationStrategy strategy
+    )
     {
         // Arrange
         var statistics = new DocumentStatistics { WordCount = 1000 };
@@ -177,7 +186,10 @@ public class DocumentSizeAnalyzerTests
         _options.LlmOptions.EnableLlmSegmentation = false;
 
         // Act
-        var result = _analyzer.EstimateProcessingTime(statistics, SegmentationStrategy.StructureBased);
+        var result = _analyzer.EstimateProcessingTime(
+            statistics,
+            SegmentationStrategy.StructureBased
+        );
 
         // Assert
         result.Should().BeLessThan(1000); // Should not include LLM overhead

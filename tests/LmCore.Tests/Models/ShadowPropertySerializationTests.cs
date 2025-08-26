@@ -27,21 +27,19 @@ public class ShadowPropertySerializationTests
     public void Usage_WithExtraProperties_SerializesInline()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
         var usage = new Usage
         {
             PromptTokens = 10,
             CompletionTokens = 20,
-            TotalTokens = 30
+            TotalTokens = 30,
         };
 
         // Add extra properties
-        var withExtras = usage.SetExtraProperty("estimated_cost", 0.05)
-                              .SetExtraProperty("cached", true);
+        var withExtras = usage
+            .SetExtraProperty("estimated_cost", 0.05)
+            .SetExtraProperty("cached", true);
 
         // Act
         var json = JsonSerializer.Serialize(withExtras, options);
@@ -72,7 +70,8 @@ public class ShadowPropertySerializationTests
     public void Usage_WithExtraProperties_DeserializesCorrectly()
     {
         // Arrange
-        var json = @"{
+        var json =
+            @"{
       ""prompt_tokens"": 10,
       ""completion_tokens"": 20,
       ""total_tokens"": 30,
@@ -105,19 +104,16 @@ public class ShadowPropertySerializationTests
     public void GenerateReplyOptions_WithExtraProperties_SerializesInline()
     {
         // Arrange
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
         var replyOptions = new GenerateReplyOptions
         {
             ModelId = "gpt-4",
             Temperature = 0.7f,
             MaxToken = 1000,
-            ExtraProperties = ImmutableDictionary<string, object?>.Empty
-            .Add("function_call", "auto")
-            .Add("top_k", 50)
+            ExtraProperties = ImmutableDictionary<string, object?>
+                .Empty.Add("function_call", "auto")
+                .Add("top_k", 50),
         };
 
         // Act
@@ -149,7 +145,8 @@ public class ShadowPropertySerializationTests
     public void GenerateReplyOptions_WithExtraProperties_DeserializesCorrectly()
     {
         // Arrange
-        var json = @"{
+        var json =
+            @"{
       ""model"": ""gpt-4"",
       ""temperature"": 0.7,
       ""max_tokens"": 1000,
@@ -235,7 +232,9 @@ public class ShadowPropertySerializationTests
     public void JsonSchemaObject_CanBeDeserialized_FromDotNetJsonSchema_NestedType()
     {
         // Generate schema using .NET 9 API
-        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(UserAccount));
+        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(
+            typeof(UserAccount)
+        );
         string schemaJson = dotnetSchema.ToJsonString();
         var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());

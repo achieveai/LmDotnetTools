@@ -1,6 +1,6 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.McpIntegrationTests;
@@ -15,45 +15,45 @@ public class McpFunctionCallExtensionsBasicTests
     {
         // Arrange - create simple function contracts and handlers
         var functionContracts = new List<FunctionContract>
-    {
-      new FunctionContract
-      {
-        Name = "Echo",
-        Description = "Returns the input text",
-        Parameters = new List<FunctionParameterContract>
         {
-          new FunctionParameterContract
-          {
-            Name = "text",
-            Description = "Text to echo",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-            IsRequired = true
-          }
-        }
-      },
-      new FunctionContract
-      {
-        Name = "Add",
-        Description = "Adds two numbers",
-        Parameters = new List<FunctionParameterContract>
-        {
-          new FunctionParameterContract
-          {
-            Name = "a",
-            Description = "First number",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            IsRequired = true
-          },
-          new FunctionParameterContract
-          {
-            Name = "b",
-            Description = "Second number",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
-            IsRequired = true
-          }
-        }
-      }
-    };
+            new FunctionContract
+            {
+                Name = "Echo",
+                Description = "Returns the input text",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "text",
+                        Description = "Text to echo",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        IsRequired = true,
+                    },
+                },
+            },
+            new FunctionContract
+            {
+                Name = "Add",
+                Description = "Adds two numbers",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "a",
+                        Description = "First number",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        IsRequired = true,
+                    },
+                    new FunctionParameterContract
+                    {
+                        Name = "b",
+                        Description = "Second number",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
+                        IsRequired = true,
+                    },
+                },
+            },
+        };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -71,7 +71,7 @@ public class McpFunctionCallExtensionsBasicTests
                 var b = args!["b"].GetDouble();
                 await Task.Yield(); // Make the task actually async
                 return (a + b).ToString();
-            }
+            },
         };
 
         // Act - create middleware with these functions
@@ -101,23 +101,23 @@ public class McpFunctionCallExtensionsBasicTests
     {
         // Arrange - create simple function contracts and handlers
         var functionContracts = new List<FunctionContract>
-    {
-      new FunctionContract
-      {
-        Name = "Echo",
-        Description = "Returns the input text",
-        Parameters = new List<FunctionParameterContract>
         {
-          new FunctionParameterContract
-          {
-            Name = "text",
-            Description = "Text to echo",
-            ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-            IsRequired = true
-          }
-        }
-      }
-    };
+            new FunctionContract
+            {
+                Name = "Echo",
+                Description = "Returns the input text",
+                Parameters = new List<FunctionParameterContract>
+                {
+                    new FunctionParameterContract
+                    {
+                        Name = "text",
+                        Description = "Text to echo",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        IsRequired = true,
+                    },
+                },
+            },
+        };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -127,7 +127,7 @@ public class McpFunctionCallExtensionsBasicTests
                 var text = args!["text"].GetString() ?? string.Empty;
                 await Task.Yield(); // Make the task actually async
                 return text;
-            }
+            },
         };
 
         // Create middleware with these functions

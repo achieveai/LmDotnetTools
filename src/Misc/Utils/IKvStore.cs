@@ -6,5 +6,7 @@ public interface IKvStore
 
     public Task SetAsync<T>(string key, T value, CancellationToken cancellationToken = default);
 
-    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(CancellationToken cancellationToken = default);
+    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(
+        CancellationToken cancellationToken = default
+    );
 }

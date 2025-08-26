@@ -7,10 +7,7 @@ public class IMessageJsonConverterTests
 {
     private JsonSerializerOptions GetOptionsWithConverter()
     {
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-        };
+        var options = new JsonSerializerOptions { WriteIndented = true };
 
         options.Converters.Add(new IMessageJsonConverter());
         options.Converters.Add(new TextMessageJsonConverter());
@@ -33,7 +30,7 @@ public class IMessageJsonConverterTests
             Role = Role.Assistant,
             FromAgent = "test-agent",
             GenerationId = "test-gen-id",
-            Metadata = ImmutableDictionary<string, object>.Empty.Add("test", "value")
+            Metadata = ImmutableDictionary<string, object>.Empty.Add("test", "value"),
         };
 
         var options = GetOptionsWithConverter();
@@ -55,7 +52,8 @@ public class IMessageJsonConverterTests
     public void Deserialize_TextMessage_WithTypeDiscriminator_ReturnsCorrectType()
     {
         // Arrange
-        string json = @"{
+        string json =
+            @"{
             ""$type"": ""text"",
             ""text"": ""Hello world"",
             ""role"": ""assistant"",
@@ -83,7 +81,8 @@ public class IMessageJsonConverterTests
     public void Deserialize_TextMessage_WithoutTypeDiscriminator_ReturnsCorrectType()
     {
         // Arrange
-        string json = @"{
+        string json =
+            @"{
             ""text"": ""Hello world"",
             ""role"": ""assistant"",
             ""fromAgent"": ""test-agent"",
@@ -112,9 +111,10 @@ public class IMessageJsonConverterTests
         // Arrange
         var toolCall = new ToolCall(
             FunctionName: "test_function",
-            FunctionArgs: """{"arg1": "value1"}""")
+            FunctionArgs: """{"arg1": "value1"}"""
+        )
         {
-            ToolCallId = "tool-1"
+            ToolCallId = "tool-1",
         };
 
         var toolCallMessage = new ToolsCallMessage
@@ -123,7 +123,7 @@ public class IMessageJsonConverterTests
             Role = Role.Assistant,
             FromAgent = "assistant-agent",
             GenerationId = "gen-1",
-            Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-call")
+            Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-call"),
         };
 
         var toolCallResult = new ToolsCallResultMessage
@@ -131,10 +131,14 @@ public class IMessageJsonConverterTests
             ToolCallResults = ImmutableList.Create(new ToolCallResult("tool-1", "function result")),
             Role = Role.User,
             FromAgent = "user-agent",
-            Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-result")
+            Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-result"),
         };
 
-        IMessage originalMessage = new ToolsCallAggregateMessage(toolCallMessage, toolCallResult, "combined-agent");
+        IMessage originalMessage = new ToolsCallAggregateMessage(
+            toolCallMessage,
+            toolCallResult,
+            "combined-agent"
+        );
 
         var options = GetOptionsWithConverter();
 
@@ -155,7 +159,9 @@ public class IMessageJsonConverterTests
 
         // Verify tool call message
         Assert.NotNull(aggregateMessage.ToolsCallMessage);
-        var resultingToolCalls = ((ICanGetToolCalls)aggregateMessage.ToolsCallMessage).GetToolCalls();
+        var resultingToolCalls = (
+            (ICanGetToolCalls)aggregateMessage.ToolsCallMessage
+        ).GetToolCalls();
         Assert.NotNull(resultingToolCalls);
 
         // Verify tool call result
@@ -170,17 +176,22 @@ public class IMessageJsonConverterTests
     [InlineData("image", typeof(ImageMessage))]
     [InlineData("tools_call", typeof(ToolsCallMessage))]
     [InlineData("tools_call_result", typeof(ToolsCallResultMessage))]
-    public void Deserialize_WithTypeDiscriminator_ReturnsCorrectType(string typeDiscriminator, Type expectedType)
+    public void Deserialize_WithTypeDiscriminator_ReturnsCorrectType(
+        string typeDiscriminator,
+        Type expectedType
+    )
     {
         // Arrange
-        string json = $@"{{
+        string json =
+            $@"{{
             ""$type"": ""{typeDiscriminator}"",
             ""role"": ""assistant""
         }}";
 
         if (expectedType == typeof(TextMessage))
         {
-            json = $@"{{
+            json =
+                $@"{{
                 ""$type"": ""{typeDiscriminator}"",
                 ""text"": ""Required text"",
                 ""role"": ""assistant""
@@ -188,7 +199,8 @@ public class IMessageJsonConverterTests
         }
         else if (expectedType == typeof(ImageMessage))
         {
-            json = $@"{{
+            json =
+                $@"{{
                 ""$type"": ""{typeDiscriminator}"",
                 ""role"": ""assistant"",
                 ""image_data"": ""ZmFrZS1pbWFnZS1kYXRh""
@@ -211,14 +223,18 @@ public class IMessageJsonConverterTests
         var messages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            new ImageMessage { ImageData = BinaryData.FromString("fake-image-data"), Role = Role.Assistant },
+            new ImageMessage
+            {
+                ImageData = BinaryData.FromString("fake-image-data"),
+                Role = Role.Assistant,
+            },
             new ToolsCallMessage
             {
                 ToolCalls = ImmutableList.Create(
-                    new ToolCall("test_function", "{}"){ ToolCallId = "id1" }
+                    new ToolCall("test_function", "{}") { ToolCallId = "id1" }
                 ),
-                Role = Role.Assistant
-            }
+                Role = Role.Assistant,
+            },
         };
 
         var options = GetOptionsWithConverter();
@@ -245,7 +261,7 @@ public class IMessageJsonConverterTests
         {
             Text = "Test message with converter",
             Role = Role.User,
-            Metadata = ImmutableDictionary<string, object>.Empty.Add("custom", "value")
+            Metadata = ImmutableDictionary<string, object>.Empty.Add("custom", "value"),
         };
 
         var options = GetOptionsWithConverter();

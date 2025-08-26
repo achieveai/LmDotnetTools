@@ -12,7 +12,10 @@ public static class MockToolCallHelperExamples
     /// <summary>
     /// Example showing how to create mock tool calls with all tools
     /// </summary>
-    public static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) CreateAllMockTools()
+    public static (
+        IEnumerable<FunctionContract>,
+        IDictionary<string, Func<string, Task<string>>>
+    ) CreateAllMockTools()
     {
         var callbackOverrides = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -46,7 +49,7 @@ public static class MockToolCallHelperExamples
                 var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
                 var code = args!["code"].GetString();
                 return Task.FromResult($"Mock Python execution output for code: {code}");
-            }
+            },
         };
 
         return MockToolCallHelper.CreateMockToolCalls(MockToolTypes.All, callbackOverrides);
@@ -55,7 +58,10 @@ public static class MockToolCallHelperExamples
     /// <summary>
     /// Example showing how to create mock tool calls for C# sample only
     /// </summary>
-    public static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) CreateCSharpMockTools()
+    public static (
+        IEnumerable<FunctionContract>,
+        IDictionary<string, Func<string, Task<string>>>
+    ) CreateCSharpMockTools()
     {
         return MockToolCallHelper.CreateMockToolCalls(MockToolTypes.CSharpSample);
     }
@@ -63,7 +69,10 @@ public static class MockToolCallHelperExamples
     /// <summary>
     /// Example of creating a specific override for a calculator method
     /// </summary>
-    public static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) CreateCalculatorMockWithDivideOverride()
+    public static (
+        IEnumerable<FunctionContract>,
+        IDictionary<string, Func<string, Task<string>>>
+    ) CreateCalculatorMockWithDivideOverride()
     {
         var callbackOverrides = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -75,15 +84,18 @@ public static class MockToolCallHelperExamples
 
                 if (b == 0)
                 {
-                    return Task.FromResult(JsonSerializer.Serialize(new { error = "Cannot divide by zero" }));
+                    return Task.FromResult(
+                        JsonSerializer.Serialize(new { error = "Cannot divide by zero" })
+                    );
                 }
 
                 return Task.FromResult((a / b).ToString());
-            }
+            },
         };
 
         return MockToolCallHelper.CreateMockToolCalls(
             new[] { typeof(MockCalculatorTool) },
-            callbackOverrides);
+            callbackOverrides
+        );
     }
 }

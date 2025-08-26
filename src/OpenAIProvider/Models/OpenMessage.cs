@@ -1,6 +1,6 @@
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using System.Collections.Immutable;
+using AchieveAi.LmDotnetTools.LmCore.Core;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -15,10 +15,7 @@ public record OpenMessage
     public IEnumerable<IMessage> ToMessages()
     {
         var messages = new List<IMessage>();
-        var chatMessage = ChatMessage with
-        {
-            Id = CompletionId,
-        };
+        var chatMessage = ChatMessage with { Id = CompletionId };
 
         // First, add all content messages
         foreach (var baseMessage in chatMessage.ToMessages(ChatMessage.Name))
@@ -39,14 +36,16 @@ public record OpenMessage
             else if (baseMessage is ImageMessage imageMessage)
             {
                 // Create a new instance since ImageMessage is not a record type
-                messages.Add(new ImageMessage
-                {
-                    FromAgent = imageMessage.FromAgent,
-                    Role = imageMessage.Role,
-                    Metadata = metadata,
-                    GenerationId = imageMessage.GenerationId,
-                    ImageData = imageMessage.ImageData
-                });
+                messages.Add(
+                    new ImageMessage
+                    {
+                        FromAgent = imageMessage.FromAgent,
+                        Role = imageMessage.Role,
+                        Metadata = metadata,
+                        GenerationId = imageMessage.GenerationId,
+                        ImageData = imageMessage.ImageData,
+                    }
+                );
             }
             else
             {
@@ -57,18 +56,20 @@ public record OpenMessage
         // Then, if we have usage data, add a dedicated UsageMessage
         if (Usage != null)
         {
-            messages.Add(new UsageMessage
-            {
-                Usage = new Usage
+            messages.Add(
+                new UsageMessage
                 {
-                    PromptTokens = Usage.PromptTokens,
-                    CompletionTokens = Usage.CompletionTokens,
-                    TotalTokens = Usage.PromptTokens + Usage.CompletionTokens
-                },
-                Role = Role.Assistant,
-                FromAgent = ChatMessage.Name,
-                GenerationId = CompletionId
-            });
+                    Usage = new Usage
+                    {
+                        PromptTokens = Usage.PromptTokens,
+                        CompletionTokens = Usage.CompletionTokens,
+                        TotalTokens = Usage.PromptTokens + Usage.CompletionTokens,
+                    },
+                    Role = Role.Assistant,
+                    FromAgent = ChatMessage.Name,
+                    GenerationId = CompletionId,
+                }
+            );
         }
 
         return messages;
@@ -77,39 +78,40 @@ public record OpenMessage
     public IEnumerable<IMessage> ToStreamingMessage()
     {
         var messages = new List<IMessage>();
-        var chatMessage = ChatMessage with
-        {
-            Id = CompletionId,
-        };
+        var chatMessage = ChatMessage with { Id = CompletionId };
 
         // First, add all content update messages
         foreach (var baseMessage in chatMessage.ToStreamingMessages(ChatMessage.Name))
         {
-            var metadata = ImmutableDictionary<string, object>.Empty
-                .Add("completion_id", CompletionId)
+            var metadata = ImmutableDictionary<string, object>
+                .Empty.Add("completion_id", CompletionId)
                 .Add("is_streaming", true);
 
             // Fill in the OpenMessage specific fields
             if (baseMessage is ToolsCallMessage toolCallMessage)
             {
-                messages.Add(toolCallMessage with
-                {
-                    GenerationId = CompletionId,
-                    FromAgent = ChatMessage.Name,
-                    Role = toolCallMessage.Role,
-                    Metadata = metadata
-                });
+                messages.Add(
+                    toolCallMessage with
+                    {
+                        GenerationId = CompletionId,
+                        FromAgent = ChatMessage.Name,
+                        Role = toolCallMessage.Role,
+                        Metadata = metadata,
+                    }
+                );
             }
             else if (baseMessage is TextMessage textMessage)
             {
-                messages.Add(new TextUpdateMessage
-                {
-                    Text = textMessage.Text,
-                    Role = textMessage.Role,
-                    FromAgent = ChatMessage.Name,
-                    GenerationId = CompletionId,
-                    Metadata = metadata
-                });
+                messages.Add(
+                    new TextUpdateMessage
+                    {
+                        Text = textMessage.Text,
+                        Role = textMessage.Role,
+                        FromAgent = ChatMessage.Name,
+                        GenerationId = CompletionId,
+                        Metadata = metadata,
+                    }
+                );
             }
             else
             {
@@ -123,18 +125,20 @@ public record OpenMessage
         // providers – in that case we omit the UsageMessage entirely to avoid noise.
         if (Usage != null && (Usage.PromptTokens > 0 || Usage.CompletionTokens > 0))
         {
-            messages.Add(new UsageMessage
-            {
-                Usage = new Usage
+            messages.Add(
+                new UsageMessage
                 {
-                    PromptTokens = Usage.PromptTokens,
-                    CompletionTokens = Usage.CompletionTokens,
-                    TotalTokens = Usage.PromptTokens + Usage.CompletionTokens
-                },
-                Role = Role.Assistant,
-                FromAgent = ChatMessage.Name,
-                GenerationId = CompletionId
-            });
+                    Usage = new Usage
+                    {
+                        PromptTokens = Usage.PromptTokens,
+                        CompletionTokens = Usage.CompletionTokens,
+                        TotalTokens = Usage.PromptTokens + Usage.CompletionTokens,
+                    },
+                    Role = Role.Assistant,
+                    FromAgent = ChatMessage.Name,
+                    GenerationId = CompletionId,
+                }
+            );
         }
 
         return messages;
@@ -161,7 +165,7 @@ public record OpenUsage
             CompletionTokens = a.CompletionTokens + b.CompletionTokens,
             PromptTokens = a.PromptTokens + b.PromptTokens,
             TotalCost = a.TotalCost + b.TotalCost,
-            IsCached = a.IsCached
+            IsCached = a.IsCached,
         };
     }
 }

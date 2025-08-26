@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using AchieveAi.LmDotnetTools.LmCore.Configuration;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
@@ -14,8 +14,14 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public class FunctionCollisionDetector
 {
     private readonly ILogger _logger;
-    private static readonly Regex InvalidCharPattern = new Regex(@"[^a-zA-Z0-9_-]", RegexOptions.Compiled);
-    private static readonly Regex MultipleUnderscorePattern = new Regex(@"_{2,}", RegexOptions.Compiled);
+    private static readonly Regex InvalidCharPattern = new Regex(
+        @"[^a-zA-Z0-9_-]",
+        RegexOptions.Compiled
+    );
+    private static readonly Regex MultipleUnderscorePattern = new Regex(
+        @"_{2,}",
+        RegexOptions.Compiled
+    );
 
     /// <summary>
     /// Initializes a new instance of the FunctionCollisionDetector class
@@ -34,12 +40,15 @@ public class FunctionCollisionDetector
     /// <returns>Dictionary mapping function keys to their registered names</returns>
     public Dictionary<string, string> DetectAndResolveCollisions(
         IEnumerable<FunctionDescriptor> functions,
-        FunctionFilterConfig? config = null)
+        FunctionFilterConfig? config = null
+    )
     {
         var usePrefixOnlyForCollisions = config?.UsePrefixOnlyForCollisions ?? true;
 
-        _logger.LogDebug("Starting collision detection: UsePrefixOnlyForCollisions={UsePrefixOnlyForCollisions}",
-            usePrefixOnlyForCollisions);
+        _logger.LogDebug(
+            "Starting collision detection: UsePrefixOnlyForCollisions={UsePrefixOnlyForCollisions}",
+            usePrefixOnlyForCollisions
+        );
 
         // Step 1: Group functions by their base name
         var functionGroups = new Dictionary<string, List<FunctionDescriptor>>();
@@ -54,8 +63,11 @@ public class FunctionCollisionDetector
             functionGroups[baseName].Add(function);
         }
 
-        _logger.LogDebug("Function groups built: UniqueNames={UniqueCount}, TotalFunctions={TotalCount}",
-            functionGroups.Count, functionGroups.Values.Sum(list => list.Count));
+        _logger.LogDebug(
+            "Function groups built: UniqueNames={UniqueCount}, TotalFunctions={TotalCount}",
+            functionGroups.Count,
+            functionGroups.Values.Sum(list => list.Count)
+        );
 
         // Step 2: Detect collisions and determine final names
         var namingMap = new Dictionary<string, string>();
@@ -67,8 +79,12 @@ public class FunctionCollisionDetector
             if (hasCollision)
             {
                 var providers = descriptors.Select(d => d.ProviderName).Distinct();
-                _logger.LogInformation("Function collision detected: FunctionName={FunctionName}, ProviderCount={ProviderCount}, Providers={Providers}",
-                    baseName, descriptors.Count, string.Join(", ", providers));
+                _logger.LogInformation(
+                    "Function collision detected: FunctionName={FunctionName}, ProviderCount={ProviderCount}, Providers={Providers}",
+                    baseName,
+                    descriptors.Count,
+                    string.Join(", ", providers)
+                );
             }
 
             foreach (var descriptor in descriptors)
@@ -77,17 +93,26 @@ public class FunctionCollisionDetector
                     descriptor,
                     hasCollision,
                     usePrefixOnlyForCollisions,
-                    config);
+                    config
+                );
 
                 namingMap[descriptor.Key] = registeredName;
 
-                _logger.LogDebug("Function naming resolved: Original={Original}, Provider={Provider}, Registered={Registered}, HasCollision={HasCollision}",
-                    descriptor.Contract.Name, descriptor.ProviderName, registeredName, hasCollision);
+                _logger.LogDebug(
+                    "Function naming resolved: Original={Original}, Provider={Provider}, Registered={Registered}, HasCollision={HasCollision}",
+                    descriptor.Contract.Name,
+                    descriptor.ProviderName,
+                    registeredName,
+                    hasCollision
+                );
             }
         }
 
-        _logger.LogInformation("Collision detection completed: TotalFunctions={TotalFunctions}, CollisionsResolved={CollisionCount}",
-            namingMap.Count, functionGroups.Count(kvp => kvp.Value.Count > 1));
+        _logger.LogInformation(
+            "Collision detection completed: TotalFunctions={TotalFunctions}, CollisionsResolved={CollisionCount}",
+            namingMap.Count,
+            functionGroups.Count(kvp => kvp.Value.Count > 1)
+        );
 
         return namingMap;
     }
@@ -99,15 +124,18 @@ public class FunctionCollisionDetector
         FunctionDescriptor descriptor,
         bool hasCollision,
         bool usePrefixOnlyForCollisions,
-        FunctionFilterConfig? config)
+        FunctionFilterConfig? config
+    )
     {
         var providerName = descriptor.ProviderName;
         var functionName = descriptor.Contract.Name;
 
         // Check for custom prefix in provider config
         string? customPrefix = null;
-        if (config?.ProviderConfigs != null &&
-            config.ProviderConfigs.TryGetValue(providerName, out var providerConfig))
+        if (
+            config?.ProviderConfigs != null
+            && config.ProviderConfigs.TryGetValue(providerName, out var providerConfig)
+        )
         {
             customPrefix = providerConfig.CustomPrefix;
         }
@@ -190,7 +218,7 @@ public class FunctionCollisionDetector
                 {
                     FunctionName = functionName,
                     Providers = descriptors.Select(d => d.ProviderName).Distinct().ToList(),
-                    Count = descriptors.Count
+                    Count = descriptors.Count,
                 };
                 report.Collisions.Add(collision);
             }

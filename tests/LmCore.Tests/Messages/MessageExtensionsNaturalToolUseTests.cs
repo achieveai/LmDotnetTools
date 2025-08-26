@@ -16,15 +16,19 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(toolCall),
-            Role = Role.Assistant
+            Role = Role.Assistant,
         };
 
         var toolResultMessage = new ToolsCallResultMessage
         {
-            ToolCallResults = ImmutableList.Create(toolResult)
+            ToolCallResults = ImmutableList.Create(toolResult),
         };
 
-        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "test-agent");
+        var aggregateMessage = new ToolsCallAggregateMessage(
+            toolCallMessage,
+            toolResultMessage,
+            "test-agent"
+        );
 
         // Act
         var result = aggregateMessage.ToNaturalToolUse();
@@ -43,11 +47,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void ToNaturalToolUse_WithNonAggregateMessage_ReturnsOriginalMessage()
     {
         // Arrange
-        var textMessage = new TextMessage
-        {
-            Text = "Hello, world!",
-            Role = Role.User
-        };
+        var textMessage = new TextMessage { Text = "Hello, world!", Role = Role.User };
 
         // Act
         var result = textMessage.ToNaturalToolUse();
@@ -75,7 +75,10 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall("TestFunction", "{}");
         var toolResult = new ToolCallResult(null, "test result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult),
+        };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[] { textMessage, aggregateMessage };
@@ -97,20 +100,19 @@ public class MessageExtensionsNaturalToolUseTests
         var prefixMessage = new TextMessage
         {
             Text = "Let me check that for you.",
-            Role = Role.Assistant
+            Role = Role.Assistant,
         };
 
         var toolCall = new ToolCall("CheckWeather", "{\"city\":\"London\"}");
         var toolResult = new ToolCallResult(null, "Cloudy, 18°C");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult),
+        };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
-        var suffixMessage = new TextMessage
-        {
-            Text = "Hope that helps!",
-            Role = Role.Assistant
-        };
+        var suffixMessage = new TextMessage { Text = "Hope that helps!", Role = Role.Assistant };
 
         var messages = new IMessage[] { prefixMessage, aggregateMessage, suffixMessage };
 
@@ -161,13 +163,16 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall("TestFunc", "{}");
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult),
+        };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            aggregateMessage
+            aggregateMessage,
         };
 
         // Act
@@ -184,7 +189,7 @@ public class MessageExtensionsNaturalToolUseTests
         var messages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            new TextMessage { Text = "World", Role = Role.Assistant }
+            new TextMessage { Text = "World", Role = Role.Assistant },
         };
 
         // Act
@@ -214,7 +219,10 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall("TestFunc", "{}");
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult),
+        };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -244,7 +252,10 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall(null, null); // Invalid data
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolResultMessage = new ToolsCallResultMessage
+        {
+            ToolCallResults = ImmutableList.Create(toolResult),
+        };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -263,7 +274,7 @@ public class MessageExtensionsNaturalToolUseTests
         var messages = new IMessage[]
         {
             new TextMessage { Text = "First message", Role = Role.User },
-            new TextMessage { Text = "Second message", Role = Role.Assistant }
+            new TextMessage { Text = "Second message", Role = Role.Assistant },
         };
 
         // Act

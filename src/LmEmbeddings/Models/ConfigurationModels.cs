@@ -513,7 +513,7 @@ public enum HealthStatus
     /// <summary>
     /// Health status is unknown
     /// </summary>
-    Unknown
+    Unknown,
 }
 
 /// <summary>
@@ -540,5 +540,5 @@ public enum RetryStrategy
     /// <summary>
     /// Custom strategy defined by the implementation
     /// </summary>
-    Custom
+    Custom,
 }

@@ -25,15 +25,20 @@ public class FileKvStore : IKvStore, IDisposable
     {
         if (string.IsNullOrWhiteSpace(cacheDirectory))
         {
-            throw new ArgumentException("Cache directory cannot be null or empty", nameof(cacheDirectory));
+            throw new ArgumentException(
+                "Cache directory cannot be null or empty",
+                nameof(cacheDirectory)
+            );
         }
 
         _cacheDirectory = Path.GetFullPath(cacheDirectory);
-        _jsonOptions = jsonOptions ?? new JsonSerializerOptions
-        {
-            WriteIndented = false,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        };
+        _jsonOptions =
+            jsonOptions
+            ?? new JsonSerializerOptions
+            {
+                WriteIndented = false,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            };
         _semaphore = new SemaphoreSlim(1, 1);
 
         // Ensure the cache directory exists
@@ -93,7 +98,11 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     /// <inheritdoc/>
-    public async Task SetAsync<T>(string key, T value, CancellationToken cancellationToken = default)
+    public async Task SetAsync<T>(
+        string key,
+        T value,
+        CancellationToken cancellationToken = default
+    )
     {
         ThrowIfDisposed();
         if (string.IsNullOrEmpty(key))
@@ -123,14 +132,19 @@ public class FileKvStore : IKvStore, IDisposable
     }
 
     /// <inheritdoc/>
-    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(CancellationToken cancellationToken = default)
+    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(
+        CancellationToken cancellationToken = default
+    )
     {
         ThrowIfDisposed();
 
         return Task.FromResult(EnumerateKeysInternal(cancellationToken));
     }
 
-    private async IAsyncEnumerable<string> EnumerateKeysInternal([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    private async IAsyncEnumerable<string> EnumerateKeysInternal(
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+            CancellationToken cancellationToken = default
+    )
     {
         await _semaphore.WaitAsync(cancellationToken);
         try
@@ -140,7 +154,11 @@ public class FileKvStore : IKvStore, IDisposable
                 yield break;
             }
 
-            var files = Directory.EnumerateFiles(_cacheDirectory, "*.json", SearchOption.TopDirectoryOnly);
+            var files = Directory.EnumerateFiles(
+                _cacheDirectory,
+                "*.json",
+                SearchOption.TopDirectoryOnly
+            );
 
             foreach (var file in files)
             {
@@ -174,7 +192,11 @@ public class FileKvStore : IKvStore, IDisposable
                 return;
             }
 
-            var files = Directory.GetFiles(_cacheDirectory, "*.json", SearchOption.TopDirectoryOnly);
+            var files = Directory.GetFiles(
+                _cacheDirectory,
+                "*.json",
+                SearchOption.TopDirectoryOnly
+            );
 
             foreach (var file in files)
             {
@@ -211,7 +233,9 @@ public class FileKvStore : IKvStore, IDisposable
                 return 0;
             }
 
-            return Directory.GetFiles(_cacheDirectory, "*.json", SearchOption.TopDirectoryOnly).Length;
+            return Directory
+                .GetFiles(_cacheDirectory, "*.json", SearchOption.TopDirectoryOnly)
+                .Length;
         }
         finally
         {

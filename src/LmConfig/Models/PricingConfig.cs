@@ -63,8 +63,8 @@ public record CostEstimation
     public required decimal TotalEstimatedCost { get; init; }
     public required string ModelId { get; init; }
     public required string Provider { get; init; }
-    public string? SubProvider { get; init; }                   // For aggregators like OpenRouter
-    public required string SelectedModel { get; init; }          // Provider-specific model name
+    public string? SubProvider { get; init; } // For aggregators like OpenRouter
+    public required string SelectedModel { get; init; } // Provider-specific model name
     public required int EstimatedPromptTokens { get; init; }
     public required int EstimatedCompletionTokens { get; init; }
     public required PricingConfig PricingInfo { get; init; }
@@ -86,14 +86,14 @@ public record CostReport
     public required decimal TotalActualCost { get; init; }
     public required string ModelId { get; init; }
     public required string Provider { get; init; }
-    public string? SubProvider { get; init; }                   // For aggregators like OpenRouter
-    public required string UsedModel { get; init; }              // Provider-specific model name used
+    public string? SubProvider { get; init; } // For aggregators like OpenRouter
+    public required string UsedModel { get; init; } // Provider-specific model name used
     public required int PromptTokens { get; init; }
     public required int CompletionTokens { get; init; }
     public required PricingConfig PricingInfo { get; init; }
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
-    public TimeSpan? ResponseTime { get; init; }                // How long the request took
-    public string? RequestId { get; init; }                     // For tracking and debugging
+    public TimeSpan? ResponseTime { get; init; } // How long the request took
+    public string? RequestId { get; init; } // For tracking and debugging
 
     /// <summary>
     /// Full provider path for aggregators (e.g., "OpenRouter -> Together AI")
@@ -126,8 +126,12 @@ public record CostComparison
     /// Gets options grouped by reliability tier.
     /// </summary>
     public IReadOnlyDictionary<string, IReadOnlyList<CostOption>> ByReliability =>
-        Options.GroupBy(o => o.ReliabilityTier ?? "Unknown")
-               .ToDictionary(g => g.Key, g => (IReadOnlyList<CostOption>)g.OrderBy(o => o.TotalCost).ToList());
+        Options
+            .GroupBy(o => o.ReliabilityTier ?? "Unknown")
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<CostOption>)g.OrderBy(o => o.TotalCost).ToList()
+            );
 }
 
 /// <summary>
@@ -143,8 +147,8 @@ public record CostOption
     public required decimal TotalCost { get; init; }
     public required PricingConfig Pricing { get; init; }
     public IReadOnlyList<string>? Tags { get; init; }
-    public string? ReliabilityTier { get; init; }               // "high", "medium", "low"
-    public double? UptimePercentage { get; init; }              // 99.9, 99.5, etc.
+    public string? ReliabilityTier { get; init; } // "high", "medium", "low"
+    public double? UptimePercentage { get; init; } // 99.9, 99.5, etc.
 
     /// <summary>
     /// Full provider path for aggregators.
@@ -168,10 +172,10 @@ public record CostOption
 /// </summary>
 public enum ProviderSelectionStrategy
 {
-    Priority,           // Use priority-based selection (default)
-    Economic,          // Prefer lowest cost providers
-    Fast,              // Prefer fastest providers
-    Balanced,          // Balance cost and performance
-    HighQuality,       // Prefer highest quality providers
-    HighReliability    // Prefer most reliable providers (high uptime)
+    Priority, // Use priority-based selection (default)
+    Economic, // Prefer lowest cost providers
+    Fast, // Prefer fastest providers
+    Balanced, // Balance cost and performance
+    HighQuality, // Prefer highest quality providers
+    HighReliability, // Prefer most reliable providers (high uptime)
 }

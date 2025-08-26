@@ -14,16 +14,21 @@ public static class MessageExtensions
     /// <returns>The extracted text or null if the message is null</returns>
     public static string? GetText(this IMessage? message)
     {
-        if (message == null) return null;
+        if (message == null)
+            return null;
 
         return message switch
         {
             TextMessage textMessage => textMessage.Text,
-            ToolsCallResultMessage toolCallResult => string.Join(Environment.NewLine,
-              toolCallResult.ToolCallResults.Select(tcr => tcr.Result)),
-            ToolsCallAggregateMessage toolCallAggregate => string.Join(Environment.NewLine,
-              toolCallAggregate.ToolsCallResult.ToolCallResults.Select(tcr => tcr.Result)),
-            _ => message.ToString()
+            ToolsCallResultMessage toolCallResult => string.Join(
+                Environment.NewLine,
+                toolCallResult.ToolCallResults.Select(tcr => tcr.Result)
+            ),
+            ToolsCallAggregateMessage toolCallAggregate => string.Join(
+                Environment.NewLine,
+                toolCallAggregate.ToolsCallResult.ToolCallResults.Select(tcr => tcr.Result)
+            ),
+            _ => message.ToString(),
         };
     }
 }

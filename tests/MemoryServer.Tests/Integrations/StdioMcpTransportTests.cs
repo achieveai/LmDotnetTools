@@ -12,10 +12,13 @@ public class StdioMcpTransportTests : McpTransportTestBase
 {
     private readonly string _serverExecutablePath;
 
-    public StdioMcpTransportTests(ITestOutputHelper output) : base(output)
+    public StdioMcpTransportTests(ITestOutputHelper output)
+        : base(output)
     {
         // Path to the Memory MCP Server executable
-        var assemblyLocation = Path.GetDirectoryName(typeof(StdioMcpTransportTests).Assembly.Location)!;
+        var assemblyLocation = Path.GetDirectoryName(
+            typeof(StdioMcpTransportTests).Assembly.Location
+        )!;
         _serverExecutablePath = Path.Combine(assemblyLocation, "MemoryServer.exe");
 
         // If not found in test output, try the actual build location
@@ -23,7 +26,17 @@ public class StdioMcpTransportTests : McpTransportTestBase
         {
             _serverExecutablePath = Path.Combine(
                 assemblyLocation,
-                "..", "..", "..", "McpServers", "Memory", "MemoryServer", "bin", "Debug", "net9.0", "MemoryServer.exe");
+                "..",
+                "..",
+                "..",
+                "McpServers",
+                "Memory",
+                "MemoryServer",
+                "bin",
+                "Debug",
+                "net9.0",
+                "MemoryServer.exe"
+            );
         }
     }
 
@@ -35,15 +48,19 @@ public class StdioMcpTransportTests : McpTransportTestBase
 
         if (!File.Exists(_serverExecutablePath))
         {
-            throw new FileNotFoundException($"Server executable not found at: {_serverExecutablePath}");
+            throw new FileNotFoundException(
+                $"Server executable not found at: {_serverExecutablePath}"
+            );
         }
 
-        var transport = new StdioClientTransport(new StdioClientTransportOptions
-        {
-            Name = "memory-server",
-            Command = _serverExecutablePath,
-            Arguments = new[] { "--stdio" }
-        });
+        var transport = new StdioClientTransport(
+            new StdioClientTransportOptions
+            {
+                Name = "memory-server",
+                Command = _serverExecutablePath,
+                Arguments = new[] { "--stdio" },
+            }
+        );
 
         var client = await McpClientFactory.CreateAsync(transport);
         _output.WriteLine("✅ STDIO MCP client connected successfully");

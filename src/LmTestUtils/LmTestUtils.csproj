@@ -1,14 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <IsTestProject>false</IsTestProject>
-      <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="dotenv.net" Version="3.2.1" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.5" />
@@ -17,11 +15,9 @@
     <PackageReference Include="System.Text.Json" Version="9.0.5" />
     <PackageReference Include="xunit" Version="2.9.2" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
     <ProjectReference Include="..\OpenAIProvider\AchieveAi.LmDotnetTools.OpenAIProvider.csproj" />
     <ProjectReference Include="..\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />
   </ItemGroup>
-
 </Project>

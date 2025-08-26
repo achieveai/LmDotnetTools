@@ -18,9 +18,10 @@ public interface ILlmProviderIntegrationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Strategy recommendation with confidence score</returns>
     Task<StrategyRecommendation> AnalyzeOptimalStrategyAsync(
-      string content,
-      DocumentType documentType,
-      CancellationToken cancellationToken = default);
+        string content,
+        DocumentType documentType,
+        CancellationToken cancellationToken = default
+    );
 
     /// <summary>
     /// Tests connectivity to LLM providers.
@@ -39,8 +40,9 @@ public interface ILlmProviderIntegrationService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Raw JSON returned by the LLM (empty string if not available)</returns>
     public virtual Task<string> GenerateTopicSegmentationJsonAsync(
-      string content,
-      DocumentType documentType,
-      int? maxSegments = null,
-      CancellationToken cancellationToken = default) => Task.FromResult(string.Empty);
+        string content,
+        DocumentType documentType,
+        int? maxSegments = null,
+        CancellationToken cancellationToken = default
+    ) => Task.FromResult(string.Empty);
 }

@@ -117,5 +117,5 @@ public enum GraphUpdateAction
     /// <summary>
     /// No action needed for this relationship.
     /// </summary>
-    NONE
+    NONE,
 }

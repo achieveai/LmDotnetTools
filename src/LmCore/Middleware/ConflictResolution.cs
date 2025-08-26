@@ -33,5 +33,5 @@ public enum ConflictResolution
     /// <summary>
     /// Require explicit handling via conflict handler callback
     /// </summary>
-    RequireExplicit
+    RequireExplicit,
 }

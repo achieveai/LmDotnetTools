@@ -87,7 +87,7 @@ public record TextUpdateMessage : IMessage, ICanGetText
             FromAgent = FromAgent,
             Metadata = Metadata,
             GenerationId = GenerationId,
-            IsThinking = IsThinking
+            IsThinking = IsThinking,
         };
     }
 }

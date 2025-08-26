@@ -187,12 +187,13 @@ public class LlmProviderConfiguration
     /// <summary>
     /// Model preferences for different operations
     /// </summary>
-    public Dictionary<string, string> ModelPreferences { get; set; } = new()
-    {
-        ["strategy_analysis"] = "gpt-4o-mini",
-        ["segmentation"] = "gpt-4o-mini",
-        ["quality_validation"] = "gpt-4o-mini"
-    };
+    public Dictionary<string, string> ModelPreferences { get; set; } =
+        new()
+        {
+            ["strategy_analysis"] = "gpt-4o-mini",
+            ["segmentation"] = "gpt-4o-mini",
+            ["quality_validation"] = "gpt-4o-mini",
+        };
 
     /// <summary>
     /// Maximum retries for failed LLM calls

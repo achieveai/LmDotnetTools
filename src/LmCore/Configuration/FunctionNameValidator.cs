@@ -13,13 +13,19 @@ public static class FunctionNameValidator
     /// Names must contain only letters (a-z, A-Z), numbers (0-9), underscores (_), or hyphens (-).
     /// Maximum length is 64 characters.
     /// </summary>
-    private static readonly Regex ValidNamePattern = new(@"^[a-zA-Z0-9_-]{1,64}$", RegexOptions.Compiled);
+    private static readonly Regex ValidNamePattern = new(
+        @"^[a-zA-Z0-9_-]{1,64}$",
+        RegexOptions.Compiled
+    );
 
     /// <summary>
     /// Regular expression pattern for valid function name prefixes.
     /// Prefixes follow the same rules as function names but should be shorter to leave room for the actual function name.
     /// </summary>
-    private static readonly Regex ValidPrefixPattern = new(@"^[a-zA-Z0-9_-]{1,32}$", RegexOptions.Compiled);
+    private static readonly Regex ValidPrefixPattern = new(
+        @"^[a-zA-Z0-9_-]{1,32}$",
+        RegexOptions.Compiled
+    );
 
     /// <summary>
     /// Maximum allowed length for a complete function name (including prefix and separator).
@@ -70,8 +76,8 @@ public static class FunctionNameValidator
         if (functionName.Length > MaxFunctionNameLength)
             return $"Function name '{functionName}' exceeds maximum length of {MaxFunctionNameLength} characters.";
 
-        return $"Function name '{functionName}' contains invalid characters. " +
-               "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
+        return $"Function name '{functionName}' contains invalid characters. "
+            + "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
     }
 
     /// <summary>
@@ -85,11 +91,11 @@ public static class FunctionNameValidator
             return "Prefix cannot be null or empty.";
 
         if (prefix.Length > MaxPrefixLength)
-            return $"Prefix '{prefix}' exceeds recommended maximum length of {MaxPrefixLength} characters. " +
-                   $"This may not leave enough room for function names (total limit is {MaxFunctionNameLength} characters).";
+            return $"Prefix '{prefix}' exceeds recommended maximum length of {MaxPrefixLength} characters. "
+                + $"This may not leave enough room for function names (total limit is {MaxFunctionNameLength} characters).";
 
-        return $"Prefix '{prefix}' contains invalid characters. " +
-               "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
+        return $"Prefix '{prefix}' contains invalid characters. "
+            + "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
     }
 
     /// <summary>
@@ -99,7 +105,11 @@ public static class FunctionNameValidator
     /// <param name="functionName">The function name part</param>
     /// <param name="separator">The separator between prefix and name (default is "__")</param>
     /// <returns>True if the complete name is valid, false otherwise</returns>
-    public static bool IsValidPrefixedFunctionName(string prefix, string functionName, string separator = "__")
+    public static bool IsValidPrefixedFunctionName(
+        string prefix,
+        string functionName,
+        string separator = "__"
+    )
     {
         var completeName = $"{prefix}{separator}{functionName}";
         return IsValidFunctionName(completeName);

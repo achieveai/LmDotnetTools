@@ -1,14 +1,14 @@
-using AchieveAi.LmDotnetTools.LmTestUtils;
+using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
-using Xunit;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
-using System.Text.Encodings.Web;
 using System.Text.Unicode;
-using System.Text;
-using System.Linq;
-using System.Net.Http;
+using AchieveAi.LmDotnetTools.LmTestUtils;
+using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests;
 
@@ -22,7 +22,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_BasicAnthropicResponse_ReturnsValidJson()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithAnthropicMessage("Hello from Claude!", "claude-3-sonnet-20240229", 10, 15)
             .Build();
 
@@ -31,7 +32,8 @@ public class MockHttpHandlerBuilderTests
         // Act
         var response = await httpClient.PostAsync(
             "https://api.anthropic.com/v1/messages",
-            new StringContent("""{"model": "claude-3-sonnet-20240229", "messages": []}"""));
+            new StringContent("""{"model": "claude-3-sonnet-20240229", "messages": []}""")
+        );
 
         // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -42,18 +44,27 @@ public class MockHttpHandlerBuilderTests
         var json = JsonDocument.Parse(responseBody);
         Assert.Equal("message", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("assistant", json.RootElement.GetProperty("role").GetString());
-        Assert.Equal("Hello from Claude!",
-            json.RootElement.GetProperty("content")[0].GetProperty("text").GetString());
+        Assert.Equal(
+            "Hello from Claude!",
+            json.RootElement.GetProperty("content")[0].GetProperty("text").GetString()
+        );
         Assert.Equal("claude-3-sonnet-20240229", json.RootElement.GetProperty("model").GetString());
-        Assert.Equal(10, json.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32());
-        Assert.Equal(15, json.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32());
+        Assert.Equal(
+            10,
+            json.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32()
+        );
+        Assert.Equal(
+            15,
+            json.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32()
+        );
     }
 
     [Fact]
     public async Task MockHttpHandlerBuilder_BasicOpenAIResponse_ReturnsValidJson()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithOpenAIMessage("Hello from GPT!", "gpt-4", 12, 18)
             .Build();
 
@@ -62,7 +73,8 @@ public class MockHttpHandlerBuilderTests
         // Act
         var response = await httpClient.PostAsync(
             "https://api.openai.com/v1/chat/completions",
-            new StringContent("""{"model": "gpt-4", "messages": []}"""));
+            new StringContent("""{"model": "gpt-4", "messages": []}""")
+        );
 
         // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -72,30 +84,47 @@ public class MockHttpHandlerBuilderTests
 
         var json = JsonDocument.Parse(responseBody);
         Assert.Equal("chat.completion", json.RootElement.GetProperty("object").GetString());
-        Assert.Equal("Hello from GPT!",
-            json.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
+        Assert.Equal(
+            "Hello from GPT!",
+            json.RootElement.GetProperty("choices")[0]
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString()
+        );
         Assert.Equal("gpt-4", json.RootElement.GetProperty("model").GetString());
-        Assert.Equal(12, json.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32());
-        Assert.Equal(18, json.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32());
-        Assert.Equal(30, json.RootElement.GetProperty("usage").GetProperty("total_tokens").GetInt32());
+        Assert.Equal(
+            12,
+            json.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32()
+        );
+        Assert.Equal(
+            18,
+            json.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32()
+        );
+        Assert.Equal(
+            30,
+            json.RootElement.GetProperty("usage").GetProperty("total_tokens").GetInt32()
+        );
     }
 
     [Fact]
     public async Task MockHttpHandlerBuilder_RequestCapture_CapturesRequestDetails()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .CaptureRequests(out var capture)
             .RespondWithAnthropicMessage("Test response")
             .Build();
 
         var httpClient = new HttpClient(handler);
-        var requestContent = """{"model": "claude-3-sonnet-20240229", "messages": [{"role": "user", "content": "Hello"}]}""";
+        var requestContent =
+            """{"model": "claude-3-sonnet-20240229", "messages": [{"role": "user", "content": "Hello"}]}""";
 
         // Act
         await httpClient.PostAsync(
             "https://api.anthropic.com/v1/messages",
-            new StringContent(requestContent, System.Text.Encoding.UTF8, "application/json"));
+            new StringContent(requestContent, System.Text.Encoding.UTF8, "application/json")
+        );
 
         // Assert
         Assert.Equal(1, capture.RequestCount);
@@ -112,7 +141,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_ErrorResponse_ReturnsSpecifiedError()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithError(HttpStatusCode.BadRequest, """{"error": "Invalid request"}""")
             .Build();
 
@@ -121,7 +151,8 @@ public class MockHttpHandlerBuilderTests
         // Act
         var response = await httpClient.PostAsync(
             "https://api.anthropic.com/v1/messages",
-            new StringContent("{}"));
+            new StringContent("{}")
+        );
 
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -134,7 +165,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_RetryScenario_FailsThenSucceeds()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RetryScenario(2, HttpStatusCode.InternalServerError)
             .Build();
 
@@ -157,18 +189,22 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_RequestCapture_ExtractsAnthropicDetails()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .CaptureRequests(out var capture)
             .RespondWithAnthropicMessage("Test response")
             .Build();
 
         var httpClient = new HttpClient(handler);
 
-        var requestBody = @"{""model"":""claude-3-sonnet-20240229"",""messages"":[{""role"":""user"",""content"":""Hello""}],""max_tokens"":100}";
+        var requestBody =
+            @"{""model"":""claude-3-sonnet-20240229"",""messages"":[{""role"":""user"",""content"":""Hello""}],""max_tokens"":100}";
 
         // Act
-        var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(requestBody, Encoding.UTF8, "application/json"));
+        var response = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(requestBody, Encoding.UTF8, "application/json")
+        );
 
         // Assert
         Assert.True(response.IsSuccessStatusCode);
@@ -192,16 +228,22 @@ public class MockHttpHandlerBuilderTests
     {
         // Arrange
         var toolInputData = new { relative_path = "." };
-        var handler = MockHttpHandlerBuilder.Create()
-            .RespondWithToolUse("python_mcp-list_directory", toolInputData,
-                "I'll help you list the files in the root directory.")
+        var handler = MockHttpHandlerBuilder
+            .Create()
+            .RespondWithToolUse(
+                "python_mcp-list_directory",
+                toolInputData,
+                "I'll help you list the files in the root directory."
+            )
             .Build();
 
         var httpClient = new HttpClient(handler);
 
         // Act
-        var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent("{}", Encoding.UTF8, "application/json"));
+        var response = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent("{}", Encoding.UTF8, "application/json")
+        );
 
         // Assert
         Assert.True(response.IsSuccessStatusCode);
@@ -234,7 +276,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_MultipleToolUse_GeneratesValidResponse()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithMultipleToolUse(
                 ("python_mcp-list_directory", new { relative_path = "." }),
                 ("python_mcp-get_directory_tree", new { max_depth = 2 })
@@ -244,8 +287,10 @@ public class MockHttpHandlerBuilderTests
         var httpClient = new HttpClient(handler);
 
         // Act
-        var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent("{}", Encoding.UTF8, "application/json"));
+        var response = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent("{}", Encoding.UTF8, "application/json")
+        );
 
         // Assert
         Assert.True(response.IsSuccessStatusCode);
@@ -273,7 +318,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_ConditionalToolResponse_WorksCorrectly()
     {
         // Arrange - setup a scenario where first request gets tool use, second gets final response
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WhenFirstToolRequest("list_directory", new { relative_path = "." })
             .WhenToolResults("Based on the directory listing, I found 5 files.")
             .Build();
@@ -281,14 +327,24 @@ public class MockHttpHandlerBuilderTests
         var httpClient = new HttpClient(handler);
 
         // Act 1 - First request (should get tool use)
-        var firstResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""List files using list_directory""}]}",
-                Encoding.UTF8, "application/json"));
+        var firstResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""List files using list_directory""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Act 2 - Second request with tool results (should get final response)
-        var secondResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""List files""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_123"",""name"":""list_directory"",""input"":{}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_123"",""content"":""file1.txt\nfile2.txt""}]}]}",
-                Encoding.UTF8, "application/json"));
+        var secondResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""List files""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_123"",""name"":""list_directory"",""input"":{}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_123"",""content"":""file1.txt\nfile2.txt""}]}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Assert
         Assert.True(firstResponse.IsSuccessStatusCode);
@@ -313,15 +369,18 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_PythonMcpTool_GeneratesCorrectFormat()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .RespondWithPythonMcpTool("list_directory", new { relative_path = "code" })
             .Build();
 
         var httpClient = new HttpClient(handler);
 
         // Act
-        var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent("{}", Encoding.UTF8, "application/json"));
+        var response = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent("{}", Encoding.UTF8, "application/json")
+        );
 
         // Assert
         Assert.True(response.IsSuccessStatusCode);
@@ -354,7 +413,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_MultiConditionalResponse_WorksCorrectly()
     {
         // Arrange - setup multiple conditions with different responses
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithConditions()
             .When((req, idx) => req.IsFirstMessage(idx), @"{""response"":""first""}")
             .When((req, idx) => req.IsSecondMessage(idx), @"{""response"":""second""}")
@@ -365,24 +425,44 @@ public class MockHttpHandlerBuilderTests
         var httpClient = new HttpClient(handler);
 
         // Act 1 - First request
-        var firstResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""}]}",
-                Encoding.UTF8, "application/json"));
+        var firstResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""Hello""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
-        // Act 2 - Second request  
-        var secondResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""World""}]}",
-                Encoding.UTF8, "application/json"));
+        // Act 2 - Second request
+        var secondResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""World""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Act 3 - Request with tool results
-        var toolResultResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""result""}]}]}",
-                Encoding.UTF8, "application/json"));
+        var toolResultResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""result""}]}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Act 4 - Request that doesn't match any condition
-        var defaultResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""assistant"",""content"":""No match""}]}",
-                Encoding.UTF8, "application/json"));
+        var defaultResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""assistant"",""content"":""No match""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Assert
         Assert.True(firstResponse.IsSuccessStatusCode);
@@ -408,7 +488,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_PredefinedConditions_WorkCorrectly()
     {
         // Arrange - test various predefined conditions
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .CaptureRequests(out var capture)
             .WhenHasToolResults()
             .ThenRespondWith(@"{""type"":""tool_response""}")
@@ -424,24 +505,44 @@ public class MockHttpHandlerBuilderTests
         var httpClient = new HttpClient(handler);
 
         // Act 1 - Request with tool results
-        var toolResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""data""}]}]}",
-                Encoding.UTF8, "application/json"));
+        var toolResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""123"",""content"":""data""}]}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
-        // Act 2 - Request mentioning weather  
-        var weatherResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""What's the weather like?""}]}",
-                Encoding.UTF8, "application/json"));
+        // Act 2 - Request mentioning weather
+        var weatherResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""What's the weather like?""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Act 3 - Request with 2 messages
-        var twoMessageResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""},{""role"":""assistant"",""content"":""Hi""}]}",
-                Encoding.UTF8, "application/json"));
+        var twoMessageResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""Hello""},{""role"":""assistant"",""content"":""Hi""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Act 4 - Request with assistant role
-        var assistantResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""assistant"",""content"":""I am assistant""}]}",
-                Encoding.UTF8, "application/json"));
+        var assistantResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""assistant"",""content"":""I am assistant""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Assert
         var toolJson = await toolResponse.Content.ReadAsStringAsync();
@@ -463,11 +564,21 @@ public class MockHttpHandlerBuilderTests
     {
         // Arrange - setup stateful conversation tracking
         var state = new ConversationState();
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .WithState(state)
-            .WhenStateful((req, idx, s) => s.RequestCount == 1, @"{""response"":""first_stateful""}")
-            .WhenStateful((req, idx, s) => s.RequestCount == 2, @"{""response"":""second_stateful""}")
-            .WhenStateful((req, idx, s) => s.RequestCount >= 3, @"{""response"":""subsequent_stateful""}")
+            .WhenStateful(
+                (req, idx, s) => s.RequestCount == 1,
+                @"{""response"":""first_stateful""}"
+            )
+            .WhenStateful(
+                (req, idx, s) => s.RequestCount == 2,
+                @"{""response"":""second_stateful""}"
+            )
+            .WhenStateful(
+                (req, idx, s) => s.RequestCount >= 3,
+                @"{""response"":""subsequent_stateful""}"
+            )
             .Build();
 
         var httpClient = new HttpClient(handler);
@@ -476,9 +587,14 @@ public class MockHttpHandlerBuilderTests
         var responses = new List<HttpResponseMessage>();
         for (int i = 0; i < 4; i++)
         {
-            var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-                new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Hello""}]}",
-                    Encoding.UTF8, "application/json"));
+            var response = await httpClient.PostAsync(
+                "https://api.anthropic.com/v1/messages",
+                new StringContent(
+                    @"{""messages"":[{""role"":""user"",""content"":""Hello""}]}",
+                    Encoding.UTF8,
+                    "application/json"
+                )
+            );
             responses.Add(response);
         }
 
@@ -504,7 +620,8 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_RequestExtensions_WorkCorrectly()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .CaptureRequests(out var capture)
             .WithConditions()
             .When((req, idx) => req.MentionsTool("calculator"), @"{""tool"":""calculator""}")
@@ -515,13 +632,20 @@ public class MockHttpHandlerBuilderTests
         var httpClient = new HttpClient(handler);
 
         // Act 1 - Anthropic request
-        var anthropicResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""model"":""claude-3""}", Encoding.UTF8, "application/json"));
+        var anthropicResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(@"{""model"":""claude-3""}", Encoding.UTF8, "application/json")
+        );
 
         // Act 2 - Request mentioning calculator tool
-        var calculatorResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Use calculator tool""}]}",
-                Encoding.UTF8, "application/json"));
+        var calculatorResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""Use calculator tool""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Assert
         var anthropicJson = await anthropicResponse.Content.ReadAsStringAsync();
@@ -538,25 +662,44 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_ComplexConversationFlow_WorksCorrectly()
     {
         // Arrange - setup complex conversation with tool use → tool result → final response
-        var handler = MockHttpHandlerBuilder.Create()
+        var handler = MockHttpHandlerBuilder
+            .Create()
             .CaptureRequests(out var capture)
             .WithConditions()
-            .When((req, idx) => req.HasToolResults(), @"{""type"":""message"",""role"":""assistant"",""content"":[{""type"":""text"",""text"":""Based on the weather data, it's sunny in San Francisco!""}]}")
-            .When((req, idx) => req.IsFirstMessage(idx), @"{""type"":""message"",""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_1"",""name"":""get_weather"",""input"":{""location"":""San Francisco""}}]}")
-            .Otherwise(@"{""type"":""message"",""role"":""assistant"",""content"":[{""type"":""text"",""text"":""Default response""}]}")
+            .When(
+                (req, idx) => req.HasToolResults(),
+                @"{""type"":""message"",""role"":""assistant"",""content"":[{""type"":""text"",""text"":""Based on the weather data, it's sunny in San Francisco!""}]}"
+            )
+            .When(
+                (req, idx) => req.IsFirstMessage(idx),
+                @"{""type"":""message"",""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_1"",""name"":""get_weather"",""input"":{""location"":""San Francisco""}}]}"
+            )
+            .Otherwise(
+                @"{""type"":""message"",""role"":""assistant"",""content"":[{""type"":""text"",""text"":""Default response""}]}"
+            )
             .Build();
 
         var httpClient = new HttpClient(handler);
 
         // Act 1 - Initial user request (should get tool use)
-        var initialResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""What's the weather in San Francisco?""}]}",
-                Encoding.UTF8, "application/json"));
+        var initialResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""What's the weather in San Francisco?""}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Act 2 - Follow-up with tool results (should get final response)
-        var followupResponse = await httpClient.PostAsync("https://api.anthropic.com/v1/messages",
-            new StringContent(@"{""messages"":[{""role"":""user"",""content"":""Weather""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_1"",""name"":""get_weather"",""input"":{""location"":""San Francisco""}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_1"",""content"":""Sunny, 72°F""}]}]}",
-                Encoding.UTF8, "application/json"));
+        var followupResponse = await httpClient.PostAsync(
+            "https://api.anthropic.com/v1/messages",
+            new StringContent(
+                @"{""messages"":[{""role"":""user"",""content"":""Weather""},{""role"":""assistant"",""content"":[{""type"":""tool_use"",""id"":""tool_1"",""name"":""get_weather"",""input"":{""location"":""San Francisco""}}]},{""role"":""user"",""content"":[{""type"":""tool_result"",""tool_use_id"":""tool_1"",""content"":""Sunny, 72°F""}]}]}",
+                Encoding.UTF8,
+                "application/json"
+            )
+        );
 
         // Assert
         Assert.True(initialResponse.IsSuccessStatusCode);

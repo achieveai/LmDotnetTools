@@ -41,9 +41,10 @@ public record CircuitBreakerConfiguration
     /// </summary>
     [JsonPropertyName("error_type_thresholds")]
     public ImmutableDictionary<string, int> ErrorTypeThresholds { get; init; } =
-      ImmutableDictionary.Create<string, int>()
-        .Add("401", 3)  // Auth errors fail faster
-        .Add("503", 5); // Service unavailable uses default
+        ImmutableDictionary
+            .Create<string, int>()
+            .Add("401", 3) // Auth errors fail faster
+            .Add("503", 5); // Service unavailable uses default
 }
 
 /// <summary>
@@ -92,17 +93,18 @@ public record RetryConfiguration
     /// </summary>
     [JsonPropertyName("non_retryable_errors")]
     public ImmutableList<string> NonRetryableErrors { get; init; } =
-      ImmutableList.Create("401", "400", "403");
+        ImmutableList.Create("401", "400", "403");
 
     /// <summary>
     /// Different retry counts for different error types.
     /// </summary>
     [JsonPropertyName("error_type_retries")]
     public ImmutableDictionary<string, int> ErrorTypeRetries { get; init; } =
-      ImmutableDictionary.Create<string, int>()
-        .Add("429", 5)  // Rate limiting gets more retries
-        .Add("503", 3)  // Service unavailable
-        .Add("timeout", 3);
+        ImmutableDictionary
+            .Create<string, int>()
+            .Add("429", 5) // Rate limiting gets more retries
+            .Add("503", 3) // Service unavailable
+            .Add("timeout", 3);
 }
 
 /// <summary>
@@ -129,7 +131,7 @@ public enum CircuitBreakerStateEnum
     /// Success transitions to Closed.
     /// Failure transitions back to Open.
     /// </summary>
-    HalfOpen
+    HalfOpen,
 }
 
 /// <summary>
@@ -178,13 +180,13 @@ public record ErrorMetrics
     /// Total number of errors by type.
     /// </summary>
     public ImmutableDictionary<string, int> ErrorCounts { get; init; } =
-      ImmutableDictionary<string, int>.Empty;
+        ImmutableDictionary<string, int>.Empty;
 
     /// <summary>
     /// Circuit breaker state duration tracking.
     /// </summary>
     public ImmutableDictionary<CircuitBreakerStateEnum, TimeSpan> StateDurations { get; init; } =
-      ImmutableDictionary<CircuitBreakerStateEnum, TimeSpan>.Empty;
+        ImmutableDictionary<CircuitBreakerStateEnum, TimeSpan>.Empty;
 
     /// <summary>
     /// Fallback usage frequency.
@@ -194,8 +196,7 @@ public record ErrorMetrics
     /// <summary>
     /// Recovery time measurements in milliseconds.
     /// </summary>
-    public ImmutableList<double> RecoveryTimes { get; init; } =
-      ImmutableList<double>.Empty;
+    public ImmutableList<double> RecoveryTimes { get; init; } = ImmutableList<double>.Empty;
 
     /// <summary>
     /// API response time percentiles.
@@ -379,7 +380,7 @@ public enum ErrorType
     /// <summary>
     /// Unknown or generic error.
     /// </summary>
-    Unknown
+    Unknown,
 }
 
 /// <summary>
@@ -407,7 +408,7 @@ public record RetryContext
     /// Original request parameters (preserved across retries).
     /// </summary>
     public ImmutableDictionary<string, object> RequestParameters { get; init; } =
-      ImmutableDictionary<string, object>.Empty;
+        ImmutableDictionary<string, object>.Empty;
 
     /// <summary>
     /// Total time spent on all attempts so far.
