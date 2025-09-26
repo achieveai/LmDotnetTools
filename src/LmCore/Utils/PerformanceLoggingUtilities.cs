@@ -485,7 +485,9 @@ public static class PerformanceLoggingUtilities
         public void Dispose()
         {
             if (_disposed)
+            {
                 return;
+            }
 
             _totalStopwatch.Stop();
 
@@ -644,7 +646,9 @@ public static class PerformanceLoggingUtilities
         public void Dispose()
         {
             if (_disposed)
+            {
                 return;
+            }
 
             _stopwatch.Stop();
             _logger.Log(

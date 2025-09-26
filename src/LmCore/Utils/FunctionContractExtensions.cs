@@ -239,7 +239,9 @@ public static class FunctionContractMarkdownExtensions
     private static object CreateExampleValueFromSchema(JsonSchemaObject schema)
     {
         if (schema == null)
+        {
             return "value";
+        }
 
         switch (schema.Type.GetTypeString())
         {
@@ -303,7 +305,9 @@ public static class FunctionContractMarkdownExtensions
     private static object CreateExampleValueFromProperty(JsonSchemaObject schemaObject)
     {
         if (schemaObject == null)
+        {
             return "value";
+        }
 
         switch (schemaObject.Type.GetTypeString())
         {

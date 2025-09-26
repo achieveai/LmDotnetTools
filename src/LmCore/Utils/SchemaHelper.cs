@@ -22,7 +22,7 @@ public static class SchemaHelper
     /// Cache to store already generated schema objects keyed by .NET type.
     /// Creation can be expensive, so we compute once and reuse.
     /// </summary>
-    private static readonly Dictionary<Type, JsonSchemaObject> _schemaCache = new();
+    private static readonly Dictionary<Type, JsonSchemaObject> _schemaCache = [];
     private static readonly object _lock = new();
 
     /// <summary>
@@ -116,7 +116,9 @@ public static class SchemaHelper
     )
     {
         if (properties == null)
+        {
             return null;
+        }
 
         var transformedProperties = new Dictionary<string, JsonSchemaObject>();
 

@@ -100,7 +100,7 @@ public record OverallStatistics
             : TimeSpan.Zero;
 
     /// <summary>Provider performance breakdown</summary>
-    public Dictionary<string, ProviderSummary> ProviderSummaries { get; init; } = new();
+    public Dictionary<string, ProviderSummary> ProviderSummaries { get; init; } = [];
 }
 
 /// <summary>

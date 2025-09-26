@@ -30,7 +30,7 @@ public record AnthropicResponse
     /// </summary>
     [JsonPropertyName("content")]
     public List<AnthropicResponseContent> Content { get; init; } =
-        new List<AnthropicResponseContent>();
+        [];
 
     /// <summary>
     /// The model that generated the response.
@@ -341,7 +341,7 @@ public record AnthropicToolCallsDelta : AnthropicDelta
     /// </summary>
     [JsonPropertyName("tool_calls")]
     public List<AnthropicDeltaToolCall> ToolCalls { get; init; } =
-        new List<AnthropicDeltaToolCall>();
+        [];
 }
 
 /// <summary>

@@ -28,7 +28,9 @@ public static class HttpRetryHelper
     )
     {
         if (checkDisposed?.Invoke() == true)
+        {
             throw new ObjectDisposedException("Service has been disposed");
+        }
 
         var attempt = 0;
         while (true)
@@ -76,7 +78,9 @@ public static class HttpRetryHelper
     )
     {
         if (checkDisposed?.Invoke() == true)
+        {
             throw new ObjectDisposedException("Service has been disposed");
+        }
 
         var attempt = 0;
         while (true)

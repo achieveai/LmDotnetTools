@@ -11,5 +11,5 @@ public class McpMiddlewareConfiguration
     /// Dictionary of MCP client configurations
     /// </summary>
     [JsonPropertyName("clients")]
-    public Dictionary<string, object> Clients { get; set; } = new();
+    public Dictionary<string, object> Clients { get; set; } = [];
 }

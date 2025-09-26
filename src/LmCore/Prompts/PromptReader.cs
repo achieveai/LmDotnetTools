@@ -42,12 +42,9 @@ public class PromptReader : IPromptReader
     /// <param name="resourceName">The name of the embedded resource.</param>
     public PromptReader(Assembly assembly, string resourceName)
     {
-        using var stream = assembly.GetManifestResourceStream(resourceName);
-        if (stream == null)
-            throw new FileNotFoundException(
+        using var stream = assembly.GetManifestResourceStream(resourceName) ?? throw new FileNotFoundException(
                 $"Resource '{resourceName}' not found in assembly '{assembly.FullName}'."
             );
-
         using var reader = new StreamReader(stream);
         _prompts = PromptReader.ParseYamlFile(reader.ReadToEnd());
     }
@@ -145,11 +142,17 @@ public class PromptReader : IPromptReader
     public Prompt GetPrompt(string promptName, string version = "latest")
     {
         if (!_prompts.TryGetValue(promptName, out Dictionary<string, object>? promptVersions))
+        {
             throw new KeyNotFoundException($"Prompt '{promptName}' not found.");
+        }
+
         if (!promptVersions.TryGetValue(version, out object? promptContent))
+        {
             throw new KeyNotFoundException(
                 $"Version '{version}' not found for prompt '{promptName}'."
             );
+        }
+
         if (promptContent is string)
         {
             return new Prompt(promptName, version, (string)promptContent);

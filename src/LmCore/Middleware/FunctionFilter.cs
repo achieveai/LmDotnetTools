@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -251,11 +248,15 @@ public class FunctionFilter
     private bool MatchesPattern(string text, string pattern)
     {
         if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(pattern))
+        {
             return false;
+        }
 
         // Handle exact match for "*"
         if (pattern == "*")
+        {
             return true;
+        }
 
         // Handle prefix wildcard (e.g., "github__*")
         if (pattern.EndsWith("*") && !pattern.StartsWith("*"))
@@ -264,11 +265,13 @@ public class FunctionFilter
             var matches = text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
             if (matches)
+            {
                 _logger.LogDebug(
                     "Pattern match (prefix): Text={Text}, Pattern={Pattern}",
                     text,
                     pattern
                 );
+            }
 
             return matches;
         }
@@ -280,11 +283,13 @@ public class FunctionFilter
             var matches = text.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
 
             if (matches)
+            {
                 _logger.LogDebug(
                     "Pattern match (suffix): Text={Text}, Pattern={Pattern}",
                     text,
                     pattern
                 );
+            }
 
             return matches;
         }
@@ -296,11 +301,13 @@ public class FunctionFilter
             var matches = text.Contains(middle, StringComparison.OrdinalIgnoreCase);
 
             if (matches)
+            {
                 _logger.LogDebug(
                     "Pattern match (contains): Text={Text}, Pattern={Pattern}",
                     text,
                     pattern
                 );
+            }
 
             return matches;
         }
@@ -309,11 +316,13 @@ public class FunctionFilter
         var exactMatch = string.Equals(text, pattern, StringComparison.OrdinalIgnoreCase);
 
         if (exactMatch)
+        {
             _logger.LogDebug(
                 "Pattern match (exact): Text={Text}, Pattern={Pattern}",
                 text,
                 pattern
             );
+        }
 
         return exactMatch;
     }

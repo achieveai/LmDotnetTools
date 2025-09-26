@@ -1,9 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
-using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -78,18 +76,33 @@ public class OpenClient : BaseHttpService, IOpenClient
     private static string GetProviderName(string baseUrl)
     {
         if (baseUrl.Contains("openrouter.ai"))
+        {
             return "OpenRouter";
+        }
         else if (baseUrl.Contains("api.openai.com"))
+        {
             return "OpenAI";
+        }
         else if (baseUrl.Contains("api.deepinfra.com"))
+        {
             return "DeepInfra";
+        }
         else if (baseUrl.Contains("api.together.xyz"))
+        {
             return "Together";
+        }
         else if (baseUrl.Contains("api.fireworks.ai"))
+        {
             return "Fireworks";
+        }
         else if (baseUrl.Contains("groq.com"))
+        {
             return "Groq";
-        else return baseUrl.Contains("cerebras.ai") ? "Cerebras" : baseUrl.Contains("api.anthropic.com") ? "Anthropic" : "Unknown";
+        }
+        else
+        {
+            return baseUrl.Contains("cerebras.ai") ? "Cerebras" : baseUrl.Contains("api.anthropic.com") ? "Anthropic" : "Unknown";
+        }
     }
 
     public async Task<ChatCompletionResponse> CreateChatCompletionsAsync(

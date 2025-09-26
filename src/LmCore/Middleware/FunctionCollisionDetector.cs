@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text.RegularExpressions;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
 using Microsoft.Extensions.Logging;
@@ -52,7 +49,7 @@ public partial class FunctionCollisionDetector
             var baseName = function.Contract.Name;
             if (!functionGroups.TryGetValue(baseName, out List<FunctionDescriptor>? value))
             {
-                value = new List<FunctionDescriptor>();
+                value = [];
                 functionGroups[baseName] = value;
             }
 
@@ -164,7 +161,9 @@ public partial class FunctionCollisionDetector
     public static string SanitizeName(string name)
     {
         if (string.IsNullOrEmpty(name))
+        {
             return "unknown";
+        }
 
         // Replace invalid characters with underscores
         var sanitized = InvalidCharPattern.Replace(name, "_");
@@ -174,11 +173,15 @@ public partial class FunctionCollisionDetector
 
         // Ensure it doesn't start with a number (OpenAI requirement)
         if (sanitized.Length > 0 && char.IsDigit(sanitized[0]))
+        {
             sanitized = "_" + sanitized;
+        }
 
         // Ensure it's not empty after sanitization
         if (string.IsNullOrEmpty(sanitized))
+        {
             sanitized = "sanitized_function";
+        }
 
         return sanitized;
     }
@@ -199,7 +202,7 @@ public partial class FunctionCollisionDetector
             var baseName = function.Contract.Name;
             if (!functionGroups.TryGetValue(baseName, out List<FunctionDescriptor>? value))
             {
-                value = new List<FunctionDescriptor>();
+                value = [];
                 functionGroups[baseName] = value;
             }
 
@@ -242,7 +245,7 @@ public class CollisionAnalysisReport
     public int TotalFunctions { get; set; }
     public int UniqueNames { get; set; }
     public int CollisionCount { get; set; }
-    public List<CollisionInfo> Collisions { get; set; } = new List<CollisionInfo>();
+    public List<CollisionInfo> Collisions { get; set; } = [];
 }
 
 /// <summary>
@@ -251,6 +254,6 @@ public class CollisionAnalysisReport
 public class CollisionInfo
 {
     public string FunctionName { get; set; } = string.Empty;
-    public List<string> Providers { get; set; } = new List<string>();
+    public List<string> Providers { get; set; } = [];
     public int Count { get; set; }
 }

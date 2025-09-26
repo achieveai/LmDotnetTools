@@ -101,7 +101,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
     public bool CanCreateAgent(string providerName)
     {
         if (string.IsNullOrWhiteSpace(providerName))
+        {
             return false;
+        }
 
         return ProviderCompatibility.ContainsKey(providerName)
             && ProviderCompatibility[providerName] != "Replicate"; // Replicate not supported yet

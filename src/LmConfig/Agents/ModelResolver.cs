@@ -26,7 +26,9 @@ public class ModelResolver : IModelResolver
     )
     {
         if (string.IsNullOrWhiteSpace(modelId))
+        {
             throw new ArgumentException("Model ID cannot be null or empty", nameof(modelId));
+        }
 
         _logger.LogDebug(
             "Resolving provider for model {ModelId} with criteria {Criteria}",
@@ -71,11 +73,15 @@ public class ModelResolver : IModelResolver
     )
     {
         if (string.IsNullOrWhiteSpace(modelId))
+        {
             throw new ArgumentException("Model ID cannot be null or empty", nameof(modelId));
+        }
 
         var model = _config.GetModel(modelId);
         if (model == null)
-            return Array.Empty<ProviderResolution>();
+        {
+            return [];
+        }
 
         criteria ??= ProviderSelectionCriteria.Default;
 
@@ -85,11 +91,15 @@ public class ModelResolver : IModelResolver
         {
             // Check if provider should be excluded
             if (ModelResolver.ShouldExcludeProvider(provider, criteria))
+            {
                 continue;
+            }
 
             // Check if provider is available
             if (!await IsProviderAvailableAsync(provider.Name, cancellationToken))
+            {
                 continue;
+            }
 
             var connection = _config.GetProviderConnection(provider.Name);
             if (connection == null)
@@ -117,11 +127,15 @@ public class ModelResolver : IModelResolver
                 foreach (var subProvider in provider.SubProviders)
                 {
                     if (ModelResolver.ShouldExcludeSubProvider(subProvider, criteria))
+                    {
                         continue;
+                    }
 
                     // Check if sub-provider is available (use main provider's connection)
                     if (!await IsProviderAvailableAsync(provider.Name, cancellationToken))
+                    {
                         continue;
+                    }
 
                     resolutions.Add(
                         new ProviderResolution
@@ -146,11 +160,15 @@ public class ModelResolver : IModelResolver
     )
     {
         if (string.IsNullOrWhiteSpace(providerName))
+        {
             return Task.FromResult(false);
+        }
 
         var connection = _config.GetProviderConnection(providerName);
         if (connection == null)
+        {
             return Task.FromResult(false);
+        }
 
         // Validate the connection configuration
         var validation = connection.Validate();
@@ -187,12 +205,16 @@ public class ModelResolver : IModelResolver
     )
     {
         if (string.IsNullOrWhiteSpace(capability))
+        {
             throw new ArgumentException("Capability cannot be null or empty", nameof(capability));
+        }
 
         var modelsWithCapability = _config.GetModelsWithCapability(capability);
 
         if (criteria == null)
+        {
             return modelsWithCapability;
+        }
 
         // Filter models that have at least one provider matching the criteria
         var filteredModels = new List<ModelConfig>();
@@ -225,7 +247,9 @@ public class ModelResolver : IModelResolver
         {
             var resolution = await ResolveProviderAsync(model.Id, criteria, cancellationToken);
             if (resolution != null)
+            {
                 return resolution;
+            }
         }
 
         return null;
@@ -302,18 +326,24 @@ public class ModelResolver : IModelResolver
     {
         // Check excluded providers
         if (criteria.ExcludeProviders?.Contains(provider.Name) == true)
+        {
             return true;
+        }
 
         // Check include-only providers
         if (
             criteria.IncludeOnlyProviders?.Any() == true
             && !criteria.IncludeOnlyProviders.Contains(provider.Name)
         )
+        {
             return true;
+        }
 
         // Check required tags
         if (criteria.RequiredTags?.Any() == true && !provider.HasAllTags(criteria.RequiredTags))
+        {
             return true;
+        }
 
         // Check cost limits
         return criteria.MaxPromptCostPerMillion.HasValue
@@ -331,14 +361,18 @@ public class ModelResolver : IModelResolver
     {
         // Check excluded providers (sub-provider names)
         if (criteria.ExcludeProviders?.Contains(subProvider.Name) == true)
+        {
             return true;
+        }
 
         // Check include-only providers (sub-provider names)
         if (
             criteria.IncludeOnlyProviders?.Any() == true
             && !criteria.IncludeOnlyProviders.Contains(subProvider.Name)
         )
+        {
             return true;
+        }
 
         // Check cost limits
         return criteria.MaxPromptCostPerMillion.HasValue

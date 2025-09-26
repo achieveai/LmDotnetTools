@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 

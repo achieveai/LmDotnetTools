@@ -67,7 +67,9 @@ public static class McpFunctionCallExtensions
             {
                 var toolAttr = toolMethod.GetCustomAttribute<McpServerToolAttribute>();
                 if (toolAttr == null)
+                {
                     continue;
+                }
 
                 // Create the function contract with class name prefix if there's a name clash
                 var contract = CreateFunctionContractFromToolMethod(toolMethod, toolAttr);

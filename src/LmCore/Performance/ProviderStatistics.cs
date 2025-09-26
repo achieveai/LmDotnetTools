@@ -7,8 +7,8 @@ namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 public class ProviderStatistics
 {
     private readonly object _lock = new();
-    private readonly List<RequestMetrics> _recentMetrics = new();
-    private readonly Dictionary<string, ModelStatistics> _modelStats = new();
+    private readonly List<RequestMetrics> _recentMetrics = [];
+    private readonly Dictionary<string, ModelStatistics> _modelStats = [];
 
     /// <summary>Maximum number of recent metrics to keep in memory</summary>
     public int MaxRecentMetrics { get; init; } = 1000;
@@ -88,7 +88,9 @@ public class ProviderStatistics
     public void RecordMetric(RequestMetrics metric)
     {
         if (metric == null)
+        {
             return;
+        }
 
         lock (_lock)
         {
@@ -96,12 +98,18 @@ public class ProviderStatistics
             TotalRequests++;
 
             if (metric.IsSuccess)
+            {
                 SuccessfulRequests++;
+            }
             else
+            {
                 FailedRequests++;
+            }
 
             if (metric.RetryAttempts > 0)
+            {
                 RetriedRequests++;
+            }
 
             TotalTokensProcessed += metric.Usage?.TotalTokens ?? 0;
             TotalProcessingTime = TotalProcessingTime.Add(metric.Duration);
@@ -245,12 +253,18 @@ public class ModelStatistics
         TotalRequests++;
 
         if (metric.IsSuccess)
+        {
             SuccessfulRequests++;
+        }
         else
+        {
             FailedRequests++;
+        }
 
         if (metric.RetryAttempts > 0)
+        {
             RetriedRequests++;
+        }
 
         TotalTokens += metric.Usage?.TotalTokens ?? 0;
         TotalProcessingTime = TotalProcessingTime.Add(metric.Duration);

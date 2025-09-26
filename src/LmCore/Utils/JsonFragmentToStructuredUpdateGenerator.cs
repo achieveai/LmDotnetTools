@@ -11,7 +11,7 @@ public class JsonFragmentToStructuredUpdateGenerator
 {
     private readonly StringBuilder _buffer = new();
     private readonly Stack<Frame> _contextStack = new();
-    private readonly List<char> _charBuffer = new();
+    private readonly List<char> _charBuffer = [];
     private ValueBuffer _currentValue = new();
     private bool _expectingPropertyName = false;
     private bool _afterColon = false;
@@ -714,7 +714,9 @@ public class JsonFragmentToStructuredUpdateGenerator
     private IEnumerable<JsonFragmentUpdate> EmitCurrentToken()
     {
         if (_currentString == null)
+        {
             yield break;
+        }
 
         var token = _currentString.ToString().Trim();
 

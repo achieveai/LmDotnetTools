@@ -1,5 +1,4 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 
@@ -53,7 +52,7 @@ public record RequestMetrics
         StatusCode >= 200 && StatusCode < 300 && string.IsNullOrEmpty(ErrorMessage);
 
     /// <summary>Additional provider-specific properties</summary>
-    public Dictionary<string, object> AdditionalProperties { get; init; } = new();
+    public Dictionary<string, object> AdditionalProperties { get; init; } = [];
 
     /// <summary>Creates a new RequestMetrics instance with start time set to now</summary>
     /// <param name="provider">Provider name</param>

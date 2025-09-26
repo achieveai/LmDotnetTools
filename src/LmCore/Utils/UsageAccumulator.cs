@@ -34,7 +34,9 @@ public class UsageAccumulator
     public bool AddUsageFromMessageMetadata(IMessage message)
     {
         if (message.Metadata == null || !message.Metadata.TryGetValue("usage", out object? usage))
+        {
             return false;
+        }
 
         // Store context for the usage message
         _fromAgent = message.FromAgent;
@@ -183,10 +185,14 @@ public class UsageAccumulator
     )
     {
         if (first == null || first.IsEmpty)
+        {
             return second ?? ImmutableDictionary<string, object?>.Empty;
+        }
 
         if (second == null || second.IsEmpty)
+        {
             return first;
+        }
 
         // Create a mutable dictionary to merge properties
         var merged = first.ToBuilder();

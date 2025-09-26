@@ -1,7 +1,3 @@
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
-
 namespace AchieveAi.LmDotnetTools.LmConfig.Http;
 
 /// <summary>
@@ -31,7 +27,9 @@ public sealed class RetryHandler : DelegatingHandler
                 var response = await base.SendAsync(request, cancellationToken)
                     .ConfigureAwait(false);
                 if ((int)response.StatusCode < 500 || attempt == _maxAttempts)
+                {
                     return response;
+                }
             }
             catch when (attempt < _maxAttempts)
             {

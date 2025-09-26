@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using Microsoft.Extensions.Caching.Memory;
@@ -39,7 +38,9 @@ public class UsageCache : IDisposable
     public Usage? TryGetUsage(string completionId)
     {
         if (string.IsNullOrEmpty(completionId) || _disposed)
+        {
             return null;
+        }
 
         if (_cache.TryGetValue(completionId, out Usage? cachedUsage) && cachedUsage != null)
         {
@@ -63,7 +64,9 @@ public class UsageCache : IDisposable
     public void SetUsage(string completionId, Usage usage)
     {
         if (string.IsNullOrEmpty(completionId) || usage == null || _disposed)
+        {
             return;
+        }
 
         // Store with TTL, mark as not cached in stored version (cache flag is added on retrieval)
         var storedUsage = usage with
@@ -92,7 +95,9 @@ public class UsageCache : IDisposable
     public void RemoveUsage(string completionId)
     {
         if (string.IsNullOrEmpty(completionId) || _disposed)
+        {
             return;
+        }
 
         _cache.Remove(completionId);
     }
@@ -103,7 +108,9 @@ public class UsageCache : IDisposable
     public void Clear()
     {
         if (_disposed)
+        {
             return;
+        }
 
         // MemoryCache doesn't have a direct Clear method, so we create a new one
         // This is a simple implementation - in production you might want to track keys

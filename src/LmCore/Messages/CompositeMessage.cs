@@ -15,7 +15,7 @@ public class CompositeMessage : IMessage
 
     public ImmutableDictionary<string, object>? Metadata { get; init; }
 
-    public ImmutableList<IMessage> Messages { get; init; } = ImmutableList<IMessage>.Empty;
+    public ImmutableList<IMessage> Messages { get; init; } = [];
 }
 
 public class CompositeMessageJsonConverter : ShadowPropertiesJsonConverter<CompositeMessage>

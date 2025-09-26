@@ -1,4 +1,3 @@
-using System.Net.Http;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Http;

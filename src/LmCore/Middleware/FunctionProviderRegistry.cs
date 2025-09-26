@@ -1,5 +1,3 @@
-using Microsoft.Extensions.DependencyInjection;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
@@ -8,9 +6,9 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public class FunctionProviderRegistry : IFunctionProviderRegistry
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly List<IFunctionProvider> _providers = new();
-    private readonly List<Func<IServiceProvider, IFunctionProvider>> _factories = new();
-    private readonly List<Type> _providerTypes = new();
+    private readonly List<IFunctionProvider> _providers = [];
+    private readonly List<Func<IServiceProvider, IFunctionProvider>> _factories = [];
+    private readonly List<Type> _providerTypes = [];
 
     public FunctionProviderRegistry(IServiceProvider serviceProvider)
     {

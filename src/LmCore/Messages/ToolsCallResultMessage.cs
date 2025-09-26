@@ -23,7 +23,7 @@ public record ToolsCallResultMessage : IMessage
 
     [JsonPropertyName("tool_call_results")]
     public ImmutableList<ToolCallResult> ToolCallResults { get; init; } =
-        ImmutableList<ToolCallResult>.Empty;
+        [];
 
     public static string? GetText() => null;
 

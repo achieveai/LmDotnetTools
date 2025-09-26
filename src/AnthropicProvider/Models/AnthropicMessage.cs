@@ -18,7 +18,7 @@ public record AnthropicMessage
     /// The content of the message, which can be text or other content types.
     /// </summary>
     [JsonPropertyName("content")]
-    public List<AnthropicContent> Content { get; init; } = new List<AnthropicContent>();
+    public List<AnthropicContent> Content { get; init; } = [];
 }
 
 /// <summary>

@@ -27,7 +27,7 @@ public sealed class PerformanceLogger : IDisposable
         _operationName = operationName;
         _logLevel = logLevel;
         _eventId = eventId;
-        _properties = new Dictionary<string, object?>();
+        _properties = [];
         _stopwatch = Stopwatch.StartNew();
     }
 
@@ -121,7 +121,9 @@ public sealed class PerformanceLogger : IDisposable
     public void Dispose()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _stopwatch.Stop();
 
@@ -223,7 +225,9 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     public void RecordFirstToken()
     {
         if (FirstTokenReceived)
+        {
             return;
+        }
 
         FirstTokenReceived = true;
         var timeToFirstToken = _stopwatch.ElapsedMilliseconds;
@@ -249,7 +253,9 @@ public sealed class TimeToFirstTokenLogger : IDisposable
     public void Dispose()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _stopwatch.Stop();
         _disposed = true;

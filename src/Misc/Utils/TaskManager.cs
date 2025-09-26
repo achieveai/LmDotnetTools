@@ -50,8 +50,8 @@ public class TaskManager
     public class BulkTaskItem
     {
         public string Task { get; set; } = string.Empty;
-        public List<string> SubTasks { get; set; } = new();
-        public List<string> Notes { get; set; } = new();
+        public List<string> SubTasks { get; set; } = [];
+        public List<string> Notes { get; set; } = [];
     }
 
 
@@ -89,13 +89,13 @@ public class TaskManager
         public TaskStatus Status { get; set; } = TaskStatus.NotStarted;
 
         [JsonPropertyName("notes")]
-        public List<string> Notes { get; } = new();
+        public List<string> Notes { get; } = [];
 
         [JsonPropertyName("parentId")]
         public int? ParentId { get; set; }
 
         [JsonPropertyName("subTasks")]
-        public List<PrivateTaskItem> SubTasks { get; init; } = new();
+        public List<PrivateTaskItem> SubTasks { get; init; } = [];
 
         [JsonPropertyName("nextSubTaskId")]
         public int NextSubTaskId { get; set; } = 1;
@@ -116,7 +116,7 @@ public class TaskManager
     private sealed record ManagerState
     {
         [JsonPropertyName("rootTasks")]
-        public List<PrivateTaskItem> RootTasks { get; set; } = new();
+        public List<PrivateTaskItem> RootTasks { get; set; } = [];
 
         [JsonPropertyName("nextId")]
         public int NextId { get; set; } = 1;
@@ -367,11 +367,15 @@ Examples:
         // Find target task using string ID
         var (targetTask, error) = FindTaskByStringId(taskId);
         if (targetTask == null)
+        {
             return error!;
+        }
 
         // Update status
         if (!TryParseStatus(status, out var newStatus))
+        {
             return "Error: Invalid status. Use: not started, in progress, completed, removed.";
+        }
 
         targetTask.Status = newStatus;
 
@@ -420,7 +424,9 @@ Examples:
             {
                 subtask = task.SubTasks.FirstOrDefault(st => st.Id == subtaskId.Value);
                 if (subtask == null)
+                {
                     return $"Error: Subtask {subtaskId.Value} not found under task {taskId}.";
+                }
 
                 task.SubTasks.Remove(subtask);
             }
@@ -453,7 +459,9 @@ Examples:
     {
         var (task, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
         if (task == null)
+        {
             return error!;
+        }
 
         return TaskManager.FormatTaskDetails(task, taskRef);
     }
@@ -483,11 +491,15 @@ Examples:
         [Description("Note text to add")] string noteText = "")
     {
         if (string.IsNullOrWhiteSpace(noteText))
+        {
             return "Error: Note text cannot be empty.";
+        }
 
         var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
         if (targetTask == null)
+        {
             return error!;
+        }
 
         lock (targetTask.Notes)
         {
@@ -509,16 +521,23 @@ Examples:
         [Description("New text to replace the existing note")] string noteText = "")
     {
         if (string.IsNullOrWhiteSpace(noteText))
+        {
             return "Error: Note text cannot be empty.";
+        }
 
         var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
         if (targetTask == null)
+        {
             return error!;
+        }
 
         lock (targetTask.Notes)
         {
             if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
+            {
                 return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+            }
+
             targetTask.Notes[noteIndex - 1] = noteText.Trim();
         }
         return $"Updated note #{noteIndex} on {taskRef}.";
@@ -537,12 +556,17 @@ Examples:
     {
         var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
         if (targetTask == null)
+        {
             return error!;
+        }
 
         lock (targetTask.Notes)
         {
             if (noteIndex < 1 || noteIndex > targetTask.Notes.Count)
+            {
                 return $"Error: Note index {noteIndex} out of range. {taskRef} has {targetTask.Notes.Count} note(s).";
+            }
+
             var deletedNote = targetTask.Notes[noteIndex - 1];
             targetTask.Notes.RemoveAt(noteIndex - 1);
             return $"Deleted note #{noteIndex} from {taskRef}: \"{deletedNote}\".";
@@ -561,13 +585,18 @@ Examples:
         // Find target task using helper method
         var (targetTask, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
         if (targetTask == null)
+        {
             return error!;
+        }
 
         List<string> notesCopy;
         lock (targetTask.Notes)
         {
             if (targetTask.Notes.Count == 0)
+            {
                 return $"{taskRef} has no notes.";
+            }
+
             notesCopy = new List<string>(targetTask.Notes);
         }
 
@@ -611,14 +640,20 @@ Examples:
     {
         List<PrivateTaskItem> rootTasksCopy;
         if (_state.RootTasks.Count == 0)
+        {
             return "No tasks found.";
+        }
+
         rootTasksCopy = new List<PrivateTaskItem>(_state.RootTasks);
 
         TaskStatus? filterStatus = null;
         if (!string.IsNullOrEmpty(status))
         {
             if (!TryParseStatus(status, out var parsedStatus))
+            {
                 return "Error: Invalid status filter. Use: not started, in progress, completed, removed.";
+            }
+
             filterStatus = parsedStatus;
         }
 
@@ -671,7 +706,9 @@ Examples:
         }
 
         if (string.IsNullOrWhiteSpace(searchTerm))
+        {
             return "Error: Provide searchTerm or countType.";
+        }
 
         var matches = new List<(PrivateTaskItem task, string path)>();
 
@@ -684,7 +721,9 @@ Examples:
         }
 
         if (matches.Count == 0)
+        {
             return $"No tasks found matching '{searchTerm}'.";
+        }
 
         var sb = new StringBuilder();
         sb.AppendLine($"Found {matches.Count} task(s) matching '{searchTerm}':");
@@ -712,7 +751,9 @@ Examples:
         var task = _state.RootTasks.FirstOrDefault(t => t.Id == taskId);
 
         if (task == null)
+        {
             return (null, string.Empty, $"Error: Task {taskId} not found.");
+        }
 
         if (subtaskId.HasValue)
         {
@@ -724,7 +765,9 @@ Examples:
             }
 
             if (subtask == null)
+            {
                 return (null, string.Empty, $"Error: Subtask {subtaskId.Value} not found under task {taskId}.");
+            }
 
             return (subtask, $"subtask {subtaskId.Value} of task {taskId}", null);
         }
@@ -843,7 +886,9 @@ Examples:
     private static void AppendTaskMarkdown(StringBuilder sb, PrivateTaskItem task, int level, TaskStatus? filterStatus = null, bool mainOnly = false)
     {
         if (filterStatus.HasValue && task.Status != filterStatus.Value)
+        {
             return;
+        }
 
         var indent = new string(' ', level * 2);
         var statusSymbol = GetStatusSymbol(task.Status);

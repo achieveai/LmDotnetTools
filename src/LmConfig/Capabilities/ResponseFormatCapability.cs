@@ -65,13 +65,13 @@ public record ResponseFormatCapability
     /// Supported JSON schema versions (e.g., "draft-07", "draft-2020-12").
     /// </summary>
     [JsonPropertyName("supported_schema_versions")]
-    public IReadOnlyList<string> SupportedSchemaVersions { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedSchemaVersions { get; init; } = [];
 
     /// <summary>
     /// Supported custom format types for responses.
     /// </summary>
     [JsonPropertyName("supported_custom_formats")]
-    public IReadOnlyList<string> SupportedCustomFormats { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedCustomFormats { get; init; } = [];
 
     /// <summary>
     /// Maximum depth allowed for nested objects in structured responses.

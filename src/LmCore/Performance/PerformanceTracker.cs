@@ -7,7 +7,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Performance;
 public class PerformanceTracker : IPerformanceTracker
 {
     private readonly object _lock = new();
-    private readonly Dictionary<string, ProviderStatistics> _providerStats = new();
+    private readonly Dictionary<string, ProviderStatistics> _providerStats = [];
 
     /// <summary>Maximum number of recent metrics to keep per provider</summary>
     public int MaxRecentMetricsPerProvider { get; init; } = 1000;
@@ -24,7 +24,9 @@ public class PerformanceTracker : IPerformanceTracker
     public void TrackRequest(RequestMetrics metric)
     {
         if (metric == null || string.IsNullOrEmpty(metric.Provider))
+        {
             return;
+        }
 
         lock (_lock)
         {
@@ -47,7 +49,9 @@ public class PerformanceTracker : IPerformanceTracker
     public ProviderStatistics? GetProviderStatistics(string provider)
     {
         if (string.IsNullOrEmpty(provider))
+        {
             return null;
+        }
 
         lock (_lock)
         {
@@ -121,7 +125,9 @@ public class PerformanceTracker : IPerformanceTracker
     public void ResetProviderStatistics(string provider)
     {
         if (string.IsNullOrEmpty(provider))
+        {
             return;
+        }
 
         lock (_lock)
         {
@@ -189,7 +195,7 @@ public class PerformanceTracker : IPerformanceTracker
                 {
                     TotalProviders = 0,
                     TotalModels = 0,
-                    ProviderSummaries = new Dictionary<string, ProviderSummary>(),
+                    ProviderSummaries = [],
                 };
             }
 

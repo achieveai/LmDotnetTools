@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text;

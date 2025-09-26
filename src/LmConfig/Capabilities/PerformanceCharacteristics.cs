@@ -83,7 +83,7 @@ public record PerformanceCharacteristics
     /// Available priority levels for request handling.
     /// </summary>
     [JsonPropertyName("priority_levels")]
-    public IReadOnlyList<string> PriorityLevels { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> PriorityLevels { get; init; } = [];
 
     /// <summary>
     /// Recommended concurrent request limit for optimal performance.

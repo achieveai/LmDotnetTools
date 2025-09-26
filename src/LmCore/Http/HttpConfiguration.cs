@@ -82,19 +82,27 @@ public class HttpConfiguration
     public void Validate()
     {
         if (MaxRetries < 0)
+        {
             throw new ArgumentException("MaxRetries cannot be negative", nameof(MaxRetries));
+        }
 
         if (Timeout <= TimeSpan.Zero)
+        {
             throw new ArgumentException("Timeout must be greater than zero", nameof(Timeout));
+        }
 
         if (BaseDelay <= TimeSpan.Zero)
+        {
             throw new ArgumentException("BaseDelay must be greater than zero", nameof(BaseDelay));
+        }
 
         if (string.IsNullOrWhiteSpace(UserAgent))
+        {
             throw new ArgumentException(
                 "UserAgent cannot be null or whitespace",
                 nameof(UserAgent)
             );
+        }
     }
 
     /// <summary>

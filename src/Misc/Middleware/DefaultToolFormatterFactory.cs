@@ -19,7 +19,7 @@ public interface IToolFormatterFactory
 public class DefaultToolFormatterFactory : IToolFormatterFactory
 {
     private readonly ConsoleColorPair _functionNameColor;
-    private readonly Dictionary<string, JsonToolFormatter> _formatters = new();
+    private readonly Dictionary<string, JsonToolFormatter> _formatters = [];
 
     /// <summary>
     /// Creates a new instance of DefaultToolFormatterFactory

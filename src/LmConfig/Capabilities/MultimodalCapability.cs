@@ -29,19 +29,19 @@ public record MultimodalCapability
     /// Supported image formats (e.g., "jpeg", "png", "webp", "gif").
     /// </summary>
     [JsonPropertyName("supported_image_formats")]
-    public IReadOnlyList<string> SupportedImageFormats { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedImageFormats { get; init; } = [];
 
     /// <summary>
     /// Supported audio formats (e.g., "mp3", "wav", "m4a").
     /// </summary>
     [JsonPropertyName("supported_audio_formats")]
-    public IReadOnlyList<string> SupportedAudioFormats { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedAudioFormats { get; init; } = [];
 
     /// <summary>
     /// Supported video formats (e.g., "mp4", "avi", "mov").
     /// </summary>
     [JsonPropertyName("supported_video_formats")]
-    public IReadOnlyList<string> SupportedVideoFormats { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedVideoFormats { get; init; } = [];
 
     /// <summary>
     /// Maximum size in bytes for image files.

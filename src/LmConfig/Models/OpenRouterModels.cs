@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
@@ -25,7 +24,7 @@ public record OpenRouterCache
     /// Model details data keyed by model slug.
     /// </summary>
     [JsonPropertyName("model_details")]
-    public Dictionary<string, JsonNode> ModelDetails { get; init; } = new();
+    public Dictionary<string, JsonNode> ModelDetails { get; init; } = [];
 
     /// <summary>
     /// Checks if the cache is still valid (less than 24 hours old).
@@ -48,10 +47,10 @@ public record OpenRouterModel
     public int ContextLength { get; init; }
 
     [JsonPropertyName("input_modalities")]
-    public string[] InputModalities { get; init; } = Array.Empty<string>();
+    public string[] InputModalities { get; init; } = [];
 
     [JsonPropertyName("output_modalities")]
-    public string[] OutputModalities { get; init; } = Array.Empty<string>();
+    public string[] OutputModalities { get; init; } = [];
 
     [JsonPropertyName("has_text_output")]
     public bool HasTextOutput { get; init; }

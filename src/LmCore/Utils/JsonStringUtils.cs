@@ -41,7 +41,9 @@ public static class JsonStringUtils
     {
         value = default;
         if (string.IsNullOrEmpty(partialJson))
+        {
             return false;
+        }
 
         // First attempt: Try to parse as valid JSON
         try
@@ -91,7 +93,9 @@ public static class JsonStringUtils
     public static bool IsLikelyCompleteJson(string jsonFragment)
     {
         if (string.IsNullOrEmpty(jsonFragment))
+        {
             return false;
+        }
 
         try
         {
@@ -107,7 +111,9 @@ public static class JsonStringUtils
 
             // Check for object completeness (balanced braces and ends with closing brace)
             if (openBraces > 0 && openBraces == closeBraces && jsonFragment.TrimEnd().EndsWith("}"))
+            {
                 return true;
+            }
 
             // Check for array completeness
             int openBrackets = jsonFragment.Count(c => c == '[');
@@ -118,7 +124,9 @@ public static class JsonStringUtils
                 && openBrackets == closeBrackets
                 && jsonFragment.TrimEnd().EndsWith("]")
             )
+            {
                 return true;
+            }
         }
 
         return false;

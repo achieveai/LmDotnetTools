@@ -141,7 +141,9 @@ public static class MessageExtensions
     public static IEnumerable<IMessage> ToNaturalToolUse(this IEnumerable<IMessage> messages)
     {
         if (messages == null)
+        {
             yield break;
+        }
 
         foreach (var message in messages)
         {
@@ -158,7 +160,9 @@ public static class MessageExtensions
     public static TextMessage CombineAsNaturalToolUse(this IEnumerable<IMessage> messages)
     {
         if (messages == null)
+        {
             return new TextMessage { Text = string.Empty, Role = Role.Assistant };
+        }
 
         try
         {

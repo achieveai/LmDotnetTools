@@ -7,7 +7,6 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -83,7 +82,9 @@ public static class ServiceCollectionExtensions
         ValidateStringParameter(configFilePath, nameof(configFilePath));
 
         if (!File.Exists(configFilePath))
+        {
             throw new FileNotFoundException($"Configuration file not found: {configFilePath}");
+        }
 
         // If the JSON has a root object matching AppConfig (e.g., models[] at root), deserialize directly.
         try
@@ -281,7 +282,9 @@ public static class ServiceCollectionExtensions
     private static void ValidateStringParameter(string value, string parameterName)
     {
         if (string.IsNullOrWhiteSpace(value))
+        {
             throw new ArgumentException($"{parameterName} cannot be null or empty", parameterName);
+        }
     }
 
     /// <summary>
@@ -309,7 +312,9 @@ public static class ServiceCollectionExtensions
     private static AppConfig LoadConfigFromStreamInternal(Stream stream)
     {
         if (stream == null || stream.Length == 0)
+        {
             throw new InvalidOperationException("Invalid or empty LmConfig stream");
+        }
 
         try
         {

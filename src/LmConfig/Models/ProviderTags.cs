@@ -128,8 +128,8 @@ public static class ProviderTags
     /// <returns>A read-only list of all predefined tags.</returns>
     public static IReadOnlyList<string> GetAllTags()
     {
-        return new[]
-        {
+        return
+        [
             // Performance characteristics
             Economic,
             Fast,
@@ -155,7 +155,7 @@ public static class ProviderTags
             OpenAiCompatible,
             MultiVendor,
             CostEffective,
-        };
+        ];
     }
 
     /// <summary>
@@ -166,7 +166,10 @@ public static class ProviderTags
     public static bool AreValidTags(IEnumerable<string> tags)
     {
         if (tags == null)
+        {
             return true;
+        }
+
         var validTags = GetAllTags();
         return tags.All(tag => validTags.Contains(tag));
     }
@@ -179,7 +182,10 @@ public static class ProviderTags
     public static IReadOnlyList<string> GetInvalidTags(IEnumerable<string> tags)
     {
         if (tags == null)
-            return Array.Empty<string>();
+        {
+            return [];
+        }
+
         var validTags = GetAllTags();
         return tags.Where(tag => !validTags.Contains(tag)).ToList();
     }
@@ -192,9 +198,9 @@ public static class ProviderTags
     {
         return new Dictionary<string, IReadOnlyList<string>>
         {
-            ["Performance"] = new[] { Economic, Fast, Reliable, HighQuality, Premium, UltraFast },
-            ["Capabilities"] = new[]
-            {
+            ["Performance"] = [Economic, Fast, Reliable, HighQuality, Premium, UltraFast],
+            ["Capabilities"] =
+            [
                 Reasoning,
                 Chat,
                 Coding,
@@ -202,9 +208,9 @@ public static class ProviderTags
                 Multimodal,
                 Thinking,
                 ComplexTasks,
-            },
-            ["Characteristics"] = new[]
-            {
+            ],
+            ["Characteristics"] =
+            [
                 OpenSource,
                 Enterprise,
                 Experimental,
@@ -214,7 +220,7 @@ public static class ProviderTags
                 OpenAiCompatible,
                 MultiVendor,
                 CostEffective,
-            },
+            ],
         };
     }
 }

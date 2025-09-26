@@ -80,10 +80,10 @@ public record PerformanceProfile
         TotalRequests > 0 ? (double)TotalResponseBytes / TotalRequests : 0;
 
     /// <summary>Most common error types and their counts</summary>
-    public Dictionary<string, int> ErrorTypes { get; init; } = new();
+    public Dictionary<string, int> ErrorTypes { get; init; } = [];
 
     /// <summary>HTTP status code distribution</summary>
-    public Dictionary<int, int> StatusCodeDistribution { get; init; } = new();
+    public Dictionary<int, int> StatusCodeDistribution { get; init; } = [];
 
     /// <summary>Creates a performance profile from a collection of request metrics</summary>
     /// <param name="metrics">Collection of request metrics</param>
@@ -111,14 +111,18 @@ public record PerformanceProfile
 
         // Filter by provider and model if specified
         if (!string.IsNullOrEmpty(provider))
+        {
             metricsList = metricsList
                 .Where(m => m.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase))
                 .ToList();
+        }
 
         if (!string.IsNullOrEmpty(model))
+        {
             metricsList = metricsList
                 .Where(m => m.Model.Equals(model, StringComparison.OrdinalIgnoreCase))
                 .ToList();
+        }
 
         var successfulRequests = metricsList.Where(m => m.IsSuccess).ToList();
         var failedRequests = metricsList.Where(m => !m.IsSuccess).ToList();

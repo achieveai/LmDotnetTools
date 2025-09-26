@@ -47,7 +47,7 @@ public record ModelCapabilities
     /// Additional model-specific features (e.g., "thinking", "multimodal", "function-calling").
     /// </summary>
     [JsonPropertyName("supported_features")]
-    public IReadOnlyList<string> SupportedFeatures { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedFeatures { get; init; } = [];
 
     /// <summary>
     /// Performance characteristics of the model.
@@ -79,7 +79,7 @@ public record ModelCapabilities
     [JsonPropertyName("custom_capabilities")]
     public IDictionary<string, object>? CustomCapabilities { get; init; }
 
-    private static readonly char[] separator = new[] { ',', ';' };
+    private static readonly char[] separator = [',', ';'];
 
     /// <summary>
     /// Checks if the model has a specific capability or multiple capabilities.
@@ -89,7 +89,9 @@ public record ModelCapabilities
     public bool HasCapability(string capability)
     {
         if (string.IsNullOrWhiteSpace(capability))
+        {
             return false;
+        }
 
         // Split by comma or semicolon and check all capabilities
         var capabilities = capability
@@ -132,34 +134,50 @@ public record ModelCapabilities
         var capabilities = new List<string>();
 
         if (Thinking?.Type != ThinkingType.None)
+        {
             capabilities.Add("thinking");
+        }
 
         if (
             Multimodal?.SupportsImages == true
             || Multimodal?.SupportsAudio == true
             || Multimodal?.SupportsVideo == true
         )
+        {
             capabilities.Add("multimodal");
+        }
 
         if (FunctionCalling?.SupportsTools == true)
+        {
             capabilities.Add("function_calling");
+        }
 
         if (SupportsStreaming)
+        {
             capabilities.Add("streaming");
+        }
 
         if (ResponseFormats?.SupportsJsonMode == true)
+        {
             capabilities.Add("json_mode");
+        }
 
         if (ResponseFormats?.SupportsJsonSchema == true)
+        {
             capabilities.Add("json_schema");
+        }
 
         if (ResponseFormats?.SupportsStructuredOutput == true)
+        {
             capabilities.Add("structured_output");
+        }
 
         capabilities.AddRange(SupportedFeatures);
 
         if (CustomCapabilities != null)
+        {
             capabilities.AddRange(CustomCapabilities.Keys);
+        }
 
         return capabilities.Distinct().ToList();
     }

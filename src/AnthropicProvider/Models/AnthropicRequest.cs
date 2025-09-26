@@ -23,7 +23,7 @@ public record AnthropicRequest
     /// The messages to include in the request.
     /// </summary>
     [JsonPropertyName("messages")]
-    public List<AnthropicMessage> Messages { get; init; } = new();
+    public List<AnthropicMessage> Messages { get; init; } = [];
 
     /// <summary>
     /// The system prompt to use for the completion.
@@ -350,7 +350,9 @@ public record AnthropicRequest
                 foreach (var param in function.Parameters)
                 {
                     if (param.Name == null)
+                    {
                         continue;
+                    }
 
                     var paramSchema = new JsonObject
                     {

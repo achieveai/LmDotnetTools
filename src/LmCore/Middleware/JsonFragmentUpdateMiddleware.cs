@@ -12,7 +12,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 {
     private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators =
-        new();
+        [];
 
     public string? Name => throw new NotImplementedException();
 

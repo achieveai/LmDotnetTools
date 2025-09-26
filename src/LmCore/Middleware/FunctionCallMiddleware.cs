@@ -115,7 +115,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
                 );
             }
 
-            return new[] { result };
+            return [result];
         }
 
         // Generate reply with the configured options
@@ -758,7 +758,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     }
 
     // Dictionary to track pending tool call results by their ID
-    private readonly Dictionary<string, Task<ToolCallResult>> _pendingToolCallResults = new();
+    private readonly Dictionary<string, Task<ToolCallResult>> _pendingToolCallResults = [];
 
     // Execute tool calls as soon as they're received during streaming
     private void OnToolCall(ToolCall call)

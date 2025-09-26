@@ -127,7 +127,7 @@ public class OpenRouterModelService
                 ?.Select(x => x?.GetValue<string>())
                 .Where(x => !string.IsNullOrEmpty(x))
                 .Cast<string>()
-                .ToArray() ?? Array.Empty<string>();
+                .ToArray() ?? [];
     }
 
     /// <summary>
@@ -136,7 +136,9 @@ public class OpenRouterModelService
     private static DateTime? TryParseDateTime(string? dateTimeString)
     {
         if (string.IsNullOrWhiteSpace(dateTimeString))
+        {
             return null;
+        }
 
         return DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime)
             ? dateTime.ToUniversalTime()
@@ -176,10 +178,13 @@ public class OpenRouterModelService
                     maxRetries + 1
                 );
                 if (attempt == maxRetries)
+                {
                     throw new HttpRequestException(
                         $"Request timed out after multiple attempts",
                         ex
                     );
+                }
+
                 await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
             }
             catch (OperationCanceledException)
@@ -197,7 +202,10 @@ public class OpenRouterModelService
                     maxRetries + 1
                 );
                 if (attempt == maxRetries)
+                {
                     throw;
+                }
+
                 await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
             }
             catch (JsonException ex)
@@ -210,7 +218,10 @@ public class OpenRouterModelService
                     maxRetries + 1
                 );
                 if (attempt == maxRetries)
+                {
                     throw new InvalidOperationException($"Invalid JSON in {operationName}", ex);
+                }
+
                 await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
             }
             catch (InvalidOperationException ex)
@@ -223,7 +234,10 @@ public class OpenRouterModelService
                     maxRetries + 1
                 );
                 if (attempt == maxRetries)
+                {
                     throw;
+                }
+
                 await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
             }
         }
@@ -288,11 +302,15 @@ public class OpenRouterModelService
         try
         {
             if (jsonData == null)
+            {
                 return false;
+            }
 
             var dataArray = jsonData["data"]?.AsArray();
             if (dataArray == null)
+            {
                 return false;
+            }
 
             // Check if we have at least one valid item
             foreach (var item in dataArray)
@@ -658,7 +676,9 @@ public class OpenRouterModelService
             foreach (var modelNode in modelsArray)
             {
                 if (modelNode == null)
+                {
                     continue;
+                }
 
                 var slug = GetStringValue(modelNode, "slug");
                 var name = GetStringValue(modelNode, "name");
@@ -818,7 +838,9 @@ public class OpenRouterModelService
         foreach (var modelNode in modelsArray)
         {
             if (modelNode == null)
+            {
                 continue;
+            }
 
             var permaslug = GetStringValue(modelNode, "permaslug");
             if (string.IsNullOrEmpty(permaslug))
@@ -826,7 +848,10 @@ public class OpenRouterModelService
                 // Fallback to slug if permaslug is not available
                 var slug = GetStringValue(modelNode, "slug");
                 if (string.IsNullOrEmpty(slug))
+                {
                     continue;
+                }
+
                 permaslug = slug;
             }
 
@@ -947,7 +972,7 @@ public class OpenRouterModelService
             "{ErrorType}: No cache available, returning empty model list",
             errorType
         );
-        return Array.Empty<ModelConfig>();
+        return [];
     }
 
     /// <summary>
@@ -1152,14 +1177,20 @@ public class OpenRouterModelService
             foreach (var modelNode in modelsArray)
             {
                 if (modelNode == null)
+                {
                     continue;
+                }
 
                 var slug = GetStringValue(modelNode, "slug");
                 if (string.IsNullOrEmpty(slug))
+                {
                     continue;
+                }
 
                 if (!modelGroups.ContainsKey(slug))
-                    modelGroups[slug] = new List<JsonNode>();
+                {
+                    modelGroups[slug] = [];
+                }
 
                 modelGroups[slug].Add(modelNode);
             }
@@ -1210,7 +1241,9 @@ public class OpenRouterModelService
     )
     {
         if (modelNodes.Count == 0)
+        {
             return null;
+        }
 
         // Use the first model node for basic model information
         var primaryModelNode = modelNodes[0];
@@ -1275,7 +1308,9 @@ public class OpenRouterModelService
                 foreach (var endpointNode in endpointsArray)
                 {
                     if (endpointNode == null)
+                    {
                         continue;
+                    }
 
                     var providerName = GetStringValue(endpointNode, "provider_name")
                         ?.ToLowerInvariant();
@@ -1291,7 +1326,9 @@ public class OpenRouterModelService
                         || isDisabled
                         || isEndpointHidden
                     )
+                    {
                         continue;
+                    }
 
                     // Create sub-provider entry for OpenRouter
                     var subProvider = CreateSubProviderFromEndpoint(endpointNode, modelSlug);
@@ -1327,7 +1364,9 @@ public class OpenRouterModelService
             {
                 var endpoint = modelNode["endpoint"];
                 if (endpoint == null)
+                {
                     continue;
+                }
 
                 var subProvider = CreateSubProviderFromEndpoint(endpoint, modelSlug);
                 if (subProvider != null)
@@ -1345,7 +1384,7 @@ public class OpenRouterModelService
             Priority = 1000, // Highest priority for OpenRouter
             Pricing = OpenRouterModelService.GetBestPricingFromSubProviders(openRouterSubProviders),
             SubProviders = openRouterSubProviders,
-            Tags = new[] { "openrouter", "aggregator" },
+            Tags = ["openrouter", "aggregator"],
         };
 
         // Insert OpenRouter as the first provider
@@ -1392,11 +1431,15 @@ public class OpenRouterModelService
             var variant = GetStringValue(endpoint, "variant");
 
             if (string.IsNullOrEmpty(providerName) || string.IsNullOrEmpty(endpointId))
+            {
                 return Task.FromResult<ProviderConfig?>(null);
+            }
 
             // Skip disabled or hidden endpoints
             if (isDisabled || isHidden)
+            {
                 return Task.FromResult<ProviderConfig?>(null);
+            }
 
             // Get pricing information
             var pricing = OpenRouterModelService.CreatePricingConfig(endpoint);
@@ -1475,15 +1518,23 @@ public class OpenRouterModelService
         var tags = new List<string> { "openrouter" };
 
         if (isFree)
+        {
             tags.Add("free");
+        }
         else
+        {
             tags.Add("paid");
+        }
 
         if (!string.IsNullOrEmpty(quantization))
+        {
             tags.Add($"quantization-{quantization.ToLowerInvariant()}");
+        }
 
         if (!string.IsNullOrEmpty(variant) && variant != "standard")
+        {
             tags.Add($"variant-{variant.ToLowerInvariant()}");
+        }
 
         // Add capability-based tags
         var supportsTools = GetBoolValue(endpoint, "supports_tool_parameters");
@@ -1492,29 +1543,43 @@ public class OpenRouterModelService
         var supportedParams = GetStringArray(endpoint, "supported_parameters");
 
         if (supportsTools)
+        {
             tags.Add("tools");
+        }
 
         if (supportsReasoning)
+        {
             tags.Add("reasoning");
+        }
 
         if (supportsMultipart)
+        {
             tags.Add("multimodal");
+        }
 
         // Add structured output tags
         if (supportedParams.Contains("response_format"))
+        {
             tags.Add("json-mode");
+        }
 
         if (supportedParams.Contains("structured_outputs"))
+        {
             tags.Add("structured-outputs");
+        }
 
         // Add performance-based tags based on limits
         var limitRpm = GetIntValue(endpoint, "limit_rpm");
         if (limitRpm > 0)
         {
             if (limitRpm >= 100)
+            {
                 tags.Add("high-throughput");
+            }
             else if (limitRpm <= 10)
+            {
                 tags.Add("low-throughput");
+            }
         }
 
         return tags;
@@ -1549,11 +1614,15 @@ public class OpenRouterModelService
             var variant = GetStringValue(endpoint, "variant");
 
             if (string.IsNullOrEmpty(providerName) || string.IsNullOrEmpty(endpointId))
+            {
                 return null;
+            }
 
             // Skip disabled or hidden endpoints
             if (isDisabled || isHidden)
+            {
                 return null;
+            }
 
             // Get pricing information
             var pricing = OpenRouterModelService.CreatePricingConfig(endpoint);
@@ -1630,13 +1699,13 @@ public class OpenRouterModelService
                 SupportsVideo = inputModalities.Contains("video"),
                 SupportedImageFormats = inputModalities.Contains("image")
                     ? new[] { "jpeg", "png", "webp", "gif" }
-                    : Array.Empty<string>(),
+                    : [],
                 SupportedAudioFormats = inputModalities.Contains("audio")
                     ? new[] { "mp3", "wav", "m4a" }
-                    : Array.Empty<string>(),
+                    : [],
                 SupportedVideoFormats = inputModalities.Contains("video")
                     ? new[] { "mp4", "avi", "mov" }
-                    : Array.Empty<string>(),
+                    : [],
             };
         }
 
@@ -1705,7 +1774,7 @@ public class OpenRouterModelService
                     SupportsToolChoice =
                         toolChoiceSupport["literal_auto"] || toolChoiceSupport["literal_required"],
                     SupportsStructuredParameters = true,
-                    SupportedToolTypes = new[] { "function" },
+                    SupportedToolTypes = ["function"],
                 };
             }
         }
@@ -1749,13 +1818,24 @@ public class OpenRouterModelService
         // Determine supported features
         var supportedFeatures = new List<string>();
         if (multimodal != null)
+        {
             supportedFeatures.Add("multimodal");
+        }
+
         if (thinking != null)
+        {
             supportedFeatures.Add("thinking");
+        }
+
         if (functionCalling != null)
+        {
             supportedFeatures.Add("function_calling");
+        }
+
         if (responseFormats != null)
+        {
             supportedFeatures.Add("structured_output");
+        }
 
         return new ModelCapabilities
         {
@@ -1783,7 +1863,9 @@ public class OpenRouterModelService
 
         // Check for explicit reasoning config
         if (reasoningConfig != null)
+        {
             return true;
+        }
 
         // Check for reasoning indicators in name/slug
         var reasoningIndicators = new[] { "o1", "reasoning", "think", "deepseek-r1", "qwq", "r1" };
@@ -1802,7 +1884,9 @@ public class OpenRouterModelService
         var author = GetStringValue(modelNode, "author")?.ToLowerInvariant() ?? "";
 
         if (name.Contains("o1") || slug.Contains("o1") || author.Contains("openai"))
+        {
             return ThinkingType.OpenAI;
+        }
 
         return name.Contains("deepseek") || slug.Contains("deepseek") || author.Contains("deepseek")
             ? ThinkingType.DeepSeek
@@ -1820,7 +1904,7 @@ public class OpenRouterModelService
             ModelName = modelSlug,
             Priority = 1,
             Pricing = new PricingConfig { PromptPerMillion = 0.0, CompletionPerMillion = 0.0 },
-            Tags = new[] { "openrouter", "fallback" },
+            Tags = ["openrouter", "fallback"],
         };
     }
 
@@ -1910,7 +1994,7 @@ public class OpenRouterModelService
 
         private static string FormatBytes(long bytes)
         {
-            string[] suffixes = { "B", "KB", "MB", "GB" };
+            string[] suffixes = ["B", "KB", "MB", "GB"];
             int counter = 0;
             decimal number = bytes;
             while (Math.Round(number / 1024) >= 1)

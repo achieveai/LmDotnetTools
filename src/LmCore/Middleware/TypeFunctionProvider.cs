@@ -84,26 +84,36 @@ public class TypeFunctionProvider : IFunctionProvider
     {
         // Skip special methods
         if (method.IsSpecialName || method.IsConstructor)
+        {
             return false;
+        }
 
         // Skip property getters/setters
         if (method.Name.StartsWith("get_") || method.Name.StartsWith("set_"))
+        {
             return false;
+        }
 
         // Skip compiler-generated methods
         if (
             method.GetCustomAttribute<System.Runtime.CompilerServices.CompilerGeneratedAttribute>()
             != null
         )
+        {
             return false;
+        }
 
         // Include if it has FunctionAttribute
         if (method.GetCustomAttribute<FunctionAttribute>() != null)
+        {
             return true;
+        }
 
         // Include if it has DescriptionAttribute (opt-in via description)
         if (method.GetCustomAttribute<DescriptionAttribute>() != null)
+        {
             return true;
+        }
 
         // Skip everything else
         return false;
@@ -160,7 +170,9 @@ public class TypeFunctionProvider : IFunctionProvider
 
         // Check for Nullable<T> value types
         if (Nullable.GetUnderlyingType(paramType) != null)
+        {
             return true;
+        }
 
         // For reference types, check nullability annotations
         if (!paramType.IsValueType)

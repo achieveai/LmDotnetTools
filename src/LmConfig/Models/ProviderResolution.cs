@@ -129,7 +129,7 @@ public record ProviderSelectionCriteria
         new()
         {
             PreferLowerCost = true,
-            PreferredTags = new[] { "cost-effective", "economical", "cheap" },
+            PreferredTags = ["cost-effective", "economical", "cheap"],
         };
 
     /// <summary>
@@ -139,12 +139,12 @@ public record ProviderSelectionCriteria
         new()
         {
             PreferHigherPerformance = true,
-            PreferredTags = new[] { "fast", "ultra-fast", "high-performance", "speed-optimized" },
+            PreferredTags = ["fast", "ultra-fast", "high-performance", "speed-optimized"],
         };
 
     /// <summary>
     /// Creates criteria that prefers reliable providers.
     /// </summary>
     public static ProviderSelectionCriteria ReliabilityOptimized =>
-        new() { PreferredTags = new[] { "reliable", "stable", "official", "flagship" } };
+        new() { PreferredTags = ["reliable", "stable", "official", "flagship"] };
 }

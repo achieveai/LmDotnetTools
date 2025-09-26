@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
-using System.Linq;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -133,7 +132,9 @@ public record ChatMessage
             {
                 var detailText = detail.Data ?? detail.Summary;
                 if (string.IsNullOrEmpty(detailText))
+                {
                     continue;
+                }
 
                 var visibility =
                     detail.Type!.EndsWith("encrypted", StringComparison.OrdinalIgnoreCase)

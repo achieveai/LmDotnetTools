@@ -1,10 +1,7 @@
 using System.Net;
-using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
-using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Misc.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -251,7 +248,7 @@ public class CachedHttpResponse
     /// <summary>
     /// HTTP headers of the response.
     /// </summary>
-    public Dictionary<string, string[]> Headers { get; set; } = new();
+    public Dictionary<string, string[]> Headers { get; set; } = [];
 
     /// <summary>
     /// When the response was cached.
@@ -433,7 +430,9 @@ public class CachingStream : Stream
     private async Task TryCacheDataAsync()
     {
         if (_cacheAttempted)
+        {
             return;
+        }
 
         _cacheAttempted = true;
 
@@ -460,7 +459,7 @@ public class CachingStream : Stream
                 StatusCode = 200, // We only cache successful responses
                 Content = content,
                 ContentType = "application/json", // Default assumption for LLM APIs
-                Headers = new Dictionary<string, string[]>(),
+                Headers = [],
                 CachedAt = DateTime.UtcNow,
                 ExpiresAt = DateTime.UtcNow.Add(_options.CacheExpiration ?? TimeSpan.FromHours(24)),
             };

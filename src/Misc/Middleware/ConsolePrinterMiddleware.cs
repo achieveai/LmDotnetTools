@@ -19,10 +19,10 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     private ToolsCallMessageBuilder? _toolsCallMessageBuilder = null;
 
     // Dictionary to track partial tool calls by their ID
-    private readonly Dictionary<string, ToolCall> _partialToolCallsById = new();
+    private readonly Dictionary<string, ToolCall> _partialToolCallsById = [];
 
     // Dictionary to track partial tool calls by their Index when ID is not available
-    private readonly Dictionary<int, ToolCall> _partialToolCallsByIndex = new();
+    private readonly Dictionary<int, ToolCall> _partialToolCallsByIndex = [];
     private IMessage? _lastMessage = null;
     private ToolFormatter? _formatter = null;
 
@@ -315,7 +315,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         // First call with empty updates just to print the function name
         var headerParts = _formatter(
             toolCall.FunctionName ?? "unknown",
-            Enumerable.Empty<JsonFragmentUpdate>()
+            []
         );
         foreach (var (color, text) in headerParts)
         {
@@ -554,7 +554,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     {
         if (string.IsNullOrEmpty(jsonString))
         {
-            return Enumerable.Empty<JsonFragmentUpdate>();
+            return [];
         }
 
         // Create a temporary generator for backward compatibility

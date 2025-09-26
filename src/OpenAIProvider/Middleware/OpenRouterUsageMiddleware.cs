@@ -45,10 +45,12 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     )
     {
         if (string.IsNullOrEmpty(openRouterApiKey))
+        {
             throw new ArgumentException(
                 "OpenRouter API key cannot be null or empty",
                 nameof(openRouterApiKey)
             );
+        }
 
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _httpClient = httpClient ?? new HttpClient();
@@ -158,7 +160,9 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     {
         var messageList = messages.ToList();
         if (messageList.Count == 0)
+        {
             return messageList;
+        }
 
         // Separate UsageMessage objects from other messages
         var nonUsageMessages = messageList.Where(m => !(m is UsageMessage)).ToList();
@@ -522,7 +526,9 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         {
             var usageData = message.Metadata["inline_usage"];
             if (usageData is Usage usage)
+            {
                 return usage;
+            }
 
             // Handle case where usage is a raw dictionary from JSON deserialization
             if (usageData is Dictionary<string, object?> usageDict)
@@ -536,7 +542,9 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         {
             var usageData = message.Metadata["usage"];
             if (usageData is Usage usage)
+            {
                 return usage;
+            }
 
             // Handle case where usage is a raw dictionary from JSON deserialization
             if (usageData is Dictionary<string, object?> usageDict)
@@ -554,13 +562,17 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     private static Usage? GetUsageFromMessage(IMessage message)
     {
         if (message is UsageMessage usageMsg)
+        {
             return usageMsg.Usage;
+        }
 
         if (message.Metadata?.ContainsKey("usage") == true)
         {
             var usageData = message.Metadata["usage"];
             if (usageData is Usage usage)
+            {
                 return usage;
+            }
         }
 
         return null;
@@ -804,7 +816,9 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             );
 
             if (!response.IsSuccessStatusCode)
+            {
                 return null;
+            }
 
             var readStartTime = DateTimeOffset.UtcNow;
             var json = await response.Content.ReadAsStringAsync(timeoutCts.Token);

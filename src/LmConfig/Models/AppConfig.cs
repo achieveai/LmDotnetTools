@@ -95,7 +95,7 @@ public record AppConfig
     /// <returns>List of all registered provider names.</returns>
     public IReadOnlyList<string> GetRegisteredProviders()
     {
-        return ProviderRegistry?.Keys.ToList() ?? new List<string>();
+        return ProviderRegistry?.Keys.ToList() ?? [];
     }
 
     /// <summary>
@@ -176,20 +176,30 @@ public record ProviderConnectionInfo
 
         // Validate required fields
         if (string.IsNullOrWhiteSpace(EndpointUrl))
+        {
             errors.Add("EndpointUrl is required");
+        }
         else if (!Uri.TryCreate(EndpointUrl, UriKind.Absolute, out _))
+        {
             errors.Add("EndpointUrl must be a valid absolute URL");
+        }
 
         if (string.IsNullOrWhiteSpace(ApiKeyEnvironmentVariable))
+        {
             errors.Add("ApiKeyEnvironmentVariable is required");
+        }
 
         if (MaxRetries < 0)
+        {
             errors.Add("MaxRetries must be non-negative");
+        }
 
         // Check if API key is available
         var apiKey = GetApiKey();
         if (string.IsNullOrWhiteSpace(apiKey))
+        {
             warnings.Add($"Environment variable '{ApiKeyEnvironmentVariable}' is not set or empty");
+        }
 
         return new ValidationResult
         {

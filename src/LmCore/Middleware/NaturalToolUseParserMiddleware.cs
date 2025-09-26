@@ -77,7 +77,9 @@ public partial class ToolCallTextParser
     public static List<ParsedChunk> Parse(string text)
     {
         if (string.IsNullOrEmpty(text))
-            return new List<ParsedChunk>();
+        {
+            return [];
+        }
 
         var chunks = new List<ParsedChunk>();
         var matches = ToolCallPattern.Matches(text);
@@ -96,7 +98,9 @@ public partial class ToolCallTextParser
             {
                 var prefixText = text.Substring(currentIndex, match.Index - currentIndex);
                 if (!string.IsNullOrEmpty(prefixText))
+                {
                     chunks.Add(new TextChunk(prefixText));
+                }
             }
 
             // Add the tool call chunk
@@ -112,7 +116,9 @@ public partial class ToolCallTextParser
         {
             var suffixText = text.Substring(currentIndex);
             if (!string.IsNullOrEmpty(suffixText))
+            {
                 chunks.Add(new TextChunk(suffixText));
+            }
         }
 
         return chunks;
@@ -131,7 +137,7 @@ public partial class PartialToolCallDetector
 
     // Patterns for detecting incomplete tags at the end
     private static readonly Regex[] PartialPatterns =
-    {
+    [
         // 1. Incomplete opening tag patterns: <, <t, <tool_call, <tool_call name="test
         MyRegex2(),
         // 2. Incomplete closing tag: ...content</tool_call but missing final >
@@ -145,12 +151,14 @@ public partial class PartialToolCallDetector
         MyRegex10(),
         MyRegex11(),
         MyRegex12(),
-    };
+    ];
 
     public static PartialToolCallMatch DetectPartialStart(string text)
     {
         if (string.IsNullOrEmpty(text))
+        {
             return PartialToolCallMatch.NoMatch;
+        }
 
         // First check for unmatched opening tags anywhere in the text
         var openMatches = OpeningTagPattern.Matches(text);
@@ -251,7 +259,9 @@ public class SafeTextExtractor
     public static SafeTextResult ExtractSafeText(string text)
     {
         if (string.IsNullOrEmpty(text))
+        {
             return new SafeTextResult(string.Empty, string.Empty);
+        }
 
         var partialMatch = PartialToolCallDetector.DetectPartialStart(text);
 
@@ -331,7 +341,9 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
     {
         var trimmed = content.Trim();
         if (string.IsNullOrEmpty(trimmed))
+        {
             return null;
+        }
 
         // Check if content looks like JSON (starts with { or [)
         if (trimmed.StartsWith("{") || trimmed.StartsWith("["))
@@ -827,7 +839,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
             if (fallbackReply != null)
             {
-                return new[] { fallbackReply };
+                return [fallbackReply];
             }
         }
         catch (Exception ex) when (!(ex is ToolUseParsingException))
@@ -948,8 +960,8 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             var isValid = _schemaValidator.Validate(jsonText, schemaString);
 
             return isValid
-                ? (IEnumerable<IMessage>)(new[]
-                {
+                ? (IEnumerable<IMessage>)(
+                [
                     new ToolsCallMessage
                     {
                         GenerationId = Guid.NewGuid().ToString(),
@@ -965,7 +977,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                             },
                         ],
                     },
-                })
+                ])
                 : throw new ToolUseParsingException(
                 $"Fallback parser returned invalid JSON for {toolName}"
             );
@@ -979,10 +991,10 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         try
         {
             JsonDocument.Parse(jsonText);
-            return new[]
-            {
+            return
+            [
                 new TextMessage { Text = jsonText, Role = Role.Assistant },
-            };
+            ];
         }
         catch (JsonException)
         {
@@ -1004,10 +1016,10 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     private static List<IMessage> CreatePromptMessages(string prompt)
     {
-        return new List<IMessage>
-        {
+        return
+        [
             new TextMessage { Text = prompt, Role = Role.User },
-        };
+        ];
     }
 
     private static ResponseFormat CreateResponseFormat(string toolName, JsonSchemaObject jsonSchema)

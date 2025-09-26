@@ -8,8 +8,8 @@ namespace AchieveAi.LmDotnetTools.Misc.Middleware;
 /// </summary>
 public class JsonToolFormatter
 {
-    private readonly Dictionary<string, int> _indentLevels = new();
-    private readonly Dictionary<string, HashSet<string>> _processedStringsByTool = new(); // Track processed strings per tool
+    private readonly Dictionary<string, int> _indentLevels = [];
+    private readonly Dictionary<string, HashSet<string>> _processedStringsByTool = []; // Track processed strings per tool
     private static readonly ConsoleColorPair NumberColor = new() { Foreground = ConsoleColor.Cyan };
     private static readonly ConsoleColorPair BooleanColor = new()
     {
@@ -56,7 +56,7 @@ public class JsonToolFormatter
         }
         if (!_processedStringsByTool.TryGetValue(toolCallName, out HashSet<string>? processedStrings))
         {
-            processedStrings = new HashSet<string>();
+            processedStrings = [];
             _processedStringsByTool[toolCallName] = processedStrings;
         }
 

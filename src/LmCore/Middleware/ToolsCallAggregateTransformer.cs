@@ -206,7 +206,9 @@ public static class ToolsCallAggregateTransformer
     private static string? TryFormatAsJson(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
+        {
             return null;
+        }
 
         text = text.Trim();
 

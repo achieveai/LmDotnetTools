@@ -16,7 +16,7 @@ public record ChatCompletionRequest
     public ChatCompletionRequest()
     {
         Model = string.Empty;
-        Messages = new List<ChatMessage>();
+        Messages = [];
         Temperature = 0.7;
         MaxTokens = 4096;
         AdditionalParameters = ImmutableDictionary<string, object>.Empty;
@@ -157,7 +157,7 @@ public record ChatCompletionRequest
                 ResponseFormat = options.ResponseFormat,
                 Temperature = options.Temperature ?? 0.0,
                 MaxTokens = options.MaxToken ?? 4096,
-                Stop = options.StopSequence ?? Array.Empty<string>(),
+                Stop = options.StopSequence ?? [],
                 Tools = options
                     .Functions?.Select(fc => new FunctionTool(fc.ToOpenFunctionDefinition()))
                     .ToList(),
@@ -183,7 +183,7 @@ public record ChatCompletionRequest
                     )
                 )
                 {
-                    return compositeMsg.Messages.SelectMany(m => FromMessage(m));
+                    return compositeMsg.Messages.SelectMany(FromMessage);
                 }
                 else
                 {
@@ -414,7 +414,10 @@ public record ChatCompletionRequest
                     }
 
                     foreach (var ch in FromMessage(m))
+                    {
                         yield return ch;
+                    }
+
                     break;
             }
         }

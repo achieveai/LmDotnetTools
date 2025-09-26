@@ -264,7 +264,9 @@ public sealed record JsonSchemaObject
     public static string GetJsonPrimaryType(JsonSchemaObject schemaObject)
     {
         if (schemaObject == null)
+        {
             return "string";
+        }
 
         // Handle both single string and list of strings
         if (schemaObject.Type.Is<string>())
@@ -289,8 +291,8 @@ public sealed record JsonSchemaObject
 public class JsonSchemaObjectBuilder
 {
     private readonly string _type;
-    private readonly Dictionary<string, JsonSchemaObject> _properties = new();
-    private readonly List<string> _required = new();
+    private readonly Dictionary<string, JsonSchemaObject> _properties = [];
+    private readonly List<string> _required = [];
     private bool _additionalProperties;
     private string? _description;
 

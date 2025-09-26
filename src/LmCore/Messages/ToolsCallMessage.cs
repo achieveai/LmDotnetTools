@@ -22,7 +22,7 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     public string? GenerationId { get; init; } = null;
 
     [JsonPropertyName("tool_calls")]
-    public ImmutableList<ToolCall> ToolCalls { get; init; } = ImmutableList<ToolCall>.Empty;
+    public ImmutableList<ToolCall> ToolCalls { get; init; } = [];
 
     public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
 
@@ -60,7 +60,7 @@ public record ToolsCallUpdateMessage : IMessage
 
     [JsonPropertyName("tool_call_updates")]
     public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } =
-        ImmutableList<ToolCallUpdate>.Empty;
+        [];
 }
 
 public class ToolsCallUpdateMessageJsonConverter
@@ -97,7 +97,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public int? CurrentIndex { get; private set; } = null;
 
-    public ImmutableList<ToolCall> CompletedToolCalls { get; private set; } = ImmutableList<ToolCall>.Empty;
+    public ImmutableList<ToolCall> CompletedToolCalls { get; private set; } = [];
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {

@@ -17,7 +17,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     private readonly IModelResolver _modelResolver;
     private readonly IProviderAgentFactory _agentFactory;
     private readonly ILogger<UnifiedAgent> _logger;
-    private readonly Dictionary<string, IAgent> _agentCache = new();
+    private readonly Dictionary<string, IAgent> _agentCache = [];
     private bool _disposed = false;
 
     public UnifiedAgent(
@@ -562,7 +562,9 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     private void ThrowIfDisposed()
     {
         if (_disposed)
+        {
             throw new ObjectDisposedException(nameof(UnifiedAgent));
+        }
     }
 
     public void Dispose()

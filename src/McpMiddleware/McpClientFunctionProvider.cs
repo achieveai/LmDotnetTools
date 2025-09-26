@@ -165,7 +165,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     "Failed to list tools for MCP client: ClientId={ClientId}",
                     serverId
                 );
-                toolsByServer[serverId] = new List<McpClientTool>();
+                toolsByServer[serverId] = [];
             }
         }
 
@@ -182,7 +182,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             toolFilterConfig?.EnableFiltering == true
                 ? new McpToolFilter(
                     toolFilterConfig,
-                    serverConfigs ?? new Dictionary<string, McpServerFilterConfig>(),
+                    serverConfigs ?? [],
                     logger
                 )
                 : null;
@@ -375,7 +375,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                                 args =
                                     JsonSerializer.Deserialize<Dictionary<string, object?>>(
                                         argsJson
-                                    ) ?? new Dictionary<string, object?>();
+                                    ) ?? [];
                             }
                             catch (JsonException jsonEx)
                             {
@@ -414,7 +414,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                                         .Select(c =>
                                             (c is TextContentBlock tb) ? tb.Text : string.Empty
                                         )
-                                    : Array.Empty<string>()
+                                    : []
                             );
 
                             logger.LogDebug(
@@ -480,7 +480,9 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     private static string SanitizeToolName(string toolName)
     {
         if (string.IsNullOrEmpty(toolName))
+        {
             return "unknown_tool";
+        }
 
         // Replace invalid characters with underscores
         var sanitized = MyRegex().Replace(toolName, "_"
@@ -488,11 +490,15 @@ public partial class McpClientFunctionProvider : IFunctionProvider
 
         // Ensure it doesn't start with a number (optional, but good practice)
         if (char.IsDigit(sanitized[0]))
+        {
             sanitized = "_" + sanitized;
+        }
 
         // Ensure it's not empty after sanitization
         if (string.IsNullOrEmpty(sanitized))
+        {
             sanitized = "sanitized_tool";
+        }
 
         return sanitized;
     }
@@ -811,7 +817,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         {
                             args =
                                 JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson)
-                                ?? new Dictionary<string, object?>();
+                                ?? [];
                         }
                         catch (JsonException jsonEx)
                         {
@@ -850,7 +856,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                                     .Select(c =>
                                         (c is TextContentBlock tb) ? tb.Text : string.Empty
                                     )
-                                : Array.Empty<string>()
+                                : []
                         );
 
                         logger.LogDebug(

@@ -17,7 +17,7 @@ public abstract record FunctionCallResult
 {
     public bool? IsError { get; init; }
 
-    public IList<ContentBlock> Content { get; init; } = new List<ContentBlock>();
+    public IList<ContentBlock> Content { get; init; } = [];
 
     public abstract JsonNode ToStructuredJson();
 }

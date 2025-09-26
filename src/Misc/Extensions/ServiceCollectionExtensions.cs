@@ -1,4 +1,3 @@
-using System.Linq;
 using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.Misc.Configuration;
 using AchieveAi.LmDotnetTools.Misc.Http;
@@ -30,7 +29,9 @@ public static class ServiceCollectionExtensions
         // Guard against duplicate registration – if cache options have already been added we assume the
         // cache pipeline has been wired up previously and simply return the collection unchanged.
         if (services.Any(sd => sd.ServiceType == typeof(LlmCacheOptions)))
+        {
             return services;
+        }
 
         ArgumentNullException.ThrowIfNull(options);
 
@@ -243,7 +244,9 @@ public static class ServiceCollectionExtensions
 
         newClient.BaseAddress = existingClient.BaseAddress;
         foreach (var h in existingClient.DefaultRequestHeaders)
+        {
             newClient.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+        }
 
         return newClient;
     }

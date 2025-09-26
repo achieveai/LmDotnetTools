@@ -1,4 +1,3 @@
-using System.Net.Http;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Http;
@@ -22,14 +21,22 @@ public static class HttpClientFactory
         var client = new HttpClient(top) { Timeout = timeout ?? TimeSpan.FromMinutes(5) };
 
         if (provider is not null && !string.IsNullOrWhiteSpace(provider.Value.BaseUrl))
+        {
             client.BaseAddress = new Uri(provider.Value.BaseUrl.TrimEnd('/'));
+        }
 
         if (headers is not null)
+        {
             foreach (var h in headers)
+            {
                 client.DefaultRequestHeaders.Add(h.Key, h.Value);
+            }
+        }
 
         if (provider is not null)
+        {
             AddAuth(client, provider.Value);
+        }
 
         return client;
     }

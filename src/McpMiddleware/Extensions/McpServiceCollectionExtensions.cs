@@ -1,6 +1,5 @@
 using System.Reflection;
 using AchieveAi.LmDotnetTools.LmCore.Extensions;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 

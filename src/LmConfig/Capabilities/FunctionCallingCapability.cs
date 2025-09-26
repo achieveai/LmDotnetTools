@@ -41,7 +41,7 @@ public record FunctionCallingCapability
     /// Supported tool types (e.g., "function", "code_interpreter", "retrieval").
     /// </summary>
     [JsonPropertyName("supported_tool_types")]
-    public IReadOnlyList<string> SupportedToolTypes { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedToolTypes { get; init; } = [];
 
     /// <summary>
     /// Whether the model supports structured schema for function parameters.
@@ -101,5 +101,5 @@ public record FunctionCallingCapability
     /// Supported JSON schema versions for parameter validation.
     /// </summary>
     [JsonPropertyName("supported_schema_versions")]
-    public IReadOnlyList<string> SupportedSchemaVersions { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SupportedSchemaVersions { get; init; } = [];
 }

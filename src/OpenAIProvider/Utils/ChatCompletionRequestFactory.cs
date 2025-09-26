@@ -159,7 +159,7 @@ public static class ChatCompletionRequestFactory
                 )
                 {
                     // Convert tool calls
-                    chatMessage.ToolCalls = new List<FunctionContent>();
+                    chatMessage.ToolCalls = [];
 
                     foreach (var tc in toolsCallMessage.ToolCalls)
                     {
@@ -191,7 +191,9 @@ public static class ChatCompletionRequestFactory
     )
     {
         if (options == null)
+        {
             return request;
+        }
 
         // Prepare properties for the new request instance
         float? topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
@@ -265,7 +267,9 @@ public static class ChatCompletionRequestFactory
     )
     {
         if (options?.ExtraProperties == null)
+        {
             return request;
+        }
 
         // Create a new JsonObject for the additional parameters
         var jsonObject = new Dictionary<string, object>();
@@ -290,15 +294,24 @@ public static class ChatCompletionRequestFactory
             {
                 case "transforms":
                     if (kvp.Value is string[] transforms)
+                    {
                         jsonObject["transforms"] = transforms;
+                    }
+
                     break;
                 case "route":
                     if (kvp.Value is string route)
+                    {
                         jsonObject["route"] = route;
+                    }
+
                     break;
                 case "models":
                     if (kvp.Value is string[] modelPreferences)
+                    {
                         jsonObject["models"] = modelPreferences;
+                    }
+
                     break;
                 case "http_headers":
                     if (kvp.Value is Dictionary<string, string> headers)

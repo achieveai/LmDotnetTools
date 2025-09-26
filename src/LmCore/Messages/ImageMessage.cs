@@ -52,7 +52,7 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
 
     public string? GenerationId { get; init; }
 
-    public List<BinaryData> ImageData { get; init; } = new List<BinaryData>();
+    public List<BinaryData> ImageData { get; init; } = [];
 
     IMessage IMessageBuilder.Build()
     {
@@ -112,11 +112,15 @@ public static partial class ImageMessageExtensions
     public static BinaryData? ToBinaryDataWithMimeType(this string? dataUrl)
     {
         if (dataUrl == null)
+        {
             return null;
+        }
 
         var match = DataUriPattern.Match(dataUrl);
         if (!match.Success)
+        {
             return null;
+        }
 
         var mimeType = match.Groups["mimeType"].Value;
         var base64Data = match.Groups["data"].Value;
@@ -142,7 +146,9 @@ public static partial class ImageMessageExtensions
     public static string? ToDataUrl(this BinaryData? data)
     {
         if (data == null)
+        {
             return null;
+        }
 
         string actualMimeType = data.MediaType ?? "application/octet-stream";
         var base64Data = Convert.ToBase64String(data.ToArray());

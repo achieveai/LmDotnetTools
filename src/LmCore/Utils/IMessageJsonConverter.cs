@@ -19,12 +19,12 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
     private readonly Dictionary<Type, string> _typeToDiscriminator;
 
     // Cache for type-specific converters
-    private readonly Dictionary<Type, JsonConverter> _typeConverters = new();
+    private readonly Dictionary<Type, JsonConverter> _typeConverters = [];
 
     public IMessageJsonConverter()
     {
         _discriminatorToType = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
-        _typeToDiscriminator = new Dictionary<Type, string>();
+        _typeToDiscriminator = [];
 
         // Get all JsonDerivedType attributes from the IMessage interface
         var attributes = typeof(IMessage).GetCustomAttributes<JsonDerivedTypeAttribute>().ToList();
@@ -174,7 +174,9 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         {
             // Skip writing the type discriminator if it's already in the document
             if (property.Name == TypeDiscriminatorPropertyName)
+            {
                 continue;
+            }
 
             property.WriteTo(writer);
         }
@@ -187,25 +189,54 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
     {
         // First check if it's a known type with a mapping in GetTypeFromDiscriminator
         if (type == typeof(TextMessage))
+        {
             return "text";
+        }
+
         if (type == typeof(ImageMessage))
+        {
             return "image";
+        }
+
         if (type == typeof(ToolsCallMessage))
+        {
             return "tools_call";
+        }
+
         if (type == typeof(TextUpdateMessage))
+        {
             return "text_update";
+        }
+
         if (type == typeof(ToolsCallResultMessage))
+        {
             return "tools_call_result";
+        }
+
         if (type == typeof(ToolsCallUpdateMessage))
+        {
             return "tools_call_update";
+        }
+
         if (type == typeof(ToolsCallAggregateMessage))
+        {
             return "tools_call_aggregate";
+        }
+
         if (type == typeof(UsageMessage))
+        {
             return "usage";
+        }
+
         if (type == typeof(ReasoningMessage))
+        {
             return "reasoning";
+        }
+
         if (type == typeof(ReasoningUpdateMessage))
+        {
             return "reasoning_update";
+        }
 
         // If not a known type, fallback to name conversion
         string typeName = type.Name;

@@ -28,8 +28,8 @@ public class FunctionRegistry
         IFunctionRegistryWithProviders,
         IConfiguredFunctionRegistry
 {
-    private readonly List<IFunctionProvider> _providers = new();
-    private readonly Dictionary<string, FunctionDescriptor> _explicitFunctions = new();
+    private readonly List<IFunctionProvider> _providers = [];
+    private readonly Dictionary<string, FunctionDescriptor> _explicitFunctions = [];
     private ConflictResolution _conflictResolution = ConflictResolution.Throw;
     private Func<string, IEnumerable<FunctionDescriptor>, FunctionDescriptor>? _conflictHandler;
     private FunctionFilterConfig? _filterConfig;
@@ -277,7 +277,10 @@ public class FunctionRegistry
         foreach (var descriptor in allDescriptors)
         {
             if (!functionsByKey.ContainsKey(descriptor.Key))
-                functionsByKey[descriptor.Key] = new List<FunctionDescriptor>();
+            {
+                functionsByKey[descriptor.Key] = [];
+            }
+
             functionsByKey[descriptor.Key].Add(descriptor);
         }
 
@@ -371,7 +374,9 @@ public class FunctionRegistry
         // Explicit functions always take precedence over provider functions
         var explicitFunction = candidates.FirstOrDefault(c => c.ProviderName == "Explicit");
         if (explicitFunction != null)
+        {
             return explicitFunction;
+        }
 
         // Custom handler takes precedence
         return _conflictHandler != null
@@ -380,9 +385,9 @@ public class FunctionRegistry
             {
                 ConflictResolution.TakeFirst => candidates.First(),
                 ConflictResolution.TakeLast => candidates.Last(),
-                ConflictResolution.PreferMcp => candidates.FirstOrDefault(c => IsMcpProvider(c))
+                ConflictResolution.PreferMcp => candidates.FirstOrDefault(IsMcpProvider)
                     ?? candidates.First(),
-                ConflictResolution.PreferNatural => candidates.FirstOrDefault(c => IsNaturalProvider(c))
+                ConflictResolution.PreferNatural => candidates.FirstOrDefault(IsNaturalProvider)
                     ?? candidates.First(),
                 ConflictResolution.RequireExplicit => throw new InvalidOperationException(
                     $"Function '{key}' has conflicts from multiple providers. "
@@ -419,7 +424,10 @@ public class FunctionRegistry
             foreach (var function in provider.GetFunctions())
             {
                 if (!allFunctions.ContainsKey(function.Key))
-                    allFunctions[function.Key] = new List<FunctionDescriptor>();
+                {
+                    allFunctions[function.Key] = [];
+                }
+
                 allFunctions[function.Key].Add(function);
             }
         }
@@ -427,7 +435,7 @@ public class FunctionRegistry
         // Add explicit functions (they take precedence)
         foreach (var kvp in _explicitFunctions)
         {
-            allFunctions[kvp.Key] = new List<FunctionDescriptor> { kvp.Value };
+            allFunctions[kvp.Key] = [kvp.Value];
         }
 
         // Resolve conflicts to get final function set
@@ -631,11 +639,19 @@ public class FunctionRegistry
             // Handle basic types with constraints
             var constraints = new List<string>();
             if (schema.Minimum.HasValue)
+            {
                 constraints.Add($"min: {schema.Minimum}");
+            }
+
             if (schema.Maximum.HasValue)
+            {
                 constraints.Add($"max: {schema.Maximum}");
+            }
+
             if (schema.MinItems.HasValue)
+            {
                 constraints.Add($"minItems: {schema.MinItems}");
+            }
 
             var constraintText = constraints.Count != 0 ? $" ({string.Join(", ", constraints)})" : "";
             return $"`{baseType}`{constraintText}";

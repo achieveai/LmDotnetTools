@@ -271,7 +271,7 @@ public class McpMiddlewareFactory
             {
                 Name = clientId,
                 Command = command,
-                Arguments = arguments ?? Array.Empty<string>(),
+                Arguments = arguments ?? [],
             }
         );
     }
@@ -327,7 +327,7 @@ public class McpMiddlewareFactory
             {
                 Name = clientId,
                 Command = command,
-                Arguments = arguments ?? Array.Empty<string>(),
+                Arguments = arguments ?? [],
             }
         );
     }
@@ -347,7 +347,7 @@ public class McpMiddlewareFactory
                 .Select(o => o?.ToString() ?? string.Empty)
                 .ToArray(),
             string singleArg => singleArg.Split(' ', StringSplitOptions.RemoveEmptyEntries),
-            _ => Array.Empty<string>(),
+            _ => [],
         };
     }
 

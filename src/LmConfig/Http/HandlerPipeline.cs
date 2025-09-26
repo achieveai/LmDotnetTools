@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-using System.Net.Http;
 using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmConfig.Http;
@@ -20,7 +18,7 @@ public interface IHttpHandlerBuilder
 public sealed class HandlerBuilder : IHttpHandlerBuilder
 {
     private readonly IList<Func<HttpMessageHandler, ILogger?, HttpMessageHandler>> _wrappers =
-        new List<Func<HttpMessageHandler, ILogger?, HttpMessageHandler>>();
+        [];
 
     /// <summary>
     /// Registers a wrapper. The lambda receives the handler to wrap and must return the new outer handler.
@@ -35,7 +33,10 @@ public sealed class HandlerBuilder : IHttpHandlerBuilder
     {
         var handler = innerMost;
         for (var i = _wrappers.Count - 1; i >= 0; i--)
+        {
             handler = _wrappers[i](handler, logger);
+        }
+
         return handler;
     }
 }
