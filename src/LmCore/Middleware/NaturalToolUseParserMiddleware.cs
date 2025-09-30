@@ -565,6 +565,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 processedReplies.Add(reply);
             }
         }
+
         return processedReplies;
     }
 
@@ -883,13 +884,13 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 return ValidateAndReturnJsonResponse(jsonText, jsonSchema, toolName);
             }
 
-            throw new ToolUseParsingException(
-                $"Fallback parser failed to generate response for {toolName}"
-            );
+            // Dont' throw, no one would be able to catch and work with this exception.
+            // throw new ToolUseParsingException($"Fallback parser failed to generate response for {toolName}");
+            return await FallbackToUnstructuredOutput(rawText, toolName, jsonSchema, messages, cancellationToken);
         }
         catch (ToolUseParsingException)
         {
-            throw;
+            return await FallbackToUnstructuredOutput(rawText, toolName, jsonSchema, messages, cancellationToken);
         }
         catch (Exception ex)
         {

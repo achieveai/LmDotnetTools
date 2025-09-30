@@ -282,33 +282,52 @@ public class ModelResolver : IModelResolver
                 continue;
             }
 
+            // Track provider validation results for this model
+            var providerErrors = new List<string>();
+            var validProviderCount = 0;
+
             foreach (var provider in model.Providers)
             {
                 if (string.IsNullOrWhiteSpace(provider.Name))
                 {
-                    errors.Add($"Model {model.Id} has provider with empty name");
+                    providerErrors.Add($"Provider with empty name");
                     continue;
                 }
 
                 var connection = _config.GetProviderConnection(provider.Name);
                 if (connection == null)
                 {
-                    errors.Add(
-                        $"No connection info found for provider {provider.Name} in model {model.Id}"
-                    );
+                    providerErrors.Add($"No connection info found for provider {provider.Name}");
                     continue;
                 }
 
                 var connectionValidation = connection.Validate();
                 if (!connectionValidation.IsValid)
                 {
-                    errors.AddRange(
-                        connectionValidation.Errors.Select(e => $"Provider {provider.Name}: {e}")
-                    );
+                    providerErrors.AddRange(connectionValidation.Errors.Select(e =>
+                        $"Provider {provider.Name}: {e}"));
                 }
-                warnings.AddRange(
-                    connectionValidation.Warnings.Select(w => $"Provider {provider.Name}: {w}")
-                );
+                else
+                {
+                    validProviderCount++;
+                }
+
+                // Always add warnings regardless of provider validity
+                warnings.AddRange(connectionValidation.Warnings.Select(w =>
+                    $"Provider {provider.Name} in model {model.Id}: {w}"));
+            }
+
+            // Only add model-level error if ALL providers have errors
+            if (validProviderCount == 0 && providerErrors.Any())
+            {
+                errors.Add($"Model {model.Id} has no valid providers - all providers failed validation:");
+                errors.AddRange(providerErrors.Select(e => $"  - {e}"));
+            }
+            else if (providerErrors.Any())
+            {
+                // If at least one provider is valid, treat invalid providers as warnings
+                warnings.Add($"Model {model.Id} has {providerErrors.Count} invalid provider(s) but {validProviderCount} valid provider(s):");
+                warnings.AddRange(providerErrors.Select(e => $"  - {e}"));
             }
         }
 
