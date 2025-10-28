@@ -276,12 +276,13 @@ public class FunctionRegistry
         var functionsByKey = new Dictionary<string, List<FunctionDescriptor>>();
         foreach (var descriptor in allDescriptors)
         {
-            if (!functionsByKey.ContainsKey(descriptor.Key))
+            if (!functionsByKey.TryGetValue(descriptor.Key, out var value))
             {
-                functionsByKey[descriptor.Key] = [];
+                value = ([]);
+                functionsByKey[descriptor.Key] = value;
             }
 
-            functionsByKey[descriptor.Key].Add(descriptor);
+            value.Add(descriptor);
         }
 
         // Step 4: Resolve conflicts
@@ -423,12 +424,13 @@ public class FunctionRegistry
         {
             foreach (var function in provider.GetFunctions())
             {
-                if (!allFunctions.ContainsKey(function.Key))
+                if (!allFunctions.TryGetValue(function.Key, out var value))
                 {
-                    allFunctions[function.Key] = [];
+                    value = ([]);
+                    allFunctions[function.Key] = value;
                 }
 
-                allFunctions[function.Key].Add(function);
+                value.Add(function);
             }
         }
 

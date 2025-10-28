@@ -1187,12 +1187,13 @@ public class OpenRouterModelService
                     continue;
                 }
 
-                if (!modelGroups.ContainsKey(slug))
+                if (!modelGroups.TryGetValue(slug, out var value))
                 {
-                    modelGroups[slug] = [];
+                    value = ([]);
+                    modelGroups[slug] = value;
                 }
 
-                modelGroups[slug].Add(modelNode);
+                value.Add(modelNode);
             }
 
             foreach (var modelGroup in modelGroups)

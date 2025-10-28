@@ -32,7 +32,7 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         _streamingMiddleware = middleware.InvokeStreamingAsync;
         _middlewareName = middleware.Name ?? middleware.GetType().Name;
         _creationStackTrace = Environment.StackTrace;
-        
+
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("MiddlewareWrappingStreamingAgent created: Middleware={MiddlewareName}", _middlewareName);
     }
@@ -53,7 +53,7 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         _streamingMiddleware = streamingMiddleware;
         _middlewareName = "CustomMiddleware";
         _creationStackTrace = Environment.StackTrace;
-        
+
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("MiddlewareWrappingStreamingAgent created: Middleware={MiddlewareName}", _middlewareName);
     }
@@ -78,7 +78,7 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         var correlationId = Guid.NewGuid().ToString("N")[..8];
         _logger.LogDebug("[{CorrelationId}] Middleware '{MiddlewareName}' starting streaming invocation",
             correlationId, _middlewareName);
-        
+
         var messageStream = await _streamingMiddleware(
             new MiddlewareContext(messages, options),
             _agent,

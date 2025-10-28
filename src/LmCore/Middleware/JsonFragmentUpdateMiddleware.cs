@@ -14,7 +14,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators =
         [];
 
-    public string? Name => throw new NotImplementedException();
+    public string? Name => "JsonFragmentUpdateMiddleware";
 
     /// <summary>
     /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage instances.

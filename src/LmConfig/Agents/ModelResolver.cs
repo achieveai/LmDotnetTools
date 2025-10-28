@@ -318,12 +318,12 @@ public class ModelResolver : IModelResolver
             }
 
             // Only add model-level error if ALL providers have errors
-            if (validProviderCount == 0 && providerErrors.Any())
+            if (validProviderCount == 0 && providerErrors.Count != 0)
             {
                 errors.Add($"Model {model.Id} has no valid providers - all providers failed validation:");
                 errors.AddRange(providerErrors.Select(e => $"  - {e}"));
             }
-            else if (providerErrors.Any())
+            else if (providerErrors.Count != 0)
             {
                 // If at least one provider is valid, treat invalid providers as warnings
                 warnings.Add($"Model {model.Id} has {providerErrors.Count} invalid provider(s) but {validProviderCount} valid provider(s):");
