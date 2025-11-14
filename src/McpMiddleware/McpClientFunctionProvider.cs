@@ -128,8 +128,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// <returns>A new instance of McpClientFunctionProvider</returns>
     public static async Task<McpClientFunctionProvider> CreateAsync(
         Dictionary<string, IMcpClient> mcpClients,
-        McpToolFilterConfig? toolFilterConfig,
-        Dictionary<string, McpServerFilterConfig>? serverConfigs,
+        AchieveAi.LmDotnetTools.LmCore.Configuration.FunctionFilterConfig? toolFilterConfig,
+        Dictionary<string, AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig>? serverConfigs,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default
@@ -170,22 +170,67 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         }
 
         // Use collision detector to resolve naming
-        var collisionDetector = new McpToolCollisionDetector(logger);
-        var usePrefixOnlyForCollisions = toolFilterConfig?.UsePrefixOnlyForCollisions ?? true;
-        var namingMap = collisionDetector.DetectAndResolveCollisions(
-            toolsByServer,
-            usePrefixOnlyForCollisions
+        // Convert MCP tools to function descriptors
+        var descriptors = new List<FunctionDescriptor>();
+        var toolToDescriptorMap =
+            new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
+
+        foreach (var (serverId, tools) in toolsByServer)
+        {
+            foreach (var tool in tools)
+            {
+                var descriptor = new FunctionDescriptor
+                {
+                    Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
+                    {
+                        Name = tool.Name,
+                        Description = tool.Description ?? string.Empty,
+                    },
+                    Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+                    ProviderName = serverId,
+                };
+
+                descriptors.Add(descriptor);
+                toolToDescriptorMap[(serverId, tool.Name)] = descriptor;
+            }
+        }
+
+        // Use the generalized collision detector
+        var collisionConfig = new AchieveAi.LmDotnetTools.LmCore.Configuration.FunctionFilterConfig
+        {
+            UsePrefixOnlyForCollisions = toolFilterConfig?.UsePrefixOnlyForCollisions ?? true,
+        };
+
+        var collisionDetector = new FunctionCollisionDetector(logger);
+        var descriptorNamingMap = collisionDetector.DetectAndResolveCollisions(
+            descriptors,
+            collisionConfig
         );
 
+        // Convert back to the expected format
+        var namingMap = new Dictionary<(string serverId, string toolName), string>();
+        foreach (var ((serverId, toolName), descriptor) in toolToDescriptorMap)
+        {
+            if (descriptorNamingMap.TryGetValue(descriptor.Key, out var registeredName))
+            {
+                namingMap[(serverId, toolName)] = registeredName;
+            }
+        }
+
         // Apply filtering if configured
-        var toolFilter =
-            toolFilterConfig?.EnableFiltering == true
-                ? new McpToolFilter(
-                    toolFilterConfig,
-                    serverConfigs ?? [],
-                    logger
-                )
-                : null;
+        FunctionFilter? toolFilter = null;
+        if (toolFilterConfig?.EnableFiltering == true)
+        {
+            // Convert server configs to provider configs if needed
+            if (serverConfigs != null && serverConfigs.Count > 0)
+            {
+                toolFilterConfig.ProviderConfigs = serverConfigs.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => (AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig)kvp.Value
+                );
+            }
+            toolFilter = new FunctionFilter(toolFilterConfig, logger);
+        }
 
         // Extract function contracts and create handlers using naming map
         var functionContracts = await ExtractFunctionContractsWithNamingMapAsync(
@@ -671,7 +716,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         Dictionary<string, IMcpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
-        McpToolFilter? toolFilter,
+        FunctionFilter? toolFilter,
         ILogger<McpClientFunctionProvider> logger,
         CancellationToken cancellationToken = default
     )
@@ -696,18 +741,28 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     }
 
                     // Apply filtering if configured
-                    if (
-                        toolFilter != null
-                        && toolFilter.ShouldFilterTool(serverId, tool.Name, registeredName)
-                    )
+                    if (toolFilter != null)
                     {
-                        logger.LogDebug(
-                            "Tool filtered out: ServerId={ServerId}, ToolName={ToolName}, RegisteredName={RegisteredName}",
-                            serverId,
-                            tool.Name,
-                            registeredName
-                        );
-                        continue;
+                        var descriptor = new FunctionDescriptor
+                        {
+                            Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
+                            {
+                                Name = tool.Name,
+                            },
+                            Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+                            ProviderName = serverId,
+                        };
+
+                        if (toolFilter.ShouldFilterFunctionWithReason(descriptor, registeredName).IsFiltered)
+                        {
+                            logger.LogDebug(
+                                "Tool filtered out: ServerId={ServerId}, ToolName={ToolName}, RegisteredName={RegisteredName}",
+                                serverId,
+                                tool.Name,
+                                registeredName
+                            );
+                            continue;
+                        }
                     }
 
                     var contract = new FunctionContract
@@ -748,7 +803,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         Dictionary<string, IMcpClient> mcpClients,
         Dictionary<string, List<McpClientTool>> toolsByServer,
         Dictionary<(string serverId, string toolName), string> namingMap,
-        McpToolFilter? toolFilter,
+        FunctionFilter? toolFilter,
         ILogger<McpClientFunctionProvider> logger,
         CancellationToken cancellationToken = default
     )
@@ -777,18 +832,28 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 }
 
                 // Apply filtering if configured
-                if (
-                    toolFilter != null
-                    && toolFilter.ShouldFilterTool(serverId, tool.Name, registeredName)
-                )
+                if (toolFilter != null)
                 {
-                    logger.LogDebug(
-                        "Tool filtered out from function map: ServerId={ServerId}, ToolName={ToolName}, RegisteredName={RegisteredName}",
-                        serverId,
-                        tool.Name,
-                        registeredName
-                    );
-                    continue;
+                    var descriptor = new FunctionDescriptor
+                    {
+                        Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
+                        {
+                            Name = tool.Name,
+                        },
+                        Handler = _ => Task.FromResult(string.Empty), // Dummy handler
+                        ProviderName = serverId,
+                    };
+
+                    if (toolFilter.ShouldFilterFunctionWithReason(descriptor, registeredName).IsFiltered)
+                    {
+                        logger.LogDebug(
+                            "Tool filtered out from function map: ServerId={ServerId}, ToolName={ToolName}, RegisteredName={RegisteredName}",
+                            serverId,
+                            tool.Name,
+                            registeredName
+                        );
+                        continue;
+                    }
                 }
 
                 logger.LogDebug(

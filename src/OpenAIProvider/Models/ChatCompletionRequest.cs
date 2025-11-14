@@ -437,7 +437,11 @@ public record ChatCompletionRequest
 
     private static void MergeReasoning(List<ReasoningMessage> reasoningBuffer, ChatMessage? ch)
     {
-        if (reasoningBuffer.Count > 0)
+        if (ch == null || reasoningBuffer.Count == 0)
+        {
+            return;
+        }
+
         {
             // Prefer encrypted reasoning blocks. If any encrypted messages exist, drop plain ones.
             List<ReasoningMessage> selected;

@@ -82,8 +82,8 @@ public static class FunctionRegistryExtensions
     public static async Task<FunctionRegistry> AddMcpClientsAsync(
         this FunctionRegistry registry,
         Dictionary<string, IMcpClient> mcpClients,
-        McpToolFilterConfig? toolFilterConfig,
-        Dictionary<string, McpServerFilterConfig>? serverConfigs,
+        AchieveAi.LmDotnetTools.LmCore.Configuration.FunctionFilterConfig? toolFilterConfig,
+        Dictionary<string, AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig>? serverConfigs,
         string? providerName = null,
         ILogger<McpClientFunctionProvider>? logger = null,
         CancellationToken cancellationToken = default

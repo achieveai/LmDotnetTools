@@ -36,7 +36,7 @@ public static class TestLoggerFactory
     /// Useful for performance-sensitive tests
     /// </summary>
     /// <typeparam name="T">The type the logger is for</typeparam>
-    /// <returns>A silent ILogger<T> instance</returns>
+    /// <returns>A silent ILogger{T} instance</returns>
     public static ILogger<T> CreateSilentLogger<T>()
     {
         return new SilentTestLogger<T>();
