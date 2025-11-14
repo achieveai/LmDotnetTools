@@ -22,6 +22,8 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 public class DataDrivenReasoningStreamingTests
 {
     private readonly ProviderTestDataManager _dm = new();
+    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
+    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
 
     #region Raw Streaming Playback
 
@@ -83,10 +85,7 @@ public class DataDrivenReasoningStreamingTests
         }
         else
         {
-            Assert.False(
-                response.OfType<UsageMessage>().Any(),
-                "UsageMessage exists but is not last"
-            );
+            Assert.False(response.OfType<UsageMessage>().Any(), "UsageMessage exists but is not last");
         }
 
         // Raw streaming should have reasoning messages (pattern varies by model)
@@ -97,10 +96,7 @@ public class DataDrivenReasoningStreamingTests
         );
 
         // Should not contain consolidated text messages yet
-        Assert.False(
-            response.OfType<TextMessage>().Any(),
-            "Raw streaming should not contain consolidated TextMessage"
-        );
+        Assert.False(response.OfType<TextMessage>().Any(), "Raw streaming should not contain consolidated TextMessage");
 
         Debug.WriteLine(
             $"Raw streaming test for {testName}: {response.Count} messages, "
@@ -113,7 +109,7 @@ public class DataDrivenReasoningStreamingTests
         {
             var preview =
                 reasoning.Reasoning?.Length > 50
-                    ? reasoning.Reasoning.Substring(0, 50) + "..."
+                    ? string.Concat(reasoning.Reasoning.AsSpan(0, 50), "...")
                     : reasoning.Reasoning;
             Debug.WriteLine(
                 $"  Reasoning message: visibility={reasoning.Visibility}, length={reasoning.Reasoning?.Length}, preview='{preview}'"
@@ -181,13 +177,10 @@ public class DataDrivenReasoningStreamingTests
         var textMessages = response.OfType<TextMessage>().ToList();
 
         Assert.True(
-            reasoningMessages.Any(),
+            reasoningMessages.Count != 0,
             "Expected at least one ReasoningMessage in joined streaming response"
         );
-        Assert.True(
-            textMessages.Any(),
-            "Expected at least one TextMessage in joined streaming response"
-        );
+        Assert.True(textMessages.Count != 0, "Expected at least one TextMessage in joined streaming response");
 
         // The last message MAY be UsageMessage when token usage is provided. Accept absence too.
         var joinedLast = response.Last();
@@ -197,10 +190,7 @@ public class DataDrivenReasoningStreamingTests
         }
         else
         {
-            Assert.False(
-                response.OfType<UsageMessage>().Any(),
-                "UsageMessage exists but is not last"
-            );
+            Assert.False(response.OfType<UsageMessage>().Any(), "UsageMessage exists but is not last");
         }
 
         Debug.WriteLine(
@@ -260,19 +250,12 @@ public class DataDrivenReasoningStreamingTests
             .Count();
 
         Debug.WriteLine($"Empty text updates found: {emptyTextUpdates}");
-        Assert.True(
-            emptyTextUpdates < 10,
-            $"Should not have many empty text updates, found {emptyTextUpdates}"
-        );
+        Assert.True(emptyTextUpdates < 10, $"Should not have many empty text updates, found {emptyTextUpdates}");
 
         // Check that we don't have excessive zero-token usage messages
         var zeroTokenUsageMessages = streamingResponse
             .OfType<UsageMessage>()
-            .Where(u =>
-                u.Usage.PromptTokens == 0
-                && u.Usage.CompletionTokens == 0
-                && u.Usage.TotalTokens == 0
-            )
+            .Where(u => u.Usage.PromptTokens == 0 && u.Usage.CompletionTokens == 0 && u.Usage.TotalTokens == 0)
             .Count();
 
         Debug.WriteLine($"Zero-token usage messages found: {zeroTokenUsageMessages}");
@@ -285,9 +268,7 @@ public class DataDrivenReasoningStreamingTests
         var reasoningMessages = streamingResponse.OfType<ReasoningMessage>().ToList();
         var tinyReasoningMessages = reasoningMessages.Where(r => r.Reasoning.Length < 10).Count();
 
-        Debug.WriteLine(
-            $"Reasoning messages: {reasoningMessages.Count}, tiny fragments: {tinyReasoningMessages}"
-        );
+        Debug.WriteLine($"Reasoning messages: {reasoningMessages.Count}, tiny fragments: {tinyReasoningMessages}");
 
         // Total message count should be reasonable (not thousands)
         Debug.WriteLine($"Total messages: {streamingResponse.Count}");
@@ -370,11 +351,7 @@ public class DataDrivenReasoningStreamingTests
 
     private async Task CreateStreamingArtefactsAsync(string testName, string modelId)
     {
-        string lmCoreRequestPath = _dm.GetTestDataPath(
-            testName,
-            ProviderType.OpenAI,
-            DataType.LmCoreRequest
-        );
+        string lmCoreRequestPath = _dm.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
         if (File.Exists(lmCoreRequestPath))
         {
             Debug.WriteLine($"Artefacts for {testName} already exist. Skip creation.");
@@ -396,20 +373,11 @@ public class DataDrivenReasoningStreamingTests
             Temperature = 0f,
             ExtraProperties = new Dictionary<string, object?>
             {
-                ["reasoning"] = new Dictionary<string, object?>
-                {
-                    ["effort"] = "medium",
-                    ["max_tokens"] = 512,
-                },
+                ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "medium", ["max_tokens"] = 512 },
             }.ToImmutableDictionary(),
         };
 
-        _dm.SaveLmCoreRequest(
-            testName,
-            ProviderType.OpenAI,
-            messages.OfType<TextMessage>().ToArray(),
-            options
-        );
+        _dm.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages.OfType<TextMessage>().ToArray(), options);
 
         // Build handler for recording
         var cassettePath = Path.Combine(
@@ -450,18 +418,10 @@ public class DataDrivenReasoningStreamingTests
     #region Helpers
 
     private static string GetApiKeyFromEnv() =>
-        EnvironmentHelper.GetApiKeyFromEnv(
-            "OPENAI_API_KEY",
-            new[] { "LLM_API_KEY" },
-            "test-api-key"
-        );
+        EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
 
     private static string GetApiBaseUrlFromEnv() =>
-        EnvironmentHelper.GetApiBaseUrlFromEnv(
-            "OPENAI_API_URL",
-            new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1"
-        );
+        EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
 
     #endregion
 }

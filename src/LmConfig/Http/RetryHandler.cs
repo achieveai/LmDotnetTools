@@ -24,8 +24,7 @@ public sealed class RetryHandler : DelegatingHandler
         {
             try
             {
-                var response = await base.SendAsync(request, cancellationToken)
-                    .ConfigureAwait(false);
+                var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 if ((int)response.StatusCode < 500 || attempt == _maxAttempts)
                 {
                     return response;

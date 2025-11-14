@@ -41,8 +41,9 @@ public class McpFunctionCallExtensionsTests
 
         // Act - test with specific tool types rather than scanning whole assembly
         var toolTypes = new[] { greetingToolType, calculatorToolType };
-        var (functionContracts, functionMap) =
-            McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
+        var (functionContracts, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(
+            toolTypes
+        );
 
         // Convert to list for easier assertions
         var contractsList = functionContracts.ToList();
@@ -110,9 +111,7 @@ public class McpFunctionCallExtensionsTests
 
         // Act - test with specific tool types rather than scanning whole assembly
         var toolTypes = new[] { greetingToolType, calculatorToolType! };
-        var (_, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(
-            toolTypes
-        );
+        var (_, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
 
         // Act & Assert for SayHello
         var sayHelloResult = await functionMap["GreetingTool-SayHello"]("{\"name\":\"Test User\"}");
@@ -149,13 +148,8 @@ public class McpFunctionCallExtensionsTests
 
         // Create a middleware using a direct approach rather than assembly scanning
         var toolTypes = new[] { greetingToolType, calculatorToolType! };
-        var (functions, functionMap) =
-            McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
-        var middleware = new FunctionCallMiddleware(
-            functions,
-            functionMap,
-            "FunctionCallMiddleware"
-        );
+        var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromTypes(toolTypes);
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "FunctionCallMiddleware");
 
         // Assert
         Assert.NotNull(middleware);

@@ -102,12 +102,7 @@ public sealed record JsonFragmentUpdate
     /// <summary>
     /// Creates a new JsonFragmentUpdate
     /// </summary>
-    public JsonFragmentUpdate(
-        string path,
-        JsonFragmentKind kind,
-        string? textValue = null,
-        JsonNode? jsonValue = null
-    )
+    public JsonFragmentUpdate(string path, JsonFragmentKind kind, string? textValue = null, JsonNode? jsonValue = null)
     {
         Path = path;
         Kind = kind;

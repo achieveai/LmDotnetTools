@@ -19,12 +19,7 @@ public class FunctionToolTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage(
-                "This is a mock response for testing.",
-                "claude-3-7-sonnet-20250219",
-                10,
-                20
-            )
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
 
@@ -40,9 +35,7 @@ public class FunctionToolTests
         TestLogger.Log($"Created {messages.Length} messages");
 
         // Get weather function from MockWeatherTool
-        var weatherFunction = MockToolCallHelper
-            .CreateMockToolCalls(new[] { typeof(MockWeatherTool) })
-            .Item1.First();
+        var weatherFunction = MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockWeatherTool) }).Item1.First();
 
         var options = new GenerateReplyOptions
         {
@@ -77,9 +70,7 @@ public class FunctionToolTests
         Assert.True(weatherTool.HasInputProperty("location"));
         Assert.Equal("string", weatherTool.GetInputPropertyType("location"));
 
-        TestLogger.Log(
-            $"Successfully validated tool: {weatherTool.Name} with {tools.Count} tools total"
-        );
+        TestLogger.Log($"Successfully validated tool: {weatherTool.Name} with {tools.Count} tools total");
     }
 
     [Fact]
@@ -90,12 +81,7 @@ public class FunctionToolTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage(
-                "This is a mock response for testing.",
-                "claude-3-7-sonnet-20250219",
-                10,
-                20
-            )
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
 
@@ -111,18 +97,12 @@ public class FunctionToolTests
                 Role = Role.System,
                 Text = "You are a helpful assistant that can use tools to help users.",
             },
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "List files in root and \"code\" directories.",
-            },
+            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." },
         };
         TestLogger.Log($"Created messages array with {messages.Length} messages");
 
         // Get mock functions from MockPythonExecutionTool
-        var mockFunctions = MockToolCallHelper
-            .CreateMockToolCalls(new[] { typeof(MockPythonExecutionTool) })
-            .Item1;
+        var mockFunctions = MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockPythonExecutionTool) }).Item1;
 
         // Create multiple function definitions based on example_requests.json
         // But extract parameter information from the mock tools
@@ -163,13 +143,7 @@ public class FunctionToolTests
             ModelId = "claude-3-7-sonnet-20250219",
             MaxToken = 2000,
             Temperature = 0.7f,
-            Functions = new[]
-            {
-                listDirectoryFunction,
-                deleteFileFunction,
-                getDirTreeFunction,
-                cleanupFunction,
-            },
+            Functions = new[] { listDirectoryFunction, deleteFileFunction, getDirTreeFunction, cleanupFunction },
         };
         TestLogger.Log("Created options with multiple function tools");
 

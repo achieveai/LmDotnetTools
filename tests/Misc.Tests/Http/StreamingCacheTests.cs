@@ -20,11 +20,7 @@ public class StreamingCacheTests
     [TestInitialize]
     public void Setup()
     {
-        _testCacheDirectory = Path.Combine(
-            Path.GetTempPath(),
-            "StreamingCacheTests",
-            Guid.NewGuid().ToString()
-        );
+        _testCacheDirectory = Path.Combine(Path.GetTempPath(), "StreamingCacheTests", Guid.NewGuid().ToString());
         Directory.CreateDirectory(_testCacheDirectory);
 
         _cache = new FileKvStore(_testCacheDirectory);
@@ -58,15 +54,9 @@ public class StreamingCacheTests
     public async Task CachingHttpMessageHandler_WithStreamingResponse_CachesContentWhileStreaming()
     {
         // Arrange
-        var responseContent =
-            "This is a test response that will be streamed and cached simultaneously.";
+        var responseContent = "This is a test response that will be streamed and cached simultaneously.";
         var mockHandler = new MockHttpMessageHandler(responseContent);
-        var cachingHandler = new CachingHttpMessageHandler(
-            _cache,
-            _options,
-            mockHandler,
-            NullLogger.Instance
-        );
+        var cachingHandler = new CachingHttpMessageHandler(_cache, _options, mockHandler, NullLogger.Instance);
 
         using var httpClient = new HttpClient(cachingHandler);
         var requestContent = "{\"test\": \"data\"}";

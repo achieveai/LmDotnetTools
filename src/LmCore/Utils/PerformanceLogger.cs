@@ -16,12 +16,7 @@ public sealed class PerformanceLogger : IDisposable
     private readonly Dictionary<string, object?> _properties;
     private bool _disposed;
 
-    private PerformanceLogger(
-        ILogger logger,
-        string operationName,
-        LogLevel logLevel,
-        EventId eventId
-    )
+    private PerformanceLogger(ILogger logger, string operationName, LogLevel logLevel, EventId eventId)
     {
         _logger = logger;
         _operationName = operationName;
@@ -46,12 +41,7 @@ public sealed class PerformanceLogger : IDisposable
         EventId? eventId = null
     )
     {
-        return new PerformanceLogger(
-            logger,
-            operationName,
-            logLevel,
-            eventId ?? LogEventIds.PerformanceMetrics
-        );
+        return new PerformanceLogger(logger, operationName, logLevel, eventId ?? LogEventIds.PerformanceMetrics);
     }
 
     /// <summary>
@@ -132,11 +122,7 @@ public sealed class PerformanceLogger : IDisposable
             var duration = _stopwatch.ElapsedMilliseconds;
 
             // Build the log message with all properties
-            var messageBuilder = new List<string>
-            {
-                "Operation={Operation}",
-                "Duration={Duration}ms",
-            };
+            var messageBuilder = new List<string> { "Operation={Operation}", "Duration={Duration}ms" };
             var values = new List<object?> { _operationName, duration };
 
             foreach (var (key, value) in _properties)
@@ -177,12 +163,7 @@ public static class TokenMetrics
     /// <param name="tokenCount">Number of tokens processed</param>
     /// <param name="durationMs">Duration in milliseconds</param>
     /// <param name="completionId">Optional completion ID</param>
-    public static void LogTokensPerSecond(
-        ILogger logger,
-        int tokenCount,
-        long durationMs,
-        string? completionId = null
-    )
+    public static void LogTokensPerSecond(ILogger logger, int tokenCount, long durationMs, string? completionId = null)
     {
         var tokensPerSecond = CalculateTokensPerSecond(tokenCount, durationMs);
 

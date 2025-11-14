@@ -19,10 +19,7 @@ public static class ChatCompletionRequestFactory
     /// <param name="messages">The messages to include in the request</param>
     /// <param name="options">The generation options</param>
     /// <returns>A properly configured ChatCompletionRequest</returns>
-    public static ChatCompletionRequest Create(
-        IEnumerable<IMessage> messages,
-        GenerateReplyOptions? options
-    )
+    public static ChatCompletionRequest Create(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
     {
         // Check if we're explicitly using OpenRouter
         bool isOpenRouter = IsOpenRouterRequest(options);
@@ -153,10 +150,7 @@ public static class ChatCompletionRequestFactory
                     // Use simple string content
                     chatMessage.Content = ChatMessage.CreateContent(textMessage.Text);
                 }
-                else if (
-                    message is ToolsCallMessage toolsCallMessage
-                    && toolsCallMessage.ToolCalls != null
-                )
+                else if (message is ToolsCallMessage toolsCallMessage && toolsCallMessage.ToolCalls != null)
                 {
                     // Convert tool calls
                     chatMessage.ToolCalls = [];
@@ -199,8 +193,7 @@ public static class ChatCompletionRequestFactory
         float? topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
         string[]? stop = options.StopSequence ?? request.Stop;
         bool? stream =
-            options.ExtraProperties.TryGetValue("stream", out var streamObj)
-            && streamObj is bool streamBool
+            options.ExtraProperties.TryGetValue("stream", out var streamObj) && streamObj is bool streamBool
                 ? streamBool
                 : request.Stream;
         bool? safePrompt =
@@ -208,18 +201,14 @@ public static class ChatCompletionRequestFactory
             && safePromptObj is bool safePromptBool
                 ? safePromptBool
                 : request.SafePrompt;
-        int? randomSeed = options.RandomSeed.HasValue
-            ? options.RandomSeed.Value
-            : request.RandomSeed;
+        int? randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
 
         // Prepare tools if functions are provided
         List<FunctionTool>? tools = request.Tools;
 
         if (options.Functions != null && options.Functions.Length > 0)
         {
-            tools = options
-                .Functions.Select(f => new FunctionTool(f.ToOpenFunctionDefinition()))
-                .ToList();
+            tools = options.Functions.Select(f => new FunctionTool(f.ToOpenFunctionDefinition())).ToList();
         }
 
         // Check for response format

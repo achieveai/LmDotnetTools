@@ -34,9 +34,7 @@ public static class ServiceCollectionExtensions
         // Configure options from appsettings
         services.Configure<DatabaseOptions>(configuration.GetSection("MemoryServer:Database"));
         services.Configure<MemoryServerOptions>(configuration.GetSection("MemoryServer"));
-        services.Configure<DocumentSegmentationOptions>(
-            configuration.GetSection("MemoryServer:DocumentSegmentation")
-        );
+        services.Configure<DocumentSegmentationOptions>(configuration.GetSection("MemoryServer:DocumentSegmentation"));
 
         // Register Database Session Pattern infrastructure
         services.AddDatabaseServices(environment);
@@ -89,9 +87,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    public static IServiceCollection AddDocumentSegmentationServices(
-        this IServiceCollection services
-    )
+    public static IServiceCollection AddDocumentSegmentationServices(this IServiceCollection services)
     {
         // Document Segmentation services - Phase 1 implementation
 
@@ -108,10 +104,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILlmProviderIntegrationService, LlmProviderIntegrationService>();
 
         // Quality assessment services
-        services.AddScoped<
-            ISegmentationQualityAssessmentService,
-            SegmentationQualityAssessmentService
-        >();
+        services.AddScoped<ISegmentationQualityAssessmentService, SegmentationQualityAssessmentService>();
 
         // Prompt management service - implemented in Week 2
         services.AddScoped<ISegmentationPromptManager, SegmentationPromptManager>();
@@ -151,15 +144,13 @@ public static class ServiceCollectionExtensions
             JitterPercent = 0.1,
         });
 
-        services.AddSingleton<GracefulDegradationConfiguration>(
-            _ => new GracefulDegradationConfiguration
-            {
-                FallbackTimeoutMs = 5000,
-                RuleBasedQualityScore = 0.7,
-                RuleBasedMaxProcessingMs = 10000,
-                MaxPerformanceDegradationPercent = 0.2,
-            }
-        );
+        services.AddSingleton<GracefulDegradationConfiguration>(_ => new GracefulDegradationConfiguration
+        {
+            FallbackTimeoutMs = 5000,
+            RuleBasedQualityScore = 0.7,
+            RuleBasedMaxProcessingMs = 10000,
+            MaxPerformanceDegradationPercent = 0.2,
+        });
 
         // Register resilience services
         services.AddSingleton<ICircuitBreakerService, CircuitBreakerService>();
@@ -205,10 +196,7 @@ public static class ServiceCollectionExtensions
     // Note: Agent creation methods removed as they are now handled by ILmConfigService
     // which provides better model selection, provider management, and configuration
 
-    public static IServiceCollection AddMcpServices(
-        this IServiceCollection services,
-        TransportMode transportMode
-    )
+    public static IServiceCollection AddMcpServices(this IServiceCollection services, TransportMode transportMode)
     {
         var mcpBuilder = services.AddMcpServer();
 

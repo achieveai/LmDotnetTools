@@ -84,11 +84,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             }
 
             // Check if we're switching message types and need to complete current builder
-            if (
-                lastMessageType != null
-                && lastMessageType != message.GetType()
-                && activeBuilder != null
-            )
+            if (lastMessageType != null && lastMessageType != message.GetType() && activeBuilder != null)
             {
                 // Complete the previous builder before processing the new message
                 var builtMessage = activeBuilder.Build();
@@ -114,9 +110,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
                     message is TextUpdateMessage
                     || message is ReasoningUpdateMessage
                     || message is ToolsCallUpdateMessage
-                    || (
-                        message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage)
-                    )
+                    || (message is ReasoningMessage && activeBuilderType == typeof(ReasoningMessage))
                 );
 
             if (!isBeingAccumulated)
@@ -148,7 +142,11 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // Handle tool call updates (ToolsCallUpdateMessage)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
         {
-            return MessageUpdateJoinerMiddleware.ProcessToolCallUpdate(toolCallUpdate, ref activeBuilder, ref activeBuilderType);
+            return MessageUpdateJoinerMiddleware.ProcessToolCallUpdate(
+                toolCallUpdate,
+                ref activeBuilder,
+                ref activeBuilderType
+            );
         }
         // For text update messages
         else if (message is TextUpdateMessage textUpdate)

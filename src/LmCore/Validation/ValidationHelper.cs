@@ -21,10 +21,7 @@ public static class ValidationHelper
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            throw new ArgumentException(
-                "Value cannot be null, empty, or whitespace",
-                parameterName
-            );
+            throw new ArgumentException("Value cannot be null, empty, or whitespace", parameterName);
         }
     }
 
@@ -86,10 +83,7 @@ public static class ValidationHelper
 
         if (collection!.Any(string.IsNullOrWhiteSpace))
         {
-            throw new ArgumentException(
-                "Collection cannot contain null, empty, or whitespace elements",
-                parameterName
-            );
+            throw new ArgumentException("Collection cannot contain null, empty, or whitespace elements", parameterName);
         }
     }
 
@@ -209,10 +203,7 @@ public static class ValidationHelper
     {
         if (!Enum.IsDefined(value))
         {
-            throw new ArgumentException(
-                $"Invalid {typeof(TEnum).Name} value: {value}",
-                parameterName
-            );
+            throw new ArgumentException($"Invalid {typeof(TEnum).Name} value: {value}", parameterName);
         }
     }
 
@@ -288,15 +279,9 @@ public static class ValidationHelper
     {
         ValidateNotNullOrWhiteSpace(baseUrl, parameterName);
 
-        if (
-            !Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
-            || (uri.Scheme != "http" && uri.Scheme != "https")
-        )
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
         {
-            throw new ArgumentException(
-                "Base URL must be a valid HTTP or HTTPS URL",
-                parameterName
-            );
+            throw new ArgumentException("Base URL must be a valid HTTP or HTTPS URL", parameterName);
         }
     }
 

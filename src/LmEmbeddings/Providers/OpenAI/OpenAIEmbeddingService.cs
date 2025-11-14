@@ -103,15 +103,15 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         : base(logger, httpClient)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _jsonOptions = JsonSerializerOptionsFactory.CreateBase(
-            namingPolicy: JsonNamingPolicy.SnakeCaseLower
-        );
+        _jsonOptions = JsonSerializerOptionsFactory.CreateBase(namingPolicy: JsonNamingPolicy.SnakeCaseLower);
 
         // Configure HttpClient
         if (!string.IsNullOrEmpty(_options.ApiKey))
         {
-            HttpClient.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey);
+            HttpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer",
+                _options.ApiKey
+            );
         }
 
         if (!string.IsNullOrEmpty(_options.BaseUrl))
@@ -135,8 +135,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     /// If an unknown model is specified, the service defaults to 1536 dimensions (text-embedding-3-small size).
     /// </para>
     /// </remarks>
-    public override int EmbeddingSize =>
-        _options.AvailableModelsWithDimensions[_options.DefaultModel].Dimensions;
+    public override int EmbeddingSize => _options.AvailableModelsWithDimensions[_options.DefaultModel].Dimensions;
 
     /// <summary>
     /// Gets the embedding size for a specific OpenAI model.
@@ -216,11 +215,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
                 var requestPayload = FormatRequestPayload(request);
 
                 var json = JsonSerializer.Serialize(requestPayload, _jsonOptions);
-                var content = new StringContent(
-                    json,
-                    System.Text.Encoding.UTF8,
-                    "application/json"
-                );
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
                 Logger.LogDebug(
                     "Sending embedding request to OpenAI for {InputCount} inputs using model {Model} with API type {ApiType}",
@@ -229,18 +224,11 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
                     request.ApiType
                 );
 
-                var response = await HttpClient.PostAsync(
-                    "/v1/embeddings",
-                    content,
-                    cancellationToken
-                );
+                var response = await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
                 response.EnsureSuccessStatusCode();
 
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-                var openAIResponse = JsonSerializer.Deserialize<OpenAIEmbeddingResponse>(
-                    responseJson,
-                    _jsonOptions
-                );
+                var openAIResponse = JsonSerializer.Deserialize<OpenAIEmbeddingResponse>(responseJson, _jsonOptions);
 
                 if (openAIResponse?.Data == null)
                     throw new InvalidOperationException("Invalid response from OpenAI API");
@@ -355,9 +343,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         {
             "base64" => DecodeBase64Embedding(embedding.ToString()!),
             "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
-            _ => throw new NotSupportedException(
-                $"Encoding format '{requestedFormat}' is not supported"
-            ),
+            _ => throw new NotSupportedException($"Encoding format '{requestedFormat}' is not supported"),
         };
     }
 

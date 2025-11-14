@@ -25,15 +25,12 @@ public class McpFunctionProvider : IFunctionProvider
 
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
-        var (contracts, handlers) =
-            McpFunctionCallExtensions.CreateFunctionCallComponentsFromAssembly(_assembly);
+        var (contracts, handlers) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromAssembly(_assembly);
 
         return contracts.Select(contract => new FunctionDescriptor
         {
             Contract = contract,
-            Handler = handlers[
-                contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name
-            ],
+            Handler = handlers[contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name],
             ProviderName = ProviderName,
         });
     }

@@ -11,46 +11,23 @@ namespace MemoryServer.DocumentSegmentation.Services;
 /// Implementation of structure-based document segmentation.
 /// Uses document structure analysis and LLM enhancement for optimal structural boundary detection.
 /// </summary>
-public class StructureBasedSegmentationService : IStructureBasedSegmentationService
+public partial class StructureBasedSegmentationService : IStructureBasedSegmentationService
 {
     private readonly ILlmProviderIntegrationService _llmService;
     private readonly ISegmentationPromptManager _promptManager;
     private readonly ILogger<StructureBasedSegmentationService> _logger;
 
     // Structural patterns for detecting document organization
-    private static readonly Regex HeadingPattern = new(
-        @"^#{1,6}\s+.+$|^[A-Z][A-Z\s\d\.\)]{2,50}$",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex MarkdownHeadingPattern = new(
-        @"^(#{1,6})\s+(.+)$",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex SectionBreakPattern = new(
-        @"^[\s]*(?:[-=_*]{3,}|[─═━]{3,})[\s]*$",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex ListPattern = new(
-        @"^\s*[-*+•]\s+.+$|^\s*\d+[\.\)]\s+.+$",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex CodeBlockPattern = new(
-        @"```[\s\S]*?```|`[^`]+`",
-        RegexOptions.Compiled
-    );
-    private static readonly Regex TablePattern = new(
-        @"\|.*?\|",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex BlockQuotePattern = new(
-        @"^\s*>\s+.+$",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
+    private static readonly Regex HeadingPattern = MyRegex();
+    private static readonly Regex MarkdownHeadingPattern = MyRegex1();
+    private static readonly Regex SectionBreakPattern = MyRegex2();
+    private static readonly Regex ListPattern = MyRegex3();
+    private static readonly Regex CodeBlockPattern = MyRegex4();
+    private static readonly Regex TablePattern = MyRegex5();
+    private static readonly Regex BlockQuotePattern = MyRegex6();
 
     // Strong formatting indicators for structural elements
-    private static readonly HashSet<string> StructuralKeywords = new(
-        StringComparer.OrdinalIgnoreCase
-    )
+    private static readonly HashSet<string> StructuralKeywords = new(StringComparer.OrdinalIgnoreCase)
     {
         "chapter",
         "section",
@@ -111,11 +88,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         try
         {
             // Step 1: Detect structural boundaries
-            var boundaries = await DetectStructuralBoundariesAsync(
-                content,
-                documentType,
-                cancellationToken
-            );
+            var boundaries = await DetectStructuralBoundariesAsync(content, documentType, cancellationToken);
             _logger.LogDebug("Detected {Count} structural boundaries", boundaries.Count);
 
             // Step 2: Create segments based on boundaries
@@ -125,12 +98,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             // Step 3: Analyze and enhance segments with LLM if needed
             if (options.UseLlmEnhancement)
             {
-                segments = await EnhanceSegmentsWithLlmAsync(
-                    segments,
-                    content,
-                    documentType,
-                    cancellationToken
-                );
+                segments = await EnhanceSegmentsWithLlmAsync(segments, content, documentType, cancellationToken);
                 _logger.LogDebug("Enhanced segments with LLM analysis");
             }
 
@@ -144,10 +112,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             // Step 5: Apply final quality validation
             segments = ApplyFinalQualityChecks(segments, options);
 
-            _logger.LogInformation(
-                "Structure-based segmentation completed: {Count} segments created",
-                segments.Count
-            );
+            _logger.LogInformation("Structure-based segmentation completed: {Count} segments created", segments.Count);
             return segments;
         }
         catch (Exception ex)
@@ -175,10 +140,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             // Step 1: Rule-based boundary detection
             var ruleBoundaries = DetectRuleBasedStructuralBoundaries(content, documentType);
             boundaries.AddRange(ruleBoundaries);
-            _logger.LogDebug(
-                "Found {Count} rule-based structural boundaries",
-                ruleBoundaries.Count
-            );
+            _logger.LogDebug("Found {Count} rule-based structural boundaries", ruleBoundaries.Count);
 
             // Step 2: Enhance with LLM analysis for better accuracy
             var llmBoundaries = await DetectLlmEnhancedStructuralBoundariesAsync(
@@ -187,10 +149,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
                 cancellationToken
             );
             boundaries.AddRange(llmBoundaries);
-            _logger.LogDebug(
-                "Found {Count} LLM-enhanced structural boundaries",
-                llmBoundaries.Count
-            );
+            _logger.LogDebug("Found {Count} LLM-enhanced structural boundaries", llmBoundaries.Count);
 
             // Step 3: Merge and validate boundaries
             var originalCount = boundaries.Count;
@@ -219,10 +178,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         CancellationToken cancellationToken = default
     )
     {
-        _logger.LogDebug(
-            "Analyzing hierarchical structure for content length: {Length}",
-            content.Length
-        );
+        _logger.LogDebug("Analyzing hierarchical structure for content length: {Length}", content.Length);
 
         try
         {
@@ -299,10 +255,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             // Step 1: Validate each segment individually
             foreach (var segment in segments)
             {
-                var result = await ValidateIndividualStructureSegmentAsync(
-                    segment,
-                    cancellationToken
-                );
+                var result = await ValidateIndividualStructureSegmentAsync(segment, cancellationToken);
                 segmentResults.Add(result);
             }
 
@@ -311,10 +264,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             validation.StructuralClarity = segmentResults.Average(r => r.StructuralClarity);
             validation.HierarchyPreservation = segmentResults.Average(r => r.HierarchyConsistency);
             validation.SectionCompleteness = segmentResults.Average(r => r.SectionCompleteness);
-            validation.BoundaryAccuracy = CalculateStructuralBoundaryAccuracy(
-                segments,
-                originalContent
-            );
+            validation.BoundaryAccuracy = CalculateStructuralBoundaryAccuracy(segments, originalContent);
 
             // Step 3: Calculate overall quality score
             validation.OverallQuality = CalculateOverallStructuralQuality(validation);
@@ -348,26 +298,22 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
     /// <summary>
     /// Detects structural boundaries using rule-based analysis.
     /// </summary>
-    private List<StructureBoundary> DetectRuleBasedStructuralBoundaries(
+    private static List<StructureBoundary> DetectRuleBasedStructuralBoundaries(
         string content,
         DocumentType documentType
     )
     {
-        System.Diagnostics.Debug.WriteLine(
-            "=== DEBUGGING: DetectRuleBasedStructuralBoundaries START ==="
-        );
+        System.Diagnostics.Debug.WriteLine("=== DEBUGGING: DetectRuleBasedStructuralBoundaries START ===");
         System.Diagnostics.Debug.WriteLine($"Content length: {content.Length}");
         System.Diagnostics.Debug.WriteLine(
-            $"Content preview: {(content.Length > 200 ? content.Substring(0, 200) + "..." : content)}"
+            $"Content preview: {(content.Length > 200 ? string.Concat(content.AsSpan(0, 200), "...") : content)}"
         );
 
         var boundaries = new List<StructureBoundary>();
 
         // 1. Detect markdown headings
         var headingMatches = MarkdownHeadingPattern.Matches(content);
-        System.Diagnostics.Debug.WriteLine(
-            $"DEBUG: Found {headingMatches.Count} heading matches for content"
-        );
+        System.Diagnostics.Debug.WriteLine($"DEBUG: Found {headingMatches.Count} heading matches for content");
 
         foreach (Match match in headingMatches)
         {
@@ -388,18 +334,12 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
                     ElementText = title,
                     HierarchicalLevel = level,
                     IsMajorSection = level <= 2,
-                    FormattingIndicators = new List<string>
-                    {
-                        "markdown_heading",
-                        $"level_{level}",
-                    },
+                    FormattingIndicators = new List<string> { "markdown_heading", $"level_{level}" },
                 }
             );
         }
 
-        System.Diagnostics.Debug.WriteLine(
-            $"DEBUG: Rule-based boundaries count after headings: {boundaries.Count}"
-        );
+        System.Diagnostics.Debug.WriteLine($"DEBUG: Rule-based boundaries count after headings: {boundaries.Count}");
 
         // 2. Detect section breaks
         var sectionBreaks = SectionBreakPattern.Matches(content);
@@ -440,11 +380,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
                         ElementText = line,
                         HierarchicalLevel = 2,
                         IsMajorSection = false,
-                        FormattingIndicators = new List<string>
-                        {
-                            "structural_keyword",
-                            "formatted_text",
-                        },
+                        FormattingIndicators = new List<string> { "structural_keyword", "formatted_text" },
                     }
                 );
             }
@@ -480,10 +416,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "LLM-enhanced structural boundary detection failed, falling back to rule-based"
-            );
+            _logger.LogWarning(ex, "LLM-enhanced structural boundary detection failed, falling back to rule-based");
             return Task.FromResult(new List<StructureBoundary>());
         }
     }
@@ -491,15 +424,13 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
     /// <summary>
     /// Creates document segments from detected structural boundaries.
     /// </summary>
-    private List<DocumentSegment> CreateSegmentsFromStructuralBoundaries(
+    private static List<DocumentSegment> CreateSegmentsFromStructuralBoundaries(
         string content,
         List<StructureBoundary> boundaries,
         StructureSegmentationOptions options
     )
     {
-        System.Diagnostics.Debug.WriteLine(
-            "=== DEBUGGING: CreateSegmentsFromStructuralBoundaries START ==="
-        );
+        System.Diagnostics.Debug.WriteLine("=== DEBUGGING: CreateSegmentsFromStructuralBoundaries START ===");
         System.Diagnostics.Debug.WriteLine($"Content length: {content.Length}");
         System.Diagnostics.Debug.WriteLine($"Boundaries count: {boundaries.Count}");
 
@@ -536,18 +467,13 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             var startPosition = currentBoundary.Position;
 
             // Determine end position (start of next boundary or end of content)
-            var endPosition =
-                (i + 1 < sortedBoundaries.Count)
-                    ? sortedBoundaries[i + 1].Position
-                    : content.Length;
+            var endPosition = (i + 1 < sortedBoundaries.Count) ? sortedBoundaries[i + 1].Position : content.Length;
 
             System.Diagnostics.Debug.WriteLine(
                 $"Creating segment {segmentIndex}: start={startPosition}, end={endPosition}"
             );
 
-            var segmentContent = content
-                .Substring(startPosition, endPosition - startPosition)
-                .Trim();
+            var segmentContent = content.Substring(startPosition, endPosition - startPosition).Trim();
 
             if (segmentContent.Length >= options.MinSegmentSize)
             {
@@ -564,23 +490,19 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             }
             else
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"Skipped small segment (length {segmentContent.Length})"
-                );
+                System.Diagnostics.Debug.WriteLine($"Skipped small segment (length {segmentContent.Length})");
             }
         }
 
         System.Diagnostics.Debug.WriteLine($"Final segment count: {segments.Count}");
-        System.Diagnostics.Debug.WriteLine(
-            "=== DEBUGGING: CreateSegmentsFromStructuralBoundaries END ==="
-        );
+        System.Diagnostics.Debug.WriteLine("=== DEBUGGING: CreateSegmentsFromStructuralBoundaries END ===");
         return segments;
     }
 
     /// <summary>
     /// Creates a DocumentSegment from content and structural metadata.
     /// </summary>
-    private DocumentSegment CreateStructuralDocumentSegment(
+    private static DocumentSegment CreateStructuralDocumentSegment(
         string content,
         int index,
         int position,
@@ -632,10 +554,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         {
             try
             {
-                var structuralAnalysis = await AnalyzeStructuralClarityAsync(
-                    segment.Content,
-                    cancellationToken
-                );
+                var structuralAnalysis = await AnalyzeStructuralClarityAsync(segment.Content, cancellationToken);
 
                 // Update segment metadata with structural information
                 segment.Metadata["structural_clarity"] = structuralAnalysis.StructuralClarity;
@@ -645,11 +564,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(
-                    ex,
-                    "Failed to enhance segment {SegmentId} with LLM",
-                    segment.Id
-                );
+                _logger.LogWarning(ex, "Failed to enhance segment {SegmentId} with LLM", segment.Id);
             }
         }
 
@@ -659,7 +574,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
     /// <summary>
     /// Analyzes structural clarity of a segment using LLM.
     /// </summary>
-    private async Task<StructuralClarityAnalysis> AnalyzeStructuralClarityAsync(
+    private static async Task<StructuralClarityAnalysis> AnalyzeStructuralClarityAsync(
         string content,
         CancellationToken cancellationToken
     )
@@ -691,14 +606,12 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
 
     #region Helper Methods
 
-    private bool ContainsStructuralKeywords(string text)
+    private static bool ContainsStructuralKeywords(string text)
     {
-        return StructuralKeywords.Any(keyword =>
-            text.Contains(keyword, StringComparison.OrdinalIgnoreCase)
-        );
+        return StructuralKeywords.Any(keyword => text.Contains(keyword, StringComparison.OrdinalIgnoreCase));
     }
 
-    private bool IsLikelyStructuralHeading(string line)
+    private static bool IsLikelyStructuralHeading(string line)
     {
         // Check for formatting patterns that suggest headings
         return line.Length < 100
@@ -708,11 +621,11 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
                 || // All caps
                 line.EndsWith(':')
                 || // Ends with colon
-                Regex.IsMatch(line, @"^\d+\.?\s")
+                MyRegex7().IsMatch(line)
             ); // Starts with number
     }
 
-    private int GetLinePosition(string content, int lineIndex)
+    private static int GetLinePosition(string content, int lineIndex)
     {
         var lines = content.Split('\n');
         int position = 0;
@@ -723,14 +636,12 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return position;
     }
 
-    private List<StructureBoundary> MergeAndValidateStructuralBoundaries(
+    private static List<StructureBoundary> MergeAndValidateStructuralBoundaries(
         List<StructureBoundary> boundaries,
         string content
     )
     {
-        System.Diagnostics.Debug.WriteLine(
-            "=== DEBUGGING: MergeAndValidateStructuralBoundaries START ==="
-        );
+        System.Diagnostics.Debug.WriteLine("=== DEBUGGING: MergeAndValidateStructuralBoundaries START ===");
         System.Diagnostics.Debug.WriteLine($"Input boundaries count: {boundaries.Count}");
 
         foreach (var boundary in boundaries)
@@ -755,9 +666,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             if (nearby != null)
             {
                 var distance = Math.Abs(boundary.Position - nearby.Position);
-                System.Diagnostics.Debug.WriteLine(
-                    $"Distance between boundaries: {distance} characters"
-                );
+                System.Diagnostics.Debug.WriteLine($"Distance between boundaries: {distance} characters");
 
                 if (distance < 50)
                 {
@@ -782,10 +691,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
                         }
 
                         // Only merge if they are truly duplicates (same level, same text)
-                        if (
-                            boundary.HeadingLevel == nearby.HeadingLevel
-                            && boundary.ElementText == nearby.ElementText
-                        )
+                        if (boundary.HeadingLevel == nearby.HeadingLevel && boundary.ElementText == nearby.ElementText)
                         {
                             System.Diagnostics.Debug.WriteLine(
                                 $"DEBUG: Merging duplicate headings: {boundary.ElementText}"
@@ -808,9 +714,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
                     else
                     {
                         // For non-heading elements, use original merge logic
-                        System.Diagnostics.Debug.WriteLine(
-                            "DEBUG: Non-heading merge logic applied"
-                        );
+                        System.Diagnostics.Debug.WriteLine("DEBUG: Non-heading merge logic applied");
                         if (boundary.Confidence > nearby.Confidence)
                         {
                             merged[merged.Count - 1] = boundary;
@@ -819,9 +723,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine(
-                        $"NOT MERGING: Distance {distance} >= 50, adding boundary"
-                    );
+                    System.Diagnostics.Debug.WriteLine($"NOT MERGING: Distance {distance} >= 50, adding boundary");
                     merged.Add(boundary);
                 }
             }
@@ -840,9 +742,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             );
         }
 
-        System.Diagnostics.Debug.WriteLine(
-            "=== DEBUGGING: MergeAndValidateStructuralBoundaries END ==="
-        );
+        System.Diagnostics.Debug.WriteLine("=== DEBUGGING: MergeAndValidateStructuralBoundaries END ===");
         return merged;
     }
 
@@ -924,10 +824,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return merged;
     }
 
-    private DocumentSegment MergeStructuralSegments(
-        DocumentSegment segment1,
-        DocumentSegment segment2
-    )
+    private static DocumentSegment MergeStructuralSegments(DocumentSegment segment1, DocumentSegment segment2)
     {
         var startPos = (int)segment1.Metadata.GetValueOrDefault("start_position", 0);
         var endPos = (int)segment2.Metadata.GetValueOrDefault("end_position", 0);
@@ -947,20 +844,17 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         };
     }
 
-    private List<DocumentSegment> ApplyFinalQualityChecks(
+    private static List<DocumentSegment> ApplyFinalQualityChecks(
         List<DocumentSegment> segments,
         StructureSegmentationOptions options
     )
     {
         return segments
-            .Where(s =>
-                s.Content.Length >= options.MinSegmentSize
-                && s.Content.Length <= options.MaxSegmentSize
-            )
+            .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
             .ToList();
     }
 
-    private List<string> AnalyzeStructuralPatterns(string content)
+    private static List<string> AnalyzeStructuralPatterns(string content)
     {
         var patterns = new List<string>();
 
@@ -982,12 +876,9 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return patterns;
     }
 
-    private double CalculateStructuralComplexity(
-        string content,
-        List<StructuralOutlineItem> outline
-    )
+    private static double CalculateStructuralComplexity(string content, List<StructuralOutlineItem> outline)
     {
-        if (!outline.Any())
+        if (outline.Count == 0)
             return 0.2;
 
         var maxDepth = outline.Max(o => o.Level);
@@ -1002,9 +893,9 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return (depthScore + diversityScore + lengthScore) / 3.0;
     }
 
-    private double CalculateHierarchyConsistency(List<StructuralOutlineItem> outline)
+    private static double CalculateHierarchyConsistency(List<StructuralOutlineItem> outline)
     {
-        if (!outline.Any())
+        if (outline.Count == 0)
             return 0.0;
 
         // Check for logical progression of heading levels
@@ -1019,9 +910,9 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return Math.Max(0.0, 1.0 - (double)inconsistencies / outline.Count);
     }
 
-    private double CalculateOrganizationQuality(string content, List<StructuralOutlineItem> outline)
+    private static double CalculateOrganizationQuality(string content, List<StructuralOutlineItem> outline)
     {
-        if (!outline.Any())
+        if (outline.Count == 0)
             return 0.3;
 
         var hasIntroduction = outline.Any(o =>
@@ -1045,15 +936,12 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return Math.Min(baseScore, 1.0);
     }
 
-    private async Task<StructureSegmentValidationResult> ValidateIndividualStructureSegmentAsync(
+    private static async Task<StructureSegmentValidationResult> ValidateIndividualStructureSegmentAsync(
         DocumentSegment segment,
         CancellationToken cancellationToken
     )
     {
-        var structuralAnalysis = await AnalyzeStructuralClarityAsync(
-            segment.Content,
-            cancellationToken
-        );
+        var structuralAnalysis = await AnalyzeStructuralClarityAsync(segment.Content, cancellationToken);
 
         var result = new StructureSegmentValidationResult
         {
@@ -1092,7 +980,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return result;
     }
 
-    private double CalculateSectionCompleteness(DocumentSegment segment)
+    private static double CalculateSectionCompleteness(DocumentSegment segment)
     {
         // Check if segment appears to be a complete structural unit
         var content = segment.Content;
@@ -1118,7 +1006,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return Math.Min(score, 1.0);
     }
 
-    private double CalculateSegmentHierarchyConsistency(DocumentSegment segment)
+    private static double CalculateSegmentHierarchyConsistency(DocumentSegment segment)
     {
         // Check for consistent heading levels within the segment
         var headingMatches = MarkdownHeadingPattern.Matches(segment.Content);
@@ -1139,16 +1027,13 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return Math.Max(0.0, 1.0 - (double)inconsistencies / levels.Count);
     }
 
-    private double CalculateStructuralBoundaryAccuracy(
-        List<DocumentSegment> segments,
-        string originalContent
-    )
+    private static double CalculateStructuralBoundaryAccuracy(List<DocumentSegment> segments, string originalContent)
     {
         // Calculate accuracy of structural boundaries
         return 0.85; // Placeholder - would implement detailed boundary analysis
     }
 
-    private double CalculateOverallStructuralQuality(StructureSegmentationValidation validation)
+    private static double CalculateOverallStructuralQuality(StructureSegmentationValidation validation)
     {
         return (
                 validation.StructuralClarity
@@ -1158,7 +1043,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
             ) / 4;
     }
 
-    private List<StructureValidationIssue> IdentifyStructuralValidationIssues(
+    private static List<StructureValidationIssue> IdentifyStructuralValidationIssues(
         List<StructureSegmentValidationResult> results
     )
     {
@@ -1196,9 +1081,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return issues;
     }
 
-    private List<string> GenerateStructuralRecommendations(
-        StructureSegmentationValidation validation
-    )
+    private static List<string> GenerateStructuralRecommendations(StructureSegmentationValidation validation)
     {
         var recommendations = new List<string>();
 
@@ -1220,7 +1103,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return recommendations;
     }
 
-    private string DetermineSectionType(string content)
+    private static string DetermineSectionType(string content)
     {
         // Analyze content to determine section type
         if (content.Contains("introduction", StringComparison.OrdinalIgnoreCase))
@@ -1235,7 +1118,7 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return "content";
     }
 
-    private List<string> ExtractStructuralKeywords(string content)
+    private static List<string> ExtractStructuralKeywords(string content)
     {
         return StructuralKeywords
             .Where(keyword => content.Contains(keyword, StringComparison.OrdinalIgnoreCase))
@@ -1243,22 +1126,18 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
     }
 
     // Placeholder methods for LLM integration
-    private string FormatStructuralBoundaryPrompt(
-        string template,
-        string content,
-        DocumentType documentType
-    )
+    private static string FormatStructuralBoundaryPrompt(string template, string content, DocumentType documentType)
     {
         return template
             .Replace(
                 "{DocumentContent}",
-                content.Length > 2000 ? content.Substring(0, 2000) + "..." : content
+                content.Length > 2000 ? string.Concat(content.AsSpan(0, 2000), "...") : content
             )
             .Replace("{DocumentType}", documentType.ToString())
             .Replace("{Language}", "en");
     }
 
-    private async Task<string> CallLlmForStructuralAnalysisAsync(
+    private static async Task<string> CallLlmForStructuralAnalysisAsync(
         string prompt,
         CancellationToken cancellationToken
     )
@@ -1268,11 +1147,35 @@ public class StructureBasedSegmentationService : IStructureBasedSegmentationServ
         return "{}"; // Placeholder response
     }
 
-    private List<StructureBoundary> ParseStructuralBoundariesFromLlmResponse(string response)
+    private static List<StructureBoundary> ParseStructuralBoundariesFromLlmResponse(string response)
     {
         // Parse LLM response to extract structural boundaries
         return new List<StructureBoundary>(); // Placeholder
     }
+
+    [GeneratedRegex(@"^#{1,6}\s+.+$|^[A-Z][A-Z\s\d\.\)]{2,50}$", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex();
+
+    [GeneratedRegex(@"^(#{1,6})\s+(.+)$", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex1();
+
+    [GeneratedRegex(@"^[\s]*(?:[-=_*]{3,}|[─═━]{3,})[\s]*$", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex2();
+
+    [GeneratedRegex(@"^\s*[-*+•]\s+.+$|^\s*\d+[\.\)]\s+.+$", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex3();
+
+    [GeneratedRegex(@"```[\s\S]*?```|`[^`]+`", RegexOptions.Compiled)]
+    private static partial Regex MyRegex4();
+
+    [GeneratedRegex(@"\|.*?\|", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex5();
+
+    [GeneratedRegex(@"^\s*>\s+.+$", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex6();
+
+    [GeneratedRegex(@"^\d+\.?\s")]
+    private static partial Regex MyRegex7();
 
     #endregion
 

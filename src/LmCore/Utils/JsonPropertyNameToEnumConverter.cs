@@ -7,15 +7,9 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 public class JsonPropertyNameEnumConverter<T> : JsonConverter<T>
     where T : struct, Enum
 {
-    public override T Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options
-    )
+    public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        string value = (
-            reader.GetString() ?? throw new JsonException("Value was null.")
-        ).ToLowerInvariant();
+        string value = (reader.GetString() ?? throw new JsonException("Value was null.")).ToLowerInvariant();
 
         foreach (var field in typeToConvert.GetFields())
         {

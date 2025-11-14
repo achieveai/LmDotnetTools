@@ -64,12 +64,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
     private static HttpClient CreateHttpClient(string apiKey)
     {
         var headers = new Dictionary<string, string> { ["anthropic-version"] = "2023-06-01" };
-        return HttpClientFactory.CreateForAnthropic(
-            apiKey,
-            "https://api.anthropic.com",
-            null,
-            headers
-        );
+        return HttpClientFactory.CreateForAnthropic(apiKey, "https://api.anthropic.com", null, headers);
     }
 
     /// <inheritdoc/>
@@ -82,10 +77,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
         try
         {
-            ValidationHelper.ValidateMessages<AnthropicMessage>(
-                request.Messages,
-                nameof(request.Messages)
-            );
+            ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
 
             var response = await ExecuteHttpWithRetryAsync(
                 async () =>
@@ -93,31 +85,21 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
                     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
-                    var requestMessage = new HttpRequestMessage(
-                        HttpMethod.Post,
-                        $"{BaseUrl}/messages"
-                    )
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
                     {
                         Content = content,
                     };
 
-                    Logger.LogDebug(
-                        "Sending Anthropic chat completion request for model {Model}",
-                        request.Model
-                    );
+                    Logger.LogDebug("Sending Anthropic chat completion request for model {Model}", request.Model);
                     return await HttpClient.SendAsync(requestMessage, cancellationToken);
                 },
                 async (httpResponse) =>
                 {
                     httpResponse.EnsureSuccessStatusCode();
-                    var responseContent = await httpResponse.Content.ReadAsStringAsync(
-                        cancellationToken
-                    );
+                    var responseContent = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
                     var anthropicResponse =
                         JsonSerializer.Deserialize<AnthropicResponse>(responseContent, _jsonOptions)
-                        ?? throw new InvalidOperationException(
-                            "Failed to deserialize Anthropic API response"
-                        );
+                        ?? throw new InvalidOperationException("Failed to deserialize Anthropic API response");
 
                     Logger.LogDebug(
                         "Received Anthropic response with {ContentCount} content blocks",
@@ -148,11 +130,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         }
         catch (Exception ex)
         {
-            Logger.LogError(
-                ex,
-                "Error in Anthropic chat completion request for model {Model}",
-                request.Model
-            );
+            Logger.LogError(ex, "Error in Anthropic chat completion request for model {Model}", request.Model);
 
             // Track failed request metrics
             var completedMetrics = metrics.Complete(
@@ -172,18 +150,11 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         CancellationToken cancellationToken = default
     )
     {
-        var metrics = RequestMetrics.StartNew(
-            ProviderName,
-            request.Model,
-            "StreamingChatCompletion"
-        );
+        var metrics = RequestMetrics.StartNew(ProviderName, request.Model, "StreamingChatCompletion");
 
         try
         {
-            ValidationHelper.ValidateMessages<AnthropicMessage>(
-                request.Messages,
-                nameof(request.Messages)
-            );
+            ValidationHelper.ValidateMessages<AnthropicMessage>(request.Messages, nameof(request.Messages));
 
             // Set the streaming flag
             request = request with
@@ -197,10 +168,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                     var requestJson = JsonSerializer.Serialize(request, _jsonOptions);
                     var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
-                    var requestMessage = new HttpRequestMessage(
-                        HttpMethod.Post,
-                        $"{BaseUrl}/messages"
-                    )
+                    var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/messages")
                     {
                         Content = content,
                     };
@@ -226,10 +194,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             var successMetrics = metrics.Complete(statusCode: 200);
             _performanceTracker.TrackRequest(successMetrics);
 
-            Logger.LogDebug(
-                "Successfully established streaming connection for model {Model}",
-                request.Model
-            );
+            Logger.LogDebug("Successfully established streaming connection for model {Model}", request.Model);
 
             return StreamData(streamResponse, cancellationToken);
         }
@@ -250,9 +215,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
 
             _performanceTracker.TrackRequest(completedMetrics);
 
-            var error = ex.Data.Contains("ResponseContent")
-                ? ex.Data["ResponseContent"]?.ToString()
-                : null;
+            var error = ex.Data.Contains("ResponseContent") ? ex.Data["ResponseContent"]?.ToString() : null;
             if (!string.IsNullOrEmpty(error))
             {
                 throw new InvalidOperationException(
@@ -285,10 +248,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
             try
             {
                 // First try to deserialize as the base AnthropicStreamEvent to get the type
-                var baseEvent = JsonSerializer.Deserialize<AnthropicStreamEvent>(
-                    sseItem.Data,
-                    _jsonOptions
-                );
+                var baseEvent = JsonSerializer.Deserialize<AnthropicStreamEvent>(sseItem.Data, _jsonOptions);
 
                 if (baseEvent == null)
                 {
@@ -302,37 +262,25 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                         sseItem.Data,
                         _jsonOptions
                     ),
-                    "content_block_start" =>
-                        JsonSerializer.Deserialize<AnthropicContentBlockStartEvent>(
-                            sseItem.Data,
-                            _jsonOptions
-                        ),
-                    "content_block_delta" =>
-                        JsonSerializer.Deserialize<AnthropicContentBlockDeltaEvent>(
-                            sseItem.Data,
-                            _jsonOptions
-                        ),
-                    "content_block_stop" =>
-                        JsonSerializer.Deserialize<AnthropicContentBlockStopEvent>(
-                            sseItem.Data,
-                            _jsonOptions
-                        ),
+                    "content_block_start" => JsonSerializer.Deserialize<AnthropicContentBlockStartEvent>(
+                        sseItem.Data,
+                        _jsonOptions
+                    ),
+                    "content_block_delta" => JsonSerializer.Deserialize<AnthropicContentBlockDeltaEvent>(
+                        sseItem.Data,
+                        _jsonOptions
+                    ),
+                    "content_block_stop" => JsonSerializer.Deserialize<AnthropicContentBlockStopEvent>(
+                        sseItem.Data,
+                        _jsonOptions
+                    ),
                     "message_delta" => JsonSerializer.Deserialize<AnthropicMessageDeltaEvent>(
                         sseItem.Data,
                         _jsonOptions
                     ),
-                    "message_stop" => JsonSerializer.Deserialize<AnthropicMessageStopEvent>(
-                        sseItem.Data,
-                        _jsonOptions
-                    ),
-                    "ping" => JsonSerializer.Deserialize<AnthropicPingEvent>(
-                        sseItem.Data,
-                        _jsonOptions
-                    ),
-                    "error" => JsonSerializer.Deserialize<AnthropicErrorEvent>(
-                        sseItem.Data,
-                        _jsonOptions
-                    ),
+                    "message_stop" => JsonSerializer.Deserialize<AnthropicMessageStopEvent>(sseItem.Data, _jsonOptions),
+                    "ping" => JsonSerializer.Deserialize<AnthropicPingEvent>(sseItem.Data, _jsonOptions),
+                    "error" => JsonSerializer.Deserialize<AnthropicErrorEvent>(sseItem.Data, _jsonOptions),
                     _ => baseEvent, // Use the base event if type is unknown
                 };
             }

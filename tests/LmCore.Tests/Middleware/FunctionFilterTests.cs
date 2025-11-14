@@ -24,10 +24,7 @@ public class FunctionFilterTests
 
     #region Helper Methods
 
-    private static FunctionDescriptor CreateTestDescriptor(
-        string functionName,
-        string providerName = "TestProvider"
-    )
+    private static FunctionDescriptor CreateTestDescriptor(string functionName, string providerName = "TestProvider")
     {
         return new FunctionDescriptor
         {
@@ -402,11 +399,7 @@ public class FunctionFilterTests
     [InlineData("exact", "exact", true)]
     [InlineData("exact", "Exact", true)] // Case insensitive
     [InlineData("exact", "notexact", false)]
-    public void MatchesPattern_VariousPatterns_ReturnsExpectedResult(
-        string pattern,
-        string text,
-        bool expectedMatch
-    )
+    public void MatchesPattern_VariousPatterns_ReturnsExpectedResult(string pattern, string text, bool expectedMatch)
     {
         // Arrange
         var config = new FunctionFilterConfig
@@ -475,10 +468,7 @@ public class FunctionFilterTests
 
         var descriptor = CreateTestDescriptor("originalName");
         var descriptors = new[] { descriptor };
-        var namingMap = new Dictionary<string, string>
-        {
-            [descriptor.Key] = "prefixed-originalName",
-        };
+        var namingMap = new Dictionary<string, string> { [descriptor.Key] = "prefixed-originalName" };
 
         // Act
         var filtered = filter.FilterFunctions(descriptors, namingMap).ToList();

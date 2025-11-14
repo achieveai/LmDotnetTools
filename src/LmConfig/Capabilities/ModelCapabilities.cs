@@ -120,8 +120,7 @@ public record ModelCapabilities
             "json_mode" => ResponseFormats?.SupportsJsonMode == true,
             "json_schema" => ResponseFormats?.SupportsJsonSchema == true,
             "structured_output" => ResponseFormats?.SupportsStructuredOutput == true,
-            _ => SupportedFeatures.Contains(capability)
-                || CustomCapabilities?.ContainsKey(capability) == true,
+            _ => SupportedFeatures.Contains(capability) || CustomCapabilities?.ContainsKey(capability) == true,
         };
     }
 

@@ -42,11 +42,7 @@ public static class EnvironmentVariables
     /// <returns>True if usage middleware should be enabled (default: true)</returns>
     public static bool GetEnableUsageMiddleware(IConfiguration configuration)
     {
-        var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            EnableUsageMiddleware,
-            null,
-            "true"
-        );
+        var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(EnableUsageMiddleware, null, "true");
         return bool.TryParse(value, out var result) ? result : true;
     }
 
@@ -57,11 +53,7 @@ public static class EnvironmentVariables
     /// <returns>True if inline usage should be enabled (default: true)</returns>
     public static bool GetEnableInlineUsage(IConfiguration configuration)
     {
-        var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            EnableInlineUsage,
-            null,
-            "true"
-        );
+        var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(EnableInlineUsage, null, "true");
         return bool.TryParse(value, out var result) ? result : true;
     }
 
@@ -72,11 +64,7 @@ public static class EnvironmentVariables
     /// <returns>Cache TTL in seconds (default: 300)</returns>
     public static int GetUsageCacheTtlSec(IConfiguration configuration)
     {
-        var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            UsageCacheTtlSec,
-            null,
-            "300"
-        );
+        var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(UsageCacheTtlSec, null, "300");
         return int.TryParse(value, out var result) && result > 0 ? result : 300;
     }
 
@@ -87,11 +75,7 @@ public static class EnvironmentVariables
     /// <returns>OpenRouter API key or null if not found</returns>
     public static string? GetOpenRouterApiKey(IConfiguration configuration)
     {
-        return EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            OpenRouterApiKey,
-            null,
-            ""
-        );
+        return EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(OpenRouterApiKey, null, "");
     }
 
     #endregion
@@ -179,9 +163,9 @@ public static class EnvironmentVariablesServiceExtensions
     )
     {
         // Register configuration values as singleton
-        services.AddSingleton<IOpenRouterUsageConfiguration>(
-            provider => new OpenRouterUsageConfiguration(configuration)
-        );
+        services.AddSingleton<IOpenRouterUsageConfiguration>(provider => new OpenRouterUsageConfiguration(
+            configuration
+        ));
 
         return services;
     }

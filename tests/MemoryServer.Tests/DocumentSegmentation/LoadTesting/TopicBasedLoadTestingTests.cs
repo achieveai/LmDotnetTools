@@ -37,11 +37,7 @@ public class TopicBasedLoadTestingTests
         });
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
-        _service = new TopicBasedSegmentationService(
-            _mockLlmService.Object,
-            _mockPromptManager.Object,
-            _logger
-        );
+        _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
 
         SetupDefaultMocks();
     }
@@ -62,9 +58,7 @@ public class TopicBasedLoadTestingTests
         // Arrange
         System.Diagnostics.Debug.WriteLine($"Running high-volume test: {testName}");
         System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Documents: {documentCount}, Avg Size: {averageDocumentSize} chars"
-        );
+        System.Diagnostics.Debug.WriteLine($"Documents: {documentCount}, Avg Size: {averageDocumentSize} chars");
 
         var documents = GenerateTestDocuments(documentCount, averageDocumentSize);
         var startMemory = GC.GetTotalMemory(true);
@@ -93,17 +87,12 @@ public class TopicBasedLoadTestingTests
 
         memoryIncrease
             .Should()
-            .BeLessThan(
-                maxMemoryIncreaseMB,
-                $"Memory increase should be less than {maxMemoryIncreaseMB}MB"
-            );
+            .BeLessThan(maxMemoryIncreaseMB, $"Memory increase should be less than {maxMemoryIncreaseMB}MB");
 
         results.Should().HaveCount(documentCount, "All documents should be processed");
         results.All(r => r.Any()).Should().BeTrue("All documents should produce segments");
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Processing completed in: {stopwatch.Elapsed.TotalSeconds:F2}s"
-        );
+        System.Diagnostics.Debug.WriteLine($"Processing completed in: {stopwatch.Elapsed.TotalSeconds:F2}s");
         System.Diagnostics.Debug.WriteLine($"Memory increase: {memoryIncrease:F2}MB");
         System.Diagnostics.Debug.WriteLine(
             $"Throughput: {documentCount / stopwatch.Elapsed.TotalMinutes:F1} docs/minute"
@@ -163,32 +152,21 @@ public class TopicBasedLoadTestingTests
 
         documentsPerHour
             .Should()
-            .BeGreaterThan(
-                80,
-                "System should process at least 80 documents per hour under sustained load"
-            );
+            .BeGreaterThan(80, "System should process at least 80 documents per hour under sustained load");
 
-        averageBatchTime
-            .Should()
-            .BeLessThan(60, "Average batch processing should be under 60 seconds");
+        averageBatchTime.Should().BeLessThan(60, "Average batch processing should be under 60 seconds");
 
         // Check for performance degradation over time
         var firstHalfAvg = batchResults.Take(5).Average(r => r.Duration.TotalSeconds);
         var secondHalfAvg = batchResults.Skip(5).Average(r => r.Duration.TotalSeconds);
         var degradationRatio = secondHalfAvg / firstHalfAvg;
 
-        degradationRatio
-            .Should()
-            .BeLessThan(1.5, "Performance should not degrade significantly over sustained load");
+        degradationRatio.Should().BeLessThan(1.5, "Performance should not degrade significantly over sustained load");
 
         System.Diagnostics.Debug.WriteLine($"Sustained load results:");
-        System.Diagnostics.Debug.WriteLine(
-            $"  Total time: {overallStopwatch.Elapsed.TotalMinutes:F1} minutes"
-        );
+        System.Diagnostics.Debug.WriteLine($"  Total time: {overallStopwatch.Elapsed.TotalMinutes:F1} minutes");
         System.Diagnostics.Debug.WriteLine($"  Throughput: {documentsPerHour:F1} documents/hour");
-        System.Diagnostics.Debug.WriteLine(
-            $"  Performance degradation: {((degradationRatio - 1) * 100):F1}%"
-        );
+        System.Diagnostics.Debug.WriteLine($"  Performance degradation: {((degradationRatio - 1) * 100):F1}%");
     }
 
     #endregion
@@ -210,9 +188,7 @@ public class TopicBasedLoadTestingTests
         // Arrange
         System.Diagnostics.Debug.WriteLine($"Running resource monitoring test: {testName}");
         System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Concurrent tasks: {concurrentTasks}, Docs per task: {documentsPerTask}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Concurrent tasks: {concurrentTasks}, Docs per task: {documentsPerTask}");
 
         var startMemory = GC.GetTotalMemory(true);
         var memoryUsageReadings = new List<long>();
@@ -239,10 +215,7 @@ public class TopicBasedLoadTestingTests
                         memoryUsageReadings.Add(GC.GetTotalMemory(false));
                     }
 
-                    var segments = await _service.SegmentByTopicsAsync(
-                        document,
-                        DocumentType.Generic
-                    );
+                    var segments = await _service.SegmentByTopicsAsync(document, DocumentType.Generic);
                     results.Add(segments);
                 }
 
@@ -257,16 +230,11 @@ public class TopicBasedLoadTestingTests
 
         // Assert
         var maxCpuUsage = cpuUsageReadings.DefaultIfEmpty(0).Max();
-        maxCpuUsage
-            .Should()
-            .BeLessThan(maxCpuUsagePercent, $"CPU usage should stay below {maxCpuUsagePercent}%");
+        maxCpuUsage.Should().BeLessThan(maxCpuUsagePercent, $"CPU usage should stay below {maxCpuUsagePercent}%");
 
         totalMemoryUsage
             .Should()
-            .BeLessThan(
-                maxMemoryUsageMB,
-                $"Total memory usage should stay below {maxMemoryUsageMB}MB"
-            );
+            .BeLessThan(maxMemoryUsageMB, $"Total memory usage should stay below {maxMemoryUsageMB}MB");
 
         // Verify all tasks completed successfully
         allResults.Should().HaveCount(concurrentTasks);
@@ -290,9 +258,7 @@ public class TopicBasedLoadTestingTests
         const int documentsPerIteration = 5;
         const int documentSize = 1500;
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Testing memory leak detection over {iterations} iterations"
-        );
+        System.Diagnostics.Debug.WriteLine($"Testing memory leak detection over {iterations} iterations");
 
         var memoryReadings = new List<long>();
 
@@ -315,9 +281,7 @@ public class TopicBasedLoadTestingTests
             var currentMemory = GC.GetTotalMemory(false);
             memoryReadings.Add(currentMemory);
 
-            System.Diagnostics.Debug.WriteLine(
-                $"Iteration {i + 1}: Memory = {currentMemory / (1024.0 * 1024.0):F2}MB"
-            );
+            System.Diagnostics.Debug.WriteLine($"Iteration {i + 1}: Memory = {currentMemory / (1024.0 * 1024.0):F2}MB");
         }
 
         // Check for memory leak patterns
@@ -333,12 +297,8 @@ public class TopicBasedLoadTestingTests
             );
 
         System.Diagnostics.Debug.WriteLine($"Memory leak analysis:");
-        System.Diagnostics.Debug.WriteLine(
-            $"  First quarter average: {firstQuarterAvg / (1024.0 * 1024.0):F2}MB"
-        );
-        System.Diagnostics.Debug.WriteLine(
-            $"  Last quarter average: {lastQuarterAvg / (1024.0 * 1024.0):F2}MB"
-        );
+        System.Diagnostics.Debug.WriteLine($"  First quarter average: {firstQuarterAvg / (1024.0 * 1024.0):F2}MB");
+        System.Diagnostics.Debug.WriteLine($"  Last quarter average: {lastQuarterAvg / (1024.0 * 1024.0):F2}MB");
         System.Diagnostics.Debug.WriteLine($"  Total increase: {memoryIncrease:F2}MB");
     }
 
@@ -359,9 +319,7 @@ public class TopicBasedLoadTestingTests
         // Arrange
         System.Diagnostics.Debug.WriteLine($"Running error recovery test: {testName}");
         System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Failure rate: {failureRate}%, Total requests: {totalRequests}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Failure rate: {failureRate}%, Total requests: {totalRequests}");
 
         var mockLlmService = new Mock<ILlmProviderIntegrationService>();
         var callCount = 0;
@@ -392,9 +350,7 @@ public class TopicBasedLoadTestingTests
                 );
             });
 
-        mockLlmService
-            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         var resilientService = new TopicBasedSegmentationService(
             mockLlmService.Object,
@@ -412,10 +368,7 @@ public class TopicBasedLoadTestingTests
         {
             try
             {
-                var segments = await resilientService.SegmentByTopicsAsync(
-                    document,
-                    DocumentType.Generic
-                );
+                var segments = await resilientService.SegmentByTopicsAsync(document, DocumentType.Generic);
 
                 if (segments.Any())
                 {
@@ -431,9 +384,7 @@ public class TopicBasedLoadTestingTests
             catch (Exception ex)
             {
                 failureCount++;
-                System.Diagnostics.Debug.WriteLine(
-                    $"Expected failure #{failureCount}: {ex.Message}"
-                );
+                System.Diagnostics.Debug.WriteLine($"Expected failure #{failureCount}: {ex.Message}");
             }
         }
 
@@ -464,9 +415,7 @@ public class TopicBasedLoadTestingTests
         System.Diagnostics.Debug.WriteLine($"  Failed requests: {failureCount}");
         System.Diagnostics.Debug.WriteLine($"  Recoveries: {recoveryCount}");
 
-        _output.WriteLine(
-            $"{testName}: {successCount}/{totalRequests} success, {recoveryCount} recoveries"
-        );
+        _output.WriteLine($"{testName}: {successCount}/{totalRequests} success, {recoveryCount} recoveries");
     }
 
     [Fact]
@@ -522,9 +471,7 @@ public class TopicBasedLoadTestingTests
         segments.Should().NotBeEmpty("Service should recover from network failures");
         attemptCount.Should().BeGreaterThan(2, "Service should retry after failures");
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Network recovery successful after {attemptCount} attempts"
-        );
+        System.Diagnostics.Debug.WriteLine($"Network recovery successful after {attemptCount} attempts");
     }
 
     #endregion
@@ -542,8 +489,7 @@ public class TopicBasedLoadTestingTests
         // Act & Assert - Validate service configuration
         validationResults["ServiceInstantiation"] = _service != null;
         validationResults["LoggerConfiguration"] = _logger != null;
-        validationResults["DependencyInjection"] =
-            _mockLlmService.Object != null && _mockPromptManager.Object != null;
+        validationResults["DependencyInjection"] = _mockLlmService.Object != null && _mockPromptManager.Object != null;
 
         // Validate core functionality
         var testDocument = GenerateTestDocument(500);
@@ -567,20 +513,14 @@ public class TopicBasedLoadTestingTests
 
         // Validate connectivity testing
         var connectivityResult =
-            _mockLlmService?.Object != null
-                ? await _mockLlmService.Object.TestConnectivityAsync()
-                : true;
+            _mockLlmService?.Object != null ? await _mockLlmService.Object.TestConnectivityAsync() : true;
         validationResults["ConnectivityTesting"] = connectivityResult;
 
         // Assert all validations pass
         foreach (var validation in validationResults)
         {
-            validation
-                .Value.Should()
-                .BeTrue($"Production validation '{validation.Key}' should pass");
-            System.Diagnostics.Debug.WriteLine(
-                $"✓ {validation.Key}: {(validation.Value ? "PASS" : "FAIL")}"
-            );
+            validation.Value.Should().BeTrue($"Production validation '{validation.Key}' should pass");
+            System.Diagnostics.Debug.WriteLine($"✓ {validation.Key}: {(validation.Value ? "PASS" : "FAIL")}");
         }
 
         var passedValidations = validationResults.Count(v => v.Value);
@@ -629,19 +569,14 @@ public class TopicBasedLoadTestingTests
 
         stopwatch
             .Elapsed.Should()
-            .BeLessThan(
-                TimeSpan.FromSeconds(30),
-                $"Processing should complete quickly for {documentType}"
-            );
+            .BeLessThan(TimeSpan.FromSeconds(30), $"Processing should complete quickly for {documentType}");
 
         System.Diagnostics.Debug.WriteLine($"{scenarioDescription} completed:");
         System.Diagnostics.Debug.WriteLine($"  Segments: {segments.Count()}");
         System.Diagnostics.Debug.WriteLine($"  Quality: {validation.OverallQuality:F2}");
         System.Diagnostics.Debug.WriteLine($"  Duration: {stopwatch.Elapsed.TotalSeconds:F2}s");
 
-        _output.WriteLine(
-            $"{documentType}: {segments.Count()} segments, quality {validation.OverallQuality:F2}"
-        );
+        _output.WriteLine($"{documentType}: {segments.Count()} segments, quality {validation.OverallQuality:F2}");
     }
 
     #endregion
@@ -727,30 +662,9 @@ public class TopicBasedLoadTestingTests
     public static IEnumerable<object[]> ErrorRecoveryTestCases =>
         new List<object[]>
         {
-            new object[]
-            {
-                "Low Error Rate Recovery",
-                10,
-                20,
-                2,
-                "Test recovery with 10% failure rate",
-            },
-            new object[]
-            {
-                "Medium Error Rate Recovery",
-                25,
-                20,
-                3,
-                "Test recovery with 25% failure rate",
-            },
-            new object[]
-            {
-                "High Error Rate Recovery",
-                40,
-                25,
-                5,
-                "Test recovery with 40% failure rate",
-            },
+            new object[] { "Low Error Rate Recovery", 10, 20, 2, "Test recovery with 10% failure rate" },
+            new object[] { "Medium Error Rate Recovery", 25, 20, 3, "Test recovery with 25% failure rate" },
+            new object[] { "High Error Rate Recovery", 40, 25, 5, "Test recovery with 40% failure rate" },
         };
 
     #endregion
@@ -761,11 +675,7 @@ public class TopicBasedLoadTestingTests
     {
         _mockPromptManager
             .Setup(x =>
-                x.GetPromptAsync(
-                    It.IsAny<SegmentationStrategy>(),
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()
-                )
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(
                 new PromptTemplate
@@ -776,9 +686,7 @@ public class TopicBasedLoadTestingTests
                 }
             );
 
-        _mockLlmService
-            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         _mockLlmService
             .Setup(x =>

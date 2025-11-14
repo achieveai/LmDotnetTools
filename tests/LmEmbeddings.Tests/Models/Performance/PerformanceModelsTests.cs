@@ -32,9 +32,7 @@ public class PerformanceModelsTests
     )
     {
         Debug.WriteLine($"Testing RequestMetrics serialization: {description}");
-        Debug.WriteLine(
-            $"RequestId: {metrics.RequestId}, Service: {metrics.Service}, Success: {metrics.Success}"
-        );
+        Debug.WriteLine($"RequestId: {metrics.RequestId}, Service: {metrics.Service}, Success: {metrics.Success}");
 
         // Act
         var json = JsonSerializer.Serialize(metrics);
@@ -59,16 +57,10 @@ public class PerformanceModelsTests
 
     [Theory]
     [MemberData(nameof(TimingBreakdownTestCases))]
-    public void TimingBreakdown_Validation_ValidatesCorrectly(
-        TimingBreakdown timing,
-        bool isValid,
-        string description
-    )
+    public void TimingBreakdown_Validation_ValidatesCorrectly(TimingBreakdown timing, bool isValid, string description)
     {
         Debug.WriteLine($"Testing TimingBreakdown validation: {description}");
-        Debug.WriteLine(
-            $"ValidationMs: {timing.ValidationMs}, ServerProcessingMs: {timing.ServerProcessingMs}"
-        );
+        Debug.WriteLine($"ValidationMs: {timing.ValidationMs}, ServerProcessingMs: {timing.ServerProcessingMs}");
 
         // Act
         var json = JsonSerializer.Serialize(timing);
@@ -156,9 +148,7 @@ public class PerformanceModelsTests
     )
     {
         Debug.WriteLine($"Testing ResponseTimeStats: {description}");
-        Debug.WriteLine(
-            $"Average: {stats.AverageMs}ms, P95: {stats.P95Ms}ms, P99: {stats.P99Ms}ms"
-        );
+        Debug.WriteLine($"Average: {stats.AverageMs}ms, P95: {stats.P95Ms}ms, P99: {stats.P99Ms}ms");
 
         // Act
         var json = JsonSerializer.Serialize(stats);
@@ -225,9 +215,7 @@ public class PerformanceModelsTests
     )
     {
         Debug.WriteLine($"Testing QualityMetrics: {description}");
-        Debug.WriteLine(
-            $"AvgQualityScore: {quality.AvgQualityScore}, UserSatisfaction: {quality.UserSatisfaction}"
-        );
+        Debug.WriteLine($"AvgQualityScore: {quality.AvgQualityScore}, UserSatisfaction: {quality.UserSatisfaction}");
 
         // Act
         var json = JsonSerializer.Serialize(quality);
@@ -258,9 +246,7 @@ public class PerformanceModelsTests
     )
     {
         Debug.WriteLine($"Testing TimePeriod: {description}");
-        Debug.WriteLine(
-            $"Start: {period.Start}, End: {period.End}, Expected Duration: {expectedDurationSeconds}s"
-        );
+        Debug.WriteLine($"Start: {period.Start}, End: {period.End}, Expected Duration: {expectedDurationSeconds}s");
 
         // Act
         var calculatedDuration = period.DurationSeconds;
@@ -318,7 +304,7 @@ public class PerformanceModelsTests
                     InputCount = 3,
                     Success = true,
                 },
-                new[] { "request_id", "service", "model", "success" },
+                item,
                 "Basic successful request metrics",
             },
             new object[]
@@ -334,7 +320,7 @@ public class PerformanceModelsTests
                     Error = "Rate limit exceeded",
                     RetryCount = 3,
                 },
-                new[] { "request_id", "service", "error", "retry_count" },
+                itemArray,
                 "Failed request with retries",
             },
         };
@@ -371,11 +357,7 @@ public class PerformanceModelsTests
                 {
                     Identifier = "openai-service",
                     Type = ProfileType.Service,
-                    TimePeriod = new TimePeriod
-                    {
-                        Start = DateTime.UtcNow.AddDays(-1),
-                        End = DateTime.UtcNow,
-                    },
+                    TimePeriod = new TimePeriod { Start = DateTime.UtcNow.AddDays(-1), End = DateTime.UtcNow },
                     ResponseTimes = new ResponseTimeStats
                     {
                         AverageMs = 250,
@@ -468,11 +450,7 @@ public class PerformanceModelsTests
                 {
                     Entity = "user-123",
                     EntityType = "user",
-                    TimePeriod = new TimePeriod
-                    {
-                        Start = DateTime.UtcNow.AddDays(-30),
-                        End = DateTime.UtcNow,
-                    },
+                    TimePeriod = new TimePeriod { Start = DateTime.UtcNow.AddDays(-30), End = DateTime.UtcNow },
                     RequestVolume = new VolumeStats
                     {
                         Total = 1000,
@@ -566,6 +544,9 @@ public class PerformanceModelsTests
             new object[] { TrendDirection.Degrading, "Degrading", "Degrading trend" },
             new object[] { TrendDirection.Unknown, "Unknown", "Unknown trend" },
         };
+
+    private static readonly string[] item = new[] { "request_id", "service", "model", "success" };
+    private static readonly string[] itemArray = new[] { "request_id", "service", "error", "retry_count" };
 
     #endregion
 }

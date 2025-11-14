@@ -17,8 +17,7 @@ public class ImmutableDictionarySerializationTests
         _output = output;
     }
 
-    private class TestClassWithExtensionDataConverter
-        : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
+    private class TestClassWithExtensionDataConverter : ShadowPropertiesJsonConverter<TestClassWithExtensionData>
     {
         protected override TestClassWithExtensionData CreateInstance()
         {
@@ -51,10 +50,7 @@ public class ImmutableDictionarySerializationTests
         {
             if (ExtraProperties == null)
             {
-                return this with
-                {
-                    ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value),
-                };
+                return this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) };
             }
 
             return this with
@@ -97,10 +93,7 @@ public class ImmutableDictionarySerializationTests
         {
             if (ExtraProperties == null)
             {
-                return this with
-                {
-                    ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value),
-                };
+                return this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) };
             }
 
             return this with
@@ -131,11 +124,7 @@ public class ImmutableDictionarySerializationTests
         // Arrange
         var options = new JsonSerializerOptions { WriteIndented = true };
 
-        var dictionary = new Dictionary<string, string>
-        {
-            ["key1"] = "value1",
-            ["key2"] = "value2",
-        };
+        var dictionary = new Dictionary<string, string> { ["key1"] = "value1", ["key2"] = "value2" };
 
         // Act
         var json = JsonSerializer.Serialize(dictionary, options);
@@ -159,17 +148,12 @@ public class ImmutableDictionarySerializationTests
             Converters = { new ImmutableDictionaryJsonConverterFactory() },
         };
 
-        var dictionary = ImmutableDictionary<string, string>
-            .Empty.Add("key1", "value1")
-            .Add("key2", "value2");
+        var dictionary = ImmutableDictionary<string, string>.Empty.Add("key1", "value1").Add("key2", "value2");
 
         // Act
         var json = JsonSerializer.Serialize(dictionary, options);
         _output.WriteLine($"Serialized JSON: {json}");
-        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, string>>(
-            json,
-            options
-        );
+        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, string>>(json, options);
 
         // Assert
         Assert.NotNull(deserialized);
@@ -199,10 +183,7 @@ public class ImmutableDictionarySerializationTests
         // Act
         var json = JsonSerializer.Serialize(dictionary, options);
         _output.WriteLine($"Serialized JSON: {json}");
-        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(
-            json,
-            options
-        );
+        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(json, options);
 
         // Assert
         Assert.NotNull(deserialized);
@@ -275,10 +256,7 @@ public class ImmutableDictionarySerializationTests
         // Act
         var json = JsonSerializer.Serialize(dictionary, options);
         _output.WriteLine($"Serialized JSON: {json}");
-        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(
-            json,
-            options
-        );
+        var deserialized = JsonSerializer.Deserialize<ImmutableDictionary<string, object?>>(json, options);
 
         // Assert
         Assert.NotNull(deserialized);
@@ -339,9 +317,7 @@ public class ImmutableDictionarySerializationTests
         var usage = new TestClassWithExtensionData { Name = "Test", Value = 10 };
 
         // Add extra properties
-        var withExtras = usage
-            .SetExtraProperty("estimated_cost", 0.05)
-            .SetExtraProperty("cached", true);
+        var withExtras = usage.SetExtraProperty("estimated_cost", 0.05).SetExtraProperty("cached", true);
 
         // Act
         var json = JsonSerializer.Serialize(withExtras, options);
@@ -412,12 +388,8 @@ public class ImmutableDictionarySerializationTests
         PrintJsonElement(_output, doc.RootElement, 0);
 
         // Verify that the extra properties are in the JSON directly
-        Assert.True(
-            doc.RootElement.TryGetProperty("extra_properties", out var extraPropertiesElement)
-        );
-        Assert.True(
-            extraPropertiesElement.TryGetProperty("function_call", out var functionCallElement)
-        );
+        Assert.True(doc.RootElement.TryGetProperty("extra_properties", out var extraPropertiesElement));
+        Assert.True(extraPropertiesElement.TryGetProperty("function_call", out var functionCallElement));
         Assert.Equal("auto", functionCallElement.GetString());
 
         var deserialized = JsonSerializer.Deserialize<TestClassWithNestedProperties>(json, options);

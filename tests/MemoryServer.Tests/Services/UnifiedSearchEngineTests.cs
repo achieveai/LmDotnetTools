@@ -80,12 +80,7 @@ public class UnifiedSearchEngineTests
                     SessionContext context,
                     DeduplicationOptions options,
                     CancellationToken token
-                ) =>
-                    new DeduplicationResults
-                    {
-                        Results = results,
-                        Metrics = new DeduplicationMetrics(),
-                    }
+                ) => new DeduplicationResults { Results = results, Metrics = new DeduplicationMetrics() }
             );
 
         // Setup default enrichment behavior to return original results
@@ -260,9 +255,7 @@ public class UnifiedSearchEngineTests
         // Setup embedding manager to return null (no vector search)
         _mockEmbeddingManager
             .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(
-                new InvalidOperationException("Embedding generation disabled for this test")
-            );
+            .ThrowsAsync(new InvalidOperationException("Embedding generation disabled for this test"));
 
         var options = new UnifiedSearchOptions
         {
@@ -271,11 +264,7 @@ public class UnifiedSearchEngineTests
         };
 
         // Act
-        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(
-            query,
-            sessionContext,
-            options
-        );
+        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(query, sessionContext, options);
 
         // Assert
         Assert.NotNull(results);
@@ -383,18 +372,10 @@ public class UnifiedSearchEngineTests
             .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockEmbedding);
 
-        var options = new UnifiedSearchOptions
-        {
-            EnableVectorSearch = true,
-            EnableFtsSearch = true,
-        };
+        var options = new UnifiedSearchOptions { EnableVectorSearch = true, EnableFtsSearch = true };
 
         // Act
-        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(
-            query,
-            sessionContext,
-            options
-        );
+        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(query, sessionContext, options);
 
         // Assert
         Assert.NotNull(results);
@@ -516,11 +497,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(new List<RelationshipVectorSearchResult>());
 
-        var options = new UnifiedSearchOptions
-        {
-            EnableVectorSearch = true,
-            EnableFtsSearch = true,
-        };
+        var options = new UnifiedSearchOptions { EnableVectorSearch = true, EnableFtsSearch = true };
 
         // Act
         var results = await _unifiedSearchEngine.SearchAllSourcesAsync(
@@ -539,9 +516,7 @@ public class UnifiedSearchEngineTests
             Times.Never
         );
 
-        _output.WriteLine(
-            $"Pre-generated embedding search completed: {results.TotalResults} total results"
-        );
+        _output.WriteLine($"Pre-generated embedding search completed: {results.TotalResults} total results");
     }
 
     [Fact]
@@ -558,11 +533,7 @@ public class UnifiedSearchEngineTests
         };
 
         // Act
-        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(
-            query,
-            sessionContext,
-            options
-        );
+        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(query, sessionContext, options);
 
         // Assert
         Assert.NotNull(results);
@@ -729,11 +700,7 @@ public class UnifiedSearchEngineTests
         };
 
         // Act
-        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(
-            query,
-            sessionContext,
-            options
-        );
+        var results = await _unifiedSearchEngine.SearchAllSourcesAsync(query, sessionContext, options);
 
         // Assert
         Assert.NotNull(results);
@@ -744,15 +711,9 @@ public class UnifiedSearchEngineTests
 
         if (sortedResults.Count >= 3)
         {
-            var memoryResult = sortedResults.FirstOrDefault(r =>
-                r.Type == UnifiedResultType.Memory
-            );
-            var entityResult = sortedResults.FirstOrDefault(r =>
-                r.Type == UnifiedResultType.Entity
-            );
-            var relationshipResult = sortedResults.FirstOrDefault(r =>
-                r.Type == UnifiedResultType.Relationship
-            );
+            var memoryResult = sortedResults.FirstOrDefault(r => r.Type == UnifiedResultType.Memory);
+            var entityResult = sortedResults.FirstOrDefault(r => r.Type == UnifiedResultType.Entity);
+            var relationshipResult = sortedResults.FirstOrDefault(r => r.Type == UnifiedResultType.Relationship);
 
             if (memoryResult != null && entityResult != null && relationshipResult != null)
             {
@@ -764,9 +725,7 @@ public class UnifiedSearchEngineTests
             }
         }
 
-        _output.WriteLine(
-            $"Type weights applied: {results.TotalResults} results with proper weighting"
-        );
+        _output.WriteLine($"Type weights applied: {results.TotalResults} results with proper weighting");
     }
 
     private SessionContext CreateTestSessionContext()

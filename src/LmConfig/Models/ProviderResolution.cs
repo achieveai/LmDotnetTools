@@ -62,8 +62,7 @@ public record ProviderResolution
     /// <returns>A string describing the resolved provider configuration.</returns>
     public override string ToString()
     {
-        var description =
-            $"Model: {Model.Id}, Provider: {EffectiveProviderName}, ModelName: {EffectiveModelName}";
+        var description = $"Model: {Model.Id}, Provider: {EffectiveProviderName}, ModelName: {EffectiveModelName}";
         if (SubProvider != null)
         {
             description += $" (via {Provider.Name})";
@@ -126,11 +125,7 @@ public record ProviderSelectionCriteria
     /// Creates criteria that prefers cost-effective providers.
     /// </summary>
     public static ProviderSelectionCriteria CostOptimized =>
-        new()
-        {
-            PreferLowerCost = true,
-            PreferredTags = ["cost-effective", "economical", "cheap"],
-        };
+        new() { PreferLowerCost = true, PreferredTags = ["cost-effective", "economical", "cheap"] };
 
     /// <summary>
     /// Creates criteria that prefers high-performance providers.

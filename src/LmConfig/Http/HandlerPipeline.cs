@@ -17,8 +17,7 @@ public interface IHttpHandlerBuilder
 /// </summary>
 public sealed class HandlerBuilder : IHttpHandlerBuilder
 {
-    private readonly IList<Func<HttpMessageHandler, ILogger?, HttpMessageHandler>> _wrappers =
-        [];
+    private readonly IList<Func<HttpMessageHandler, ILogger?, HttpMessageHandler>> _wrappers = [];
 
     /// <summary>
     /// Registers a wrapper. The lambda receives the handler to wrap and must return the new outer handler.

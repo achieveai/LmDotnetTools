@@ -29,24 +29,17 @@ public class TransportSessionInitializer
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults if found, null otherwise</returns>
-    public async Task<SessionDefaults?> InitializeStdioSessionAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<SessionDefaults?> InitializeStdioSessionAsync(CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Initializing STDIO transport session context");
 
         try
         {
-            var sessionDefaults = await _sessionManager.ProcessEnvironmentVariablesAsync(
-                cancellationToken
-            );
+            var sessionDefaults = await _sessionManager.ProcessEnvironmentVariablesAsync(cancellationToken);
 
             if (sessionDefaults != null)
             {
-                _logger.LogInformation(
-                    "STDIO session initialized with context: {SessionDefaults}",
-                    sessionDefaults
-                );
+                _logger.LogInformation("STDIO session initialized with context: {SessionDefaults}", sessionDefaults);
 
                 // Log environment variables found (for debugging)
                 LogEnvironmentVariables();
@@ -90,19 +83,14 @@ public class TransportSessionInitializer
 
             if (sessionDefaults != null)
             {
-                _logger.LogInformation(
-                    "SSE session initialized with context: {SessionDefaults}",
-                    sessionDefaults
-                );
+                _logger.LogInformation("SSE session initialized with context: {SessionDefaults}", sessionDefaults);
 
                 // Log what was found (for debugging)
                 LogSseContext(queryParameters, headers);
             }
             else
             {
-                _logger.LogInformation(
-                    "No URL parameters or headers found for SSE session context"
-                );
+                _logger.LogInformation("No URL parameters or headers found for SSE session context");
             }
 
             return sessionDefaults;
@@ -119,19 +107,14 @@ public class TransportSessionInitializer
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of cleaned up sessions</returns>
-    public async Task<int> CleanupExpiredSessionsAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<int> CleanupExpiredSessionsAsync(CancellationToken cancellationToken = default)
     {
         _logger.LogDebug("Starting cleanup of expired session defaults");
 
         try
         {
             var maxAge = TimeSpan.FromMinutes(_options.SessionDefaults.MaxSessionAge);
-            var cleanedCount = await _sessionManager.CleanupExpiredSessionsAsync(
-                maxAge,
-                cancellationToken
-            );
+            var cleanedCount = await _sessionManager.CleanupExpiredSessionsAsync(maxAge, cancellationToken);
 
             if (cleanedCount > 0)
             {
@@ -199,10 +182,7 @@ public class TransportSessionInitializer
             return false;
         }
 
-        _logger.LogDebug(
-            "Session context validation passed for {SessionDefaults}",
-            sessionDefaults
-        );
+        _logger.LogDebug("Session context validation passed for {SessionDefaults}", sessionDefaults);
         return true;
     }
 
@@ -213,18 +193,12 @@ public class TransportSessionInitializer
     {
         var envVars = new[]
         {
-            (
-                "MCP_MEMORY_USER_ID",
-                EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID")
-            ),
+            ("MCP_MEMORY_USER_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID")),
             (
                 "MCP_MEMORY_AGENT_ID",
                 EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID")
             ),
-            (
-                "MCP_MEMORY_RUN_ID",
-                EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID")
-            ),
+            ("MCP_MEMORY_RUN_ID", EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID")),
         };
 
         foreach (var (name, value) in envVars)
@@ -239,16 +213,13 @@ public class TransportSessionInitializer
     /// <summary>
     /// Logs SSE context for debugging purposes.
     /// </summary>
-    private void LogSseContext(
-        IDictionary<string, string>? queryParameters,
-        IDictionary<string, string>? headers
-    )
+    private void LogSseContext(IDictionary<string, string>? queryParameters, IDictionary<string, string>? headers)
     {
         if (queryParameters != null && queryParameters.Any())
         {
             var relevantParams = queryParameters.Where(kvp => kvp.Key.EndsWith("_id")).ToList();
 
-            if (relevantParams.Any())
+            if (relevantParams.Count != 0)
             {
                 _logger.LogDebug(
                     "Found URL parameters: {Parameters}",
@@ -261,7 +232,7 @@ public class TransportSessionInitializer
         {
             var relevantHeaders = headers.Where(kvp => kvp.Key.StartsWith("X-Memory-")).ToList();
 
-            if (relevantHeaders.Any())
+            if (relevantHeaders.Count != 0)
             {
                 _logger.LogDebug(
                     "Found HTTP headers: {Headers}",

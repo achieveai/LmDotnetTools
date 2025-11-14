@@ -31,12 +31,10 @@ public class SqliteManager : IDisposable
     /// <summary>
     /// Gets a database connection with proper configuration.
     /// </summary>
-    public async Task<ManagedSqliteConnection> GetConnectionAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<ManagedSqliteConnection> GetConnectionAsync(CancellationToken cancellationToken = default)
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var threadId = Environment.CurrentManagedThreadId;
         var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
 
         _logger.LogDebug(
@@ -57,18 +55,10 @@ public class SqliteManager : IDisposable
 
         try
         {
-            _logger.LogDebug(
-                "🔌 Creating connection - Thread: {ThreadId}, Task: {TaskId}",
-                threadId,
-                taskId
-            );
+            _logger.LogDebug("🔌 Creating connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             var connection = new SqliteConnection(_connectionString);
 
-            _logger.LogDebug(
-                "📡 Opening connection - Thread: {ThreadId}, Task: {TaskId}",
-                threadId,
-                taskId
-            );
+            _logger.LogDebug("📡 Opening connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             await connection.OpenAsync(cancellationToken);
             _logger.LogDebug(
                 "✅ Connection opened - Thread: {ThreadId}, Task: {TaskId}, State: {State}",
@@ -78,11 +68,7 @@ public class SqliteManager : IDisposable
             );
 
             // Configure connection settings
-            _logger.LogDebug(
-                "⚙️ Configuring connection - Thread: {ThreadId}, Task: {TaskId}",
-                threadId,
-                taskId
-            );
+            _logger.LogDebug("⚙️ Configuring connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             await ConfigureConnectionAsync(connection, cancellationToken);
             _logger.LogDebug(
                 "✅ Connection configured - Thread: {ThreadId}, Task: {TaskId}, Total Elapsed: {Elapsed}ms",
@@ -114,7 +100,7 @@ public class SqliteManager : IDisposable
     /// </summary>
     internal void ReleaseConnection(SqliteConnection connection)
     {
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var threadId = Environment.CurrentManagedThreadId;
         var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
 
         _logger.LogDebug(
@@ -136,11 +122,7 @@ public class SqliteManager : IDisposable
                     connection.State
                 );
                 connection.Dispose();
-                _logger.LogDebug(
-                    "✅ Connection disposed - Thread: {ThreadId}, Task: {TaskId}",
-                    threadId,
-                    taskId
-                );
+                _logger.LogDebug("✅ Connection disposed - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             }
             else
             {
@@ -153,20 +135,11 @@ public class SqliteManager : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "❌ Error disposing connection - Thread: {ThreadId}, Task: {TaskId}",
-                threadId,
-                taskId
-            );
+            _logger.LogError(ex, "❌ Error disposing connection - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
         }
         finally
         {
-            _logger.LogDebug(
-                "🔓 Releasing semaphore - Thread: {ThreadId}, Task: {TaskId}",
-                threadId,
-                taskId
-            );
+            _logger.LogDebug("🔓 Releasing semaphore - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
             _connectionSemaphore.Release();
             _logger.LogDebug(
                 "✅ Semaphore released - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
@@ -193,13 +166,9 @@ public class SqliteManager : IDisposable
             if (_isInitialized)
                 return;
 
-            var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+            var threadId = Environment.CurrentManagedThreadId;
             var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
-            _logger.LogDebug(
-                "🔧 InitializeDatabaseAsync START - Thread: {ThreadId}, Task: {TaskId}",
-                threadId,
-                taskId
-            );
+            _logger.LogDebug("🔧 InitializeDatabaseAsync START - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
 
             _logger.LogInformation("Initializing SQLite database...");
 
@@ -239,30 +208,14 @@ public class SqliteManager : IDisposable
                 );
 
                 // Load extensions first
-                _logger.LogDebug(
-                    "🔌 Loading extensions - Thread: {ThreadId}, Task: {TaskId}",
-                    threadId,
-                    taskId
-                );
+                _logger.LogDebug("🔌 Loading extensions - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
                 LoadExtensions(connection);
-                _logger.LogDebug(
-                    "✅ Extensions loaded - Thread: {ThreadId}, Task: {TaskId}",
-                    threadId,
-                    taskId
-                );
+                _logger.LogDebug("✅ Extensions loaded - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
 
                 // Create schema
-                _logger.LogDebug(
-                    "🏗️ Creating database schema - Thread: {ThreadId}, Task: {TaskId}",
-                    threadId,
-                    taskId
-                );
+                _logger.LogDebug("🏗️ Creating database schema - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
                 await ExecuteSchemaScriptsAsync(connection, cancellationToken);
-                _logger.LogDebug(
-                    "✅ Schema created - Thread: {ThreadId}, Task: {TaskId}",
-                    threadId,
-                    taskId
-                );
+                _logger.LogDebug("✅ Schema created - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
 
                 // Verify connection state before disposal
                 _logger.LogDebug(
@@ -293,7 +246,7 @@ public class SqliteManager : IDisposable
         }
         finally
         {
-            var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+            var threadId = Environment.CurrentManagedThreadId;
             var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
             _logger.LogDebug(
                 "🔓 Releasing initialization semaphore - Thread: {ThreadId}, Task: {TaskId}",
@@ -312,20 +265,13 @@ public class SqliteManager : IDisposable
     /// <summary>
     /// Configures connection-specific settings.
     /// </summary>
-    private async Task ConfigureConnectionAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
+    private async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         var commands = new List<string>();
 
         // For testing, use simpler configuration to avoid locking issues
         // Enable WAL mode only if not in memory database
-        if (
-            _options.EnableWAL
-            && !_connectionString.Contains(":memory:")
-            && !_connectionString.Contains("Mode=Memory")
-        )
+        if (_options.EnableWAL && !_connectionString.Contains(":memory:") && !_connectionString.Contains("Mode=Memory"))
         {
             commands.Add("PRAGMA journal_mode = WAL;");
         }
@@ -373,10 +319,7 @@ public class SqliteManager : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to load sqlite-vec extension. Vector functionality requires this extension."
-            );
+            _logger.LogError(ex, "Failed to load sqlite-vec extension. Vector functionality requires this extension.");
             throw new InvalidOperationException(
                 "sqlite-vec extension is required for vector functionality but could not be loaded. Ensure the sqlite-vec NuGet package is properly installed.",
                 ex
@@ -387,10 +330,7 @@ public class SqliteManager : IDisposable
     /// <summary>
     /// Executes database schema creation scripts.
     /// </summary>
-    private async Task ExecuteSchemaScriptsAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
+    private async Task ExecuteSchemaScriptsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         var schema = GetDatabaseSchema();
 
@@ -406,7 +346,7 @@ public class SqliteManager : IDisposable
     /// <summary>
     /// Gets the complete database schema SQL.
     /// </summary>
-    private string GetDatabaseSchema()
+    private static string GetDatabaseSchema()
     {
         var schema = new StringBuilder();
 
@@ -740,7 +680,7 @@ public class ManagedSqliteConnection : IDisposable
         _manager = manager;
         _connectionId = Interlocked.Increment(ref _nextConnectionId);
 
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var threadId = Environment.CurrentManagedThreadId;
         System.Diagnostics.Debug.WriteLine(
             $"🔌 ManagedConnection-{_connectionId} CREATED - Thread: {threadId}, State: {connection.State}"
         );
@@ -754,7 +694,7 @@ public class ManagedSqliteConnection : IDisposable
 
     public SqliteTransaction BeginTransaction()
     {
-        var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        var threadId = Environment.CurrentManagedThreadId;
         System.Diagnostics.Debug.WriteLine(
             $"🔄 ManagedConnection-{_connectionId} BeginTransaction START - Thread: {threadId}, State: {State}"
         );
@@ -783,7 +723,7 @@ public class ManagedSqliteConnection : IDisposable
     {
         if (!_disposed)
         {
-            var threadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+            var threadId = Environment.CurrentManagedThreadId;
             System.Diagnostics.Debug.WriteLine(
                 $"🗑️ ManagedConnection-{_connectionId} DISPOSE START - Thread: {threadId}, State: {State}"
             );
@@ -802,6 +742,5 @@ public class ManagedSqliteConnection : IDisposable
     }
 
     // Implicit conversion to SqliteConnection for compatibility
-    public static implicit operator SqliteConnection(ManagedSqliteConnection managed) =>
-        managed._connection;
+    public static implicit operator SqliteConnection(ManagedSqliteConnection managed) => managed._connection;
 }

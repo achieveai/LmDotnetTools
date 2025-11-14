@@ -65,8 +65,7 @@ public class CustomFunctionProvider : IFunctionProvider
         {
             var jsonObject = JsonObject.Parse(json)!;
             var question = jsonObject["question"]?.ToString() ?? "";
-            var options =
-                jsonObject["options"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
+            var options = jsonObject["options"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
             return await Program.AskUser(question, options);
         };
 
@@ -89,12 +88,7 @@ public static class Program
         string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
         string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
         string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
-        string PROMPTS_PATH = Path.Combine(
-            GetWorkspaceRootPath(),
-            "example",
-            "ExamplePythonMCPClient",
-            "prompts.yaml"
-        );
+        string PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
 
         Console.WriteLine("Example Python MCP Client Demo");
 
@@ -158,25 +152,17 @@ public static class Program
         };
         var clientIds = new[] { "brave-search", "url-fetcher", "thinking", "memory", "fs" };
 
-        var mcpClients = await Task.WhenAll(
-            mcpServers.Select(transport => McpClientFactory.CreateAsync(transport))
-        );
+        var mcpClients = await Task.WhenAll(mcpServers.Select(transport => McpClientFactory.CreateAsync(transport)));
 
         try
         {
             var functionRegistry = await new FunctionRegistry()
                 .AddProvider(new CustomFunctionProvider())
-                .AddMcpClientsAsync(
-                    mcpClients.ToDictionary(client => client.ServerInfo.Name, client => client)
-                );
+                .AddMcpClientsAsync(mcpClients.ToDictionary(client => client.ServerInfo.Name, client => client));
 
             // Register Todo TaskManager instance functions (stateful)
             var taskManager = new TaskManager();
-            functionRegistry.AddFunctionsFromObject(
-                taskManager,
-                providerName: "TodoManager",
-                priority: 50
-            );
+            functionRegistry.AddFunctionsFromObject(taskManager, providerName: "TodoManager", priority: 50);
 
             // Print comprehensive function documentation
             Console.WriteLine("=== Available Functions ===");
@@ -207,8 +193,7 @@ public static class Program
             var openAgent = new OpenClientAgent("OpenAi", openClient) as IStreamingAgent;
 
             // Get the function call middleware factory and create middleware
-            var middlewareFactory =
-                serviceProvider.GetRequiredService<IFunctionCallMiddlewareFactory>();
+            var middlewareFactory = serviceProvider.GetRequiredService<IFunctionCallMiddlewareFactory>();
             var functionCallMiddleware = middlewareFactory.Create("Combined-Functions");
 
             // Create other middleware components
@@ -231,11 +216,7 @@ public static class Program
                 ExtraProperties = new Dictionary<string, object?>()
                 {
                     ["parallel_tool_call"] = true,
-                    ["reasoning"] = new Dictionary<string, object?>()
-                    {
-                        ["effort"] = "low",
-                        ["max_tokens"] = 768,
-                    },
+                    ["reasoning"] = new Dictionary<string, object?>() { ["effort"] = "low", ["max_tokens"] = 768 },
                 }.ToImmutableDictionary(),
             };
 
@@ -267,10 +248,7 @@ public static class Program
                 while (contLoop)
                 {
                     contLoop = false;
-                    var repliesStream = await theogent.GenerateReplyStreamingAsync(
-                        plannerPrompt,
-                        options
-                    );
+                    var repliesStream = await theogent.GenerateReplyStreamingAsync(plannerPrompt, options);
 
                     var replyMessages = new List<IMessage>();
                     await foreach (var reply in repliesStream)
@@ -305,7 +283,10 @@ public static class Program
                 Console.WriteLine("What's Next (q/quit to quit)?");
                 var x = Console.ReadLine()?.Trim() ?? "";
 
-                if (x.ToLowerInvariant() == "quit" || x.ToLowerInvariant() == "q")
+                if (
+                    x.Equals("quit", StringComparison.InvariantCultureIgnoreCase)
+                    || x.Equals("q", StringComparison.InvariantCultureIgnoreCase)
+                )
                 {
                     break;
                 }
@@ -333,12 +314,7 @@ public static class Program
         string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
         string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
         string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
-        string PROMPTS_PATH = Path.Combine(
-            GetWorkspaceRootPath(),
-            "example",
-            "ExamplePythonMCPClient",
-            "prompts.yaml"
-        );
+        string PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
 
         Console.WriteLine("Example Python MCP Client Demo - DeepSeek R1 Reasoning");
 
@@ -348,13 +324,7 @@ public static class Program
             {
                 Name = "python-mcp",
                 Command = $"{GetWorkspaceRootPath()}/McpServers/PythonMCPServer/run.bat",
-                Arguments =
-                [
-                    "--image",
-                    "pyexec:latest",
-                    "--code-dir",
-                    GetWorkspaceRootPath() + "/.code_workspace",
-                ],
+                Arguments = ["--image", "pyexec:latest", "--code-dir", GetWorkspaceRootPath() + "/.code_workspace"],
             }
         );
 
@@ -420,11 +390,7 @@ public static class Program
                 MaxToken = 4096 * 2,
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["reasoning"] = new Dictionary<string, object?>
-                    {
-                        ["effort"] = "medium",
-                        ["max_tokens"] = 1024,
-                    },
+                    ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "medium", ["max_tokens"] = 1024 },
                 }.ToImmutableDictionary(),
             };
 
@@ -447,10 +413,7 @@ public static class Program
             do
             {
                 bool contLoop = false;
-                var repliesStream = await theogent.GenerateReplyStreamingAsync(
-                    plannerPrompt,
-                    options
-                );
+                var repliesStream = await theogent.GenerateReplyStreamingAsync(plannerPrompt, options);
 
                 var replyMessages = new List<IMessage>();
                 await foreach (var reply in repliesStream)
@@ -515,11 +478,7 @@ public static class Program
     public static string GetWorkspaceRootPath()
     {
         var curPath = Environment.CurrentDirectory;
-        while (
-            curPath != null
-            && !string.IsNullOrEmpty(curPath)
-            && !Directory.GetFiles(curPath, "*.sln").Any()
-        )
+        while (curPath != null && !string.IsNullOrEmpty(curPath) && Directory.GetFiles(curPath, "*.sln").Length == 0)
         {
             curPath = Path.GetDirectoryName(curPath);
         }
@@ -542,19 +501,13 @@ public static class Program
     private static void LoadEnvironmentVariables()
     {
         var curPath = Environment.CurrentDirectory;
-        while (
-            curPath != null
-            && !string.IsNullOrEmpty(curPath)
-            && !File.Exists(Path.Combine(curPath, ".env"))
-        )
+        while (curPath != null && !string.IsNullOrEmpty(curPath) && !File.Exists(Path.Combine(curPath, ".env")))
         {
             curPath = Path.GetDirectoryName(curPath);
         }
 
         _ =
-            curPath != null
-            && !string.IsNullOrEmpty(curPath)
-            && File.Exists(Path.Combine(curPath, ".env"))
+            curPath != null && !string.IsNullOrEmpty(curPath) && File.Exists(Path.Combine(curPath, ".env"))
                 ? DotNetEnv.Env.Load(Path.Combine(curPath, ".env"))
                 : throw new FileNotFoundException(
                     ".env file not found in the current directory or any parent directories."
@@ -569,11 +522,7 @@ public static class Program
                 WriteToConsoleInColor(textMessage.Text, ConsoleColor.DarkYellow, null);
                 break;
             case UsageMessage usageMessage:
-                WriteToConsoleInColor(
-                    $"Usage: {usageMessage.Usage}",
-                    ConsoleColor.DarkGray,
-                    ConsoleColor.White
-                );
+                WriteToConsoleInColor($"Usage: {usageMessage.Usage}", ConsoleColor.DarkGray, ConsoleColor.White);
                 break;
             case ReasoningMessage reasoningMessage:
                 // WriteToConsoleInColor($"Reasoning: {reasoningMessage.Reasoning}", ConsoleColor.DarkGreen, null);
@@ -592,9 +541,7 @@ public static class Program
                 break;
             case ToolsCallAggregateMessage toolsCallAggregateMessage:
                 toolsCallAggregateMessage
-                    .ToolsCallMessage.ToolCalls.Zip(
-                        toolsCallAggregateMessage.ToolsCallResult.ToolCallResults
-                    )
+                    .ToolsCallMessage.ToolCalls.Zip(toolsCallAggregateMessage.ToolsCallResult.ToolCallResults)
                     .ToImmutableList()
                     .ForEach(
                         (tup) =>
@@ -619,11 +566,7 @@ public static class Program
         }
     }
 
-    public static void WriteToConsoleInColor(
-        string text,
-        ConsoleColor fgColor,
-        ConsoleColor? bgColor
-    )
+    public static void WriteToConsoleInColor(string text, ConsoleColor fgColor, ConsoleColor? bgColor)
     {
         var fgColorBak = Console.ForegroundColor;
         var bgColorBak = Console.BackgroundColor;

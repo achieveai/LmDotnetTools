@@ -57,12 +57,7 @@ public static class FunctionRegistryExtensions
         CancellationToken cancellationToken = default
     )
     {
-        var provider = await McpClientFunctionProvider.CreateAsync(
-            mcpClients,
-            providerName,
-            logger,
-            cancellationToken
-        );
+        var provider = await McpClientFunctionProvider.CreateAsync(mcpClients, providerName, logger, cancellationToken);
 
         registry.AddProvider(provider);
         return registry;
@@ -120,12 +115,6 @@ public static class FunctionRegistryExtensions
     )
     {
         var clientId = providerName ?? $"McpClient-{Guid.NewGuid():N}";
-        return await registry.AddMcpClientAsync(
-            mcpClient,
-            clientId,
-            providerName,
-            logger,
-            cancellationToken
-        );
+        return await registry.AddMcpClientAsync(mcpClient, clientId, providerName, logger, cancellationToken);
     }
 }

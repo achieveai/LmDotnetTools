@@ -34,9 +34,7 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
             Options.Create(CreateTestOptions())
         );
 
-        var repository = new DocumentSegmentRepository(
-            loggerFactory.CreateLogger<DocumentSegmentRepository>()
-        );
+        var repository = new DocumentSegmentRepository(loggerFactory.CreateLogger<DocumentSegmentRepository>());
 
         _sessionFactory = new TestSqliteSessionFactory(loggerFactory);
 
@@ -153,17 +151,9 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         var parentDocumentId2 = 4002;
 
         // Act
-        var result1 = await _integration.ProcessDocumentWorkflowAsync(
-            content,
-            parentDocumentId1,
-            session1Context
-        );
+        var result1 = await _integration.ProcessDocumentWorkflowAsync(content, parentDocumentId1, session1Context);
 
-        var result2 = await _integration.ProcessDocumentWorkflowAsync(
-            content,
-            parentDocumentId2,
-            session2Context
-        );
+        var result2 = await _integration.ProcessDocumentWorkflowAsync(content, parentDocumentId2, session2Context);
 
         // Assert
         result1.Should().NotBeNull();
@@ -189,11 +179,7 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         var parentDocumentId = 5001; // Unique document ID
 
         // Act
-        var result = await _integration.ProcessDocumentWorkflowAsync(
-            content,
-            parentDocumentId,
-            _testSessionContext
-        );
+        var result = await _integration.ProcessDocumentWorkflowAsync(content, parentDocumentId, _testSessionContext);
 
         // Assert - Verify all workflow steps completed
         result.DocumentStatistics.Should().NotBeNull();
@@ -220,11 +206,7 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         var parentDocumentId = 6001; // Unique document ID
 
         // Act
-        var result = await _integration.ProcessDocumentWorkflowAsync(
-            content,
-            parentDocumentId,
-            _testSessionContext
-        );
+        var result = await _integration.ProcessDocumentWorkflowAsync(content, parentDocumentId, _testSessionContext);
 
         // Assert
         result.Segments.Should().NotBeEmpty();

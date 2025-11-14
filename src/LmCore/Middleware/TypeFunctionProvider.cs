@@ -95,10 +95,7 @@ public class TypeFunctionProvider : IFunctionProvider
         }
 
         // Skip compiler-generated methods
-        if (
-            method.GetCustomAttribute<System.Runtime.CompilerServices.CompilerGeneratedAttribute>()
-            != null
-        )
+        if (method.GetCustomAttribute<System.Runtime.CompilerServices.CompilerGeneratedAttribute>() != null)
         {
             return false;
         }
@@ -135,9 +132,7 @@ public class TypeFunctionProvider : IFunctionProvider
         var parameters = method.GetParameters().Select(CreateParameterContract).ToList();
 
         // Get return type description if available
-        var returnDescription = method
-            .ReturnParameter?.GetCustomAttribute<DescriptionAttribute>()
-            ?.Description;
+        var returnDescription = method.ReturnParameter?.GetCustomAttribute<DescriptionAttribute>()?.Description;
 
         return new FunctionContract
         {
@@ -152,8 +147,7 @@ public class TypeFunctionProvider : IFunctionProvider
     private FunctionParameterContract CreateParameterContract(ParameterInfo parameter)
     {
         var description =
-            parameter.GetCustomAttribute<DescriptionAttribute>()?.Description
-            ?? $"Parameter {parameter.Name}";
+            parameter.GetCustomAttribute<DescriptionAttribute>()?.Description ?? $"Parameter {parameter.Name}";
 
         return new FunctionParameterContract
         {
@@ -178,8 +172,7 @@ public class TypeFunctionProvider : IFunctionProvider
         if (!paramType.IsValueType)
         {
             // Check for nullable reference type annotations
-            var nullableAttribute =
-                parameter.GetCustomAttribute<System.Runtime.CompilerServices.NullableAttribute>();
+            var nullableAttribute = parameter.GetCustomAttribute<System.Runtime.CompilerServices.NullableAttribute>();
             if (nullableAttribute != null && nullableAttribute.NullableFlags.Length > 0)
             {
                 // Flag 2 means nullable, 1 means not nullable
@@ -234,9 +227,7 @@ public class TypeFunctionProvider : IFunctionProvider
 
                 if (!string.IsNullOrEmpty(argsJson) && parameters.Length > 0)
                 {
-                    var argsDict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
-                        argsJson
-                    );
+                    var argsDict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
 
                     for (int i = 0; i < parameters.Length; i++)
                     {
@@ -294,9 +285,7 @@ public class TypeFunctionProvider : IFunctionProvider
                     }
                     else
                     {
-                        throw new InvalidOperationException(
-                            $"Async method {method.Name} did not return a Task"
-                        );
+                        throw new InvalidOperationException($"Async method {method.Name} did not return a Task");
                     }
                 }
                 else
@@ -327,9 +316,7 @@ public class TypeFunctionProvider : IFunctionProvider
             }
             catch (Exception ex)
             {
-                return JsonSerializer.Serialize(
-                    new { error = ex.Message, type = ex.GetType().Name }
-                );
+                return JsonSerializer.Serialize(new { error = ex.Message, type = ex.GetType().Name });
             }
         };
     }
@@ -337,10 +324,7 @@ public class TypeFunctionProvider : IFunctionProvider
     private static bool IsAsyncMethod(MethodInfo method)
     {
         return method.ReturnType == typeof(Task)
-            || (
-                method.ReturnType.IsGenericType
-                && method.ReturnType.GetGenericTypeDefinition() == typeof(Task<>)
-            );
+            || (method.ReturnType.IsGenericType && method.ReturnType.GetGenericTypeDefinition() == typeof(Task<>));
     }
 }
 
@@ -426,12 +410,7 @@ public static class FunctionRegistryTypeExtensions
             .GetTypes()
             .Where(t => !t.IsAbstract && !t.IsInterface)
             .Where(t =>
-                t.GetMethods(
-                        BindingFlags.Public
-                            | BindingFlags.NonPublic
-                            | BindingFlags.Static
-                            | BindingFlags.Instance
-                    )
+                t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)
                     .Any(m =>
                         m.GetCustomAttribute<FunctionAttribute>() != null
                         || m.GetCustomAttribute<DescriptionAttribute>() != null

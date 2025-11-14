@@ -26,10 +26,7 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(ValidStringTestCases))]
-    public void ValidateNotNullOrWhiteSpace_ValidStrings_DoesNotThrow(
-        string value,
-        string description
-    )
+    public void ValidateNotNullOrWhiteSpace_ValidStrings_DoesNotThrow(string value, string description)
     {
         Debug.WriteLine($"Testing ValidateNotNullOrWhiteSpace with valid string: {description}");
         Debug.WriteLine($"Value: '{value}'");
@@ -43,23 +40,16 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(InvalidStringTestCases))]
-    public void ValidateNotNullOrWhiteSpace_InvalidStrings_ThrowsArgumentException(
-        string? value,
-        string description
-    )
+    public void ValidateNotNullOrWhiteSpace_InvalidStrings_ThrowsArgumentException(string? value, string description)
     {
         Debug.WriteLine($"Testing ValidateNotNullOrWhiteSpace with invalid string: {description}");
         Debug.WriteLine($"Value: '{value}'");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            ValidationHelper.ValidateNotNullOrWhiteSpace(value)
-        );
+        var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateNotNullOrWhiteSpace(value));
 
         Assert.Contains("cannot be null, empty, or whitespace", exception.Message);
-        Debug.WriteLine(
-            $"✓ ValidateNotNullOrWhiteSpace correctly threw ArgumentException: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidateNotNullOrWhiteSpace correctly threw ArgumentException: {exception.Message}");
     }
 
     #endregion
@@ -86,13 +76,9 @@ public class ValidationHelperTests
         Debug.WriteLine("Testing ValidateNotNull with null object");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentNullException>(() =>
-            ValidationHelper.ValidateNotNull<object>(null)
-        );
+        var exception = Assert.Throws<ArgumentNullException>(() => ValidationHelper.ValidateNotNull<object>(null));
 
-        Debug.WriteLine(
-            $"✓ ValidateNotNull correctly threw ArgumentNullException: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidateNotNull correctly threw ArgumentNullException: {exception.Message}");
     }
 
     #endregion
@@ -129,14 +115,9 @@ public class ValidationHelperTests
         Debug.WriteLine($"Expected exception: {expectedExceptionType.Name}");
 
         // Act & Assert
-        var exception = Assert.Throws(
-            expectedExceptionType,
-            () => ValidationHelper.ValidateNotNullOrEmpty(collection)
-        );
+        var exception = Assert.Throws(expectedExceptionType, () => ValidationHelper.ValidateNotNullOrEmpty(collection));
 
-        Debug.WriteLine(
-            $"✓ ValidateNotNullOrEmpty correctly threw {expectedExceptionType.Name}: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidateNotNullOrEmpty correctly threw {expectedExceptionType.Name}: {exception.Message}");
     }
 
     #endregion
@@ -150,15 +131,11 @@ public class ValidationHelperTests
         string description
     )
     {
-        Debug.WriteLine(
-            $"Testing ValidateStringCollectionElements with valid collection: {description}"
-        );
+        Debug.WriteLine($"Testing ValidateStringCollectionElements with valid collection: {description}");
         Debug.WriteLine($"Collection: [{string.Join(", ", collection.Select(s => $"'{s}'"))}]");
 
         // Act & Assert
-        var exception = Record.Exception(() =>
-            ValidationHelper.ValidateStringCollectionElements(collection)
-        );
+        var exception = Record.Exception(() => ValidationHelper.ValidateStringCollectionElements(collection));
 
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateStringCollectionElements passed for valid collection");
@@ -171,18 +148,14 @@ public class ValidationHelperTests
         string description
     )
     {
-        Debug.WriteLine(
-            $"Testing ValidateStringCollectionElements with invalid collection: {description}"
-        );
+        Debug.WriteLine($"Testing ValidateStringCollectionElements with invalid collection: {description}");
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() =>
             ValidationHelper.ValidateStringCollectionElements(collection)
         );
 
-        Debug.WriteLine(
-            $"✓ ValidateStringCollectionElements correctly threw ArgumentException: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidateStringCollectionElements correctly threw ArgumentException: {exception.Message}");
     }
 
     #endregion
@@ -205,23 +178,16 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(NonPositiveNumberTestCases))]
-    public void ValidatePositive_NonPositiveNumbers_ThrowsArgumentException(
-        int value,
-        string description
-    )
+    public void ValidatePositive_NonPositiveNumbers_ThrowsArgumentException(int value, string description)
     {
         Debug.WriteLine($"Testing ValidatePositive with non-positive number: {description}");
         Debug.WriteLine($"Value: {value}");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            ValidationHelper.ValidatePositive(value)
-        );
+        var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidatePositive(value));
 
         Assert.Contains("must be positive", exception.Message);
-        Debug.WriteLine(
-            $"✓ ValidatePositive correctly threw ArgumentException: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidatePositive correctly threw ArgumentException: {exception.Message}");
     }
 
     #endregion
@@ -230,12 +196,7 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(ValidRangeTestCases))]
-    public void ValidateRange_ValuesInRange_DoesNotThrow(
-        int value,
-        int min,
-        int max,
-        string description
-    )
+    public void ValidateRange_ValuesInRange_DoesNotThrow(int value, int min, int max, string description)
     {
         Debug.WriteLine($"Testing ValidateRange with value in range: {description}");
         Debug.WriteLine($"Value: {value}, Range: [{min}, {max}]");
@@ -264,9 +225,7 @@ public class ValidationHelperTests
             ValidationHelper.ValidateRange(value, min, max)
         );
 
-        Debug.WriteLine(
-            $"✓ ValidateRange correctly threw ArgumentOutOfRangeException: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidateRange correctly threw ArgumentOutOfRangeException: {exception.Message}");
     }
 
     #endregion
@@ -275,10 +234,7 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(ValidEnumTestCases))]
-    public void ValidateEnumDefined_ValidEnumValues_DoesNotThrow(
-        EmbeddingApiType value,
-        string description
-    )
+    public void ValidateEnumDefined_ValidEnumValues_DoesNotThrow(EmbeddingApiType value, string description)
     {
         Debug.WriteLine($"Testing ValidateEnumDefined with valid enum: {description}");
         Debug.WriteLine($"Enum value: {value}");
@@ -301,14 +257,10 @@ public class ValidationHelperTests
         Debug.WriteLine($"Enum value: {value} ({(int)value})");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            ValidationHelper.ValidateEnumDefined(value)
-        );
+        var exception = Assert.Throws<ArgumentException>(() => ValidationHelper.ValidateEnumDefined(value));
 
         Assert.Contains("Invalid EmbeddingApiType value", exception.Message);
-        Debug.WriteLine(
-            $"✓ ValidateEnumDefined correctly threw ArgumentException: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidateEnumDefined correctly threw ArgumentException: {exception.Message}");
     }
 
     #endregion
@@ -317,19 +269,13 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(ValidAllowedValuesTestCases))]
-    public void ValidateAllowedValues_ValidValues_DoesNotThrow(
-        string value,
-        string[] allowedValues,
-        string description
-    )
+    public void ValidateAllowedValues_ValidValues_DoesNotThrow(string value, string[] allowedValues, string description)
     {
         Debug.WriteLine($"Testing ValidateAllowedValues with valid value: {description}");
         Debug.WriteLine($"Value: '{value}', Allowed: [{string.Join(", ", allowedValues)}]");
 
         // Act & Assert
-        var exception = Record.Exception(() =>
-            ValidationHelper.ValidateAllowedValues(value, allowedValues)
-        );
+        var exception = Record.Exception(() => ValidationHelper.ValidateAllowedValues(value, allowedValues));
 
         Assert.Null(exception);
         Debug.WriteLine("✓ ValidateAllowedValues passed for valid value");
@@ -351,9 +297,7 @@ public class ValidationHelperTests
             ValidationHelper.ValidateAllowedValues(value, allowedValues)
         );
 
-        Debug.WriteLine(
-            $"✓ ValidateAllowedValues correctly threw ArgumentException: {exception.Message}"
-        );
+        Debug.WriteLine($"✓ ValidateAllowedValues correctly threw ArgumentException: {exception.Message}");
     }
 
     #endregion
@@ -362,10 +306,7 @@ public class ValidationHelperTests
 
     [Theory]
     [MemberData(nameof(ValidEmbeddingRequestTestCases))]
-    public void ValidateEmbeddingRequest_ValidRequests_DoesNotThrow(
-        EmbeddingRequest request,
-        string description
-    )
+    public void ValidateEmbeddingRequest_ValidRequests_DoesNotThrow(EmbeddingRequest request, string description)
     {
         Debug.WriteLine($"Testing ValidateEmbeddingRequest with valid request: {description}");
         Debug.WriteLine($"Model: {request.Model}, Inputs: {request.Inputs.Count}");
@@ -389,10 +330,7 @@ public class ValidationHelperTests
         Debug.WriteLine($"Expected exception: {expectedExceptionType.Name}");
 
         // Act & Assert
-        var exception = Assert.Throws(
-            expectedExceptionType,
-            () => ValidationHelper.ValidateEmbeddingRequest(request)
-        );
+        var exception = Assert.Throws(expectedExceptionType, () => ValidationHelper.ValidateEmbeddingRequest(request));
 
         Debug.WriteLine(
             $"✓ ValidateEmbeddingRequest correctly threw {expectedExceptionType.Name}: {exception.Message}"
@@ -434,8 +372,8 @@ public class ValidationHelperTests
     public static IEnumerable<object[]> ValidCollectionTestCases =>
         new List<object[]>
         {
-            new object[] { new[] { "item1" }, 1, "Single item collection" },
-            new object[] { new[] { "item1", "item2", "item3" }, 3, "Multiple item collection" },
+            new object[] { item, 1, "Single item collection" },
+            new object[] { itemArray, 3, "Multiple item collection" },
             new object[]
             {
                 new List<string> { "test" },
@@ -448,28 +386,24 @@ public class ValidationHelperTests
         new List<object[]>
         {
             new object[] { null!, typeof(ArgumentNullException), "Null collection" },
-            new object[] { new string[0], typeof(ArgumentException), "Empty array" },
+            new object[] { Array.Empty<string>(), typeof(ArgumentException), "Empty array" },
             new object[] { new List<string>(), typeof(ArgumentException), "Empty list" },
         };
 
     public static IEnumerable<object[]> ValidStringCollectionTestCases =>
         new List<object[]>
         {
-            new object[] { new[] { "valid1", "valid2" }, "Collection with valid strings" },
-            new object[] { new[] { "single" }, "Single valid string" },
-            new object[] { new[] { "a", "b", "c" }, "Multiple single characters" },
+            new object[] { itemArray0, "Collection with valid strings" },
+            new object[] { itemArray1, "Single valid string" },
+            new object[] { itemArray2, "Multiple single characters" },
         };
 
     public static IEnumerable<object[]> InvalidStringCollectionTestCases =>
         new List<object[]>
         {
             new object[] { new[] { "valid", null!, "valid" }, "Collection with null element" },
-            new object[] { new[] { "valid", "", "valid" }, "Collection with empty element" },
-            new object[]
-            {
-                new[] { "valid", "   ", "valid" },
-                "Collection with whitespace element",
-            },
+            new object[] { itemArray3, "Collection with empty element" },
+            new object[] { itemArray4, "Collection with whitespace element" },
         };
 
     public static IEnumerable<object[]> PositiveNumberTestCases =>
@@ -522,22 +456,17 @@ public class ValidationHelperTests
     public static IEnumerable<object[]> ValidAllowedValuesTestCases =>
         new List<object[]>
         {
-            new object[] { "float", new[] { "float", "base64" }, "Exact match" },
-            new object[] { "FLOAT", new[] { "float", "base64" }, "Case insensitive match" },
-            new object[]
-            {
-                "base64",
-                new[] { "float", "base64", "binary" },
-                "Match in multiple options",
-            },
+            new object[] { "float", itemArray5, "Exact match" },
+            new object[] { "FLOAT", itemArray5, "Case insensitive match" },
+            new object[] { "base64", itemArray6, "Match in multiple options" },
         };
 
     public static IEnumerable<object[]> InvalidAllowedValuesTestCases =>
         new List<object[]>
         {
-            new object[] { "invalid", new[] { "float", "base64" }, "Value not in allowed list" },
-            new object[] { null!, new[] { "float", "base64" }, "Null value" },
-            new object[] { "", new[] { "float", "base64" }, "Empty value" },
+            new object[] { "invalid", itemArray7, "Value not in allowed list" },
+            new object[] { null!, itemArray7, "Null value" },
+            new object[] { "", itemArray8, "Empty value" },
         };
 
     public static IEnumerable<object[]> ValidEmbeddingRequestTestCases =>
@@ -545,14 +474,14 @@ public class ValidationHelperTests
         {
             new object[]
             {
-                new EmbeddingRequest { Inputs = new[] { "test input" }, Model = "test-model" },
+                new EmbeddingRequest { Inputs = itemArray9, Model = "test-model" },
                 "Basic valid request",
             },
             new object[]
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "input1", "input2" },
+                    Inputs = itemArray10,
                     Model = "test-model",
                     Dimensions = 512,
                 },
@@ -566,17 +495,32 @@ public class ValidationHelperTests
             new object[] { null!, typeof(ArgumentNullException), "Null request" },
             new object[]
             {
-                new EmbeddingRequest { Inputs = new[] { "test" }, Model = "" },
+                new EmbeddingRequest { Inputs = itemArray11, Model = "" },
                 typeof(ArgumentException),
                 "Empty model",
             },
             new object[]
             {
-                new EmbeddingRequest { Inputs = new string[0], Model = "test-model" },
+                new EmbeddingRequest { Inputs = Array.Empty<string>(), Model = "test-model" },
                 typeof(ArgumentException),
                 "Empty inputs",
             },
         };
+
+    private static readonly string[] item = new[] { "item1" };
+    private static readonly string[] itemArray = new[] { "item1", "item2", "item3" };
+    private static readonly string[] itemArray0 = new[] { "valid1", "valid2" };
+    private static readonly string[] itemArray1 = new[] { "single" };
+    private static readonly string[] itemArray2 = new[] { "a", "b", "c" };
+    private static readonly string[] itemArray3 = new[] { "valid", "", "valid" };
+    private static readonly string[] itemArray4 = new[] { "valid", "   ", "valid" };
+    private static readonly string[] itemArray5 = new[] { "float", "base64" };
+    private static readonly string[] itemArray6 = new[] { "float", "base64", "binary" };
+    private static readonly string[] itemArray7 = new[] { "float", "base64" };
+    private static readonly string[] itemArray8 = new[] { "float", "base64" };
+    private static readonly string[] itemArray9 = new[] { "test input" };
+    private static readonly string[] itemArray10 = new[] { "input1", "input2" };
+    private static readonly string[] itemArray11 = new[] { "test" };
 
     #endregion
 }

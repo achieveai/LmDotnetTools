@@ -32,10 +32,7 @@ public static class Extensions
         return new MiddlewareWrappingStreamingAgent(agent, middleware, streamingMiddleware);
     }
 
-    public static IStreamingAgent WithMiddleware(
-        this IStreamingAgent agent,
-        IStreamingMiddleware middleware
-    )
+    public static IStreamingAgent WithMiddleware(this IStreamingAgent agent, IStreamingMiddleware middleware)
     {
         return new MiddlewareWrappingStreamingAgent(agent, middleware);
     }

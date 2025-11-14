@@ -30,9 +30,7 @@ public class OpenRouterModelServiceTests : IDisposable
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("openrouter.ai")
-                ),
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("openrouter.ai")),
                 ItExpr.IsAny<CancellationToken>()
             )
             .ReturnsAsync(
@@ -44,7 +42,7 @@ public class OpenRouterModelServiceTests : IDisposable
             );
     }
 
-    private void ClearCache()
+    private static void ClearCache()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "LmDotnetTools");
         var cacheFilePath = Path.Combine(tempDir, "openrouter-cache.json");
@@ -95,19 +93,17 @@ public class OpenRouterModelServiceTests : IDisposable
             .Verify(
                 "SendAsync",
                 Times.Once(),
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("openrouter.ai")
-                ),
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("openrouter.ai")),
                 ItExpr.IsAny<CancellationToken>()
             );
 
         Assert.Single(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.Equal("test-model-1", modelConfig.Id);
         Assert.Single(modelConfig.Providers);
 
-        var provider = modelConfig.Providers.First();
+        var provider = modelConfig.Providers[0];
         Assert.Equal("OpenRouter", provider.Name);
         Assert.Equal("test-model-1", provider.ModelName);
         Assert.Contains("openrouter", provider.Tags ?? Array.Empty<string>());
@@ -141,10 +137,7 @@ public class OpenRouterModelServiceTests : IDisposable
     public void JsonParsing_WorksCorrectly()
     {
         // Arrange
-        var mockResponse = new
-        {
-            data = new[] { new { slug = "test-model-1", name = "Test Model 1" } },
-        };
+        var mockResponse = new { data = new[] { new { slug = "test-model-1", name = "Test Model 1" } } };
 
         var jsonResponse = JsonSerializer.Serialize(mockResponse);
 
@@ -198,9 +191,7 @@ public class OpenRouterModelServiceTests : IDisposable
             .Verify(
                 "SendAsync",
                 Times.Once(),
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("openrouter.ai")
-                ),
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("openrouter.ai")),
                 ItExpr.IsAny<CancellationToken>()
             );
     }

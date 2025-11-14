@@ -353,16 +353,8 @@ public class LlmFailureSimulationTests
             _circuitBreakerConfig,
             Mock.Of<ILogger<CircuitBreakerService>>()
         );
-        var retryPolicy = new RetryPolicyService(
-            _retryConfig,
-            Mock.Of<ILogger<RetryPolicyService>>()
-        );
-        var resilience = new ResilienceService(
-            circuitBreaker,
-            retryPolicy,
-            _degradationConfig,
-            _mockLogger.Object
-        );
+        var retryPolicy = new RetryPolicyService(_retryConfig, Mock.Of<ILogger<RetryPolicyService>>());
+        var resilience = new ResilienceService(circuitBreaker, retryPolicy, _degradationConfig, _mockLogger.Object);
 
         // Act - Execute enough failures to open circuit breaker
         var results = new List<ResilienceOperationResult<string>>();
@@ -425,10 +417,7 @@ public class LlmFailureSimulationTests
     [InlineData("503", 30000)] // Service unavailable should be fast
     [InlineData("401", 10000)] // Auth errors should fail fast
     [InlineData("malformed", 30000)] // Parsing errors with retries
-    public async Task ErrorHandling_PerformanceRequirements_ShouldMeetTimeLimits(
-        string errorType,
-        int maxTimeMs
-    )
+    public async Task ErrorHandling_PerformanceRequirements_ShouldMeetTimeLimits(string errorType, int maxTimeMs)
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
@@ -467,17 +456,9 @@ public class LlmFailureSimulationTests
             _circuitBreakerConfig,
             Mock.Of<ILogger<CircuitBreakerService>>()
         );
-        var retryPolicy = new RetryPolicyService(
-            _retryConfig,
-            Mock.Of<ILogger<RetryPolicyService>>()
-        );
+        var retryPolicy = new RetryPolicyService(_retryConfig, Mock.Of<ILogger<RetryPolicyService>>());
 
-        return new ResilienceService(
-            circuitBreaker,
-            retryPolicy,
-            _degradationConfig,
-            _mockLogger.Object
-        );
+        return new ResilienceService(circuitBreaker, retryPolicy, _degradationConfig, _mockLogger.Object);
     }
 
     private async Task<string> SimulateLlmCall(HttpMessageHandler handler, string operationId)
@@ -494,10 +475,7 @@ public class LlmFailureSimulationTests
         return content;
     }
 
-    private async Task<string> SimulateLlmCallWithParsing(
-        HttpMessageHandler handler,
-        string operationId
-    )
+    private async Task<string> SimulateLlmCallWithParsing(HttpMessageHandler handler, string operationId)
     {
         using var client = new HttpClient(handler);
         var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
@@ -630,10 +608,7 @@ public class LlmFailureSimulationTests
             var result = await resilience.ExecuteWithResilienceAsync<string>(
                 () =>
                     scenarioName == "malformed"
-                        ? SimulateLlmCallWithParsing(
-                            mockHandler.Object,
-                            $"scenario-{i}-{scenarioName}"
-                        )
+                        ? SimulateLlmCallWithParsing(mockHandler.Object, $"scenario-{i}-{scenarioName}")
                         : SimulateLlmCall(mockHandler.Object, $"scenario-{i}-{scenarioName}"),
                 () => Task.FromResult($"fallback-{i}"),
                 $"end-to-end-test-{i}"

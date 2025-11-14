@@ -15,10 +15,7 @@ public interface IEmbeddingManager
     /// <param name="content">The text content to generate an embedding for.</param>
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>The embedding vector as a float array.</returns>
-    Task<float[]> GenerateEmbeddingAsync(
-        string content,
-        CancellationToken cancellationToken = default
-    );
+    Task<float[]> GenerateEmbeddingAsync(string content, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Generates embeddings for multiple content strings in a batch for efficiency.

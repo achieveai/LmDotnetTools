@@ -28,13 +28,7 @@ public class AnthropicResponse_ToMessages_Tests
 
     private static string GetExampleFilePath(string filename)
     {
-        return Path.Combine(
-            GetRepositoryRootPath(),
-            "src",
-            "AnthropicProvider",
-            "Examples",
-            filename
-        );
+        return Path.Combine(GetRepositoryRootPath(), "src", "AnthropicProvider", "Examples", filename);
     }
 
     [Fact]
@@ -50,11 +44,10 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Act & Assert for first response - text and tool_use
         var response1 = responses[0];
-        var messages1 =
-            AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(
-                response1,
-                "test-agent"
-            );
+        var messages1 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(
+            response1,
+            "test-agent"
+        );
 
         // Assert basic properties - we now have 3 messages because of the additional UsageMessage
         Assert.Equal(3, messages1.Count);
@@ -66,10 +59,7 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.IsType<TextMessage>(messages1[0]);
         var textMessage = messages1[0] as TextMessage;
         Assert.NotNull(textMessage);
-        Assert.Contains(
-            "I'll help you list the files in the root and \"code\" directories",
-            textMessage.Text
-        );
+        Assert.Contains("I'll help you list the files in the root and \"code\" directories", textMessage.Text);
         Assert.False(textMessage.IsThinking);
 
         // Verify tool message content
@@ -90,11 +80,10 @@ public class AnthropicResponse_ToMessages_Tests
 
         // Act & Assert for second response - thinking content
         var response2 = responses[1];
-        var messages2 =
-            AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(
-                response2,
-                "test-agent"
-            );
+        var messages2 = AchieveAi.LmDotnetTools.AnthropicProvider.Models.AnthropicExtensions.ToMessages(
+            response2,
+            "test-agent"
+        );
 
         // Assert basic properties - we now have 4 messages because of the additional UsageMessage
         Assert.Equal(4, messages2.Count);
@@ -104,10 +93,7 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.IsType<TextMessage>(messages2[0]);
         var thinkingMessage = messages2[0] as TextMessage;
         Assert.NotNull(thinkingMessage);
-        Assert.Contains(
-            "The user wants to find files that are in the directory",
-            thinkingMessage.Text
-        );
+        Assert.Contains("The user wants to find files that are in the directory", thinkingMessage.Text);
         Assert.True(thinkingMessage.IsThinking);
 
         // Verify regular text message
@@ -229,11 +215,13 @@ public class AnthropicResponse_ToMessages_Tests
         Assert.Equal("tool_use", messageDeltas[0]?["delta"]?["stop_reason"]?.GetValue<string>());
     }
 
+    private static readonly string[] separator = new[] { "\r\n", "\n" };
+
     // Helper method to parse SSE events
     private static List<SseEvent> ParseSseEvents(string input)
     {
         var events = new List<SseEvent>();
-        var lines = input.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        var lines = input.Split(separator, StringSplitOptions.None);
 
         SseEvent? currentEvent = null;
 

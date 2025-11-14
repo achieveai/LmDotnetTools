@@ -62,10 +62,7 @@ public class FilterResultTests
 
         // Assert
         Assert.True(result.IsFiltered);
-        Assert.Equal(
-            "Function blocked by provider 'TestProvider' deny list pattern: dangerous_*",
-            result.Reason
-        );
+        Assert.Equal("Function blocked by provider 'TestProvider' deny list pattern: dangerous_*", result.Reason);
         Assert.Equal(FilterRuleType.ProviderBlockList, result.RuleType);
         Assert.Equal(pattern, result.MatchedPattern);
     }
@@ -177,20 +174,14 @@ public class FilterResultTests
     [InlineData(FilterRuleType.ProviderAllowList, true)]
     [InlineData(FilterRuleType.GlobalBlockList, true)]
     [InlineData(FilterRuleType.GlobalAllowList, true)]
-    public void FilterRuleType_CorrectlyIndicatesFiltering(
-        FilterRuleType ruleType,
-        bool expectedFiltered
-    )
+    public void FilterRuleType_CorrectlyIndicatesFiltering(FilterRuleType ruleType, bool expectedFiltered)
     {
         // Arrange & Act
         FilterResult result = ruleType switch
         {
             FilterRuleType.None => FilterResult.Include(),
             FilterRuleType.ProviderDisabled => FilterResult.FilteredByDisabledProvider("test"),
-            FilterRuleType.ProviderBlockList => FilterResult.FilteredByProviderBlockList(
-                "test",
-                "*"
-            ),
+            FilterRuleType.ProviderBlockList => FilterResult.FilteredByProviderBlockList("test", "*"),
             FilterRuleType.ProviderAllowList => FilterResult.FilteredByProviderAllowList("test"),
             FilterRuleType.GlobalBlockList => FilterResult.FilteredByGlobalBlockList("*"),
             FilterRuleType.GlobalAllowList => FilterResult.FilteredByGlobalAllowList(),

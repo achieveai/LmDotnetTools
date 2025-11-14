@@ -100,12 +100,7 @@ public static class LoggingExtensions
     /// <param name="modelId">The model ID being used.</param>
     /// <param name="agentName">The name of the agent.</param>
     /// <param name="messageCount">The number of messages.</param>
-    public static void LogStreamingInitiated(
-        this ILogger logger,
-        string modelId,
-        string agentName,
-        int messageCount
-    )
+    public static void LogStreamingInitiated(this ILogger logger, string modelId, string agentName, int messageCount)
     {
         logger.LogInformation(
             LogEventIds.AgentStreamingInitiated,
@@ -424,12 +419,7 @@ public static class LoggingExtensions
     /// <param name="component">The component name.</param>
     /// <param name="memoryUsageBytes">The memory usage in bytes.</param>
     /// <param name="operation">The operation that triggered the measurement.</param>
-    public static void LogMemoryMetrics(
-        this ILogger logger,
-        string component,
-        long memoryUsageBytes,
-        string operation
-    )
+    public static void LogMemoryMetrics(this ILogger logger, string component, long memoryUsageBytes, string operation)
     {
         logger.LogDebug(
             LogEventIds.MemoryMetrics,
@@ -450,11 +440,7 @@ public static class LoggingExtensions
     /// <param name="logger">The logger instance.</param>
     /// <param name="middlewareName">The name of the middleware.</param>
     /// <param name="messageCount">The number of messages being processed.</param>
-    public static void LogMiddlewareProcessing(
-        this ILogger logger,
-        string middlewareName,
-        int messageCount
-    )
+    public static void LogMiddlewareProcessing(this ILogger logger, string middlewareName, int messageCount)
     {
         logger.LogInformation(
             LogEventIds.MiddlewareProcessing,
@@ -493,11 +479,7 @@ public static class LoggingExtensions
     /// <param name="logger">The logger instance.</param>
     /// <param name="exception">The exception that occurred.</param>
     /// <param name="middlewareName">The name of the middleware.</param>
-    public static void LogMiddlewareProcessingFailed(
-        this ILogger logger,
-        Exception exception,
-        string middlewareName
-    )
+    public static void LogMiddlewareProcessingFailed(this ILogger logger, Exception exception, string middlewareName)
     {
         logger.LogError(
             LogEventIds.MiddlewareProcessingFailed,
@@ -576,12 +558,7 @@ public static class LoggingExtensions
     /// <param name="agentType">The type of agent being delegated to.</param>
     /// <param name="modelName">The effective model name.</param>
     /// <param name="reason">The reason for delegation.</param>
-    public static void LogAgentDelegated(
-        this ILogger logger,
-        string agentType,
-        string modelName,
-        string reason
-    )
+    public static void LogAgentDelegated(this ILogger logger, string agentType, string modelName, string reason)
     {
         logger.LogInformation(
             LogEventIds.AgentDelegated,

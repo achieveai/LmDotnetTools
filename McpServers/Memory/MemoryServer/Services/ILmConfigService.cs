@@ -15,10 +15,7 @@ public interface ILmConfigService
     /// <param name="capability">The required capability (e.g., "chat", "embedding", "reranking")</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The optimal model configuration, or null if none found</returns>
-    Task<ModelConfig?> GetOptimalModelAsync(
-        string capability,
-        CancellationToken cancellationToken = default
-    );
+    Task<ModelConfig?> GetOptimalModelAsync(string capability, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Creates an agent for a specific capability using the optimal model.
@@ -46,9 +43,7 @@ public interface ILmConfigService
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>Configured embedding service instance</returns>
-    Task<IEmbeddingService> CreateEmbeddingServiceAsync(
-        CancellationToken cancellationToken = default
-    );
+    Task<IEmbeddingService> CreateEmbeddingServiceAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Creates a reranking service using the optimal reranking model.

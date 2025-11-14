@@ -162,8 +162,7 @@ public static class HttpRetryHelper
     public static bool IsRetryableStatusCode(HttpStatusCode statusCode)
     {
         // Retry on server errors (5xx) and rate limiting (429)
-        return statusCode == HttpStatusCode.TooManyRequests
-            || ((int)statusCode >= 500 && (int)statusCode < 600);
+        return statusCode == HttpStatusCode.TooManyRequests || ((int)statusCode >= 500 && (int)statusCode < 600);
     }
 
     /// <summary>

@@ -127,8 +127,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         HttpClient? httpClient = null
     )
         : base(
-            logger
-                ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ServerEmbeddings>.Instance,
+            logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ServerEmbeddings>.Instance,
             httpClient ?? new HttpClient()
         )
     {
@@ -151,8 +150,10 @@ public class ServerEmbeddings : BaseEmbeddingService
 
         // Configure HttpClient
         HttpClient.BaseAddress = new Uri(_endpoint);
-        HttpClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+        HttpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Bearer",
+            _apiKey
+        );
     }
 
     /// <inheritdoc />
@@ -202,7 +203,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         // Trigger immediate processing if queue is getting full
         if (_batchQueue.Count >= _maxBatchSize)
         {
-            _ = Task.Run(() => ProcessBatch(null));
+            _ = Task.Run(() => ProcessBatch(null), cancellationToken);
         }
 
         return await tcs.Task;
@@ -233,7 +234,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         ValidateRequest(request);
 
         // Apply text chunking if needed
-        var processedInputs = ApplyTextChunking(request.Inputs);
+        var processedInputs = ServerEmbeddings.ApplyTextChunking(request.Inputs);
 
         var chunkedRequest = new EmbeddingRequest
         {
@@ -252,11 +253,7 @@ public class ServerEmbeddings : BaseEmbeddingService
             {
                 var requestPayload = FormatRequestPayload(chunkedRequest);
                 var json = JsonSerializer.Serialize(requestPayload);
-                var content = new StringContent(
-                    json,
-                    System.Text.Encoding.UTF8,
-                    "application/json"
-                );
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
                 return await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
             },
@@ -279,9 +276,7 @@ public class ServerEmbeddings : BaseEmbeddingService
     /// For ServerEmbeddings, this method returns the single model configured during initialization.
     /// The service is designed to work with a specific model, so only that model is reported as available.
     /// </remarks>
-    public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(
-        CancellationToken cancellationToken = default
-    )
+    public override Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
     {
         // For ServerEmbeddings, we return the configured model
         return Task.FromResult<IReadOnlyList<string>>(new[] { _model });
@@ -322,9 +317,7 @@ public class ServerEmbeddings : BaseEmbeddingService
                     response.EnsureSuccessStatusCode(); // This will throw
                 }
 
-                lastException = new HttpRequestException(
-                    $"HTTP {(int)response.StatusCode} {response.StatusCode}"
-                );
+                lastException = new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
             }
             catch (HttpRequestException ex) when (HttpRetryHelper.IsRetryableError(ex))
             {
@@ -352,8 +345,7 @@ public class ServerEmbeddings : BaseEmbeddingService
             }
         }
 
-        throw lastException
-            ?? new InvalidOperationException("Operation failed after all retry attempts");
+        throw lastException ?? new InvalidOperationException("Operation failed after all retry attempts");
     }
 
     /// <summary>
@@ -361,7 +353,7 @@ public class ServerEmbeddings : BaseEmbeddingService
     /// </summary>
     /// <param name="inputs">The input texts</param>
     /// <returns>Chunked inputs</returns>
-    private string[] ApplyTextChunking(IEnumerable<string> inputs)
+    private static string[] ApplyTextChunking(IEnumerable<string> inputs)
     {
         var chunkedInputs = new List<string>();
 
@@ -401,11 +393,7 @@ public class ServerEmbeddings : BaseEmbeddingService
             // Try to break at word boundaries if possible
             if (chunkLength < remainingLength)
             {
-                var lastSpaceIndex = text.LastIndexOf(
-                    ' ',
-                    currentIndex + chunkLength - 1,
-                    chunkLength
-                );
+                var lastSpaceIndex = text.LastIndexOf(' ', currentIndex + chunkLength - 1, chunkLength);
                 if (lastSpaceIndex > currentIndex)
                 {
                     chunkLength = lastSpaceIndex - currentIndex + 1;
@@ -459,10 +447,7 @@ public class ServerEmbeddings : BaseEmbeddingService
                     // Complete each task with its corresponding embedding
                     for (int i = 0; i < batch.Count && i < response.Embeddings.Count; i++)
                     {
-                        batch[i]
-                            .TaskCompletionSource.SetResult(
-                                response.Embeddings.ElementAt(i).Vector
-                            );
+                        batch[i].TaskCompletionSource.SetResult(response.Embeddings.ElementAt(i).Vector);
                     }
                 }
                 catch (Exception ex)

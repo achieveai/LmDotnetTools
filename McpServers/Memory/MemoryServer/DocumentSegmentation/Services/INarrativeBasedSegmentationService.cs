@@ -44,10 +44,7 @@ public interface INarrativeBasedSegmentationService
     /// <param name="content">The document content to analyze</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Narrative flow analysis results</returns>
-    Task<NarrativeFlowAnalysis> AnalyzeLogicalFlowAsync(
-        string content,
-        CancellationToken cancellationToken = default
-    );
+    Task<NarrativeFlowAnalysis> AnalyzeLogicalFlowAsync(string content, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Validates narrative-based segments for quality and coherence.

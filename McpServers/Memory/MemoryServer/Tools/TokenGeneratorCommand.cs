@@ -20,18 +20,12 @@ public static class TokenGeneratorCommand
     /// <returns>The configured command</returns>
     public static Command CreateCommand()
     {
-        var userIdOption = new Option<string>(
-            name: "--userId",
-            description: "The user identifier for the token"
-        )
+        var userIdOption = new Option<string>(name: "--userId", description: "The user identifier for the token")
         {
             IsRequired = true,
         };
 
-        var agentIdOption = new Option<string>(
-            name: "--agentId",
-            description: "The agent identifier for the token"
-        )
+        var agentIdOption = new Option<string>(name: "--agentId", description: "The agent identifier for the token")
         {
             IsRequired = true,
         };
@@ -98,9 +92,7 @@ public static class TokenGeneratorCommand
             var jwtOptions = serviceProvider.GetRequiredService<IOptions<JwtOptions>>().Value;
             if (!jwtOptions.IsValid())
             {
-                Console.Error.WriteLine(
-                    "❌ JWT configuration is invalid. Please check your JWT settings."
-                );
+                Console.Error.WriteLine("❌ JWT configuration is invalid. Please check your JWT settings.");
                 Console.Error.WriteLine(
                     $"   - Secret: {(string.IsNullOrEmpty(jwtOptions.Secret) ? "Missing" : "Present")}"
                 );

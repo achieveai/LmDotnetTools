@@ -38,15 +38,7 @@ public class ServerEmbeddingsTests
         Debug.WriteLine($"Testing constructor with: {description}");
 
         // Act & Assert
-        var service = new ServerEmbeddings(
-            endpoint,
-            model,
-            embeddingSize,
-            apiKey,
-            maxBatchSize,
-            apiType,
-            _logger
-        );
+        var service = new ServerEmbeddings(endpoint, model, embeddingSize, apiKey, maxBatchSize, apiType, _logger);
 
         Assert.NotNull(service);
         Assert.Equal(embeddingSize, service.EmbeddingSize);
@@ -90,10 +82,7 @@ public class ServerEmbeddingsTests
 
     [Theory]
     [MemberData(nameof(BasicEmbeddingTestCases))]
-    public async Task GetEmbeddingAsync_WithValidInput_ReturnsEmbedding(
-        string input,
-        string description
-    )
+    public async Task GetEmbeddingAsync_WithValidInput_ReturnsEmbedding(string input, string description)
     {
         Debug.WriteLine($"Testing basic embedding generation: {description}");
 
@@ -134,9 +123,7 @@ public class ServerEmbeddingsTests
         // Assert
         Assert.NotNull(result);
         Assert.Equal(3, result.Embeddings.Count);
-        Debug.WriteLine(
-            $"Batch processing completed in {stopwatch.ElapsedMilliseconds}ms for {texts.Length} texts"
-        );
+        Debug.WriteLine($"Batch processing completed in {stopwatch.ElapsedMilliseconds}ms for {texts.Length} texts");
     }
 
     [Fact]
@@ -195,9 +182,7 @@ public class ServerEmbeddingsTests
             result.Embeddings.Count >= expectedChunks,
             $"Expected at least {expectedChunks} chunks, got {result.Embeddings.Count}"
         );
-        Debug.WriteLine(
-            $"Text chunking created {result.Embeddings.Count} chunks for: {description}"
-        );
+        Debug.WriteLine($"Text chunking created {result.Embeddings.Count} chunks for: {description}");
     }
 
     [Theory]
@@ -282,16 +267,7 @@ public class ServerEmbeddingsTests
     public static IEnumerable<object[]> ConstructorInvalidParametersTestCases =>
         new List<object[]>
         {
-            new object[]
-            {
-                null!,
-                "model",
-                1536,
-                "key",
-                100,
-                typeof(ArgumentNullException),
-                "Null endpoint",
-            },
+            new object[] { null!, "model", 1536, "key", 100, typeof(ArgumentNullException), "Null endpoint" },
             new object[]
             {
                 "https://api.test.com",
@@ -332,16 +308,7 @@ public class ServerEmbeddingsTests
                 typeof(ArgumentException),
                 "Null API key",
             },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                1536,
-                "",
-                100,
-                typeof(ArgumentException),
-                "Empty API key",
-            },
+            new object[] { "https://api.test.com", "model", 1536, "", 100, typeof(ArgumentException), "Empty API key" },
             new object[]
             {
                 "https://api.test.com",
@@ -366,12 +333,7 @@ public class ServerEmbeddingsTests
         new List<object[]>
         {
             new object[] { new string('a', 10000), 2, "Long text requiring chunking" },
-            new object[]
-            {
-                string.Join(" ", Enumerable.Repeat("word", 2000)),
-                2,
-                "Many words requiring chunking",
-            },
+            new object[] { string.Join(" ", Enumerable.Repeat("word", 2000)), 2, "Many words requiring chunking" },
             new object[] { "Short text", 1, "Short text not requiring chunking" },
         };
 

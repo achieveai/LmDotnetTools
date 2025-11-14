@@ -40,8 +40,7 @@ public class McpToolCollisionDetector
     {
         // Convert MCP tools to function descriptors
         var descriptors = new List<FunctionDescriptor>();
-        var toolToDescriptorMap =
-            new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
+        var toolToDescriptorMap = new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
 
         foreach (var (serverId, tools) in toolsByServer)
         {
@@ -64,10 +63,7 @@ public class McpToolCollisionDetector
         }
 
         // Use the generalized collision detector
-        var config = new FunctionFilterConfig
-        {
-            UsePrefixOnlyForCollisions = usePrefixOnlyForCollisions,
-        };
+        var config = new FunctionFilterConfig { UsePrefixOnlyForCollisions = usePrefixOnlyForCollisions };
 
         var namingMap = _functionCollisionDetector.DetectAndResolveCollisions(descriptors, config);
 

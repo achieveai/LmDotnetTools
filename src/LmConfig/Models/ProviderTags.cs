@@ -199,16 +199,7 @@ public static class ProviderTags
         return new Dictionary<string, IReadOnlyList<string>>
         {
             ["Performance"] = [Economic, Fast, Reliable, HighQuality, Premium, UltraFast],
-            ["Capabilities"] =
-            [
-                Reasoning,
-                Chat,
-                Coding,
-                Creative,
-                Multimodal,
-                Thinking,
-                ComplexTasks,
-            ],
+            ["Capabilities"] = [Reasoning, Chat, Coding, Creative, Multimodal, Thinking, ComplexTasks],
             ["Characteristics"] =
             [
                 OpenSource,

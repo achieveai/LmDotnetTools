@@ -65,17 +65,11 @@ public class RerankingEngineTests
         var results = CreateTestResults();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-            engine.RerankResultsAsync("", results, sessionContext)
-        );
+        await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("", results, sessionContext));
 
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-            engine.RerankResultsAsync("   ", results, sessionContext)
-        );
+        await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("   ", results, sessionContext));
 
-        await Assert.ThrowsAsync<ArgumentException>(() =>
-            engine.RerankResultsAsync(null!, results, sessionContext)
-        );
+        await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync(null!, results, sessionContext));
     }
 
     [Fact]
@@ -207,9 +201,7 @@ public class RerankingEngineTests
             $"Recent content score ({recentResult.Score}) should be higher than old content score ({oldResult.Score})"
         );
 
-        _output.WriteLine(
-            $"Recency boost test: Recent={recentResult.Score:F3}, Old={oldResult.Score:F3}"
-        );
+        _output.WriteLine($"Recency boost test: Recent={recentResult.Score:F3}, Old={oldResult.Score:F3}");
     }
 
     [Fact]
@@ -257,9 +249,7 @@ public class RerankingEngineTests
 
         var memoryResult = result.Results.First(r => r.Type == UnifiedResultType.Memory);
         var entityResult = result.Results.First(r => r.Type == UnifiedResultType.Entity);
-        var relationshipResult = result.Results.First(r =>
-            r.Type == UnifiedResultType.Relationship
-        );
+        var relationshipResult = result.Results.First(r => r.Type == UnifiedResultType.Relationship);
 
         // Memory should have highest score, then Entity, then Relationship
         Assert.True(
@@ -293,9 +283,7 @@ public class RerankingEngineTests
         Assert.Equal(2, result.Metrics.CandidateCount); // Should be limited to max candidates
         Assert.Equal(2, result.Results.Count);
 
-        _output.WriteLine(
-            $"Max candidates test: {result.Metrics.CandidateCount} candidates processed"
-        );
+        _output.WriteLine($"Max candidates test: {result.Metrics.CandidateCount} candidates processed");
     }
 
     [Fact]
@@ -386,19 +374,13 @@ public class RerankingEngineTests
         _output.WriteLine($"Position changes: {result.Metrics.PositionChanges}");
     }
 
-    private RerankingEngine CreateRerankingEngine(
-        bool enableReranking = true,
-        int maxCandidates = 100
-    )
+    private RerankingEngine CreateRerankingEngine(bool enableReranking = true, int maxCandidates = 100)
     {
         var options = CreateTestOptions(enableReranking, maxCandidates);
         return new RerankingEngine(options, _mockLogger.Object);
     }
 
-    private IOptions<MemoryServerOptions> CreateTestOptions(
-        bool enableReranking = true,
-        int maxCandidates = 100
-    )
+    private IOptions<MemoryServerOptions> CreateTestOptions(bool enableReranking = true, int maxCandidates = 100)
     {
         var memoryServerOptions = new MemoryServerOptions
         {

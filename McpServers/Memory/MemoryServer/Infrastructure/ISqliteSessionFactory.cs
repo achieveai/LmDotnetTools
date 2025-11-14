@@ -19,10 +19,7 @@ public interface ISqliteSessionFactory
     /// <param name="connectionString">SQLite connection string</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>New database session</returns>
-    Task<ISqliteSession> CreateSessionAsync(
-        string connectionString,
-        CancellationToken cancellationToken = default
-    );
+    Task<ISqliteSession> CreateSessionAsync(string connectionString, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Initializes the database schema if not already initialized.

@@ -102,8 +102,7 @@ public class StrategyWeights
     /// <summary>
     /// Validates that weights sum to approximately 1.0.
     /// </summary>
-    public bool AreValid =>
-        Math.Abs((StructureWeight + NarrativeWeight + TopicWeight) - 1.0) < 0.01;
+    public bool AreValid => Math.Abs((StructureWeight + NarrativeWeight + TopicWeight) - 1.0) < 0.01;
 
     /// <summary>
     /// Normalizes weights to sum to 1.0.
@@ -206,9 +205,7 @@ public class HybridSegmentationValidation
     /// </summary>
     public bool MeetsQualityStandards =>
         OverallQuality >= 0.7
-        && Issues.Count(i =>
-            i.Severity == MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Error
-        ) == 0;
+        && !Issues.Any(i => i.Severity == MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Error);
 }
 
 /// <summary>
@@ -275,8 +272,7 @@ public class BoundaryConsensus
     /// <summary>
     /// Consensus strength (0.0-1.0).
     /// </summary>
-    public double ConsensusStrength =>
-        TotalStrategies > 0 ? (double)AgreementCount / TotalStrategies : 0.0;
+    public double ConsensusStrength => TotalStrategies > 0 ? (double)AgreementCount / TotalStrategies : 0.0;
 
     /// <summary>
     /// Strategies that agree on this boundary.
@@ -312,8 +308,7 @@ public class SegmentMergeOperation
     /// <summary>
     /// Merge strategy to use for combining segments.
     /// </summary>
-    public SegmentMergeStrategy MergeStrategy { get; set; } =
-        SegmentMergeStrategy.WeightedCombination;
+    public SegmentMergeStrategy MergeStrategy { get; set; } = SegmentMergeStrategy.WeightedCombination;
 
     /// <summary>
     /// Quality threshold for including segments in merge.

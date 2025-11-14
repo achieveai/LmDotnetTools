@@ -38,11 +38,7 @@ public class GraphRepository : IGraphRepository
                 // Generate ID if not provided
                 if (entity.Id == 0)
                 {
-                    entity.Id = await GenerateNextIdAsync(
-                        connection,
-                        transaction,
-                        cancellationToken
-                    );
+                    entity.Id = await GenerateNextIdAsync(connection, transaction, cancellationToken);
                 }
 
                 // Set session context
@@ -93,7 +89,8 @@ public class GraphRepository : IGraphRepository
                     sessionContext
                 );
                 return entity;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -105,11 +102,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, name, type, aliases, user_id, agent_id, run_id, created_at, updated_at, 
                        confidence, source_memory_ids, metadata, version
                 FROM entities 
@@ -118,22 +116,21 @@ public class GraphRepository : IGraphRepository
                   AND (@agentId IS NULL OR agent_id = @agentId)
                   AND (@runId IS NULL OR run_id = @runId)";
 
-            command.Parameters.AddWithValue("@entityId", entityId);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@entityId", entityId);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                return MapEntityFromReader(reader);
-            }
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    return MapEntityFromReader(reader);
+                }
 
-            return null;
-        });
+                return null;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<Entity?> GetEntityByNameAsync(
@@ -144,11 +141,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, name, type, aliases, user_id, agent_id, run_id, created_at, updated_at, 
                        confidence, source_memory_ids, metadata, version
                 FROM entities 
@@ -159,22 +157,21 @@ public class GraphRepository : IGraphRepository
                 ORDER BY created_at DESC
                 LIMIT 1";
 
-            command.Parameters.AddWithValue("@name", name);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@name", name);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                return MapEntityFromReader(reader);
-            }
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    return MapEntityFromReader(reader);
+                }
 
-            return null;
-        });
+                return null;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<IEnumerable<Entity>> GetEntitiesAsync(
@@ -186,11 +183,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, name, type, aliases, user_id, agent_id, run_id, created_at, updated_at, 
                        confidence, source_memory_ids, metadata, version
                 FROM entities 
@@ -200,24 +198,23 @@ public class GraphRepository : IGraphRepository
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset";
 
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            command.Parameters.AddWithValue("@limit", limit);
-            command.Parameters.AddWithValue("@offset", offset);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@limit", limit);
+                command.Parameters.AddWithValue("@offset", offset);
 
-            var entities = new List<Entity>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                entities.Add(MapEntityFromReader(reader));
-            }
+                var entities = new List<Entity>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    entities.Add(MapEntityFromReader(reader));
+                }
 
-            return entities;
-        });
+                return entities;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<Entity> UpdateEntityAsync(
@@ -240,9 +237,7 @@ public class GraphRepository : IGraphRepository
                 );
                 if (existing == null)
                 {
-                    throw new InvalidOperationException(
-                        $"Entity {entity.Id} not found or does not belong to session"
-                    );
+                    throw new InvalidOperationException($"Entity {entity.Id} not found or does not belong to session");
                 }
 
                 entity.UpdatedAt = DateTime.UtcNow;
@@ -280,14 +275,8 @@ public class GraphRepository : IGraphRepository
                 );
                 command.Parameters.AddWithValue("@version", entity.Version);
                 command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                command.Parameters.AddWithValue(
-                    "@agentId",
-                    sessionContext.AgentId ?? (object)DBNull.Value
-                );
-                command.Parameters.AddWithValue(
-                    "@runId",
-                    sessionContext.RunId ?? (object)DBNull.Value
-                );
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
                 command.Parameters.AddWithValue("@currentVersion", existing.Version);
 
                 var rowsAffected = await command.ExecuteNonQueryAsync(cancellationToken);
@@ -303,7 +292,8 @@ public class GraphRepository : IGraphRepository
                     sessionContext
                 );
                 return entity;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -331,10 +321,7 @@ public class GraphRepository : IGraphRepository
                   AND (@runId IS NULL OR run_id = @runId)";
 
                 deleteRelationshipsCommand.Parameters.AddWithValue("@entityId", entityId);
-                deleteRelationshipsCommand.Parameters.AddWithValue(
-                    "@userId",
-                    sessionContext.UserId
-                );
+                deleteRelationshipsCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
                 deleteRelationshipsCommand.Parameters.AddWithValue(
                     "@agentId",
                     sessionContext.AgentId ?? (object)DBNull.Value
@@ -359,18 +346,10 @@ public class GraphRepository : IGraphRepository
 
                 deleteEntityCommand.Parameters.AddWithValue("@entityId", entityId);
                 deleteEntityCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                deleteEntityCommand.Parameters.AddWithValue(
-                    "@agentId",
-                    sessionContext.AgentId ?? (object)DBNull.Value
-                );
-                deleteEntityCommand.Parameters.AddWithValue(
-                    "@runId",
-                    sessionContext.RunId ?? (object)DBNull.Value
-                );
+                deleteEntityCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                deleteEntityCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-                var rowsAffected = await deleteEntityCommand.ExecuteNonQueryAsync(
-                    cancellationToken
-                );
+                var rowsAffected = await deleteEntityCommand.ExecuteNonQueryAsync(cancellationToken);
 
                 if (rowsAffected > 0)
                 {
@@ -383,7 +362,8 @@ public class GraphRepository : IGraphRepository
                 }
 
                 return false;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -405,11 +385,7 @@ public class GraphRepository : IGraphRepository
                 // Generate ID if not provided
                 if (relationship.Id == 0)
                 {
-                    relationship.Id = await GenerateNextIdAsync(
-                        connection,
-                        transaction,
-                        cancellationToken
-                    );
+                    relationship.Id = await GenerateNextIdAsync(connection, transaction, cancellationToken);
                 }
 
                 // Set session context
@@ -433,30 +409,19 @@ public class GraphRepository : IGraphRepository
                 command.Parameters.AddWithValue("@relationshipType", relationship.RelationshipType);
                 command.Parameters.AddWithValue("@target", relationship.Target);
                 command.Parameters.AddWithValue("@userId", relationship.UserId);
-                command.Parameters.AddWithValue(
-                    "@agentId",
-                    relationship.AgentId ?? (object)DBNull.Value
-                );
-                command.Parameters.AddWithValue(
-                    "@runId",
-                    relationship.RunId ?? (object)DBNull.Value
-                );
+                command.Parameters.AddWithValue("@agentId", relationship.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", relationship.RunId ?? (object)DBNull.Value);
                 command.Parameters.AddWithValue("@createdAt", relationship.CreatedAt);
                 command.Parameters.AddWithValue("@updatedAt", relationship.UpdatedAt);
                 command.Parameters.AddWithValue("@confidence", relationship.Confidence);
-                command.Parameters.AddWithValue(
-                    "@sourceMemoryId",
-                    relationship.SourceMemoryId ?? (object)DBNull.Value
-                );
+                command.Parameters.AddWithValue("@sourceMemoryId", relationship.SourceMemoryId ?? (object)DBNull.Value);
                 command.Parameters.AddWithValue(
                     "@temporalContext",
                     relationship.TemporalContext ?? (object)DBNull.Value
                 );
                 command.Parameters.AddWithValue(
                     "@metadata",
-                    JsonSerializer.Serialize(
-                        relationship.Metadata ?? new Dictionary<string, object>()
-                    )
+                    JsonSerializer.Serialize(relationship.Metadata ?? new Dictionary<string, object>())
                 );
                 command.Parameters.AddWithValue("@version", relationship.Version);
 
@@ -470,7 +435,8 @@ public class GraphRepository : IGraphRepository
                     sessionContext
                 );
                 return relationship;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -482,11 +448,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, source_entity_name, relationship_type, target_entity_name, user_id, agent_id, run_id, created_at, updated_at,
                        confidence, source_memory_id, temporal_context, metadata, version
                 FROM relationships 
@@ -495,22 +462,21 @@ public class GraphRepository : IGraphRepository
                   AND (@agentId IS NULL OR agent_id = @agentId)
                   AND (@runId IS NULL OR run_id = @runId)";
 
-            command.Parameters.AddWithValue("@relationshipId", relationshipId);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@relationshipId", relationshipId);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                return MapRelationshipFromReader(reader);
-            }
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    return MapRelationshipFromReader(reader);
+                }
 
-            return null;
-        });
+                return null;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<IEnumerable<Relationship>> GetRelationshipsAsync(
@@ -522,11 +488,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, source_entity_name, relationship_type, target_entity_name, user_id, agent_id, run_id, created_at, updated_at,
                        confidence, source_memory_id, temporal_context, metadata, version
                 FROM relationships 
@@ -536,24 +503,23 @@ public class GraphRepository : IGraphRepository
                 ORDER BY created_at DESC
                 LIMIT @limit OFFSET @offset";
 
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            command.Parameters.AddWithValue("@limit", limit);
-            command.Parameters.AddWithValue("@offset", offset);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@limit", limit);
+                command.Parameters.AddWithValue("@offset", offset);
 
-            var relationships = new List<Relationship>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                relationships.Add(MapRelationshipFromReader(reader));
-            }
+                var relationships = new List<Relationship>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    relationships.Add(MapRelationshipFromReader(reader));
+                }
 
-            return relationships;
-        });
+                return relationships;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<IEnumerable<Relationship>> GetRelationshipsForEntityAsync(
@@ -565,18 +531,19 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            var whereClause = asSource switch
+        return await session.ExecuteAsync(
+            async connection =>
             {
-                true => "source_entity_name = @entityName",
-                false => "target_entity_name = @entityName",
-                null => "(source_entity_name = @entityName OR target_entity_name = @entityName)",
-            };
+                var whereClause = asSource switch
+                {
+                    true => "source_entity_name = @entityName",
+                    false => "target_entity_name = @entityName",
+                    null => "(source_entity_name = @entityName OR target_entity_name = @entityName)",
+                };
 
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                $@"
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    $@"
                 SELECT id, source_entity_name, relationship_type, target_entity_name, user_id, agent_id, run_id, created_at, updated_at,
                        confidence, source_memory_id, temporal_context, metadata, version
                 FROM relationships 
@@ -586,23 +553,22 @@ public class GraphRepository : IGraphRepository
                   AND (@runId IS NULL OR run_id = @runId)
                 ORDER BY created_at DESC";
 
-            command.Parameters.AddWithValue("@entityName", entityName);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@entityName", entityName);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            var relationships = new List<Relationship>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                relationships.Add(MapRelationshipFromReader(reader));
-            }
+                var relationships = new List<Relationship>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    relationships.Add(MapRelationshipFromReader(reader));
+                }
 
-            return relationships;
-        });
+                return relationships;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<Relationship> UpdateRelationshipAsync(
@@ -617,11 +583,7 @@ public class GraphRepository : IGraphRepository
             async (connection, transaction) =>
             {
                 // Verify relationship exists and belongs to session
-                var existing = await GetRelationshipByIdAsync(
-                    relationship.Id,
-                    sessionContext,
-                    cancellationToken
-                );
+                var existing = await GetRelationshipByIdAsync(relationship.Id, sessionContext, cancellationToken);
                 if (existing == null)
                 {
                     throw new InvalidOperationException(
@@ -650,38 +612,25 @@ public class GraphRepository : IGraphRepository
                 command.Parameters.AddWithValue("@relationshipType", relationship.RelationshipType);
                 command.Parameters.AddWithValue("@target", relationship.Target);
                 command.Parameters.AddWithValue("@confidence", relationship.Confidence);
-                command.Parameters.AddWithValue(
-                    "@sourceMemoryId",
-                    relationship.SourceMemoryId ?? (object)DBNull.Value
-                );
+                command.Parameters.AddWithValue("@sourceMemoryId", relationship.SourceMemoryId ?? (object)DBNull.Value);
                 command.Parameters.AddWithValue(
                     "@temporalContext",
                     relationship.TemporalContext ?? (object)DBNull.Value
                 );
                 command.Parameters.AddWithValue(
                     "@metadata",
-                    JsonSerializer.Serialize(
-                        relationship.Metadata ?? new Dictionary<string, object>()
-                    )
+                    JsonSerializer.Serialize(relationship.Metadata ?? new Dictionary<string, object>())
                 );
                 command.Parameters.AddWithValue("@updatedAt", relationship.UpdatedAt);
                 command.Parameters.AddWithValue("@version", relationship.Version);
                 command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                command.Parameters.AddWithValue(
-                    "@agentId",
-                    sessionContext.AgentId ?? (object)DBNull.Value
-                );
-                command.Parameters.AddWithValue(
-                    "@runId",
-                    sessionContext.RunId ?? (object)DBNull.Value
-                );
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 var rowsAffected = await command.ExecuteNonQueryAsync(cancellationToken);
                 if (rowsAffected == 0)
                 {
-                    throw new InvalidOperationException(
-                        $"Relationship {relationship.Id} could not be updated"
-                    );
+                    throw new InvalidOperationException($"Relationship {relationship.Id} could not be updated");
                 }
 
                 _logger.LogInformation(
@@ -693,7 +642,8 @@ public class GraphRepository : IGraphRepository
                     sessionContext
                 );
                 return relationship;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -720,14 +670,8 @@ public class GraphRepository : IGraphRepository
 
                 command.Parameters.AddWithValue("@relationshipId", relationshipId);
                 command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                command.Parameters.AddWithValue(
-                    "@agentId",
-                    sessionContext.AgentId ?? (object)DBNull.Value
-                );
-                command.Parameters.AddWithValue(
-                    "@runId",
-                    sessionContext.RunId ?? (object)DBNull.Value
-                );
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 var rowsAffected = await command.ExecuteNonQueryAsync(cancellationToken);
 
@@ -742,7 +686,8 @@ public class GraphRepository : IGraphRepository
                 }
 
                 return false;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -750,9 +695,7 @@ public class GraphRepository : IGraphRepository
 
     #region Graph Traversal Operations
 
-    public async Task<
-        IEnumerable<(Entity Entity, Relationship? Relationship, int Depth)>
-    > TraverseGraphAsync(
+    public async Task<IEnumerable<(Entity Entity, Relationship? Relationship, int Depth)>> TraverseGraphAsync(
         string startEntityName,
         SessionContext sessionContext,
         int maxDepth = 2,
@@ -762,16 +705,17 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            var relationshipFilter =
-                relationshipTypes != null && relationshipTypes.Any()
-                    ? $"AND r.relationship_type IN ({string.Join(",", relationshipTypes.Select((_, i) => $"@relType{i}"))})"
-                    : "";
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                var relationshipFilter =
+                    relationshipTypes != null && relationshipTypes.Any()
+                        ? $"AND r.relationship_type IN ({string.Join(",", relationshipTypes.Select((_, i) => $"@relType{i}"))})"
+                        : "";
 
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                $@"
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    $@"
                 WITH RECURSIVE graph_traversal(entity_name, relationship_id, depth) AS (
                     -- Base case: start with the initial entity
                     SELECT @startEntity as entity_name, NULL as relationship_id, 0 as depth
@@ -811,40 +755,37 @@ public class GraphRepository : IGraphRepository
                 LEFT JOIN relationships r ON r.id = gt.relationship_id
                 ORDER BY gt.depth, e.name";
 
-            command.Parameters.AddWithValue("@startEntity", startEntityName);
-            command.Parameters.AddWithValue("@maxDepth", maxDepth);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@startEntity", startEntityName);
+                command.Parameters.AddWithValue("@maxDepth", maxDepth);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            // Add relationship type filters if provided
-            if (relationshipTypes != null)
-            {
-                var relTypes = relationshipTypes.ToArray();
-                for (int i = 0; i < relTypes.Length; i++)
+                // Add relationship type filters if provided
+                if (relationshipTypes != null)
                 {
-                    command.Parameters.AddWithValue($"@relType{i}", relTypes[i]);
+                    var relTypes = relationshipTypes.ToArray();
+                    for (int i = 0; i < relTypes.Length; i++)
+                    {
+                        command.Parameters.AddWithValue($"@relType{i}", relTypes[i]);
+                    }
                 }
-            }
 
-            var results = new List<(Entity Entity, Relationship? Relationship, int Depth)>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var entity = MapEntityFromReader(reader);
-                var relationship = reader.IsDBNull("rel_id")
-                    ? null
-                    : MapRelationshipFromReader(reader, "rel_");
-                var depth = Convert.ToInt32(reader["depth"]);
+                var results = new List<(Entity Entity, Relationship? Relationship, int Depth)>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var entity = MapEntityFromReader(reader);
+                    var relationship = reader.IsDBNull("rel_id") ? null : MapRelationshipFromReader(reader, "rel_");
+                    var depth = Convert.ToInt32(reader["depth"]);
 
-                results.Add((entity, relationship, depth));
-            }
+                    results.Add((entity, relationship, depth));
+                }
 
-            return results;
-        });
+                return results;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<IEnumerable<Relationship>> SearchRelationshipsAsync(
@@ -856,11 +797,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, source, relationship_type, target, user_id, agent_id, run_id, created_at, updated_at,
                        confidence, source_memory_id, temporal_context, metadata, version
                 FROM relationships 
@@ -878,26 +820,25 @@ public class GraphRepository : IGraphRepository
                     created_at DESC
                 LIMIT @limit";
 
-            var likeQuery = $"%{query}%";
-            command.Parameters.AddWithValue("@query", likeQuery);
-            command.Parameters.AddWithValue("@exactQuery", query);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            command.Parameters.AddWithValue("@limit", limit);
+                var likeQuery = $"%{query}%";
+                command.Parameters.AddWithValue("@query", likeQuery);
+                command.Parameters.AddWithValue("@exactQuery", query);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@limit", limit);
 
-            var relationships = new List<Relationship>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                relationships.Add(MapRelationshipFromReader(reader));
-            }
+                var relationships = new List<Relationship>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    relationships.Add(MapRelationshipFromReader(reader));
+                }
 
-            return relationships;
-        });
+                return relationships;
+            },
+            cancellationToken
+        );
     }
 
     // Enhanced Search Operations for Phase 6
@@ -911,11 +852,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT e.id, e.name, e.type, e.aliases, e.user_id, e.agent_id, e.run_id, e.created_at, e.updated_at,
                        e.confidence, e.source_memory_ids, e.metadata, e.version
                 FROM entities e
@@ -927,29 +869,24 @@ public class GraphRepository : IGraphRepository
                 ORDER BY bm25(entities_fts), e.confidence DESC, e.created_at DESC
                 LIMIT @limit";
 
-            command.Parameters.AddWithValue("@query", query);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            command.Parameters.AddWithValue("@limit", limit);
+                command.Parameters.AddWithValue("@query", query);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@limit", limit);
 
-            var entities = new List<Entity>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                entities.Add(MapEntityFromReader(reader));
-            }
+                var entities = new List<Entity>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    entities.Add(MapEntityFromReader(reader));
+                }
 
-            _logger.LogDebug(
-                "Entity FTS5 search for '{Query}' returned {Count} results",
-                query,
-                entities.Count
-            );
-            return entities;
-        });
+                _logger.LogDebug("Entity FTS5 search for '{Query}' returned {Count} results", query, entities.Count);
+                return entities;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<List<EntityVectorSearchResult>> SearchEntitiesVectorAsync(
@@ -962,11 +899,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT e.id, e.name, e.type, e.user_id, e.agent_id, e.run_id, e.created_at, e.updated_at,
                        e.description, e.confidence, e.source_memory_id, e.metadata, e.version,
                        vec_distance_cosine(ee.embedding, @queryEmbedding) as distance
@@ -979,52 +917,48 @@ public class GraphRepository : IGraphRepository
                 ORDER BY distance ASC
                 LIMIT @limit";
 
-            var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
+                var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
 
-            // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
-            var queryEmbeddingJson =
-                "["
-                + string.Join(
-                    ",",
-                    queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))
-                )
-                + "]";
+                // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+                var queryEmbeddingJson =
+                    "["
+                    + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture)))
+                    + "]";
 
-            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
-            command.Parameters.AddWithValue("@limit", limit);
+                command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
+                command.Parameters.AddWithValue("@limit", limit);
 
-            var results = new List<EntityVectorSearchResult>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var entity = MapEntityFromReader(reader);
-                var distance = Convert.ToSingle(reader["distance"]);
-                var score = 1.0f - distance; // Convert distance back to similarity
+                var results = new List<EntityVectorSearchResult>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var entity = MapEntityFromReader(reader);
+                    var distance = Convert.ToSingle(reader["distance"]);
+                    var score = 1.0f - distance; // Convert distance back to similarity
 
-                results.Add(
-                    new EntityVectorSearchResult
-                    {
-                        Entity = entity,
-                        Distance = distance,
-                        Score = score,
-                    }
+                    results.Add(
+                        new EntityVectorSearchResult
+                        {
+                            Entity = entity,
+                            Distance = distance,
+                            Score = score,
+                        }
+                    );
+                }
+
+                _logger.LogDebug(
+                    "Entity vector search returned {Count} results with threshold {Threshold}",
+                    results.Count,
+                    threshold
                 );
-            }
-
-            _logger.LogDebug(
-                "Entity vector search returned {Count} results with threshold {Threshold}",
-                results.Count,
-                threshold
-            );
-            return results;
-        });
+                return results;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<List<RelationshipVectorSearchResult>> SearchRelationshipsVectorAsync(
@@ -1037,11 +971,12 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT r.id, r.source, r.relationship_type, r.target, r.user_id, r.agent_id, r.run_id, r.created_at, r.updated_at,
                        r.confidence, r.source_memory_id, r.temporal_context, r.metadata, r.version,
                        vec_distance_cosine(re.embedding, @queryEmbedding) as distance
@@ -1054,52 +989,48 @@ public class GraphRepository : IGraphRepository
                 ORDER BY distance ASC
                 LIMIT @limit";
 
-            var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
+                var distanceThreshold = 1.0f - threshold; // Convert similarity to distance
 
-            // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
-            var queryEmbeddingJson =
-                "["
-                + string.Join(
-                    ",",
-                    queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))
-                )
-                + "]";
+                // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+                var queryEmbeddingJson =
+                    "["
+                    + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture)))
+                    + "]";
 
-            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-            command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
-            command.Parameters.AddWithValue("@limit", limit);
+                command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
+                command.Parameters.AddWithValue("@limit", limit);
 
-            var results = new List<RelationshipVectorSearchResult>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var relationship = MapRelationshipFromReader(reader);
-                var distance = Convert.ToSingle(reader["distance"]);
-                var score = 1.0f - distance; // Convert distance back to similarity
+                var results = new List<RelationshipVectorSearchResult>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var relationship = MapRelationshipFromReader(reader);
+                    var distance = Convert.ToSingle(reader["distance"]);
+                    var score = 1.0f - distance; // Convert distance back to similarity
 
-                results.Add(
-                    new RelationshipVectorSearchResult
-                    {
-                        Relationship = relationship,
-                        Distance = distance,
-                        Score = score,
-                    }
+                    results.Add(
+                        new RelationshipVectorSearchResult
+                        {
+                            Relationship = relationship,
+                            Distance = distance,
+                            Score = score,
+                        }
+                    );
+                }
+
+                _logger.LogDebug(
+                    "Relationship vector search returned {Count} results with threshold {Threshold}",
+                    results.Count,
+                    threshold
                 );
-            }
-
-            _logger.LogDebug(
-                "Relationship vector search returned {Count} results with threshold {Threshold}",
-                results.Count,
-                threshold
-            );
-            return results;
-        });
+                return results;
+            },
+            cancellationToken
+        );
     }
 
     // Embedding Storage Operations
@@ -1126,12 +1057,7 @@ public class GraphRepository : IGraphRepository
 
                 // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
                 var embeddingJson =
-                    "["
-                    + string.Join(
-                        ",",
-                        embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))
-                    )
-                    + "]";
+                    "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
 
                 embeddingCommand.Parameters.AddWithValue("@entityId", entityId);
                 embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
@@ -1153,12 +1079,9 @@ public class GraphRepository : IGraphRepository
 
                 await metadataCommand.ExecuteNonQueryAsync(cancellationToken);
 
-                _logger.LogDebug(
-                    "Stored embedding for entity {EntityId} using model {ModelName}",
-                    entityId,
-                    modelName
-                );
-            }
+                _logger.LogDebug("Stored embedding for entity {EntityId} using model {ModelName}", entityId, modelName);
+            },
+            cancellationToken
         );
     }
 
@@ -1184,12 +1107,7 @@ public class GraphRepository : IGraphRepository
 
                 // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
                 var embeddingJson =
-                    "["
-                    + string.Join(
-                        ",",
-                        embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))
-                    )
-                    + "]";
+                    "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
 
                 embeddingCommand.Parameters.AddWithValue("@relationshipId", relationshipId);
                 embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
@@ -1216,42 +1134,43 @@ public class GraphRepository : IGraphRepository
                     relationshipId,
                     modelName
                 );
-            }
+            },
+            cancellationToken
         );
     }
 
-    public async Task<float[]?> GetEntityEmbeddingAsync(
-        int entityId,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<float[]?> GetEntityEmbeddingAsync(int entityId, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT embedding FROM entity_embeddings WHERE entity_id = @entityId";
 
-            command.Parameters.AddWithValue("@entityId", entityId);
+                command.Parameters.AddWithValue("@entityId", entityId);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                var embeddingOrdinal = reader.GetOrdinal("embedding");
-                if (!reader.IsDBNull(embeddingOrdinal))
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
                 {
-                    // sqlite-vec stores embeddings as BLOB, convert to float array
-                    var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
-                    var embedding = new float[embeddingBytes.Length / sizeof(float)];
-                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
-                    return embedding;
+                    var embeddingOrdinal = reader.GetOrdinal("embedding");
+                    if (!reader.IsDBNull(embeddingOrdinal))
+                    {
+                        // sqlite-vec stores embeddings as BLOB, convert to float array
+                        var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
+                        var embedding = new float[embeddingBytes.Length / sizeof(float)];
+                        Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                        return embedding;
+                    }
                 }
-            }
 
-            return null;
-        });
+                return null;
+            },
+            cancellationToken
+        );
     }
 
     public async Task<float[]?> GetRelationshipEmbeddingAsync(
@@ -1261,31 +1180,34 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT embedding FROM relationship_embeddings WHERE relationship_id = @relationshipId";
 
-            command.Parameters.AddWithValue("@relationshipId", relationshipId);
+                command.Parameters.AddWithValue("@relationshipId", relationshipId);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                var embeddingOrdinal = reader.GetOrdinal("embedding");
-                if (!reader.IsDBNull(embeddingOrdinal))
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
                 {
-                    // sqlite-vec stores embeddings as BLOB, convert to float array
-                    var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
-                    var embedding = new float[embeddingBytes.Length / sizeof(float)];
-                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
-                    return embedding;
+                    var embeddingOrdinal = reader.GetOrdinal("embedding");
+                    if (!reader.IsDBNull(embeddingOrdinal))
+                    {
+                        // sqlite-vec stores embeddings as BLOB, convert to float array
+                        var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
+                        var embedding = new float[embeddingBytes.Length / sizeof(float)];
+                        Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                        return embedding;
+                    }
                 }
-            }
 
-            return null;
-        });
+                return null;
+            },
+            cancellationToken
+        );
     }
 
     #endregion
@@ -1300,11 +1222,12 @@ public class GraphRepository : IGraphRepository
             async (connection, transaction) =>
             {
                 return await GenerateNextIdAsync(connection, transaction, cancellationToken);
-            }
+            },
+            cancellationToken
         );
     }
 
-    private async Task<int> GenerateNextIdAsync(
+    private static async Task<int> GenerateNextIdAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CancellationToken cancellationToken
@@ -1321,7 +1244,7 @@ public class GraphRepository : IGraphRepository
         return Convert.ToInt32(result);
     }
 
-    private async Task<Entity?> GetEntityByIdInternalAsync(
+    private static async Task<Entity?> GetEntityByIdInternalAsync(
         SqliteConnection connection,
         int entityId,
         SessionContext sessionContext,
@@ -1360,37 +1283,30 @@ public class GraphRepository : IGraphRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            var stats = new GraphStatistics();
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                var stats = new GraphStatistics();
 
-            // Get entity count
-            using var entityCountCommand = connection.CreateCommand();
-            entityCountCommand.CommandText =
-                @"
+                // Get entity count
+                using var entityCountCommand = connection.CreateCommand();
+                entityCountCommand.CommandText =
+                    @"
                 SELECT COUNT(*) FROM entities 
                 WHERE user_id = @userId 
                   AND (@agentId IS NULL OR agent_id = @agentId)
                   AND (@runId IS NULL OR run_id = @runId)";
 
-            entityCountCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            entityCountCommand.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            entityCountCommand.Parameters.AddWithValue(
-                "@runId",
-                sessionContext.RunId ?? (object)DBNull.Value
-            );
+                entityCountCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                entityCountCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                entityCountCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            stats.EntityCount = Convert.ToInt32(
-                await entityCountCommand.ExecuteScalarAsync(cancellationToken)
-            );
+                stats.EntityCount = Convert.ToInt32(await entityCountCommand.ExecuteScalarAsync(cancellationToken));
 
-            // Get relationship count and statistics
-            using var relationshipStatsCommand = connection.CreateCommand();
-            relationshipStatsCommand.CommandText =
-                @"
+                // Get relationship count and statistics
+                using var relationshipStatsCommand = connection.CreateCommand();
+                relationshipStatsCommand.CommandText =
+                    @"
                 SELECT 
                     COUNT(*) as total_relationships,
                     COUNT(DISTINCT relationship_type) as unique_types
@@ -1399,27 +1315,27 @@ public class GraphRepository : IGraphRepository
                   AND (@agentId IS NULL OR agent_id = @agentId)
                   AND (@runId IS NULL OR run_id = @runId)";
 
-            relationshipStatsCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            relationshipStatsCommand.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            relationshipStatsCommand.Parameters.AddWithValue(
-                "@runId",
-                sessionContext.RunId ?? (object)DBNull.Value
-            );
+                relationshipStatsCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                relationshipStatsCommand.Parameters.AddWithValue(
+                    "@agentId",
+                    sessionContext.AgentId ?? (object)DBNull.Value
+                );
+                relationshipStatsCommand.Parameters.AddWithValue(
+                    "@runId",
+                    sessionContext.RunId ?? (object)DBNull.Value
+                );
 
-            using var reader = await relationshipStatsCommand.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                stats.RelationshipCount = Convert.ToInt32(reader["total_relationships"]);
-                stats.UniqueRelationshipTypes = Convert.ToInt32(reader["unique_types"]);
-            }
+                using var reader = await relationshipStatsCommand.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    stats.RelationshipCount = Convert.ToInt32(reader["total_relationships"]);
+                    stats.UniqueRelationshipTypes = Convert.ToInt32(reader["unique_types"]);
+                }
 
-            // Get top relationship types
-            using var topRelTypesCommand = connection.CreateCommand();
-            topRelTypesCommand.CommandText =
-                @"
+                // Get top relationship types
+                using var topRelTypesCommand = connection.CreateCommand();
+                topRelTypesCommand.CommandText =
+                    @"
                 SELECT relationship_type, COUNT(*) as count
                 FROM relationships 
                 WHERE user_id = @userId 
@@ -1429,30 +1345,22 @@ public class GraphRepository : IGraphRepository
                 ORDER BY count DESC
                 LIMIT 10";
 
-            topRelTypesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            topRelTypesCommand.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            topRelTypesCommand.Parameters.AddWithValue(
-                "@runId",
-                sessionContext.RunId ?? (object)DBNull.Value
-            );
+                topRelTypesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                topRelTypesCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                topRelTypesCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            using var topRelTypesReader = await topRelTypesCommand.ExecuteReaderAsync(
-                cancellationToken
-            );
-            while (await topRelTypesReader.ReadAsync(cancellationToken))
-            {
-                var relType = topRelTypesReader["relationship_type"].ToString()!;
-                var count = Convert.ToInt32(topRelTypesReader["count"]);
-                stats.TopRelationshipTypes[relType] = count;
-            }
+                using var topRelTypesReader = await topRelTypesCommand.ExecuteReaderAsync(cancellationToken);
+                while (await topRelTypesReader.ReadAsync(cancellationToken))
+                {
+                    var relType = topRelTypesReader["relationship_type"].ToString()!;
+                    var count = Convert.ToInt32(topRelTypesReader["count"]);
+                    stats.TopRelationshipTypes[relType] = count;
+                }
 
-            // Get top connected entities
-            using var topEntitiesCommand = connection.CreateCommand();
-            topEntitiesCommand.CommandText =
-                @"
+                // Get top connected entities
+                using var topEntitiesCommand = connection.CreateCommand();
+                topEntitiesCommand.CommandText =
+                    @"
                 SELECT entity_name, COUNT(*) as connection_count
                 FROM (
                     SELECT source_entity_name as entity_name FROM relationships 
@@ -1469,28 +1377,22 @@ public class GraphRepository : IGraphRepository
                 ORDER BY connection_count DESC
                 LIMIT 10";
 
-            topEntitiesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            topEntitiesCommand.Parameters.AddWithValue(
-                "@agentId",
-                sessionContext.AgentId ?? (object)DBNull.Value
-            );
-            topEntitiesCommand.Parameters.AddWithValue(
-                "@runId",
-                sessionContext.RunId ?? (object)DBNull.Value
-            );
+                topEntitiesCommand.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                topEntitiesCommand.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                topEntitiesCommand.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-            using var topEntitiesReader = await topEntitiesCommand.ExecuteReaderAsync(
-                cancellationToken
-            );
-            while (await topEntitiesReader.ReadAsync(cancellationToken))
-            {
-                var entityName = topEntitiesReader["entity_name"].ToString()!;
-                var count = Convert.ToInt32(topEntitiesReader["connection_count"]);
-                stats.TopConnectedEntities[entityName] = count;
-            }
+                using var topEntitiesReader = await topEntitiesCommand.ExecuteReaderAsync(cancellationToken);
+                while (await topEntitiesReader.ReadAsync(cancellationToken))
+                {
+                    var entityName = topEntitiesReader["entity_name"].ToString()!;
+                    var count = Convert.ToInt32(topEntitiesReader["connection_count"]);
+                    stats.TopConnectedEntities[entityName] = count;
+                }
 
-            return stats;
-        });
+                return stats;
+            },
+            cancellationToken
+        );
     }
 
     #endregion
@@ -1518,17 +1420,12 @@ public class GraphRepository : IGraphRepository
                 : JsonSerializer.Deserialize<List<int>>(reader["source_memory_ids"].ToString()!),
             Metadata = reader.IsDBNull("metadata")
                 ? null
-                : JsonSerializer.Deserialize<Dictionary<string, object>>(
-                    reader["metadata"].ToString()!
-                ),
+                : JsonSerializer.Deserialize<Dictionary<string, object>>(reader["metadata"].ToString()!),
             Version = Convert.ToInt32(reader["version"]),
         };
     }
 
-    private static Relationship MapRelationshipFromReader(
-        SqliteDataReader reader,
-        string prefix = ""
-    )
+    private static Relationship MapRelationshipFromReader(SqliteDataReader reader, string prefix = "")
     {
         return new Relationship
         {
@@ -1537,12 +1434,8 @@ public class GraphRepository : IGraphRepository
             RelationshipType = reader[$"{prefix}relationship_type"].ToString()!,
             Target = reader[$"{prefix}target_entity_name"].ToString()!,
             UserId = reader[$"{prefix}user_id"].ToString()!,
-            AgentId = reader.IsDBNull($"{prefix}agent_id")
-                ? null
-                : reader[$"{prefix}agent_id"].ToString(),
-            RunId = reader.IsDBNull($"{prefix}run_id")
-                ? null
-                : reader[$"{prefix}run_id"].ToString(),
+            AgentId = reader.IsDBNull($"{prefix}agent_id") ? null : reader[$"{prefix}agent_id"].ToString(),
+            RunId = reader.IsDBNull($"{prefix}run_id") ? null : reader[$"{prefix}run_id"].ToString(),
             CreatedAt = Convert.ToDateTime(reader[$"{prefix}created_at"]),
             UpdatedAt = Convert.ToDateTime(reader[$"{prefix}updated_at"]),
             Confidence = Convert.ToSingle(reader[$"{prefix}confidence"]),
@@ -1554,9 +1447,7 @@ public class GraphRepository : IGraphRepository
                 : reader[$"{prefix}temporal_context"].ToString(),
             Metadata = reader.IsDBNull($"{prefix}metadata")
                 ? null
-                : JsonSerializer.Deserialize<Dictionary<string, object>>(
-                    reader[$"{prefix}metadata"].ToString()!
-                ),
+                : JsonSerializer.Deserialize<Dictionary<string, object>>(reader[$"{prefix}metadata"].ToString()!),
             Version = Convert.ToInt32(reader[$"{prefix}version"]),
         };
     }

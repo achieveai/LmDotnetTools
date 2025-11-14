@@ -65,11 +65,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
                 resolution.EffectiveProviderName
             );
 
-            var result = await agent.GenerateReplyAsync(
-                messageList,
-                updatedOptions,
-                cancellationToken
-            );
+            var result = await agent.GenerateReplyAsync(messageList, updatedOptions, cancellationToken);
 
             stopwatch.Stop();
             _logger.LogInformation(
@@ -114,11 +110,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
             "streaming"
         );
 
-        var (_, resolution, _, updatedOptions) = await PrepareForGenerationAsync(
-            messages,
-            options,
-            cancellationToken
-        );
+        var (_, resolution, _, updatedOptions) = await PrepareForGenerationAsync(messages, options, cancellationToken);
         var streamingAgent = await ResolveStreamingAgentAsync(options, cancellationToken);
 
         try
@@ -206,10 +198,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
             throw new ArgumentException("Messages cannot be empty", nameof(messages));
         }
 
-        _logger.LogDebug(
-            "Message validation successful: MessageCount={MessageCount}",
-            messageList.Count
-        );
+        _logger.LogDebug("Message validation successful: MessageCount={MessageCount}", messageList.Count);
         return messageList;
     }
 
@@ -240,8 +229,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         CancellationToken cancellationToken = default
     )
     {
-        return (IStreamingAgent)
-            await ResolveAgentInternalAsync<IStreamingAgent>(options, cancellationToken, true);
+        return (IStreamingAgent)await ResolveAgentInternalAsync<IStreamingAgent>(options, cancellationToken, true);
     }
 
     /// <summary>
@@ -255,7 +243,9 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         where T : IAgent
     {
         var resolution = await ResolveProviderAsync(options, cancellationToken);
-        var cacheKey = isStreaming ? UnifiedAgent.GetStreamingCacheKey(resolution) : UnifiedAgent.GetCacheKey(resolution);
+        var cacheKey = isStreaming
+            ? UnifiedAgent.GetStreamingCacheKey(resolution)
+            : UnifiedAgent.GetCacheKey(resolution);
 
         if (!_agentCache.TryGetValue(cacheKey, out var agent))
         {
@@ -339,11 +329,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         CancellationToken cancellationToken = default
     )
     {
-        var availableProviders = await _modelResolver.GetAvailableProvidersAsync(
-            modelId,
-            criteria,
-            cancellationToken
-        );
+        var availableProviders = await _modelResolver.GetAvailableProvidersAsync(modelId, criteria, cancellationToken);
 
         _logger.LogDebug(
             LogEventIds.AvailableProvidersEvaluated,
@@ -367,9 +353,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         var modelId = options?.ModelId;
         if (string.IsNullOrWhiteSpace(modelId))
         {
-            throw new InvalidOperationException(
-                "Model ID must be specified in GenerateReplyOptions.ModelId"
-            );
+            throw new InvalidOperationException("Model ID must be specified in GenerateReplyOptions.ModelId");
         }
 
         // Create selection criteria from options if needed
@@ -383,12 +367,8 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
                 modelId,
                 criteria.PreferLowerCost,
                 criteria.PreferHigherPerformance,
-                criteria.IncludeOnlyProviders != null
-                    ? string.Join(",", criteria.IncludeOnlyProviders)
-                    : "none",
-                criteria.ExcludeProviders != null
-                    ? string.Join(",", criteria.ExcludeProviders)
-                    : "none"
+                criteria.IncludeOnlyProviders != null ? string.Join(",", criteria.IncludeOnlyProviders) : "none",
+                criteria.ExcludeProviders != null ? string.Join(",", criteria.ExcludeProviders) : "none"
             );
         }
         else
@@ -404,11 +384,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         try
         {
             // Resolve the provider
-            var resolution = await _modelResolver.ResolveProviderAsync(
-                modelId,
-                criteria,
-                cancellationToken
-            );
+            var resolution = await _modelResolver.ResolveProviderAsync(modelId, criteria, cancellationToken);
             if (resolution == null)
             {
                 stopwatch.Stop();
@@ -452,15 +428,11 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
         }
     }
 
-    private ProviderSelectionCriteria? CreateSelectionCriteriaFromOptions(
-        GenerateReplyOptions? options
-    )
+    private ProviderSelectionCriteria? CreateSelectionCriteriaFromOptions(GenerateReplyOptions? options)
     {
         if (options?.ExtraProperties == null || options.ExtraProperties.IsEmpty)
         {
-            _logger.LogDebug(
-                "Configuration resolution: No extra properties found, using default criteria"
-            );
+            _logger.LogDebug("Configuration resolution: No extra properties found, using default criteria");
             return null;
         }
 

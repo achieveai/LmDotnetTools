@@ -20,10 +20,7 @@ public class MockHttpHandlerBuilderBenchmarks
         for (int i = 0; i < 1000; i++)
         {
             // Create a new request for each iteration to avoid HttpRequestMessage reuse issues
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.anthropic.com/v1/messages"
-            )
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
             {
                 Content = new StringContent("{}"),
             };
@@ -67,10 +64,7 @@ public class MockHttpHandlerBuilderBenchmarks
                 for (int i = 0; i < 100; i++)
                 {
                     // Create a new request for each iteration to avoid HttpRequestMessage reuse issues
-                    var request = new HttpRequestMessage(
-                        HttpMethod.Post,
-                        "https://api.anthropic.com/v1/messages"
-                    )
+                    var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
                     {
                         Content = new StringContent("{}"),
                     };

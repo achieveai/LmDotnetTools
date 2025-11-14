@@ -69,9 +69,7 @@ public class FunctionCallMiddlewareTests
         };
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            new FunctionCallMiddleware(functions, functionMap)
-        );
+        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(functions, functionMap));
 
         Assert.Contains("getWeather", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -83,17 +81,11 @@ public class FunctionCallMiddlewareTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
-                Name = "getWeather",
-                Description = "Get the weather in a location",
-            },
+            new FunctionContract { Name = "getWeather", Description = "Get the weather in a location" },
         };
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            new FunctionCallMiddleware(functions, null!)
-        );
+        var exception = Assert.Throws<ArgumentException>(() => new FunctionCallMiddleware(functions, null!));
 
         Assert.Contains("Function map must be provided", exception.Message);
         Assert.Equal("functionMap", exception.ParamName);
@@ -141,10 +133,7 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a message with a tool call for the getWeather function
-        var toolCallMessage = CreateToolCallMessage(
-            "getWeather",
-            new { location = "San Francisco", unit = "celsius" }
-        );
+        var toolCallMessage = CreateToolCallMessage("getWeather", new { location = "San Francisco", unit = "celsius" });
 
         // Create the context with our tool call message
         var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
@@ -179,10 +168,7 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a message with a tool call for a non-existent function
-        var toolCallMessage = CreateToolCallMessage(
-            "getNonExistentFunction",
-            new { param = "value" }
-        );
+        var toolCallMessage = CreateToolCallMessage("getNonExistentFunction", new { param = "value" });
 
         // Create the context with our tool call message
         var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
@@ -218,11 +204,7 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functionContracts, functionMap);
 
         // Create a regular text message (no tool call)
-        var message = new TextMessage
-        {
-            Text = "What's the weather in San Francisco?",
-            Role = Role.User,
-        };
+        var message = new TextMessage { Text = "What's the weather in San Francisco?", Role = Role.User };
 
         // Create the context with our message
         var context = new MiddlewareContext(new[] { message }, new GenerateReplyOptions());
@@ -343,7 +325,7 @@ public class FunctionCallMiddlewareTests
         Assert.NotEmpty(toolCallResult.Result);
     }
 
-    private Dictionary<string, Func<string, Task<string>>> CreateMockFunctionMap()
+    private static Dictionary<string, Func<string, Task<string>>> CreateMockFunctionMap()
     {
         return new Dictionary<string, Func<string, Task<string>>>
         {
@@ -356,7 +338,7 @@ public class FunctionCallMiddlewareTests
         };
     }
 
-    private IEnumerable<FunctionContract> CreateMockFunctionContracts()
+    private static IEnumerable<FunctionContract> CreateMockFunctionContracts()
     {
         return new[]
         {
@@ -495,7 +477,7 @@ public class FunctionCallMiddlewareTests
         };
     }
 
-    private ToolsCallMessage CreateToolCallMessage(string functionName, object args)
+    private static ToolsCallMessage CreateToolCallMessage(string functionName, object args)
     {
         // Serialize the arguments to a JSON string
         var jsonArgs = JsonSerializer.Serialize(args);
@@ -574,7 +556,7 @@ public class FunctionCallMiddlewareTests
         }
     }
 
-    private string AddAsync(string argsJson)
+    private static string AddAsync(string argsJson)
     {
         try
         {
@@ -604,7 +586,7 @@ public class FunctionCallMiddlewareTests
         }
     }
 
-    private string SubtractAsync(string argsJson)
+    private static string SubtractAsync(string argsJson)
     {
         try
         {
@@ -634,7 +616,7 @@ public class FunctionCallMiddlewareTests
         }
     }
 
-    private string MultiplyAsync(string argsJson)
+    private static string MultiplyAsync(string argsJson)
     {
         try
         {
@@ -664,7 +646,7 @@ public class FunctionCallMiddlewareTests
         }
     }
 
-    private string DivideAsync(string argsJson)
+    private static string DivideAsync(string argsJson)
     {
         try
         {
@@ -751,11 +733,7 @@ public class FunctionCallMiddlewareTests
 
         var messages = new List<IMessage>
         {
-            new TextMessage
-            {
-                Role = Role.System,
-                Text = "You're a helpful AI Agent that can use tools",
-            },
+            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
@@ -792,9 +770,7 @@ public class FunctionCallMiddlewareTests
 
         System.Diagnostics.Debug.WriteLine("=== MIDDLEWARE TEST DEBUG ===");
         System.Diagnostics.Debug.WriteLine($"Context messages count: {context.Messages.Count()}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Last message type: {context.Messages.Last().GetType().Name}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Last message type: {context.Messages.Last().GetType().Name}");
         System.Diagnostics.Debug.WriteLine($"Agent type: {agent.GetType().Name}");
 
         // Act
@@ -805,14 +781,10 @@ public class FunctionCallMiddlewareTests
         var responses = new List<IMessage>();
         await foreach (var response in responseStream)
         {
-            System.Diagnostics.Debug.WriteLine(
-                $"Response received: {response.GetType().Name}, Role: {response.Role}"
-            );
+            System.Diagnostics.Debug.WriteLine($"Response received: {response.GetType().Name}, Role: {response.Role}");
             if (response is ToolsCallMessage toolsCall)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}"
-                );
+                System.Diagnostics.Debug.WriteLine($"  Tool calls count: {toolsCall.ToolCalls?.Count ?? 0}");
             }
             responses.Add(response);
         }
@@ -821,9 +793,7 @@ public class FunctionCallMiddlewareTests
         System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
         foreach (var response in responses)
         {
-            System.Diagnostics.Debug.WriteLine(
-                $"Response type: {response.GetType().Name}, Role: {response.Role}"
-            );
+            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
         }
         System.Diagnostics.Debug.WriteLine("=== END DEBUG ===");
         Assert.NotEmpty(responses);
@@ -834,10 +804,7 @@ public class FunctionCallMiddlewareTests
 
         var aggregate = (ToolsCallAggregateMessage)lastMessage;
         Assert.NotEmpty(aggregate.ToolsCallMessage.GetToolCalls()!);
-        Assert.Contains(
-            aggregate.ToolsCallMessage.GetToolCalls()!,
-            call => call.FunctionName == "getWeather"
-        );
+        Assert.Contains(aggregate.ToolsCallMessage.GetToolCalls()!, call => call.FunctionName == "getWeather");
     }
 
     [Fact]
@@ -1009,11 +976,7 @@ public class FunctionCallMiddlewareTests
                 Text =
                     "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool.",
             },
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "List files in root and \"code\" directories.",
-            },
+            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." },
         };
 
         var options = new GenerateReplyOptions
@@ -1051,9 +1014,7 @@ public class FunctionCallMiddlewareTests
         System.Diagnostics.Debug.WriteLine($"Total responses: {responses.Count}");
         foreach (var response in responses)
         {
-            System.Diagnostics.Debug.WriteLine(
-                $"Response type: {response.GetType().Name}, Role: {response.Role}"
-            );
+            System.Diagnostics.Debug.WriteLine($"Response type: {response.GetType().Name}, Role: {response.Role}");
         }
         Assert.NotEmpty(responses);
 
@@ -1077,10 +1038,9 @@ public class FunctionCallMiddlewareTests
         var mcpSampleServerAssembly = typeof(CalculatorTool).Assembly;
 
         // Create function call middleware components from the MCP sample server assembly
-        var (functions, functionMap) =
-            McpFunctionCallExtensions.CreateFunctionCallComponentsFromAssembly(
-                mcpSampleServerAssembly
-            );
+        var (functions, functionMap) = McpFunctionCallExtensions.CreateFunctionCallComponentsFromAssembly(
+            mcpSampleServerAssembly
+        );
 
         // Create the middleware with the MCP tools
         var middleware = new FunctionCallMiddleware(functions, functionMap, "McpCalculatorTest");
@@ -1097,10 +1057,7 @@ public class FunctionCallMiddlewareTests
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = ImmutableList.Create(
-                new ToolCall(
-                    "CalculatorTool-Add",
-                    JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber })
-                )
+                new ToolCall("CalculatorTool-Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
                 {
                     ToolCallId = toolCallId,
                 }
@@ -1113,9 +1070,7 @@ public class FunctionCallMiddlewareTests
 
         // Create a mock agent that won't actually be used for generation
         // since we're directly testing the middleware function execution
-        var mockAgent = new MockAgent(
-            new TextMessage { Role = Role.Assistant, Text = "This is a mock response" }
-        );
+        var mockAgent = new MockAgent(new TextMessage { Role = Role.Assistant, Text = "This is a mock response" });
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent);
@@ -1153,10 +1108,7 @@ public class FunctionCallMiddlewareTests
             System.Diagnostics.Debug.WriteLine($"Base URL: {baseUrl}");
 
             // Test MockHttpHandlerBuilder
-            var handler = MockHttpHandlerBuilder
-                .Create()
-                .RespondWithJson("{\"test\": \"value\"}")
-                .Build();
+            var handler = MockHttpHandlerBuilder.Create().RespondWithJson("{\"test\": \"value\"}").Build();
             System.Diagnostics.Debug.WriteLine("Handler created successfully");
 
             // Test HttpClient
@@ -1202,11 +1154,7 @@ public class FunctionCallMiddlewareTests
 
             var messages = new List<IMessage>
             {
-                new TextMessage
-                {
-                    Role = Role.System,
-                    Text = "You're a helpful AI Agent that can use tools",
-                },
+                new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
                 new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
             };
 
@@ -1225,9 +1173,7 @@ public class FunctionCallMiddlewareTests
                             {
                                 Name = "location",
                                 Description = "City name",
-                                ParameterType = SchemaHelper.CreateJsonSchemaFromType(
-                                    typeof(string)
-                                ),
+                                ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                                 IsRequired = true,
                             },
                         },
@@ -1245,9 +1191,7 @@ public class FunctionCallMiddlewareTests
             var responses = new List<IMessage>();
             await foreach (var response in streamingResponse2)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"Agent response: {response.GetType().Name}, Role: {response.Role}"
-                );
+                System.Diagnostics.Debug.WriteLine($"Agent response: {response.GetType().Name}, Role: {response.Role}");
                 responses.Add(response);
             }
 
@@ -1269,11 +1213,8 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv(
-            "OPENAI_API_KEY",
-            new[] { "LLM_API_KEY" },
-            "test-api-key"
-        );
+        string[] fallbackKeys = new[] { "LLM_API_KEY" };
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
     }
 
     /// <summary>
@@ -1281,11 +1222,8 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv(
-            "OPENAI_API_URL",
-            new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1"
-        );
+        string[] fallbackKeys = new[] { "LLM_API_BASE_URL" };
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys, "https://api.openai.com/v1");
     }
 
     /// <summary>
@@ -1365,10 +1303,7 @@ public class FunctionCallMiddlewareTests
                                     new
                                     {
                                         index = 0,
-                                        function = new
-                                        {
-                                            arguments = "{\"location\": \"San Francisco\"}",
-                                        },
+                                        function = new { arguments = "{\"location\": \"San Francisco\"}" },
                                     },
                                 },
                             },
@@ -1450,11 +1385,7 @@ public class FunctionCallMiddlewareTests
                                         index = 0,
                                         id = "call_test123",
                                         type = "function",
-                                        function = new
-                                        {
-                                            name = "python-mcp.list_directory",
-                                            arguments = "",
-                                        },
+                                        function = new { name = "python-mcp.list_directory", arguments = "" },
                                     },
                                 },
                             },
@@ -1480,11 +1411,7 @@ public class FunctionCallMiddlewareTests
                             {
                                 tool_calls = new[]
                                 {
-                                    new
-                                    {
-                                        index = 0,
-                                        function = new { arguments = "{\"relative_path\": \"\"}" },
-                                    },
+                                    new { index = 0, function = new { arguments = "{\"relative_path\": \"\"}" } },
                                 },
                             },
                             finish_reason = (string?)null,
@@ -1514,11 +1441,7 @@ public class FunctionCallMiddlewareTests
                                         index = 1,
                                         id = "call_test456",
                                         type = "function",
-                                        function = new
-                                        {
-                                            name = "python-mcp.list_directory",
-                                            arguments = "",
-                                        },
+                                        function = new { name = "python-mcp.list_directory", arguments = "" },
                                     },
                                 },
                             },
@@ -1544,14 +1467,7 @@ public class FunctionCallMiddlewareTests
                             {
                                 tool_calls = new[]
                                 {
-                                    new
-                                    {
-                                        index = 1,
-                                        function = new
-                                        {
-                                            arguments = "{\"relative_path\": \"code\"}",
-                                        },
-                                    },
+                                    new { index = 1, function = new { arguments = "{\"relative_path\": \"code\"}" } },
                                 },
                             },
                             finish_reason = (string?)null,

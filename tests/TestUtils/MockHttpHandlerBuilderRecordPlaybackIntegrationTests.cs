@@ -75,6 +75,8 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
         }
     }
 
+    private static readonly string[] fallbackApiKeys = new[] { "LLM_API_KEY" };
+
     /// <summary>
     /// Helper method to get API key from environment (using shared EnvironmentHelper)
     /// </summary>
@@ -82,10 +84,12 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
     {
         return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv(
             "OPENAI_API_KEY",
-            new[] { "LLM_API_KEY" },
+            fallbackApiKeys,
             "test-api-key"
         );
     }
+
+    private static readonly string[] fallbackBaseUrls = new[] { "LLM_API_BASE_URL" };
 
     /// <summary>
     /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
@@ -94,7 +98,7 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
     {
         return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv(
             "OPENAI_API_URL",
-            new[] { "LLM_API_BASE_URL" },
+            fallbackBaseUrls,
             "https://api.openai.com/v1"
         );
     }

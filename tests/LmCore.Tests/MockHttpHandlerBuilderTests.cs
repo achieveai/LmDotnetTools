@@ -44,19 +44,10 @@ public class MockHttpHandlerBuilderTests
         var json = JsonDocument.Parse(responseBody);
         Assert.Equal("message", json.RootElement.GetProperty("type").GetString());
         Assert.Equal("assistant", json.RootElement.GetProperty("role").GetString());
-        Assert.Equal(
-            "Hello from Claude!",
-            json.RootElement.GetProperty("content")[0].GetProperty("text").GetString()
-        );
+        Assert.Equal("Hello from Claude!", json.RootElement.GetProperty("content")[0].GetProperty("text").GetString());
         Assert.Equal("claude-3-sonnet-20240229", json.RootElement.GetProperty("model").GetString());
-        Assert.Equal(
-            10,
-            json.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32()
-        );
-        Assert.Equal(
-            15,
-            json.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32()
-        );
+        Assert.Equal(10, json.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32());
+        Assert.Equal(15, json.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32());
     }
 
     [Fact]
@@ -86,24 +77,12 @@ public class MockHttpHandlerBuilderTests
         Assert.Equal("chat.completion", json.RootElement.GetProperty("object").GetString());
         Assert.Equal(
             "Hello from GPT!",
-            json.RootElement.GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString()
+            json.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()
         );
         Assert.Equal("gpt-4", json.RootElement.GetProperty("model").GetString());
-        Assert.Equal(
-            12,
-            json.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32()
-        );
-        Assert.Equal(
-            18,
-            json.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32()
-        );
-        Assert.Equal(
-            30,
-            json.RootElement.GetProperty("usage").GetProperty("total_tokens").GetInt32()
-        );
+        Assert.Equal(12, json.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32());
+        Assert.Equal(18, json.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32());
+        Assert.Equal(30, json.RootElement.GetProperty("usage").GetProperty("total_tokens").GetInt32());
     }
 
     [Fact]
@@ -149,10 +128,7 @@ public class MockHttpHandlerBuilderTests
         var httpClient = new HttpClient(handler);
 
         // Act
-        var response = await httpClient.PostAsync(
-            "https://api.anthropic.com/v1/messages",
-            new StringContent("{}")
-        );
+        var response = await httpClient.PostAsync("https://api.anthropic.com/v1/messages", new StringContent("{}"));
 
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -165,10 +141,7 @@ public class MockHttpHandlerBuilderTests
     public async Task MockHttpHandlerBuilder_RetryScenario_FailsThenSucceeds()
     {
         // Arrange
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RetryScenario(2, HttpStatusCode.InternalServerError)
-            .Build();
+        var handler = MockHttpHandlerBuilder.Create().RetryScenario(2, HttpStatusCode.InternalServerError).Build();
 
         var httpClient = new HttpClient(handler);
 
@@ -567,18 +540,9 @@ public class MockHttpHandlerBuilderTests
         var handler = MockHttpHandlerBuilder
             .Create()
             .WithState(state)
-            .WhenStateful(
-                (req, idx, s) => s.RequestCount == 1,
-                @"{""response"":""first_stateful""}"
-            )
-            .WhenStateful(
-                (req, idx, s) => s.RequestCount == 2,
-                @"{""response"":""second_stateful""}"
-            )
-            .WhenStateful(
-                (req, idx, s) => s.RequestCount >= 3,
-                @"{""response"":""subsequent_stateful""}"
-            )
+            .WhenStateful((req, idx, s) => s.RequestCount == 1, @"{""response"":""first_stateful""}")
+            .WhenStateful((req, idx, s) => s.RequestCount == 2, @"{""response"":""second_stateful""}")
+            .WhenStateful((req, idx, s) => s.RequestCount >= 3, @"{""response"":""subsequent_stateful""}")
             .Build();
 
         var httpClient = new HttpClient(handler);

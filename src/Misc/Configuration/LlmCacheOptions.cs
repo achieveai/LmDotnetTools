@@ -118,35 +118,21 @@ public record LlmCacheOptions
 
         return new LlmCacheOptions
         {
-            CacheDirectory = !string.IsNullOrEmpty(cacheDirectory)
-                ? cacheDirectory
-                : GetDefaultCacheDirectory(),
+            CacheDirectory = !string.IsNullOrEmpty(cacheDirectory) ? cacheDirectory : GetDefaultCacheDirectory(),
             EnableCaching =
-                !string.IsNullOrEmpty(enableCaching)
-                && bool.TryParse(enableCaching, out var enabled)
-                    ? enabled
-                    : true,
+                !string.IsNullOrEmpty(enableCaching) && bool.TryParse(enableCaching, out var enabled) ? enabled : true,
             CacheExpiration =
-                !string.IsNullOrEmpty(expirationHours)
-                && double.TryParse(expirationHours, out var hours)
-                && hours > 0
+                !string.IsNullOrEmpty(expirationHours) && double.TryParse(expirationHours, out var hours) && hours > 0
                     ? TimeSpan.FromHours(hours)
                     : TimeSpan.FromHours(24),
             MaxCacheItems =
-                !string.IsNullOrEmpty(maxItems)
-                && int.TryParse(maxItems, out var items)
-                && items > 0
-                    ? items
-                    : 10_000,
+                !string.IsNullOrEmpty(maxItems) && int.TryParse(maxItems, out var items) && items > 0 ? items : 10_000,
             MaxCacheSizeBytes =
-                !string.IsNullOrEmpty(maxSizeMB)
-                && long.TryParse(maxSizeMB, out var sizeMB)
-                && sizeMB > 0
+                !string.IsNullOrEmpty(maxSizeMB) && long.TryParse(maxSizeMB, out var sizeMB) && sizeMB > 0
                     ? sizeMB * 1024 * 1024
                     : 1_073_741_824,
             CleanupOnStartup =
-                !string.IsNullOrEmpty(cleanupOnStartup)
-                && bool.TryParse(cleanupOnStartup, out var cleanup)
+                !string.IsNullOrEmpty(cleanupOnStartup) && bool.TryParse(cleanupOnStartup, out var cleanup)
                     ? cleanup
                     : false,
         };

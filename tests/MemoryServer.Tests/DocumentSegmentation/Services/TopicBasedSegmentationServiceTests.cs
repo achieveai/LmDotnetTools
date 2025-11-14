@@ -37,11 +37,7 @@ public class TopicBasedSegmentationServiceTests
         });
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
-        _service = new TopicBasedSegmentationService(
-            _mockLlmService.Object,
-            _mockPromptManager.Object,
-            _logger
-        );
+        _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
 
         SetupDefaultMocks();
     }
@@ -72,10 +68,7 @@ public class TopicBasedSegmentationServiceTests
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
             segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment
-                .Metadata["segmentation_strategy"]
-                .Should()
-                .Be(SegmentationStrategy.TopicBased.ToString());
+            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.TopicBased.ToString());
         }
     }
 
@@ -103,13 +96,7 @@ public class TopicBasedSegmentationServiceTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(
-                new StrategyRecommendation
-                {
-                    Strategy = SegmentationStrategy.TopicBased,
-                    Confidence = 0.9,
-                }
-            );
+            .ReturnsAsync(new StrategyRecommendation { Strategy = SegmentationStrategy.TopicBased, Confidence = 0.9 });
 
         // Act
         var result = await _service.SegmentByTopicsAsync(content, DocumentType.Technical, options);
@@ -322,22 +309,14 @@ Furthermore, economic implications must be considered. Market volatility is incr
                 Id = "1",
                 Content = "A", // Too short
                 SequenceNumber = 0,
-                Metadata = new Dictionary<string, object>
-                {
-                    ["start_position"] = 0,
-                    ["end_position"] = 1,
-                },
+                Metadata = new Dictionary<string, object> { ["start_position"] = 0, ["end_position"] = 1 },
             },
             new DocumentSegment
             {
                 Id = "2",
                 Content = CreateIncoherentContent(), // Poor coherence
                 SequenceNumber = 1,
-                Metadata = new Dictionary<string, object>
-                {
-                    ["start_position"] = 2,
-                    ["end_position"] = 100,
-                },
+                Metadata = new Dictionary<string, object> { ["start_position"] = 2, ["end_position"] = 100 },
             },
         };
 
@@ -349,9 +328,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         result.Issues.Should().NotBeEmpty();
 
         // Should identify coherence issues
-        var coherenceIssues = result
-            .Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence)
-            .ToList();
+        var coherenceIssues = result.Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence).ToList();
         coherenceIssues.Should().NotBeEmpty();
 
         result.Recommendations.Should().NotBeEmpty();
@@ -383,11 +360,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var options = new TopicSegmentationOptions { MinSegmentSize = 50 };
 
         // Act
-        var result = await _service.SegmentByTopicsAsync(
-            shortContent,
-            DocumentType.Generic,
-            options
-        );
+        var result = await _service.SegmentByTopicsAsync(shortContent, DocumentType.Generic, options);
 
         // Assert
         result.Should().NotBeNull();
@@ -407,10 +380,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         ";
 
         // Act
-        var result = await _service.DetectTopicBoundariesAsync(
-            singleTopicContent,
-            DocumentType.Generic
-        );
+        var result = await _service.DetectTopicBoundariesAsync(singleTopicContent, DocumentType.Generic);
 
         // Assert
         result.Should().NotBeNull();
@@ -427,18 +397,13 @@ Furthermore, economic implications must be considered. Market volatility is incr
         // Setup default prompt manager response
         _mockPromptManager
             .Setup(x =>
-                x.GetPromptAsync(
-                    It.IsAny<SegmentationStrategy>(),
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()
-                )
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(
                 new PromptTemplate
                 {
                     SystemPrompt = "You are a topic analysis expert.",
-                    UserPrompt =
-                        "Analyze the following content for topic boundaries: {DocumentContent}",
+                    UserPrompt = "Analyze the following content for topic boundaries: {DocumentContent}",
                     ExpectedFormat = "json",
                     Metadata = new Dictionary<string, object>
                     {
@@ -449,9 +414,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
             );
 
         // Setup default LLM service responses
-        _mockLlmService
-            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
     private string CreateMultiTopicDocument()
@@ -521,9 +484,7 @@ public class TopicBasedSegmentationServiceIntegrationTests
             "RealLlmService.json"
         );
 
-        var workspaceRoot = EnvironmentHelper.FindWorkspaceRoot(
-            AppDomain.CurrentDomain.BaseDirectory
-        );
+        var workspaceRoot = EnvironmentHelper.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
         var fullTestDataPath = Path.Combine(workspaceRoot, testDataPath);
 
         // Create HTTP handler with record/playback functionality
@@ -531,11 +492,7 @@ public class TopicBasedSegmentationServiceIntegrationTests
             .Create()
             .WithRecordPlayback(fullTestDataPath, allowAdditional: true)
             .ForwardToApi(
-                EnvironmentHelper.GetApiBaseUrlFromEnv(
-                    "LLM_API_BASE_URL",
-                    null,
-                    "https://openrouter.ai/api/v1"
-                ),
+                EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL", null, "https://openrouter.ai/api/v1"),
                 EnvironmentHelper.GetApiKeyFromEnv("OPENROUTER_API_KEY")
             )
             .Build();
@@ -547,8 +504,7 @@ public class TopicBasedSegmentationServiceIntegrationTests
         ConfigureIntegrationServices(serviceCollection, httpClient);
         var serviceProvider = serviceCollection.BuildServiceProvider();
 
-        var segmentationService =
-            serviceProvider.GetRequiredService<ITopicBasedSegmentationService>();
+        var segmentationService = serviceProvider.GetRequiredService<ITopicBasedSegmentationService>();
 
         // Test content with clear topic boundaries
         var testContent =
@@ -615,10 +571,7 @@ public class TopicBasedSegmentationServiceIntegrationTests
         }
     }
 
-    private static void ConfigureIntegrationServices(
-        ServiceCollection services,
-        HttpClient httpClient
-    )
+    private static void ConfigureIntegrationServices(ServiceCollection services, HttpClient httpClient)
     {
         // Add logging
         services.AddLogging(builder => builder.AddConsole());

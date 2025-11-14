@@ -76,12 +76,7 @@ public static class ProviderTestDataGenerator
             new object[] { BaseUrls.ValidHttps, true, "Valid HTTPS URL should pass" },
             new object[] { BaseUrls.ValidHttp, true, "Valid HTTP URL should pass" },
             new object[] { BaseUrls.ValidWithPath, true, "Valid URL with path should pass" },
-            new object[]
-            {
-                BaseUrls.ValidWithTrailingSlash,
-                true,
-                "Valid URL with trailing slash should pass",
-            },
+            new object[] { BaseUrls.ValidWithTrailingSlash, true, "Valid URL with trailing slash should pass" },
             new object[] { BaseUrls.Invalid, false, "Invalid URL should fail" },
             new object[] { BaseUrls.Empty, false, "Empty URL should fail" },
             new object[] { BaseUrls.WhitespaceOnly, false, "Whitespace-only URL should fail" },

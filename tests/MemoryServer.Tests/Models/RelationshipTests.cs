@@ -61,9 +61,7 @@ public class RelationshipTests
         Assert.Equal(metadata, relationship.Metadata);
 
         Debug.WriteLine($"✅ Relationship created successfully with ID: {relationship.Id}");
-        Debug.WriteLine(
-            $"   Confidence: {relationship.Confidence}, Temporal: {temporalContext ?? "none"}"
-        );
+        Debug.WriteLine($"   Confidence: {relationship.Confidence}, Temporal: {temporalContext ?? "none"}");
     }
 
     [Theory]
@@ -97,10 +95,7 @@ public class RelationshipTests
         // Assert - Relationship creation doesn't throw, but we can validate the data
         if (string.IsNullOrWhiteSpace(source))
         {
-            Assert.True(
-                string.IsNullOrWhiteSpace(relationship.Source),
-                "Source should be empty or whitespace"
-            );
+            Assert.True(string.IsNullOrWhiteSpace(relationship.Source), "Source should be empty or whitespace");
         }
         if (string.IsNullOrWhiteSpace(relationshipType))
         {
@@ -111,17 +106,11 @@ public class RelationshipTests
         }
         if (string.IsNullOrWhiteSpace(target))
         {
-            Assert.True(
-                string.IsNullOrWhiteSpace(relationship.Target),
-                "Target should be empty or whitespace"
-            );
+            Assert.True(string.IsNullOrWhiteSpace(relationship.Target), "Target should be empty or whitespace");
         }
         if (string.IsNullOrWhiteSpace(userId))
         {
-            Assert.True(
-                string.IsNullOrWhiteSpace(relationship.UserId),
-                "UserId should be empty or whitespace"
-            );
+            Assert.True(string.IsNullOrWhiteSpace(relationship.UserId), "UserId should be empty or whitespace");
         }
         if (confidence < 0 || confidence > 1)
         {
@@ -202,20 +191,14 @@ public class RelationshipTests
         // Assert
         Assert.NotNull(deserializedRelationship);
         Assert.Equal(originalRelationship.Source, deserializedRelationship.Source);
-        Assert.Equal(
-            originalRelationship.RelationshipType,
-            deserializedRelationship.RelationshipType
-        );
+        Assert.Equal(originalRelationship.RelationshipType, deserializedRelationship.RelationshipType);
         Assert.Equal(originalRelationship.Target, deserializedRelationship.Target);
         Assert.Equal(originalRelationship.UserId, deserializedRelationship.UserId);
         Assert.Equal(originalRelationship.AgentId, deserializedRelationship.AgentId);
         Assert.Equal(originalRelationship.RunId, deserializedRelationship.RunId);
         Assert.Equal(originalRelationship.Confidence, deserializedRelationship.Confidence);
         Assert.Equal(originalRelationship.SourceMemoryId, deserializedRelationship.SourceMemoryId);
-        Assert.Equal(
-            originalRelationship.TemporalContext,
-            deserializedRelationship.TemporalContext
-        );
+        Assert.Equal(originalRelationship.TemporalContext, deserializedRelationship.TemporalContext);
 
         // Compare metadata
         if (originalRelationship.Metadata == null)
@@ -225,17 +208,11 @@ public class RelationshipTests
         else
         {
             Assert.NotNull(deserializedRelationship.Metadata);
-            Assert.Equal(
-                originalRelationship.Metadata.Count,
-                deserializedRelationship.Metadata.Count
-            );
+            Assert.Equal(originalRelationship.Metadata.Count, deserializedRelationship.Metadata.Count);
             foreach (var kvp in originalRelationship.Metadata)
             {
                 Assert.True(deserializedRelationship.Metadata.ContainsKey(kvp.Key));
-                Assert.Equal(
-                    kvp.Value.ToString(),
-                    deserializedRelationship.Metadata[kvp.Key].ToString()
-                );
+                Assert.Equal(kvp.Value.ToString(), deserializedRelationship.Metadata[kvp.Key].ToString());
             }
         }
 
@@ -310,11 +287,7 @@ public class RelationshipTests
                 0.9f,
                 42,
                 "2024-01-15",
-                new Dictionary<string, object>
-                {
-                    { "department", "engineering" },
-                    { "start_date", "2023-06-01" },
-                },
+                new Dictionary<string, object> { { "department", "engineering" }, { "start_date", "2023-06-01" } },
             },
             new object?[]
             {
@@ -370,26 +343,8 @@ public class RelationshipTests
         new List<object[]>
         {
             // Format: testName, source, relationshipType, target, userId, confidence, expectedIssue
-            new object[]
-            {
-                "Empty source",
-                "",
-                "likes",
-                "Pizza",
-                "user123",
-                0.8f,
-                "Source is empty",
-            },
-            new object[]
-            {
-                "Whitespace source",
-                "   ",
-                "likes",
-                "Pizza",
-                "user123",
-                0.8f,
-                "Source is whitespace",
-            },
+            new object[] { "Empty source", "", "likes", "Pizza", "user123", 0.8f, "Source is empty" },
+            new object[] { "Whitespace source", "   ", "likes", "Pizza", "user123", 0.8f, "Source is whitespace" },
             new object[]
             {
                 "Empty relationship type",
@@ -410,47 +365,11 @@ public class RelationshipTests
                 0.8f,
                 "RelationshipType is whitespace",
             },
-            new object[]
-            {
-                "Empty target",
-                "John",
-                "likes",
-                "",
-                "user123",
-                0.8f,
-                "Target is empty",
-            },
-            new object[]
-            {
-                "Whitespace target",
-                "John",
-                "likes",
-                "   ",
-                "user123",
-                0.8f,
-                "Target is whitespace",
-            },
+            new object[] { "Empty target", "John", "likes", "", "user123", 0.8f, "Target is empty" },
+            new object[] { "Whitespace target", "John", "likes", "   ", "user123", 0.8f, "Target is whitespace" },
             new object[] { "Empty userId", "John", "likes", "Pizza", "", 0.8f, "UserId is empty" },
-            new object[]
-            {
-                "Negative confidence",
-                "John",
-                "likes",
-                "Pizza",
-                "user123",
-                -0.1f,
-                "Confidence below 0",
-            },
-            new object[]
-            {
-                "Confidence above 1",
-                "John",
-                "likes",
-                "Pizza",
-                "user123",
-                1.1f,
-                "Confidence above 1",
-            },
+            new object[] { "Negative confidence", "John", "likes", "Pizza", "user123", -0.1f, "Confidence below 0" },
+            new object[] { "Confidence above 1", "John", "likes", "Pizza", "user123", 1.1f, "Confidence above 1" },
         };
 
     public static IEnumerable<object?[]> SessionContextTestCases =>
@@ -459,22 +378,8 @@ public class RelationshipTests
             // Format: testName, userId, agentId, runId, expectedToString
             new object?[] { "User only", "user123", null, null, "user123" },
             new object?[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
-            new object?[]
-            {
-                "Full context",
-                "user123",
-                "agent456",
-                "run789",
-                "user123/agent456/run789",
-            },
-            new object?[]
-            {
-                "User and run (no agent)",
-                "user123",
-                null,
-                "run789",
-                "user123//run789",
-            },
+            new object?[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
+            new object?[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
             new object?[] { "Empty strings treated as null", "user123", "", "", "user123" },
         };
 
@@ -512,11 +417,7 @@ public class RelationshipTests
                     Confidence = 0.95f,
                     SourceMemoryId = 42,
                     TemporalContext = "since 2023",
-                    Metadata = new Dictionary<string, object>
-                    {
-                        { "department", "AI" },
-                        { "level", "senior" },
-                    },
+                    Metadata = new Dictionary<string, object> { { "department", "AI" }, { "level", "senior" } },
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },

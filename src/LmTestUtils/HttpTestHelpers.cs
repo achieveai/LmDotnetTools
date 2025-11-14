@@ -56,11 +56,7 @@ public static class HttpTestHelpers
         string baseAddress = "https://api.test.com"
     )
     {
-        var handler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount,
-            successResponse,
-            failureStatusCode
-        );
+        var handler = FakeHttpMessageHandler.CreateRetryHandler(failureCount, successResponse, failureStatusCode);
         return CreateTestHttpClient(handler, baseAddress);
     }
 
@@ -122,12 +118,7 @@ public static class HttpTestHelpers
         string baseAddress = "https://api.anthropic.com/v1"
     )
     {
-        var handler = FakeHttpMessageHandler.CreateAnthropicResponseHandler(
-            content,
-            model,
-            inputTokens,
-            outputTokens
-        );
+        var handler = FakeHttpMessageHandler.CreateAnthropicResponseHandler(content, model, inputTokens, outputTokens);
         return CreateTestHttpClient(handler, baseAddress);
     }
 
@@ -146,11 +137,7 @@ public static class HttpTestHelpers
         string baseAddress = "https://api.test.com"
     )
     {
-        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(
-            responseJson,
-            out capturedRequest,
-            statusCode
-        );
+        var handler = FakeHttpMessageHandler.CreateRequestCaptureHandler(responseJson, out capturedRequest, statusCode);
         return CreateTestHttpClient(handler, baseAddress);
     }
 
@@ -192,9 +179,7 @@ public static class HttpTestHelpers
     {
         foreach (var header in expectedHeaders)
         {
-            var found =
-                request.Headers.TryGetValues(header.Key, out var values)
-                && values.Contains(header.Value);
+            var found = request.Headers.TryGetValues(header.Key, out var values) && values.Contains(header.Value);
 
             if (!found)
             {
@@ -242,9 +227,7 @@ public static class HttpTestHelpers
             {
                 if (throwOnMissing)
                 {
-                    throw new AssertionException(
-                        $"Expected JSON key '{key}' not found in request content"
-                    );
+                    throw new AssertionException($"Expected JSON key '{key}' not found in request content");
                 }
                 return false;
             }
@@ -301,12 +284,7 @@ public static class HttpTestHelpers
                 false,
                 "500 Internal Server Error should fail (but be retryable)",
             },
-            new object[]
-            {
-                HttpStatusCode.BadGateway,
-                false,
-                "502 Bad Gateway should fail (but be retryable)",
-            },
+            new object[] { HttpStatusCode.BadGateway, false, "502 Bad Gateway should fail (but be retryable)" },
             new object[]
             {
                 HttpStatusCode.ServiceUnavailable,

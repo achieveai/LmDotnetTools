@@ -28,8 +28,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     {
         var databaseOptions = options?.Value ?? throw new ArgumentNullException(nameof(options));
         _connectionString =
-            databaseOptions.ConnectionString
-            ?? throw new ArgumentException("Connection string is required");
+            databaseOptions.ConnectionString ?? throw new ArgumentException("Connection string is required");
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = _loggerFactory.CreateLogger<SqliteSessionFactory>();
 
@@ -42,9 +41,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         );
     }
 
-    public async Task<ISqliteSession> CreateSessionAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -52,10 +49,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         {
             await EnsureInitializedAsync(cancellationToken);
 
-            var session = new SqliteSession(
-                _connectionString,
-                _loggerFactory.CreateLogger<SqliteSession>()
-            );
+            var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
 
             // Track session for metrics
             _activeSessions[session.SessionId] = DateTime.UtcNow;
@@ -89,11 +83,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 _failedSessionCreations++;
             }
 
-            _logger.LogError(
-                ex,
-                "Failed to create session after {ElapsedMs}ms",
-                stopwatch.ElapsedMilliseconds
-            );
+            _logger.LogError(ex, "Failed to create session after {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
             throw;
         }
     }
@@ -104,19 +94,13 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     )
     {
         if (string.IsNullOrEmpty(connectionString))
-            throw new ArgumentException(
-                "Connection string cannot be null or empty",
-                nameof(connectionString)
-            );
+            throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
 
         var stopwatch = Stopwatch.StartNew();
 
         try
         {
-            var session = new SqliteSession(
-                connectionString,
-                _loggerFactory.CreateLogger<SqliteSession>()
-            );
+            var session = new SqliteSession(connectionString, _loggerFactory.CreateLogger<SqliteSession>());
 
             // Track session for metrics
             _activeSessions[session.SessionId] = DateTime.UtcNow;
@@ -170,10 +154,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             _logger.LogInformation("Initializing database schema...");
 
             // Create session directly without going through EnsureInitializedAsync to avoid circular dependency
-            var session = new SqliteSession(
-                _connectionString,
-                _loggerFactory.CreateLogger<SqliteSession>()
-            );
+            var session = new SqliteSession(_connectionString, _loggerFactory.CreateLogger<SqliteSession>());
             await using var _ = session;
 
             await session.ExecuteAsync(
@@ -205,18 +186,13 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     /// <summary>
     /// Applies database migrations for schema updates.
     /// </summary>
-    private Task ApplyMigrationsAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
+    private static Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         // No migrations needed after removing session_defaults table
         return Task.CompletedTask;
     }
 
-    public Task<SessionPerformanceMetrics> GetMetricsAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
     {
         lock (_metricsLock)
         {
@@ -276,11 +252,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug(
-                "Session {SessionId} disposed after {LifetimeMs}ms",
-                sessionId,
-                lifetime
-            );
+            _logger.LogDebug("Session {SessionId} disposed after {LifetimeMs}ms", sessionId, lifetime);
         }
     }
 
@@ -478,11 +450,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         {
             return connectionString
                 .Split(';')
-                .Select(part =>
-                    part.Contains("Password", StringComparison.OrdinalIgnoreCase)
-                        ? "Password=***"
-                        : part
-                )
+                .Select(part => part.Contains("Password", StringComparison.OrdinalIgnoreCase) ? "Password=***" : part)
                 .Aggregate((a, b) => $"{a};{b}");
         }
         return connectionString;
@@ -513,11 +481,7 @@ internal class TrackedSqliteSession : ISqliteSession
     ) => _innerSession.ExecuteAsync(operation, cancellationToken);
 
     public Task<T> ExecuteInTransactionAsync<T>(
-        Func<
-            Microsoft.Data.Sqlite.SqliteConnection,
-            Microsoft.Data.Sqlite.SqliteTransaction,
-            Task<T>
-        > operation,
+        Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task<T>> operation,
         CancellationToken cancellationToken = default
     ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
@@ -527,17 +491,12 @@ internal class TrackedSqliteSession : ISqliteSession
     ) => _innerSession.ExecuteAsync(operation, cancellationToken);
 
     public Task ExecuteInTransactionAsync(
-        Func<
-            Microsoft.Data.Sqlite.SqliteConnection,
-            Microsoft.Data.Sqlite.SqliteTransaction,
-            Task
-        > operation,
+        Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task> operation,
         CancellationToken cancellationToken = default
     ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
-    public Task<SessionHealthStatus> GetHealthAsync(
-        CancellationToken cancellationToken = default
-    ) => _innerSession.GetHealthAsync(cancellationToken);
+    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default) =>
+        _innerSession.GetHealthAsync(cancellationToken);
 
     public async ValueTask DisposeAsync()
     {

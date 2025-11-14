@@ -28,11 +28,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
     /// <param name="name">The name of the agent.</param>
     /// <param name="client">The client to use for API calls.</param>
     /// <param name="logger">Optional logger for the agent.</param>
-    public AnthropicAgent(
-        string name,
-        IAnthropicClient client,
-        ILogger<AnthropicAgent>? logger = null
-    )
+    public AnthropicAgent(string name, IAnthropicClient client, ILogger<AnthropicAgent>? logger = null)
     {
         Name = name;
         _client = client;

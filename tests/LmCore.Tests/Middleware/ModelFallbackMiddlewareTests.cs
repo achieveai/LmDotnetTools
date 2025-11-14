@@ -12,26 +12,15 @@ public class ModelFallbackMiddlewareTests
         // Arrange
         var modelId = "model1";
         var testMessage = new TextMessage { Text = "Test message", Role = Role.User };
-        var model1Response = new TextMessage
-        {
-            Text = "Response from model1",
-            Role = Role.Assistant,
-        };
-        var defaultResponse = new TextMessage
-        {
-            Text = "Response from default",
-            Role = Role.Assistant,
-        };
+        var model1Response = new TextMessage { Text = "Response from model1", Role = Role.Assistant };
+        var defaultResponse = new TextMessage { Text = "Response from default", Role = Role.Assistant };
 
         // Create agents
         var model1Agent = new MockAgent(model1Response);
         var defaultAgent = new MockAgent(defaultResponse);
 
         // Create model agent map
-        var modelAgentMap = new Dictionary<string, IAgent[]>
-        {
-            { "model1", new IAgent[] { model1Agent } },
-        };
+        var modelAgentMap = new Dictionary<string, IAgent[]> { { "model1", new IAgent[] { model1Agent } } };
 
         // Create middleware
         var middleware = new ModelFallbackMiddleware(modelAgentMap, defaultAgent);
@@ -57,26 +46,15 @@ public class ModelFallbackMiddlewareTests
         // Arrange
         var modelId = "unknown-model";
         var testMessage = new TextMessage { Text = "Test message", Role = Role.User };
-        var model1Response = new TextMessage
-        {
-            Text = "Response from model1",
-            Role = Role.Assistant,
-        };
-        var defaultResponse = new TextMessage
-        {
-            Text = "Response from default",
-            Role = Role.Assistant,
-        };
+        var model1Response = new TextMessage { Text = "Response from model1", Role = Role.Assistant };
+        var defaultResponse = new TextMessage { Text = "Response from default", Role = Role.Assistant };
 
         // Create agents
         var model1Agent = new MockAgent(model1Response);
         var defaultAgent = new MockAgent(defaultResponse);
 
         // Create model agent map
-        var modelAgentMap = new Dictionary<string, IAgent[]>
-        {
-            { "model1", new IAgent[] { model1Agent } },
-        };
+        var modelAgentMap = new Dictionary<string, IAgent[]> { { "model1", new IAgent[] { model1Agent } } };
 
         // Create middleware
         var middleware = new ModelFallbackMiddleware(modelAgentMap, defaultAgent);
@@ -188,11 +166,7 @@ public class ModelFallbackMiddlewareTests
         };
 
         // Create middleware with tryDefaultLast = true
-        var middleware = new ModelFallbackMiddleware(
-            modelAgentMap,
-            defaultAgent,
-            tryDefaultLast: true
-        );
+        var middleware = new ModelFallbackMiddleware(modelAgentMap, defaultAgent, tryDefaultLast: true);
 
         // Create context with model1 specified
         var options = new GenerateReplyOptions { ModelId = modelId };
@@ -258,11 +232,7 @@ public class ModelFallbackMiddlewareTests
         };
 
         // Create middleware with tryDefaultLast = true
-        var middleware = new ModelFallbackMiddleware(
-            modelAgentMap,
-            failingDefaultAgent.Object,
-            tryDefaultLast: true
-        );
+        var middleware = new ModelFallbackMiddleware(modelAgentMap, failingDefaultAgent.Object, tryDefaultLast: true);
 
         // Create context with model1 specified
         var options = new GenerateReplyOptions { ModelId = modelId };
@@ -304,10 +274,7 @@ public class ModelFallbackMiddlewareTests
         var defaultAgent = new MockStreamingAgent(defaultResponse);
 
         // Create model agent map
-        var modelAgentMap = new Dictionary<string, IAgent[]>
-        {
-            { "model1", new IAgent[] { model1Agent } },
-        };
+        var modelAgentMap = new Dictionary<string, IAgent[]> { { "model1", new IAgent[] { model1Agent } } };
 
         // Create middleware
         var middleware = new ModelFallbackMiddleware(modelAgentMap, defaultAgent);

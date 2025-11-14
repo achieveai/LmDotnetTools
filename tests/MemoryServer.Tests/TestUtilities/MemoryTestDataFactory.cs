@@ -20,38 +20,13 @@ public static class MemoryTestDataFactory
             true,
             "Special characters should be allowed",
         };
-        yield return new object[]
-        {
-            new string('A', 100),
-            true,
-            "100 character content should be valid",
-        };
-        yield return new object[]
-        {
-            new string('A', 1000),
-            true,
-            "1000 character content should be valid",
-        };
-        yield return new object[]
-        {
-            new string('A', 10000),
-            true,
-            "10000 character content should be at limit",
-        };
+        yield return new object[] { new string('A', 100), true, "100 character content should be valid" };
+        yield return new object[] { new string('A', 1000), true, "1000 character content should be valid" };
+        yield return new object[] { new string('A', 10000), true, "10000 character content should be at limit" };
         yield return new object[] { "", false, "Empty content should be invalid" };
         yield return new object[] { "   ", false, "Whitespace-only content should be invalid" };
-        yield return new object[]
-        {
-            new string('A', 10001),
-            false,
-            "Content over 10000 chars should be invalid",
-        };
-        yield return new object[]
-        {
-            new string('A', 50000),
-            false,
-            "Very long content should be invalid",
-        };
+        yield return new object[] { new string('A', 10001), false, "Content over 10000 chars should be invalid" };
+        yield return new object[] { new string('A', 50000), false, "Very long content should be invalid" };
     }
 
     /// <summary>
@@ -138,13 +113,7 @@ public static class MemoryTestDataFactory
         yield return new object[] { "test query", 5, 0.8f, "Multi-word search query" };
         yield return new object[] { "special!@#", 20, 0.5f, "Special characters in query" };
         yield return new object[] { "", 10, 0.7f, "Empty query should return empty results" };
-        yield return new object[]
-        {
-            "   ",
-            10,
-            0.7f,
-            "Whitespace query should return empty results",
-        };
+        yield return new object[] { "   ", 10, 0.7f, "Whitespace query should return empty results" };
         yield return new object[] { "test", 1, 0.9f, "Single result limit" };
         yield return new object[] { "test", 100, 0.1f, "High limit, low threshold" };
     }
@@ -156,11 +125,7 @@ public static class MemoryTestDataFactory
     {
         yield return new object?[] { null, "Null metadata" };
 
-        yield return new object?[]
-        {
-            new Dictionary<string, object>(),
-            "Empty metadata dictionary",
-        };
+        yield return new object?[] { new Dictionary<string, object>(), "Empty metadata dictionary" };
 
         yield return new object?[]
         {

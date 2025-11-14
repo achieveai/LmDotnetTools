@@ -55,12 +55,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var handler = MockHttpHandlerBuilder
             .Create()
             .WithRecordPlayback(testDataPath, allowAdditional: true)
-            .RespondWithAnthropicMessage(
-                "Hello from record/playback test!",
-                "claude-3-sonnet-20240229",
-                10,
-                20
-            )
+            .RespondWithAnthropicMessage("Hello from record/playback test!", "claude-3-sonnet-20240229", 10, 20)
             .Build();
 
         var httpClient = new HttpClient(handler);
@@ -121,9 +116,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         // Verify the file exists
         if (!File.Exists(streamingFilePath))
         {
-            throw new FileNotFoundException(
-                $"Streaming response file not found: {streamingFilePath}"
-            );
+            throw new FileNotFoundException($"Streaming response file not found: {streamingFilePath}");
         }
 
         var testDataPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".json");
@@ -152,8 +145,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                             new AnthropicContent
                             {
                                 Type = "text",
-                                Text =
-                                    "Write a Python function to calculate Fibonacci sequence for n=10",
+                                Text = "Write a Python function to calculate Fibonacci sequence for n=10",
                             },
                         },
                     },

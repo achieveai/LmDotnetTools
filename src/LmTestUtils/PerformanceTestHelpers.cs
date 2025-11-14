@@ -86,11 +86,7 @@ public static class PerformanceTestHelpers
     )
     {
         var metrics = CreateTestRequestMetrics(providerName, model, operation);
-        return metrics.Complete(
-            statusCode: statusCode,
-            errorMessage: errorMessage,
-            exceptionType: exceptionType
-        );
+        return metrics.Complete(statusCode: statusCode, errorMessage: errorMessage, exceptionType: exceptionType);
     }
 
     /// <summary>
@@ -171,17 +167,7 @@ public static class PerformanceTestHelpers
     {
         return new List<object[]>
         {
-            new object[]
-            {
-                "OpenAI",
-                "gpt-4",
-                "ChatCompletion",
-                200,
-                10,
-                20,
-                true,
-                "Successful OpenAI request",
-            },
+            new object[] { "OpenAI", "gpt-4", "ChatCompletion", 200, 10, 20, true, "Successful OpenAI request" },
             new object[]
             {
                 "Anthropic",
@@ -215,17 +201,7 @@ public static class PerformanceTestHelpers
                 false,
                 "Failed request with bad request",
             },
-            new object[]
-            {
-                "OpenAI",
-                "gpt-4",
-                "ChatCompletion",
-                500,
-                0,
-                0,
-                false,
-                "Failed request with server error",
-            },
+            new object[] { "OpenAI", "gpt-4", "ChatCompletion", 500, 0, 0, false, "Failed request with server error" },
         };
     }
 
@@ -259,9 +235,7 @@ public static class PerformanceTestHelpers
     /// </summary>
     /// <param name="operation">Operation to measure</param>
     /// <returns>Tuple containing the result and execution time</returns>
-    public static async Task<(T result, TimeSpan duration)> MeasureExecutionTime<T>(
-        Func<Task<T>> operation
-    )
+    public static async Task<(T result, TimeSpan duration)> MeasureExecutionTime<T>(Func<Task<T>> operation)
     {
         var startTime = DateTime.UtcNow;
         var result = await operation();
@@ -278,11 +252,7 @@ public static class PerformanceTestHelpers
     /// <param name="expectedDuration">Expected duration</param>
     /// <param name="tolerance">Tolerance for timing variations</param>
     /// <returns>True if duration is within bounds</returns>
-    public static bool ValidateDuration(
-        TimeSpan actualDuration,
-        TimeSpan expectedDuration,
-        TimeSpan tolerance
-    )
+    public static bool ValidateDuration(TimeSpan actualDuration, TimeSpan expectedDuration, TimeSpan tolerance)
     {
         var minDuration = expectedDuration - tolerance;
         var maxDuration = expectedDuration + tolerance;

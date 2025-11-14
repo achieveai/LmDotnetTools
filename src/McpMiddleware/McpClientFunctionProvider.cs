@@ -58,21 +58,14 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         );
 
         // Extract function contracts and create handlers
-        var functionContracts = await ExtractFunctionContractsAsync(
-            mcpClients,
-            logger,
-            cancellationToken
-        );
+        var functionContracts = await ExtractFunctionContractsAsync(mcpClients, logger, cancellationToken);
         var functionMap = await CreateFunctionMapAsync(mcpClients, logger, cancellationToken);
 
         // Create function descriptors
         var functions = new List<FunctionDescriptor>();
         foreach (var contract in functionContracts)
         {
-            var key =
-                contract.ClassName != null
-                    ? $"{contract.ClassName}-{contract.Name}"
-                    : contract.Name;
+            var key = contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name;
             if (functionMap.TryGetValue(key, out var handler))
             {
                 functions.Add(
@@ -152,19 +145,11 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
                 toolsByServer[serverId] = tools.ToList();
-                logger.LogDebug(
-                    "Retrieved tools for server {ServerId}: ToolCount={ToolCount}",
-                    serverId,
-                    tools.Count
-                );
+                logger.LogDebug("Retrieved tools for server {ServerId}: ToolCount={ToolCount}", serverId, tools.Count);
             }
             catch (Exception ex)
             {
-                logger.LogError(
-                    ex,
-                    "Failed to list tools for MCP client: ClientId={ClientId}",
-                    serverId
-                );
+                logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", serverId);
                 toolsByServer[serverId] = [];
             }
         }
@@ -172,8 +157,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         // Use collision detector to resolve naming
         // Convert MCP tools to function descriptors
         var descriptors = new List<FunctionDescriptor>();
-        var toolToDescriptorMap =
-            new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
+        var toolToDescriptorMap = new Dictionary<(string serverId, string toolName), FunctionDescriptor>();
 
         foreach (var (serverId, tools) in toolsByServer)
         {
@@ -202,10 +186,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         };
 
         var collisionDetector = new FunctionCollisionDetector(logger);
-        var descriptorNamingMap = collisionDetector.DetectAndResolveCollisions(
-            descriptors,
-            collisionConfig
-        );
+        var descriptorNamingMap = collisionDetector.DetectAndResolveCollisions(descriptors, collisionConfig);
 
         // Convert back to the expected format
         var namingMap = new Dictionary<(string serverId, string toolName), string>();
@@ -254,10 +235,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         var functions = new List<FunctionDescriptor>();
         foreach (var contract in functionContracts)
         {
-            var key =
-                contract.ClassName != null
-                    ? $"{contract.ClassName}-{contract.Name}"
-                    : contract.Name;
+            var key = contract.ClassName != null ? $"{contract.ClassName}-{contract.Name}" : contract.Name;
             if (functionMap.TryGetValue(key, out var handler))
             {
                 functions.Add(
@@ -336,11 +314,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             }
             catch (Exception ex)
             {
-                logger.LogError(
-                    ex,
-                    "Failed to list tools for MCP client: ClientId={ClientId}",
-                    kvp.Key
-                );
+                logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
                 // Continue with other clients even if one fails
                 continue;
             }
@@ -353,9 +327,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// Creates function delegates for the MCP clients asynchronously
     /// (Reused from McpMiddleware with minor adaptations)
     /// </summary>
-    private static async Task<
-        IDictionary<string, Func<string, Task<string>>>
-    > CreateFunctionMapAsync(
+    private static async Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
         ILogger<McpClientFunctionProvider> logger,
         CancellationToken cancellationToken = default
@@ -417,10 +389,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             Dictionary<string, object?> args;
                             try
                             {
-                                args =
-                                    JsonSerializer.Deserialize<Dictionary<string, object?>>(
-                                        argsJson
-                                    ) ?? [];
+                                args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
                             }
                             catch (JsonException jsonEx)
                             {
@@ -456,9 +425,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                                 response.Content != null
                                     ? response
                                         .Content.Where(c => c?.Type == "text")
-                                        .Select(c =>
-                                            (c is TextContentBlock tb) ? tb.Text : string.Empty
-                                        )
+                                        .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
                                     : []
                             );
 
@@ -505,11 +472,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             }
             catch (Exception ex)
             {
-                logger.LogError(
-                    ex,
-                    "MCP client tool discovery failed: ClientId={ClientId}",
-                    clientId
-                );
+                logger.LogError(ex, "MCP client tool discovery failed: ClientId={ClientId}", clientId);
                 // Continue with other clients even if one fails
                 continue;
             }
@@ -530,8 +493,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         }
 
         // Replace invalid characters with underscores
-        var sanitized = MyRegex().Replace(toolName, "_"
-);
+        var sanitized = MyRegex().Replace(toolName, "_");
 
         // Ensure it doesn't start with a number (optional, but good practice)
         if (char.IsDigit(sanitized[0]))
@@ -580,9 +542,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     {
         if (inputSchema == null)
         {
-            logger?.LogDebug(
-                "JSON schema processing: InputSchema is null, returning null parameters"
-            );
+            logger?.LogDebug("JSON schema processing: InputSchema is null, returning null parameters");
             return null;
         }
 
@@ -644,10 +604,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     {
                         isRequired = requiredElement
                             .EnumerateArray()
-                            .Any(item =>
-                                item.ValueKind == JsonValueKind.String
-                                && item.GetString() == paramName
-                            );
+                            .Any(item => item.ValueKind == JsonValueKind.String && item.GetString() == paramName);
                     }
 
                     logger?.LogDebug(
@@ -679,9 +636,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 JsonSerializer.Serialize(inputSchema)
             );
             // Log the error or handle it as needed
-            Console.Error.WriteLine(
-                $"Failed to extract parameters from input schema: {ex.Message}"
-            );
+            Console.Error.WriteLine($"Failed to extract parameters from input schema: {ex.Message}");
         }
 
         logger?.LogDebug(
@@ -745,10 +700,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                     {
                         var descriptor = new FunctionDescriptor
                         {
-                            Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
-                            {
-                                Name = tool.Name,
-                            },
+                            Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract { Name = tool.Name },
                             Handler = _ => Task.FromResult(string.Empty), // Dummy handler
                             ProviderName = serverId,
                         };
@@ -836,10 +788,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                 {
                     var descriptor = new FunctionDescriptor
                     {
-                        Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
-                        {
-                            Name = tool.Name,
-                        },
+                        Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract { Name = tool.Name },
                         Handler = _ => Task.FromResult(string.Empty), // Dummy handler
                         ProviderName = serverId,
                     };
@@ -880,9 +829,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         Dictionary<string, object?> args;
                         try
                         {
-                            args =
-                                JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson)
-                                ?? [];
+                            args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
                         }
                         catch (JsonException jsonEx)
                         {
@@ -918,9 +865,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             response.Content != null
                                 ? response
                                     .Content.Where(c => c?.Type == "text")
-                                    .Select(c =>
-                                        (c is TextContentBlock tb) ? tb.Text : string.Empty
-                                    )
+                                    .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
                                 : []
                         );
 

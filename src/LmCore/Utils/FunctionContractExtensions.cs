@@ -42,9 +42,7 @@ public static class FunctionContractMarkdownExtensions
                 var requiredStatus = parameter.IsRequired ? "required" : "optional";
 
                 // Add the parameter name and description
-                markdown.AppendLine(
-                    $"- {parameter.Name} ({requiredStatus}): {parameter.Description}"
-                );
+                markdown.AppendLine($"- {parameter.Name} ({requiredStatus}): {parameter.Description}");
 
                 // If parameter has a complex schema, include detailed information
                 if (parameter.ParameterType != null)
@@ -55,16 +53,11 @@ public static class FunctionContractMarkdownExtensions
                     // Add description from schema if available
                     if (!string.IsNullOrEmpty(parameter.ParameterType.Description))
                     {
-                        markdown.AppendLine(
-                            $"  - Description: {parameter.ParameterType.Description}"
-                        );
+                        markdown.AppendLine($"  - Description: {parameter.ParameterType.Description}");
                     }
 
                     // Add enum values if present
-                    if (
-                        parameter.ParameterType.Enum != null
-                        && parameter.ParameterType.Enum.Count > 0
-                    )
+                    if (parameter.ParameterType.Enum != null && parameter.ParameterType.Enum.Count > 0)
                     {
                         markdown.AppendLine(
                             $"  - Allowed Values (Enum): {string.Join(", ", parameter.ParameterType.Enum)}"
@@ -74,15 +67,11 @@ public static class FunctionContractMarkdownExtensions
                     // Add range constraints for numbers
                     if (parameter.ParameterType.Minimum.HasValue)
                     {
-                        markdown.AppendLine(
-                            $"  - Minimum: {parameter.ParameterType.Minimum.Value}"
-                        );
+                        markdown.AppendLine($"  - Minimum: {parameter.ParameterType.Minimum.Value}");
                     }
                     if (parameter.ParameterType.Maximum.HasValue)
                     {
-                        markdown.AppendLine(
-                            $"  - Maximum: {parameter.ParameterType.Maximum.Value}"
-                        );
+                        markdown.AppendLine($"  - Maximum: {parameter.ParameterType.Maximum.Value}");
                     }
 
                     // Add array constraints
@@ -90,15 +79,11 @@ public static class FunctionContractMarkdownExtensions
                     {
                         if (parameter.ParameterType.MinItems.HasValue)
                         {
-                            markdown.AppendLine(
-                                $"  - Minimum Items: {parameter.ParameterType.MinItems.Value}"
-                            );
+                            markdown.AppendLine($"  - Minimum Items: {parameter.ParameterType.MinItems.Value}");
                         }
                         if (parameter.ParameterType.MaxItems.HasValue)
                         {
-                            markdown.AppendLine(
-                                $"  - Maximum Items: {parameter.ParameterType.MaxItems.Value}"
-                            );
+                            markdown.AppendLine($"  - Maximum Items: {parameter.ParameterType.MaxItems.Value}");
                         }
                         if (parameter.ParameterType.UniqueItems)
                         {
@@ -107,9 +92,7 @@ public static class FunctionContractMarkdownExtensions
                         // Add information about array item type if available
                         if (parameter.ParameterType.Items != null)
                         {
-                            markdown.AppendLine(
-                                $"  - Item Type: {parameter.ParameterType.Items.Type}"
-                            );
+                            markdown.AppendLine($"  - Item Type: {parameter.ParameterType.Items.Type}");
                             if (!string.IsNullOrEmpty(parameter.ParameterType.Items.Description))
                             {
                                 markdown.AppendLine(
@@ -120,10 +103,7 @@ public static class FunctionContractMarkdownExtensions
                     }
 
                     // If it's an object with properties, list them
-                    if (
-                        parameter.ParameterType.Properties != null
-                        && parameter.ParameterType.Properties.Count > 0
-                    )
+                    if (parameter.ParameterType.Properties != null && parameter.ParameterType.Properties.Count > 0)
                     {
                         markdown.AppendLine("  - Properties:");
                         foreach (var prop in parameter.ParameterType.Properties)
@@ -131,9 +111,7 @@ public static class FunctionContractMarkdownExtensions
                             markdown.AppendLine($"    - {prop.Key}: Type={prop.Value.Type}");
                             if (!string.IsNullOrEmpty(prop.Value.Description))
                             {
-                                markdown.AppendLine(
-                                    $"      - Description: {prop.Value.Description}"
-                                );
+                                markdown.AppendLine($"      - Description: {prop.Value.Description}");
                             }
                             if (prop.Value.Enum != null && prop.Value.Enum.Count > 0)
                             {
@@ -153,15 +131,11 @@ public static class FunctionContractMarkdownExtensions
                             {
                                 if (prop.Value.MinItems.HasValue)
                                 {
-                                    markdown.AppendLine(
-                                        $"      - Minimum Items: {prop.Value.MinItems.Value}"
-                                    );
+                                    markdown.AppendLine($"      - Minimum Items: {prop.Value.MinItems.Value}");
                                 }
                                 if (prop.Value.MaxItems.HasValue)
                                 {
-                                    markdown.AppendLine(
-                                        $"      - Maximum Items: {prop.Value.MaxItems.Value}"
-                                    );
+                                    markdown.AppendLine($"      - Maximum Items: {prop.Value.MaxItems.Value}");
                                 }
                                 if (prop.Value.UniqueItems)
                                 {
@@ -209,10 +183,7 @@ public static class FunctionContractMarkdownExtensions
         }
 
         // Serialize the example object to JSON
-        var exampleJson = JsonSerializer.Serialize(
-            exampleObject,
-            new JsonSerializerOptions { WriteIndented = true }
-        );
+        var exampleJson = JsonSerializer.Serialize(exampleObject, new JsonSerializerOptions { WriteIndented = true });
 
         markdown.AppendLine(exampleJson);
         markdown.AppendLine("```");
@@ -228,7 +199,9 @@ public static class FunctionContractMarkdownExtensions
     /// <returns>A sample value for the parameter.</returns>
     private static object CreateExampleValue(FunctionParameterContract parameter)
     {
-        return parameter == null || parameter.ParameterType == null ? "value" : CreateExampleValueFromSchema(parameter.ParameterType);
+        return parameter == null || parameter.ParameterType == null
+            ? "value"
+            : CreateExampleValueFromSchema(parameter.ParameterType);
     }
 
     /// <summary>
@@ -264,9 +237,7 @@ public static class FunctionContractMarkdownExtensions
                 // Create an array with items respecting MinItems if possible
                 if (schema.Items != null)
                 {
-                    int itemCount = schema.MinItems.HasValue
-                        ? Math.Max(1, schema.MinItems.Value)
-                        : 1;
+                    int itemCount = schema.MinItems.HasValue ? Math.Max(1, schema.MinItems.Value) : 1;
                     if (schema.MaxItems.HasValue && itemCount > schema.MaxItems.Value)
                     {
                         itemCount = schema.MaxItems.Value;
@@ -330,9 +301,7 @@ public static class FunctionContractMarkdownExtensions
                 // Create an array with items respecting MinItems if possible
                 if (schemaObject.Items != null)
                 {
-                    int itemCount = schemaObject.MinItems.HasValue
-                        ? Math.Max(1, schemaObject.MinItems.Value)
-                        : 1;
+                    int itemCount = schemaObject.MinItems.HasValue ? Math.Max(1, schemaObject.MinItems.Value) : 1;
                     if (schemaObject.MaxItems.HasValue && itemCount > schemaObject.MaxItems.Value)
                     {
                         itemCount = schemaObject.MaxItems.Value;

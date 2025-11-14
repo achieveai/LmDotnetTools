@@ -69,11 +69,7 @@ public static class ChatCompletionTestData
                 new
                 {
                     index = 0,
-                    delta = new
-                    {
-                        role = finishReason == null ? (string?)"assistant" : null,
-                        content = content,
-                    },
+                    delta = new { role = finishReason == null ? (string?)"assistant" : null, content = content },
                     finish_reason = finishReason,
                 },
             },
@@ -114,11 +110,7 @@ public static class ChatCompletionTestData
     /// <returns>JSON rate limit error response</returns>
     public static string CreateRateLimitErrorResponse()
     {
-        return CreateErrorResponse(
-            "Rate limit exceeded",
-            "rate_limit_exceeded",
-            HttpStatusCode.TooManyRequests
-        );
+        return CreateErrorResponse("Rate limit exceeded", "rate_limit_exceeded", HttpStatusCode.TooManyRequests);
     }
 
     /// <summary>
@@ -127,11 +119,7 @@ public static class ChatCompletionTestData
     /// <returns>JSON authentication error response</returns>
     public static string CreateAuthenticationErrorResponse()
     {
-        return CreateErrorResponse(
-            "Invalid API key",
-            "authentication_error",
-            HttpStatusCode.Unauthorized
-        );
+        return CreateErrorResponse("Invalid API key", "authentication_error", HttpStatusCode.Unauthorized);
     }
 
     /// <summary>
@@ -140,11 +128,7 @@ public static class ChatCompletionTestData
     /// <returns>JSON server error response</returns>
     public static string CreateServerErrorResponse()
     {
-        return CreateErrorResponse(
-            "Internal server error",
-            "server_error",
-            HttpStatusCode.InternalServerError
-        );
+        return CreateErrorResponse("Internal server error", "server_error", HttpStatusCode.InternalServerError);
     }
 
     /// <summary>
@@ -155,20 +139,8 @@ public static class ChatCompletionTestData
     {
         return new List<object[]>
         {
-            new object[]
-            {
-                CreateSuccessfulResponse(),
-                HttpStatusCode.OK,
-                true,
-                "Successful response should work",
-            },
-            new object[]
-            {
-                CreateErrorResponse(),
-                HttpStatusCode.BadRequest,
-                false,
-                "Bad request should fail",
-            },
+            new object[] { CreateSuccessfulResponse(), HttpStatusCode.OK, true, "Successful response should work" },
+            new object[] { CreateErrorResponse(), HttpStatusCode.BadRequest, false, "Bad request should fail" },
             new object[]
             {
                 CreateRateLimitErrorResponse(),
@@ -232,19 +204,12 @@ public static class ChatCompletionTestData
                 new[] { ProviderTestDataGenerator.CreateTestMessage("user", "Hello") },
                 "Single user message",
             },
-            new object[]
-            {
-                ProviderTestDataGenerator.CreateTestMessages(),
-                "Multi-turn conversation",
-            },
+            new object[] { ProviderTestDataGenerator.CreateTestMessages(), "Multi-turn conversation" },
             new object[]
             {
                 new[]
                 {
-                    ProviderTestDataGenerator.CreateTestMessage(
-                        "system",
-                        "You are a helpful assistant"
-                    ),
+                    ProviderTestDataGenerator.CreateTestMessage("system", "You are a helpful assistant"),
                     ProviderTestDataGenerator.CreateTestMessage("user", "What is 2+2?"),
                 },
                 "System message with user question",

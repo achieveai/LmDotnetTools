@@ -14,10 +14,7 @@ public class UsageSerializationTests
         _output = output;
         // Set up the options to match how the Usage class would be serialized in production
         // Even though UsageShadowPropertiesJsonConverter is applied via attribute, this makes the test more explicit
-        _options = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        };
+        _options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     }
 
     [Fact]
@@ -61,8 +58,7 @@ public class UsageSerializationTests
         _output.WriteLine($"Serialized JSON: {json}");
 
         // Assert
-        var expectedJson =
-            """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"total_cost":0.05}""";
+        var expectedJson = """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"total_cost":0.05}""";
         Assert.Equal(expectedJson, json);
     }
 
@@ -120,8 +116,7 @@ public class UsageSerializationTests
     public void Usage_ShouldDeserializeFromJson()
     {
         // Arrange
-        var json =
-            """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"total_cost":0.05}""";
+        var json = """{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"total_cost":0.05}""";
 
         // Act
         var usage = JsonSerializer.Deserialize<Usage>(json, _options);

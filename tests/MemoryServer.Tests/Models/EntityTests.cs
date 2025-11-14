@@ -88,24 +88,15 @@ public class EntityTests
         // Assert - Entity creation doesn't throw, but we can validate the data
         if (string.IsNullOrWhiteSpace(name))
         {
-            Assert.True(
-                string.IsNullOrWhiteSpace(entity.Name),
-                "Name should be empty or whitespace"
-            );
+            Assert.True(string.IsNullOrWhiteSpace(entity.Name), "Name should be empty or whitespace");
         }
         if (string.IsNullOrWhiteSpace(userId))
         {
-            Assert.True(
-                string.IsNullOrWhiteSpace(entity.UserId),
-                "UserId should be empty or whitespace"
-            );
+            Assert.True(string.IsNullOrWhiteSpace(entity.UserId), "UserId should be empty or whitespace");
         }
         if (confidence < 0 || confidence > 1)
         {
-            Assert.True(
-                entity.Confidence < 0 || entity.Confidence > 1,
-                "Confidence should be out of valid range"
-            );
+            Assert.True(entity.Confidence < 0 || entity.Confidence > 1, "Confidence should be out of valid range");
         }
 
         Debug.WriteLine($"⚠️ Invalid entity handled: {expectedIssue}");
@@ -157,10 +148,7 @@ public class EntityTests
 
     [Theory]
     [MemberData(nameof(SerializationTestCases))]
-    public void JsonSerialization_WithComplexData_ShouldPreserveAllFields(
-        string testName,
-        Entity originalEntity
-    )
+    public void JsonSerialization_WithComplexData_ShouldPreserveAllFields(string testName, Entity originalEntity)
     {
         // Arrange
         Debug.WriteLine($"Testing JSON serialization: {testName}");
@@ -203,13 +191,8 @@ public class EntityTests
         else
         {
             Assert.NotNull(deserializedEntity.SourceMemoryIds);
-            Assert.Equal(
-                originalEntity.SourceMemoryIds.Count,
-                deserializedEntity.SourceMemoryIds.Count
-            );
-            Assert.True(
-                originalEntity.SourceMemoryIds.SequenceEqual(deserializedEntity.SourceMemoryIds)
-            );
+            Assert.Equal(originalEntity.SourceMemoryIds.Count, deserializedEntity.SourceMemoryIds.Count);
+            Assert.True(originalEntity.SourceMemoryIds.SequenceEqual(deserializedEntity.SourceMemoryIds));
         }
 
         Debug.WriteLine($"✅ Serialization successful - all fields preserved");
@@ -260,11 +243,7 @@ public class EntityTests
                 "run456",
                 0.95f,
                 new List<int> { 10, 20 },
-                new Dictionary<string, object>
-                {
-                    { "domain", "technology" },
-                    { "complexity", "high" },
-                },
+                new Dictionary<string, object> { { "domain", "technology" }, { "complexity", "high" } },
             },
             new object?[]
             {
@@ -306,22 +285,8 @@ public class EntityTests
             new object[] { "Empty name", "", "user123", 0.8f, "Name is empty" },
             new object[] { "Whitespace name", "   ", "user123", 0.8f, "Name is whitespace" },
             new object[] { "Empty userId", "Valid Name", "", 0.8f, "UserId is empty" },
-            new object[]
-            {
-                "Negative confidence",
-                "Valid Name",
-                "user123",
-                -0.1f,
-                "Confidence below 0",
-            },
-            new object[]
-            {
-                "Confidence above 1",
-                "Valid Name",
-                "user123",
-                1.1f,
-                "Confidence above 1",
-            },
+            new object[] { "Negative confidence", "Valid Name", "user123", -0.1f, "Confidence below 0" },
+            new object[] { "Confidence above 1", "Valid Name", "user123", 1.1f, "Confidence above 1" },
             new object[]
             {
                 "Extreme negative confidence",
@@ -346,22 +311,8 @@ public class EntityTests
             // Format: testName, userId, agentId, runId, expectedToString
             new object?[] { "User only", "user123", null, null, "user123" },
             new object?[] { "User and agent", "user123", "agent456", null, "user123/agent456" },
-            new object?[]
-            {
-                "Full context",
-                "user123",
-                "agent456",
-                "run789",
-                "user123/agent456/run789",
-            },
-            new object?[]
-            {
-                "User and run (no agent)",
-                "user123",
-                null,
-                "run789",
-                "user123//run789",
-            },
+            new object?[] { "Full context", "user123", "agent456", "run789", "user123/agent456/run789" },
+            new object?[] { "User and run (no agent)", "user123", null, "run789", "user123//run789" },
             new object?[] { "Empty strings treated as null", "user123", "", "", "user123" },
         };
 
@@ -397,11 +348,7 @@ public class EntityTests
                     RunId = "run123",
                     Confidence = 0.95f,
                     SourceMemoryIds = new List<int> { 1, 2, 3 },
-                    Metadata = new Dictionary<string, object>
-                    {
-                        { "key1", "value1" },
-                        { "key2", 42 },
-                    },
+                    Metadata = new Dictionary<string, object> { { "key1", "value1" }, { "key2", 42 } },
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                     UpdatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },

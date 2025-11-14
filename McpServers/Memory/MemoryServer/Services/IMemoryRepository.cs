@@ -20,11 +20,7 @@ public interface IMemoryRepository
     /// <summary>
     /// Gets a memory by its integer ID within the session context.
     /// </summary>
-    Task<Memory?> GetByIdAsync(
-        int id,
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    );
+    Task<Memory?> GetByIdAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Updates an existing memory.
@@ -40,11 +36,7 @@ public interface IMemoryRepository
     /// <summary>
     /// Deletes a memory by its integer ID within the session context.
     /// </summary>
-    Task<bool> DeleteAsync(
-        int id,
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    );
+    Task<bool> DeleteAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets all memories for a session context with optional pagination.
@@ -70,18 +62,12 @@ public interface IMemoryRepository
     /// <summary>
     /// Gets memory statistics for a session context.
     /// </summary>
-    Task<MemoryStats> GetStatsAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    );
+    Task<MemoryStats> GetStatsAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Deletes all memories for a session context.
     /// </summary>
-    Task<int> DeleteAllAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    );
+    Task<int> DeleteAllAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets memory history entries for a specific memory ID.
@@ -100,11 +86,7 @@ public interface IMemoryRepository
     /// <summary>
     /// Gets all run IDs for a specific user and agent.
     /// </summary>
-    Task<List<string>> GetRunsAsync(
-        string userId,
-        string agentId,
-        CancellationToken cancellationToken = default
-    );
+    Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default);
 
     // Vector storage and search methods
 

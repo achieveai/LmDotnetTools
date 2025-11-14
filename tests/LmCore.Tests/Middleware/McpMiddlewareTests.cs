@@ -59,11 +59,7 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Act
-        var shouldFilter = filter.ShouldFilterTool(
-            "testServer",
-            "dangerous_function",
-            "dangerous_function"
-        );
+        var shouldFilter = filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function");
 
         // Assert
         shouldFilter.Should().BeTrue();
@@ -110,28 +106,16 @@ public class McpMiddlewareTests
             BlockedFunctions = new List<string> { "server_blocked" },
         };
 
-        var serverConfigs = new Dictionary<string, McpServerFilterConfig>
-        {
-            ["testServer"] = serverConfig,
-        };
+        var serverConfigs = new Dictionary<string, McpServerFilterConfig> { ["testServer"] = serverConfig };
 
         var filter = new McpToolFilter(config, serverConfigs, _mockLogger.Object);
 #pragma warning restore CS0618
 
         // Act & Assert - Test various scenarios
-        filter
-            .ShouldFilterTool("testServer", "allowed_function", "allowed_function")
-            .Should()
-            .BeFalse();
-        filter
-            .ShouldFilterTool("testServer", "blocked_function", "blocked_function")
-            .Should()
-            .BeTrue();
+        filter.ShouldFilterTool("testServer", "allowed_function", "allowed_function").Should().BeFalse();
+        filter.ShouldFilterTool("testServer", "blocked_function", "blocked_function").Should().BeTrue();
         filter.ShouldFilterTool("testServer", "server_blocked", "server_blocked").Should().BeTrue();
-        filter
-            .ShouldFilterTool("testServer", "random_function", "random_function")
-            .Should()
-            .BeTrue(); // Not in allow list
+        filter.ShouldFilterTool("testServer", "random_function", "random_function").Should().BeTrue(); // Not in allow list
     }
 
     [Fact]
@@ -212,7 +196,7 @@ public class McpMiddlewareTests
         // Since McpClientTool constructor has changed and these are tests for obsolete wrapper classes,
         // we'll test the underlying FunctionCollisionDetector directly through the wrapper
         // by mocking the behavior rather than creating real McpClientTool instances
-        
+
         // Arrange
 #pragma warning disable CS0618 // Type or member is obsolete
         var detector = new McpToolCollisionDetector(_mockLogger.Object);
@@ -233,7 +217,7 @@ public class McpMiddlewareTests
     {
         // This test verifies the wrapper delegates correctly to FunctionCollisionDetector
         // Since we can't easily construct McpClientTool instances, we test the wrapper behavior
-        
+
         // Arrange
 #pragma warning disable CS0618 // Type or member is obsolete
         var detector = new McpToolCollisionDetector(_mockLogger.Object);
@@ -253,7 +237,7 @@ public class McpMiddlewareTests
     public void McpToolCollisionDetector_WithPrefixAll_PrefixesAllTools()
     {
         // Test the wrapper behavior with different prefix settings
-        
+
         // Arrange
 #pragma warning disable CS0618 // Type or member is obsolete
         var detector = new McpToolCollisionDetector(_mockLogger.Object);
@@ -275,7 +259,7 @@ public class McpMiddlewareTests
     {
         // This test ensures the MCP wrapper can handle different scenarios gracefully
         // Since the wrapper delegates to FunctionCollisionDetector, we test the basic functionality
-        
+
         // Arrange
 #pragma warning disable CS0618 // Type or member is obsolete
         var detector = new McpToolCollisionDetector(_mockLogger.Object);
@@ -337,14 +321,12 @@ public class McpMiddlewareTests
 
 #pragma warning disable CS0618 // Type or member is obsolete
         var mcpToolFilterAttr =
-            typeof(McpToolFilter)
-                .GetCustomAttributes(typeof(ObsoleteAttribute), false)
-                .FirstOrDefault() as ObsoleteAttribute;
+            typeof(McpToolFilter).GetCustomAttributes(typeof(ObsoleteAttribute), false).FirstOrDefault()
+            as ObsoleteAttribute;
 
         var mcpToolFilterConfigAttr =
-            typeof(McpToolFilterConfig)
-                .GetCustomAttributes(typeof(ObsoleteAttribute), false)
-                .FirstOrDefault() as ObsoleteAttribute;
+            typeof(McpToolFilterConfig).GetCustomAttributes(typeof(ObsoleteAttribute), false).FirstOrDefault()
+            as ObsoleteAttribute;
 #pragma warning restore CS0618
 
         // Assert
@@ -387,14 +369,8 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Act & Assert
-        filter
-            .ShouldFilterTool("testServer", "dangerous_function", "dangerous_function")
-            .Should()
-            .BeTrue();
-        filter
-            .ShouldFilterTool("testServer", "specific_blocked", "specific_blocked")
-            .Should()
-            .BeTrue();
+        filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function").Should().BeTrue();
+        filter.ShouldFilterTool("testServer", "specific_blocked", "specific_blocked").Should().BeTrue();
         filter.ShouldFilterTool("testServer", "safe_function", "safe_function").Should().BeFalse();
         filter.ShouldFilterTool("unknownServer", "any_function", "any_function").Should().BeFalse();
     }

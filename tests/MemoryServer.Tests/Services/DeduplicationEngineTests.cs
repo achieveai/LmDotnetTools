@@ -50,44 +50,29 @@ public class DeduplicationEngineTests
         var results = new List<UnifiedSearchResult>();
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
-            results,
-            _sessionContext
-        );
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext);
 
         // Assert
         Assert.NotNull(deduplicationResults);
         Assert.Empty(deduplicationResults.Results);
         Assert.False(deduplicationResults.WasDeduplicationPerformed);
-        Assert.Equal(
-            "Deduplication disabled or insufficient results",
-            deduplicationResults.FallbackReason
-        );
+        Assert.Equal("Deduplication disabled or insufficient results", deduplicationResults.FallbackReason);
     }
 
     [Fact]
     public async Task DeduplicateResultsAsync_WithSingleResult_ReturnsSameResult()
     {
         // Arrange
-        var results = new List<UnifiedSearchResult>
-        {
-            CreateMemoryResult(1, "Test memory content", 0.9f),
-        };
+        var results = new List<UnifiedSearchResult> { CreateMemoryResult(1, "Test memory content", 0.9f) };
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
-            results,
-            _sessionContext
-        );
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext);
 
         // Assert
         Assert.NotNull(deduplicationResults);
         Assert.Single(deduplicationResults.Results);
         Assert.False(deduplicationResults.WasDeduplicationPerformed);
-        Assert.Equal(
-            "Deduplication disabled or insufficient results",
-            deduplicationResults.FallbackReason
-        );
+        Assert.Equal("Deduplication disabled or insufficient results", deduplicationResults.FallbackReason);
     }
 
     [Fact]
@@ -103,10 +88,7 @@ public class DeduplicationEngineTests
         };
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
-            results,
-            _sessionContext
-        );
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext);
 
         // Assert
         Assert.NotNull(deduplicationResults);
@@ -132,10 +114,7 @@ public class DeduplicationEngineTests
         };
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
-            results,
-            _sessionContext
-        );
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext);
 
         // Assert
         Assert.NotNull(deduplicationResults);
@@ -166,10 +145,7 @@ public class DeduplicationEngineTests
         Assert.NotNull(deduplicationResults);
         Assert.False(deduplicationResults.WasDeduplicationPerformed);
         Assert.Equal(2, deduplicationResults.Results.Count);
-        Assert.Equal(
-            "Deduplication disabled or insufficient results",
-            deduplicationResults.FallbackReason
-        );
+        Assert.Equal("Deduplication disabled or insufficient results", deduplicationResults.FallbackReason);
     }
 
     [Fact]
@@ -272,10 +248,7 @@ public class DeduplicationEngineTests
         };
 
         // Act
-        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
-            results,
-            _sessionContext
-        );
+        var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(results, _sessionContext);
 
         // Assert
         Assert.NotNull(deduplicationResults.Metrics);

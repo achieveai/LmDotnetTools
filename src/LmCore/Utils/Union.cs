@@ -176,10 +176,7 @@ public record Union<T1, T2, T3> : Union<T1, T2>
         }
     }
 
-    protected static new Union<T1, T2, T3>? DeserializeInternal(
-        string json,
-        JsonSerializerOptions options
-    )
+    protected static new Union<T1, T2, T3>? DeserializeInternal(string json, JsonSerializerOptions options)
     {
         if (Union<T1, T2>.DeserializeInternal(json, options) is Union<T1, T2> union)
         {
@@ -249,17 +246,13 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
 
     public static implicit operator T4(Union<T1, T2, T3, T4> union) => union.Get<T4>();
 
-    public static implicit operator Union<T1, T2, T3, T4>(T1 value) =>
-        new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T1 value) => new Union<T1, T2, T3, T4>(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T2 value) =>
-        new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T2 value) => new Union<T1, T2, T3, T4>(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T3 value) =>
-        new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T3 value) => new Union<T1, T2, T3, T4>(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T4 value) =>
-        new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T4 value) => new Union<T1, T2, T3, T4>(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -273,10 +266,7 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
         }
     }
 
-    protected static new Union<T1, T2, T3, T4>? DeserializeInternal(
-        string json,
-        JsonSerializerOptions options
-    )
+    protected static new Union<T1, T2, T3, T4>? DeserializeInternal(string json, JsonSerializerOptions options)
     {
         if (Union<T1, T2, T3>.DeserializeInternal(json, options) is Union<T1, T2, T3> union)
         {
@@ -301,21 +291,13 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
 
 public class UnionJsonConverter<T1, T2> : JsonConverter<Union<T1, T2>>
 {
-    public override Union<T1, T2>? Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options
-    )
+    public override Union<T1, T2>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         var json = JsonSerializer.Deserialize<JsonElement>(ref reader).GetRawText();
         return json == null ? null : Union<T1, T2>.Deserialize(json, options);
     }
 
-    public override void Write(
-        Utf8JsonWriter writer,
-        Union<T1, T2> value,
-        JsonSerializerOptions options
-    )
+    public override void Write(Utf8JsonWriter writer, Union<T1, T2> value, JsonSerializerOptions options)
     {
         value.Serialize(writer, options);
     }
@@ -333,11 +315,7 @@ public class UnionJsonConverter<T1, T2, T3> : JsonConverter<Union<T1, T2, T3>>
         return json == null ? null : Union<T1, T2, T3>.Deserialize(json, options);
     }
 
-    public override void Write(
-        Utf8JsonWriter writer,
-        Union<T1, T2, T3> value,
-        JsonSerializerOptions options
-    )
+    public override void Write(Utf8JsonWriter writer, Union<T1, T2, T3> value, JsonSerializerOptions options)
     {
         value.Serialize(writer, options);
     }
@@ -355,11 +333,7 @@ public class UnionJsonConverter<T1, T2, T3, T4> : JsonConverter<Union<T1, T2, T3
         return json == null ? null : Union<T1, T2, T3, T4>.Deserialize(json, options);
     }
 
-    public override void Write(
-        Utf8JsonWriter writer,
-        Union<T1, T2, T3, T4> value,
-        JsonSerializerOptions options
-    )
+    public override void Write(Utf8JsonWriter writer, Union<T1, T2, T3, T4> value, JsonSerializerOptions options)
     {
         value.Serialize(writer, options);
     }

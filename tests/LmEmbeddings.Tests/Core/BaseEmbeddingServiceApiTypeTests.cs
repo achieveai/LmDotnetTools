@@ -46,26 +46,17 @@ public class BaseEmbeddingServiceApiTypeTests
                 capturedRequest = httpRequest;
 
                 // Return a valid response
-                var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(
-                    request.Inputs.Count
-                );
+                var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            response,
-                            System.Text.Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
                     }
                 );
             }
         );
 
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
 
         var service = new TestEmbeddingService(_logger, httpClient);
 
@@ -82,10 +73,7 @@ public class BaseEmbeddingServiceApiTypeTests
 
         foreach (var expectedField in expectedPayloadFields)
         {
-            Assert.True(
-                payload.ContainsKey(expectedField.Key),
-                $"Missing key: {expectedField.Key}"
-            );
+            Assert.True(payload.ContainsKey(expectedField.Key), $"Missing key: {expectedField.Key}");
             Debug.WriteLine($"✓ {expectedField.Key}: found in payload");
         }
 
@@ -101,9 +89,7 @@ public class BaseEmbeddingServiceApiTypeTests
     )
     {
         Debug.WriteLine($"Testing Jina HTTP request formatting: {description}");
-        Debug.WriteLine(
-            $"Input: Model={request.Model}, ApiType={request.ApiType}, Normalized={request.Normalized}"
-        );
+        Debug.WriteLine($"Input: Model={request.Model}, ApiType={request.ApiType}, Normalized={request.Normalized}");
 
         // Arrange
         HttpRequestMessage? capturedRequest = null;
@@ -112,26 +98,17 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 capturedRequest = httpRequest;
 
-                var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(
-                    request.Inputs.Count
-                );
+                var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            response,
-                            System.Text.Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
                     }
                 );
             }
         );
 
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.jina.ai"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.jina.ai") };
 
         var service = new TestEmbeddingService(_logger, httpClient);
 
@@ -148,10 +125,7 @@ public class BaseEmbeddingServiceApiTypeTests
 
         foreach (var expectedField in expectedPayloadFields)
         {
-            Assert.True(
-                payload.ContainsKey(expectedField.Key),
-                $"Missing key: {expectedField.Key}"
-            );
+            Assert.True(payload.ContainsKey(expectedField.Key), $"Missing key: {expectedField.Key}");
             Debug.WriteLine($"✓ {expectedField.Key}: found in payload");
         }
 
@@ -168,19 +142,14 @@ public class BaseEmbeddingServiceApiTypeTests
     )
     {
         Debug.WriteLine($"Testing request validation via HTTP: {description}");
-        Debug.WriteLine(
-            $"Input: ApiType={request.ApiType}, EncodingFormat={request.EncodingFormat}"
-        );
+        Debug.WriteLine($"Input: ApiType={request.ApiType}, EncodingFormat={request.EncodingFormat}");
 
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count)
         );
 
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
 
         var service = new TestEmbeddingService(_logger, httpClient);
 
@@ -193,9 +162,7 @@ public class BaseEmbeddingServiceApiTypeTests
         }
         else
         {
-            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-                service.GenerateEmbeddingsAsync(request)
-            );
+            var exception = await Assert.ThrowsAsync<ArgumentException>(() => service.GenerateEmbeddingsAsync(request));
             Assert.Contains(expectedErrorMessage, exception.Message);
             Debug.WriteLine($"✓ Validation failed as expected: {exception.Message}");
         }
@@ -215,22 +182,13 @@ public class BaseEmbeddingServiceApiTypeTests
         Debug.WriteLine($"Error status: {errorStatus}");
 
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            errorResponse,
-            errorStatus
-        );
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(errorResponse, errorStatus);
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
 
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync(
-            expectedExceptionType,
-            () => service.GenerateEmbeddingsAsync(request)
-        );
+        var exception = await Assert.ThrowsAsync(expectedExceptionType, () => service.GenerateEmbeddingsAsync(request));
 
         Debug.WriteLine($"Exception caught: {exception.Message}");
         Assert.NotNull(exception);
@@ -251,19 +209,10 @@ public class BaseEmbeddingServiceApiTypeTests
         Debug.WriteLine($"Failure count: {failureCount}, Status: {failureStatus}");
 
         // Arrange
-        var successResponse = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(
-            request.Inputs.Count
-        );
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount,
-            successResponse,
-            failureStatus
-        );
+        var successResponse = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
+        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(failureCount, successResponse, failureStatus);
 
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
 
         var service = new TestEmbeddingService(_logger, httpClient);
 
@@ -333,26 +282,17 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 capturedRequest = httpRequest;
 
-                var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(
-                    request.Inputs.Count
-                );
+                var response = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request.Inputs.Count);
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            response,
-                            System.Text.Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
                     }
                 );
             }
         );
 
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
 
         var service = new TestEmbeddingService(_logger, httpClient);
 
@@ -384,6 +324,8 @@ public class BaseEmbeddingServiceApiTypeTests
 
         public override int EmbeddingSize => 1536;
 
+        private static readonly string[] result = new[] { "test-model" };
+
         public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
             EmbeddingRequest request,
             CancellationToken cancellationToken = default
@@ -396,20 +338,14 @@ public class BaseEmbeddingServiceApiTypeTests
                 {
                     var requestPayload = FormatRequestPayload(request);
                     var json = JsonSerializer.Serialize(requestPayload);
-                    var content = new StringContent(
-                        json,
-                        System.Text.Encoding.UTF8,
-                        "application/json"
-                    );
+                    var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
                     return await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
                 },
                 async (response) =>
                 {
                     var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
-                    var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(
-                        responseJson
-                    );
+                    var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseJson);
 
                     if (embeddingResponse?.Embeddings == null)
                         throw new InvalidOperationException("Invalid response from API");
@@ -443,7 +379,7 @@ public class BaseEmbeddingServiceApiTypeTests
             CancellationToken cancellationToken = default
         )
         {
-            return Task.FromResult<IReadOnlyList<string>>(new[] { "test-model" });
+            return Task.FromResult<IReadOnlyList<string>>(result);
         }
 
         private class TestEmbeddingResponse
@@ -487,22 +423,18 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "Hello world" },
+                    Inputs = item,
                     Model = "text-embedding-3-small",
                     ApiType = EmbeddingApiType.Default,
                 },
-                new Dictionary<string, object>
-                {
-                    ["input"] = new[] { "Hello world" },
-                    ["model"] = "text-embedding-3-small",
-                },
+                new Dictionary<string, object> { ["input"] = item, ["model"] = "text-embedding-3-small" },
                 "Basic OpenAI request",
             },
             new object[]
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "Hello", "World" },
+                    Inputs = itemArray,
                     Model = "text-embedding-3-large",
                     ApiType = EmbeddingApiType.Default,
                     EncodingFormat = "float",
@@ -511,7 +443,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 },
                 new Dictionary<string, object>
                 {
-                    ["input"] = new[] { "Hello", "World" },
+                    ["input"] = itemArray,
                     ["model"] = "text-embedding-3-large",
                     ["encoding_format"] = "float",
                     ["dimensions"] = 1536,
@@ -528,22 +460,18 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "Hello world" },
+                    Inputs = itemArray0,
                     Model = "jina-embeddings-v3",
                     ApiType = EmbeddingApiType.Jina,
                 },
-                new Dictionary<string, object>
-                {
-                    ["input"] = new[] { "Hello world" },
-                    ["model"] = "jina-embeddings-v3",
-                },
+                new Dictionary<string, object> { ["input"] = itemArray0, ["model"] = "jina-embeddings-v3" },
                 "Basic Jina request",
             },
             new object[]
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "Hello", "World" },
+                    Inputs = itemArray1,
                     Model = "jina-embeddings-v3",
                     ApiType = EmbeddingApiType.Jina,
                     EncodingFormat = "float",
@@ -552,7 +480,7 @@ public class BaseEmbeddingServiceApiTypeTests
                 },
                 new Dictionary<string, object>
                 {
-                    ["input"] = new[] { "Hello", "World" },
+                    ["input"] = itemArray1,
                     ["model"] = "jina-embeddings-v3",
                     ["embedding_type"] = "float",
                     ["normalized"] = true,
@@ -569,7 +497,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray2,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Default,
                     EncodingFormat = "float",
@@ -582,7 +510,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray2,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Default,
                     EncodingFormat = "binary",
@@ -595,7 +523,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray3,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Jina,
                     EncodingFormat = "binary",
@@ -608,7 +536,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray3,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Jina,
                     EncodingFormat = "invalid",
@@ -626,7 +554,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray4,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Default,
                 },
@@ -639,7 +567,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray4,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Jina,
                 },
@@ -657,7 +585,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray5,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Default,
                 },
@@ -669,7 +597,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test1", "test2" },
+                    Inputs = itemArray6,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Jina,
                 },
@@ -686,7 +614,7 @@ public class BaseEmbeddingServiceApiTypeTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray5,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Default,
                     AdditionalOptions = new Dictionary<string, object>
@@ -695,20 +623,33 @@ public class BaseEmbeddingServiceApiTypeTests
                         ["another_param"] = 42,
                     },
                 },
-                new[] { "input", "model", "custom_param", "another_param" },
+                itemArray7,
                 "OpenAI request with additional options",
             },
             new object[]
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray8,
                     Model = "test-model",
                     ApiType = EmbeddingApiType.Jina,
                     AdditionalOptions = new Dictionary<string, object> { ["jina_specific"] = true },
                 },
-                new[] { "input", "model", "jina_specific" },
+                itemArray9,
                 "Jina request with additional options",
             },
         };
+
+    private static readonly string[] item = new[] { "Hello world" };
+    private static readonly string[] itemArray = new[] { "Hello", "World" };
+    private static readonly string[] itemArray0 = new[] { "Hello world" };
+    private static readonly string[] itemArray1 = new[] { "Hello", "World" };
+    private static readonly string[] itemArray2 = new[] { "test" };
+    private static readonly string[] itemArray3 = new[] { "test" };
+    private static readonly string[] itemArray4 = new[] { "test" };
+    private static readonly string[] itemArray5 = new[] { "test" };
+    private static readonly string[] itemArray6 = new[] { "test1", "test2" };
+    private static readonly string[] itemArray7 = new[] { "input", "model", "custom_param", "another_param" };
+    private static readonly string[] itemArray8 = new[] { "test" };
+    private static readonly string[] itemArray9 = new[] { "input", "model", "jina_specific" };
 }

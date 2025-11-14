@@ -32,10 +32,7 @@ public class PerformanceTracker : IPerformanceTracker
         {
             if (!_providerStats.TryGetValue(metric.Provider, out var providerStats))
             {
-                providerStats = new ProviderStatistics(
-                    metric.Provider,
-                    MaxRecentMetricsPerProvider
-                );
+                providerStats = new ProviderStatistics(metric.Provider, MaxRecentMetricsPerProvider);
                 _providerStats[metric.Provider] = providerStats;
             }
 
@@ -74,11 +71,7 @@ public class PerformanceTracker : IPerformanceTracker
     /// <param name="model">Optional model filter</param>
     /// <param name="since">Optional time filter (defaults to last 24 hours)</param>
     /// <returns>Performance profile for the specified criteria</returns>
-    public PerformanceProfile GetPerformanceProfile(
-        string provider,
-        string model = "",
-        DateTimeOffset? since = null
-    )
+    public PerformanceProfile GetPerformanceProfile(string provider, string model = "", DateTimeOffset? since = null)
     {
         if (string.IsNullOrEmpty(provider))
         {
@@ -163,9 +156,7 @@ public class PerformanceTracker : IPerformanceTracker
         {
             var allModels = _providerStats
                 .SelectMany(kvp =>
-                    kvp.Value.ModelStatistics.Select(ms =>
-                        (Provider: kvp.Key, Model: ms.Key, Stats: ms.Value)
-                    )
+                    kvp.Value.ModelStatistics.Select(ms => (Provider: kvp.Key, Model: ms.Key, Stats: ms.Value))
                 )
                 .ToList();
 

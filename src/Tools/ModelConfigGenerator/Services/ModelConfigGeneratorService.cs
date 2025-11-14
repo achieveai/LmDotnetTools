@@ -11,44 +11,37 @@ namespace AchieveAi.LmDotnetTools.ModelConfigGenerator.Services;
 /// <summary>
 /// Service for generating Models.config files from OpenRouter data with filtering capabilities.
 /// </summary>
-public class ModelConfigGeneratorService
+public partial class ModelConfigGeneratorService
 {
     private readonly OpenRouterModelService _openRouterService;
     private readonly ILogger<ModelConfigGeneratorService> _logger;
 
     // Model family patterns for filtering
-    private static readonly Dictionary<string, Regex> ModelFamilyPatterns = new(
-        StringComparer.OrdinalIgnoreCase
-    )
+    private static readonly Dictionary<string, Regex> ModelFamilyPatterns = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["llama"] = new Regex(@"llama|meta-llama", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["qwen"] = new Regex(@"qwen|alibaba", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["kimi"] = new Regex(@"kimi|moonshot", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["deepseek"] = new Regex(@"deepseek", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["claude"] = new Regex(
-            @"claude|anthropic",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled
-        ),
-        ["gpt"] = new Regex(@"gpt|openai", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["gemini"] = new Regex(@"gemini|google", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["grok"] = new Regex(@"grok|xai", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["glm"] = new Regex(@"glm|thudm|chatglm", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["openrouter"] = new Regex(@"openrouter/|cloaked", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["mistral"] = new Regex(@"mistral", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["cohere"] = new Regex(@"cohere|command", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["yi"] = new Regex(@"yi-|01-ai", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["phi"] = new Regex(@"phi-|microsoft", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["falcon"] = new Regex(@"falcon", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["wizardlm"] = new Regex(@"wizard", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["vicuna"] = new Regex(@"vicuna", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["alpaca"] = new Regex(@"alpaca", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        ["nous"] = new Regex(@"nous|hermes", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        ["llama"] = MyRegex(),
+        ["qwen"] = MyRegex1(),
+        ["kimi"] = MyRegex2(),
+        ["deepseek"] = MyRegex3(),
+        ["claude"] = MyRegex4(),
+        ["gpt"] = MyRegex5(),
+        ["gemini"] = MyRegex6(),
+        ["grok"] = MyRegex7(),
+        ["glm"] = MyRegex8(),
+        ["openrouter"] = MyRegex9(),
+        ["mistral"] = MyRegex10(),
+        ["cohere"] = MyRegex11(),
+        ["yi"] = MyRegex12(),
+        ["phi"] = MyRegex13(),
+        ["falcon"] = MyRegex14(),
+        ["wizardlm"] = MyRegex15(),
+        ["vicuna"] = MyRegex16(),
+        ["alpaca"] = MyRegex17(),
+        ["nous"] = MyRegex18(),
     };
 
     // Known problematic models that consistently return 404 or cause issues
-    private static readonly HashSet<string> ProblematicModels = new(
-        StringComparer.OrdinalIgnoreCase
-    )
+    private static readonly HashSet<string> ProblematicModels = new(StringComparer.OrdinalIgnoreCase)
     {
         "qwen/qwen3-coder",
         "qwen/qwen3-235b-a22b-2507",
@@ -67,27 +60,20 @@ public class ModelConfigGeneratorService
         ILogger<ModelConfigGeneratorService> logger
     )
     {
-        _openRouterService =
-            openRouterService ?? throw new ArgumentNullException(nameof(openRouterService));
+        _openRouterService = openRouterService ?? throw new ArgumentNullException(nameof(openRouterService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>
     /// Generates a Models.config file based on the provided options.
     /// </summary>
-    public async Task<bool> GenerateConfigAsync(
-        GeneratorOptions options,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<bool> GenerateConfigAsync(GeneratorOptions options, CancellationToken cancellationToken = default)
     {
         try
         {
             _logger.LogInformation(
                 "Starting model config generation with options: {Options}",
-                JsonSerializer.Serialize(
-                    options,
-                    new JsonSerializerOptions { WriteIndented = true }
-                )
+                JsonSerializer.Serialize(options, new JsonSerializerOptions { WriteIndented = true })
             );
 
             // Fetch all models from OpenRouter
@@ -97,16 +83,11 @@ public class ModelConfigGeneratorService
 
             // Apply filters
             var filteredModels = ApplyFilters(allModels, options);
-            _logger.LogInformation(
-                "After filtering: {Count} models remaining",
-                filteredModels.Count
-            );
+            _logger.LogInformation("After filtering: {Count} models remaining", filteredModels.Count);
 
             if (!filteredModels.Any())
             {
-                _logger.LogWarning(
-                    "No models match the specified criteria. No config file will be generated."
-                );
+                _logger.LogWarning("No models match the specified criteria. No config file will be generated.");
                 return false;
             }
 
@@ -137,10 +118,7 @@ public class ModelConfigGeneratorService
     /// <summary>
     /// Applies all configured filters to the model list.
     /// </summary>
-    private IReadOnlyList<ModelConfig> ApplyFilters(
-        IReadOnlyList<ModelConfig> models,
-        GeneratorOptions options
-    )
+    private IReadOnlyList<ModelConfig> ApplyFilters(IReadOnlyList<ModelConfig> models, GeneratorOptions options)
     {
         var filtered = models.AsEnumerable();
 
@@ -158,23 +136,15 @@ public class ModelConfigGeneratorService
         // Filter by reasoning capability
         if (options.ReasoningOnly)
         {
-            filtered = filtered.Where(model =>
-                model.IsReasoning || model.HasCapability("thinking")
-            );
-            _logger.LogDebug(
-                "Filtered by reasoning only: {Count} models remaining",
-                filtered.Count()
-            );
+            filtered = filtered.Where(model => model.IsReasoning || model.HasCapability("thinking"));
+            _logger.LogDebug("Filtered by reasoning only: {Count} models remaining", filtered.Count());
         }
 
         // Filter by multimodal capability
         if (options.MultimodalOnly)
         {
             filtered = filtered.Where(model => model.HasCapability("multimodal"));
-            _logger.LogDebug(
-                "Filtered by multimodal only: {Count} models remaining",
-                filtered.Count()
-            );
+            _logger.LogDebug("Filtered by multimodal only: {Count} models remaining", filtered.Count());
         }
 
         // Filter by minimum context length
@@ -194,9 +164,7 @@ public class ModelConfigGeneratorService
         if (options.MaxCostPerMillion > 0)
         {
             filtered = filtered.Where(model =>
-                model.Providers.Any(p =>
-                    (decimal)p.Pricing.PromptPerMillion <= options.MaxCostPerMillion
-                )
+                model.Providers.Any(p => (decimal)p.Pricing.PromptPerMillion <= options.MaxCostPerMillion)
             );
             _logger.LogDebug(
                 "Filtered by max cost {MaxCost}: {Count} models remaining",
@@ -210,8 +178,7 @@ public class ModelConfigGeneratorService
         {
             var beforeCount = filtered.Count();
             filtered = filtered.Where(model =>
-                model.CreatedDate.HasValue
-                && model.CreatedDate.Value.Date >= options.ModelUpdatedSince.Value.Date
+                model.CreatedDate.HasValue && model.CreatedDate.Value.Date >= options.ModelUpdatedSince.Value.Date
             );
             var afterCount = filtered.Count();
             _logger.LogDebug(
@@ -358,10 +325,7 @@ public class ModelConfigGeneratorService
     /// <summary>
     /// Logs detailed statistics about the generated configuration.
     /// </summary>
-    private void LogGenerationStatistics(
-        IReadOnlyList<ModelConfig> models,
-        GeneratorOptions options
-    )
+    private void LogGenerationStatistics(IReadOnlyList<ModelConfig> models, GeneratorOptions options)
     {
         _logger.LogInformation("=== Generation Statistics ===");
 
@@ -379,10 +343,7 @@ public class ModelConfigGeneratorService
             }
         }
 
-        _logger.LogInformation(
-            "Models by family: {@FamilyCounts}",
-            familyCounts.OrderByDescending(x => x.Value)
-        );
+        _logger.LogInformation("Models by family: {@FamilyCounts}", familyCounts.OrderByDescending(x => x.Value));
 
         // Count by capabilities
         var reasoningCount = models.Count(m => m.IsReasoning || m.HasCapability("thinking"));
@@ -412,15 +373,13 @@ public class ModelConfigGeneratorService
         );
 
         // Cost and context analysis
-        var costs = models
-            .SelectMany(m => m.Providers.Select(p => p.Pricing.PromptPerMillion))
-            .ToList();
+        var costs = models.SelectMany(m => m.Providers.Select(p => p.Pricing.PromptPerMillion)).ToList();
         var contexts = models
             .Where(m => m.Capabilities?.TokenLimits?.MaxContextTokens > 0)
             .Select(m => m.Capabilities!.TokenLimits!.MaxContextTokens)
             .ToList();
 
-        if (costs.Any() && contexts.Any())
+        if (costs.Count != 0 && contexts.Count != 0)
         {
             _logger.LogInformation(
                 "Cost and context analysis: {@Analysis}",
@@ -485,4 +444,61 @@ public class ModelConfigGeneratorService
         }
         return "unknown";
     }
+
+    [GeneratedRegex(@"llama|meta-llama", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex();
+
+    [GeneratedRegex(@"qwen|alibaba", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex1();
+
+    [GeneratedRegex(@"kimi|moonshot", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex2();
+
+    [GeneratedRegex(@"deepseek", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex3();
+
+    [GeneratedRegex(@"claude|anthropic", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex4();
+
+    [GeneratedRegex(@"gpt|openai", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex5();
+
+    [GeneratedRegex(@"gemini|google", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex6();
+
+    [GeneratedRegex(@"grok|xai", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex7();
+
+    [GeneratedRegex(@"glm|thudm|chatglm", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex8();
+
+    [GeneratedRegex(@"openrouter/|cloaked", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex9();
+
+    [GeneratedRegex(@"mistral", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex10();
+
+    [GeneratedRegex(@"cohere|command", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex11();
+
+    [GeneratedRegex(@"yi-|01-ai", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex12();
+
+    [GeneratedRegex(@"phi-|microsoft", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex13();
+
+    [GeneratedRegex(@"falcon", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex14();
+
+    [GeneratedRegex(@"wizard", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex15();
+
+    [GeneratedRegex(@"vicuna", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex16();
+
+    [GeneratedRegex(@"alpaca", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex17();
+
+    [GeneratedRegex(@"nous|hermes", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex18();
 }

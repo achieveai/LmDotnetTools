@@ -83,10 +83,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     /// Gets whether the JSON is complete (balanced braces/brackets and no in-flight tokens)
     /// </summary>
     public bool IsComplete =>
-        _contextStack.Count == 1
-        && _currentValue.Kind == ValueKind.None
-        && !_expectingPropertyName
-        && !_afterColon;
+        _contextStack.Count == 1 && _currentValue.Kind == ValueKind.None && !_expectingPropertyName && !_afterColon;
 
     /// <summary>
     /// Adds a fragment to the accumulated JSON buffer and processes it character by character
@@ -162,12 +159,7 @@ public class JsonFragmentToStructuredUpdateGenerator
             if (!_wasComplete && isCurrentlyComplete)
             {
                 // Document just became complete - emit completion event
-                yield return new JsonFragmentUpdate(
-                    "root",
-                    JsonFragmentKind.JsonComplete,
-                    CurrentJson,
-                    null
-                );
+                yield return new JsonFragmentUpdate("root", JsonFragmentKind.JsonComplete, CurrentJson, null);
             }
             _wasComplete = isCurrentlyComplete;
         }
@@ -217,11 +209,7 @@ public class JsonFragmentToStructuredUpdateGenerator
     /// <returns>True if extraction was successful, false otherwise</returns>
     public bool TryGetValue<T>(string propertyName, out T? value)
     {
-        return JsonStringUtils.TryExtractPropertyFromPartialJson(
-            CurrentJson,
-            propertyName,
-            out value
-        );
+        return JsonStringUtils.TryExtractPropertyFromPartialJson(CurrentJson, propertyName, out value);
     }
 
     /// <summary>
@@ -388,10 +376,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 {
                     IsInString = false,
                     IsEscaped = false,
-                    IsStartOrEnd =
-                        currentFrame.Type == ContainerType.Array
-                            ? false
-                            : currentFrame.IsStartOrEnd,
+                    IsStartOrEnd = currentFrame.Type == ContainerType.Array ? false : currentFrame.IsStartOrEnd,
                 }
             );
 
@@ -401,12 +386,7 @@ public class JsonFragmentToStructuredUpdateGenerator
             if (_expectingPropertyName)
             {
                 _lastPropertyName = stringValue[1..^1]; // Remove quotes for internal use
-                yield return new JsonFragmentUpdate(
-                    GetCurrentPath(),
-                    JsonFragmentKind.Key,
-                    stringValue,
-                    stringValue
-                );
+                yield return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.Key, stringValue, stringValue);
             }
             else
             {
@@ -468,12 +448,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         _contextStack.Push(objectFrame);
         _expectingPropertyName = true;
 
-        yield return new JsonFragmentUpdate(
-            GetCurrentPath(),
-            JsonFragmentKind.StartObject,
-            "{",
-            null
-        );
+        yield return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.StartObject, "{", null);
     }
 
     private IEnumerable<JsonFragmentUpdate> HandleEndObject()
@@ -554,12 +529,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         _contextStack.Push(arrayFrame);
         _afterColon = false;
 
-        yield return new JsonFragmentUpdate(
-            GetCurrentPath(),
-            JsonFragmentKind.StartArray,
-            "[",
-            null
-        );
+        yield return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.StartArray, "[", null);
     }
 
     private IEnumerable<JsonFragmentUpdate> HandleEndArray()
@@ -655,10 +625,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 {
                     IsInString = true,
                     IsEscaped = false,
-                    IsStartOrEnd =
-                        currentFrame.Type == ContainerType.Array
-                            ? false
-                            : currentFrame.IsStartOrEnd,
+                    IsStartOrEnd = currentFrame.Type == ContainerType.Array ? false : currentFrame.IsStartOrEnd,
                 }
             );
 
@@ -671,12 +638,7 @@ public class JsonFragmentToStructuredUpdateGenerator
             // Only emit StartString for value strings, not property names
             if (!_expectingPropertyName)
             {
-                yield return new JsonFragmentUpdate(
-                    GetCurrentPath(),
-                    JsonFragmentKind.StartString,
-                    "\"",
-                    null
-                );
+                yield return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.StartString, "\"", null);
             }
         }
     }
@@ -726,12 +688,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         }
         else if (_currentTokenType == TokenType.Number && double.TryParse(token, out _))
         {
-            yield return new JsonFragmentUpdate(
-                GetCurrentPath(),
-                JsonFragmentKind.CompleteNumber,
-                token,
-                token
-            );
+            yield return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.CompleteNumber, token, token);
         }
 
         // Reset token state
@@ -743,21 +700,11 @@ public class JsonFragmentToStructuredUpdateGenerator
     {
         if (token == "true" || token == "false")
         {
-            return new JsonFragmentUpdate(
-                GetCurrentPath(),
-                JsonFragmentKind.CompleteBoolean,
-                token,
-                token
-            );
+            return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.CompleteBoolean, token, token);
         }
         else if (token == "null")
         {
-            return new JsonFragmentUpdate(
-                GetCurrentPath(),
-                JsonFragmentKind.CompleteNull,
-                token,
-                null
-            );
+            return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.CompleteNull, token, null);
         }
 
         // Default case - shouldn't usually happen

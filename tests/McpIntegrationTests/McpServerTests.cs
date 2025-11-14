@@ -33,11 +33,7 @@ public class McpServerTests
         try
         {
             // Create middleware with the mock client
-            var clients = new Dictionary<string, IMcpClient>
-            {
-                ["test_client"] = client,
-                ["GreetingTool"] = client,
-            };
+            var clients = new Dictionary<string, IMcpClient> { ["test_client"] = client, ["GreetingTool"] = client };
 
             var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
 

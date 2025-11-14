@@ -8,20 +8,17 @@ namespace MemoryServer.DocumentSegmentation.Services;
 /// <summary>
 /// Service for analyzing document size and determining segmentation requirements.
 /// </summary>
-public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
+public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
 {
     private readonly ILogger<DocumentSizeAnalyzer> _logger;
     private readonly DocumentSegmentationOptions _options;
 
     // Regex patterns for text analysis
-    private static readonly Regex WordPattern = new(@"\b\w+\b", RegexOptions.Compiled);
-    private static readonly Regex SentencePattern = new(@"[.!?]+\s*", RegexOptions.Compiled);
-    private static readonly Regex ParagraphPattern = new(@"\n\s*\n", RegexOptions.Compiled);
+    private static readonly Regex WordPattern = MyRegex();
+    private static readonly Regex SentencePattern = MyRegex1();
+    private static readonly Regex ParagraphPattern = MyRegex2();
 
-    public DocumentSizeAnalyzer(
-        ILogger<DocumentSizeAnalyzer> logger,
-        IOptions<DocumentSegmentationOptions> options
-    )
+    public DocumentSizeAnalyzer(ILogger<DocumentSizeAnalyzer> logger, IOptions<DocumentSegmentationOptions> options)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
@@ -37,10 +34,7 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
     {
         try
         {
-            _logger.LogDebug(
-                "Analyzing document size, content length: {Length} characters",
-                content?.Length ?? 0
-            );
+            _logger.LogDebug("Analyzing document size, content length: {Length} characters", content?.Length ?? 0);
 
             // Handle null content
             if (content == null)
@@ -99,10 +93,7 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
     /// <summary>
     /// Determines if a document should be segmented based on configured thresholds.
     /// </summary>
-    public bool ShouldSegmentDocument(
-        DocumentStatistics statistics,
-        DocumentType documentType = DocumentType.Generic
-    )
+    public bool ShouldSegmentDocument(DocumentStatistics statistics, DocumentType documentType = DocumentType.Generic)
     {
         if (statistics == null)
         {
@@ -240,6 +231,15 @@ public class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
             _ => defaultMinWords, // Use default for other types
         };
     }
+
+    [GeneratedRegex(@"\b\w+\b", RegexOptions.Compiled)]
+    private static partial Regex MyRegex();
+
+    [GeneratedRegex(@"[.!?]+\s*", RegexOptions.Compiled)]
+    private static partial Regex MyRegex1();
+
+    [GeneratedRegex(@"\n\s*\n", RegexOptions.Compiled)]
+    private static partial Regex MyRegex2();
 
     #endregion
 }

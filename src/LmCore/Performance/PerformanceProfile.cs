@@ -31,8 +31,7 @@ public record PerformanceProfile
     public int RetriedRequests { get; init; }
 
     /// <summary>Success rate as a percentage (0-100)</summary>
-    public double SuccessRate =>
-        TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double SuccessRate => TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
 
     /// <summary>Retry rate as a percentage (0-100)</summary>
     public double RetryRate => TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
@@ -62,8 +61,7 @@ public record PerformanceProfile
     public long CompletionTokens { get; init; }
 
     /// <summary>Average tokens per request</summary>
-    public double AverageTokensPerRequest =>
-        TotalRequests > 0 ? (double)TotalTokens / TotalRequests : 0;
+    public double AverageTokensPerRequest => TotalRequests > 0 ? (double)TotalTokens / TotalRequests : 0;
 
     /// <summary>Total request size in bytes</summary>
     public long TotalRequestBytes { get; init; }
@@ -72,12 +70,10 @@ public record PerformanceProfile
     public long TotalResponseBytes { get; init; }
 
     /// <summary>Average request size in bytes</summary>
-    public double AverageRequestSizeBytes =>
-        TotalRequests > 0 ? (double)TotalRequestBytes / TotalRequests : 0;
+    public double AverageRequestSizeBytes => TotalRequests > 0 ? (double)TotalRequestBytes / TotalRequests : 0;
 
     /// <summary>Average response size in bytes</summary>
-    public double AverageResponseSizeBytes =>
-        TotalRequests > 0 ? (double)TotalResponseBytes / TotalRequests : 0;
+    public double AverageResponseSizeBytes => TotalRequests > 0 ? (double)TotalResponseBytes / TotalRequests : 0;
 
     /// <summary>Most common error types and their counts</summary>
     public Dictionary<string, int> ErrorTypes { get; init; } = [];
@@ -119,9 +115,7 @@ public record PerformanceProfile
 
         if (!string.IsNullOrEmpty(model))
         {
-            metricsList = metricsList
-                .Where(m => m.Model.Equals(model, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            metricsList = metricsList.Where(m => m.Model.Equals(model, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
         var successfulRequests = metricsList.Where(m => m.IsSuccess).ToList();
@@ -145,17 +139,12 @@ public record PerformanceProfile
             SuccessfulRequests = successfulRequests.Count,
             FailedRequests = failedRequests.Count,
             RetriedRequests = retriedRequests.Count,
-            AverageRequestDuration = durations.Count != 0
-                ? TimeSpan.FromTicks((long)durations.Average(d => d.Ticks))
-                : TimeSpan.Zero,
+            AverageRequestDuration =
+                durations.Count != 0 ? TimeSpan.FromTicks((long)durations.Average(d => d.Ticks)) : TimeSpan.Zero,
             MinRequestDuration = durations.Count != 0 ? durations.Min() : TimeSpan.Zero,
             MaxRequestDuration = durations.Count != 0 ? durations.Max() : TimeSpan.Zero,
-            P95RequestDuration = durations.Count != 0
-                ? durations[(int)(durations.Count * 0.95)]
-                : TimeSpan.Zero,
-            P99RequestDuration = durations.Count != 0
-                ? durations[(int)(durations.Count * 0.99)]
-                : TimeSpan.Zero,
+            P95RequestDuration = durations.Count != 0 ? durations[(int)(durations.Count * 0.95)] : TimeSpan.Zero,
+            P99RequestDuration = durations.Count != 0 ? durations[(int)(durations.Count * 0.99)] : TimeSpan.Zero,
             TotalTokens = totalTokens,
             PromptTokens = inputTokens,
             CompletionTokens = outputTokens,

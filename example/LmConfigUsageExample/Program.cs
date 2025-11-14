@@ -37,9 +37,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder =>
-                builder.AddConsole().SetMinimumLevel(LogLevel.Information)
-            );
+            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Create configuration from models.json file
             var configuration = new ConfigurationBuilder()
@@ -72,9 +70,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder =>
-                builder.AddConsole().SetMinimumLevel(LogLevel.Information)
-            );
+            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Try to load from embedded resource (will fallback to file if not embedded)
             try
@@ -85,9 +81,7 @@ class Program
             catch (InvalidOperationException)
             {
                 // Fallback to file-based loading if embedded resource not found
-                Console.WriteLine(
-                    "! Embedded resource not found, falling back to file-based loading"
-                );
+                Console.WriteLine("! Embedded resource not found, falling back to file-based loading");
 
                 var configuration = new ConfigurationBuilder()
                     .AddJsonFile("models.json", optional: false, reloadOnChange: false)
@@ -119,9 +113,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder =>
-                builder.AddConsole().SetMinimumLevel(LogLevel.Information)
-            );
+            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Load configuration using stream factory
             services.AddLmConfigFromStream(() =>
@@ -155,9 +147,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder =>
-                builder.AddConsole().SetMinimumLevel(LogLevel.Information)
-            );
+            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Create configuration using .NET's configuration system
             var configuration = new ConfigurationBuilder()
@@ -190,9 +180,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder =>
-                builder.AddConsole().SetMinimumLevel(LogLevel.Information)
-            );
+            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             var configuration = new ConfigurationBuilder()
                 .AddJsonFile("models.json", optional: false, reloadOnChange: false)
@@ -210,9 +198,7 @@ class Program
             foreach (var providerName in providerNames)
             {
                 var isAvailable = await modelResolver.IsProviderAvailableAsync(providerName);
-                var status = isAvailable
-                    ? "✓ Available"
-                    : "✗ Not available (missing API key or config)";
+                var status = isAvailable ? "✓ Available" : "✗ Not available (missing API key or config)";
                 Console.WriteLine($"  {providerName}: {status}");
             }
 
@@ -227,9 +213,7 @@ class Program
                 var resolution = await modelResolver.ResolveProviderAsync(testModel);
                 if (resolution != null)
                 {
-                    Console.WriteLine(
-                        $"✓ Resolved to provider: {resolution.EffectiveProviderName}"
-                    );
+                    Console.WriteLine($"✓ Resolved to provider: {resolution.EffectiveProviderName}");
                     Console.WriteLine($"  Model: {resolution.EffectiveModelName}");
                     Console.WriteLine($"  Endpoint: {resolution.Connection.EndpointUrl}");
                 }
@@ -262,9 +246,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder =>
-                builder.AddConsole().SetMinimumLevel(LogLevel.Information)
-            );
+            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             var configuration = new ConfigurationBuilder()
                 .AddJsonFile("models.json", optional: false, reloadOnChange: false)
@@ -275,9 +257,7 @@ class Program
             var serviceProvider = services.BuildServiceProvider();
             var unifiedAgent = serviceProvider.GetRequiredService<UnifiedAgent>();
 
-            Console.WriteLine(
-                "Demonstrating ModelId translation from logical to provider-specific names:"
-            );
+            Console.WriteLine("Demonstrating ModelId translation from logical to provider-specific names:");
             Console.WriteLine();
 
             // Example 1: GPT-4.1 -> OpenRouter translation
@@ -306,11 +286,7 @@ class Program
             }
 
             // Example 2: Claude -> OpenRouter translation
-            var claudeOptions = new GenerateReplyOptions
-            {
-                ModelId = "claude-3-sonnet",
-                Temperature = 0.5f,
-            };
+            var claudeOptions = new GenerateReplyOptions { ModelId = "claude-3-sonnet", Temperature = 0.5f };
 
             try
             {
@@ -335,17 +311,11 @@ class Program
 
             try
             {
-                var deepSeekResolution = await unifiedAgent.GetProviderResolutionAsync(
-                    deepSeekOptions
-                );
+                var deepSeekResolution = await unifiedAgent.GetProviderResolutionAsync(deepSeekOptions);
                 Console.WriteLine("Example 3: DeepSeek-R1 Resolution");
                 Console.WriteLine($"  User requested: {deepSeekOptions.ModelId}");
-                Console.WriteLine(
-                    $"  Resolved provider: {deepSeekResolution.EffectiveProviderName}"
-                );
-                Console.WriteLine(
-                    $"  Provider model name: {deepSeekResolution.EffectiveModelName}"
-                );
+                Console.WriteLine($"  Resolved provider: {deepSeekResolution.EffectiveProviderName}");
+                Console.WriteLine($"  Provider model name: {deepSeekResolution.EffectiveModelName}");
                 Console.WriteLine(
                     $"  ✓ UnifiedAgent will translate '{deepSeekOptions.ModelId}' to '{deepSeekResolution.EffectiveModelName}' when calling the provider"
                 );
@@ -358,15 +328,9 @@ class Program
             }
 
             Console.WriteLine("Key Benefits:");
-            Console.WriteLine(
-                "  • Users can use logical model names like 'gpt-4.1' or 'claude-3-sonnet'"
-            );
-            Console.WriteLine(
-                "  • UnifiedAgent automatically resolves to the best available provider"
-            );
-            Console.WriteLine(
-                "  • Provider agents receive the correct provider-specific model names"
-            );
+            Console.WriteLine("  • Users can use logical model names like 'gpt-4.1' or 'claude-3-sonnet'");
+            Console.WriteLine("  • UnifiedAgent automatically resolves to the best available provider");
+            Console.WriteLine("  • Provider agents receive the correct provider-specific model names");
             Console.WriteLine("  • Supports complex routing through aggregators like OpenRouter");
             Console.WriteLine("  • Enables seamless model switching without code changes");
             Console.WriteLine();

@@ -87,9 +87,7 @@ public class SegmentationPromptManagerTests : IDisposable
     [InlineData(DocumentType.Technical)]
     [InlineData(DocumentType.Email)]
     [InlineData(DocumentType.Chat)]
-    public async Task GetDomainInstructionsAsync_WithValidDocumentType_ReturnsInstructions(
-        DocumentType documentType
-    )
+    public async Task GetDomainInstructionsAsync_WithValidDocumentType_ReturnsInstructions(DocumentType documentType)
     {
         // Act
         var result = await _promptManager.GetDomainInstructionsAsync(documentType);
@@ -124,9 +122,7 @@ public class SegmentationPromptManagerTests : IDisposable
     [InlineData(SegmentationStrategy.StructureBased)]
     [InlineData(SegmentationStrategy.NarrativeBased)]
     [InlineData(SegmentationStrategy.Hybrid)]
-    public async Task GetPromptAsync_WithAllMainStrategies_ReturnsValidPrompts(
-        SegmentationStrategy strategy
-    )
+    public async Task GetPromptAsync_WithAllMainStrategies_ReturnsValidPrompts(SegmentationStrategy strategy)
     {
         // Act
         var result = await _promptManager.GetPromptAsync(strategy);

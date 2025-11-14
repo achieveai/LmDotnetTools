@@ -128,10 +128,7 @@ public record CostComparison
     public IReadOnlyDictionary<string, IReadOnlyList<CostOption>> ByReliability =>
         Options
             .GroupBy(o => o.ReliabilityTier ?? "Unknown")
-            .ToDictionary(
-                g => g.Key,
-                g => (IReadOnlyList<CostOption>)g.OrderBy(o => o.TotalCost).ToList()
-            );
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<CostOption>)g.OrderBy(o => o.TotalCost).ToList());
 }
 
 /// <summary>

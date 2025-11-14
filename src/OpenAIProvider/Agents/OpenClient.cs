@@ -101,7 +101,9 @@ public class OpenClient : BaseHttpService, IOpenClient
         }
         else
         {
-            return baseUrl.Contains("cerebras.ai") ? "Cerebras" : baseUrl.Contains("api.anthropic.com") ? "Anthropic" : "Unknown";
+            return baseUrl.Contains("cerebras.ai") ? "Cerebras"
+                : baseUrl.Contains("api.anthropic.com") ? "Anthropic"
+                : "Unknown";
         }
     }
 
@@ -130,11 +132,7 @@ public class OpenClient : BaseHttpService, IOpenClient
             chatCompletionRequest.Messages.Count
         );
 
-        var metrics = RequestMetrics.StartNew(
-            ProviderName,
-            chatCompletionRequest.Model,
-            "ChatCompletion"
-        );
+        var metrics = RequestMetrics.StartNew(ProviderName, chatCompletionRequest.Model, "ChatCompletion");
 
         try
         {
@@ -143,19 +141,9 @@ public class OpenClient : BaseHttpService, IOpenClient
             var response = await ExecuteHttpWithRetryAsync(
                 async () =>
                 {
-                    var request = new HttpRequestMessage(
-                        HttpMethod.Post,
-                        $"{_baseUrl}/chat/completions"
-                    );
-                    var jsonContent = JsonSerializer.Serialize(
-                        chatCompletionRequest,
-                        S_jsonSerializerOptions
-                    );
-                    request.Content = new StringContent(
-                        jsonContent,
-                        Encoding.UTF8,
-                        "application/json"
-                    );
+                    var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions");
+                    var jsonContent = JsonSerializer.Serialize(chatCompletionRequest, S_jsonSerializerOptions);
+                    request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
                     Logger.LogTrace(
                         "Sending request - RequestId: {RequestId}, PayloadSize: {PayloadSize}",
@@ -168,9 +156,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                 async (httpResponse) =>
                 {
                     httpResponse.EnsureSuccessStatusCode();
-                    var responseStream = await httpResponse.Content.ReadAsStreamAsync(
-                        cancellationToken
-                    );
+                    var responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken);
                     var chatResponse =
                         await JsonSerializer.DeserializeAsync<ChatCompletionResponse>(
                             responseStream,
@@ -196,8 +182,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                             chatResponse.Usage.PromptTokens,
                             chatResponse.Usage.CompletionTokens,
                             chatResponse.Usage.TotalTokens,
-                            chatResponse.Usage.ExtraProperties?.ContainsKey("estimated_cost")
-                                == true
+                            chatResponse.Usage.ExtraProperties?.ContainsKey("estimated_cost") == true
                         );
                     }
                     else
@@ -283,11 +268,7 @@ public class OpenClient : BaseHttpService, IOpenClient
             _baseUrl
         );
 
-        var metrics = RequestMetrics.StartNew(
-            ProviderName,
-            chatCompletionRequest.Model,
-            "StreamingChatCompletion"
-        );
+        var metrics = RequestMetrics.StartNew(ProviderName, chatCompletionRequest.Model, "StreamingChatCompletion");
 
         chatCompletionRequest = chatCompletionRequest with { Stream = true };
 
@@ -320,19 +301,9 @@ public class OpenClient : BaseHttpService, IOpenClient
             var streamResponse = await ExecuteHttpWithRetryAsync(
                 async () =>
                 {
-                    var request = new HttpRequestMessage(
-                        HttpMethod.Post,
-                        $"{_baseUrl}/chat/completions"
-                    );
-                    var jsonContent = JsonSerializer.Serialize(
-                        chatCompletionRequest,
-                        S_jsonSerializerOptions
-                    );
-                    request.Content = new StringContent(
-                        jsonContent,
-                        Encoding.UTF8,
-                        "application/json"
-                    );
+                    var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/chat/completions");
+                    var jsonContent = JsonSerializer.Serialize(chatCompletionRequest, S_jsonSerializerOptions);
+                    request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
                     Logger.LogTrace(
                         "Sending streaming request - RequestId: {RequestId}, PayloadSize: {PayloadSize}",
@@ -406,9 +377,7 @@ public class OpenClient : BaseHttpService, IOpenClient
     {
         try
         {
-            await foreach (
-                var sseItem in SseParser.Create(stream).EnumerateAsync(cancellationToken)
-            )
+            await foreach (var sseItem in SseParser.Create(stream).EnumerateAsync(cancellationToken))
             {
                 // Skip "[DONE]" event which indicates the end of the stream
                 if (sseItem.Data == "[DONE]")
@@ -420,10 +389,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                 ChatCompletionResponse? res = null;
                 try
                 {
-                    res = JsonSerializer.Deserialize<ChatCompletionResponse>(
-                        sseItem.Data,
-                        S_jsonSerializerOptions
-                    );
+                    res = JsonSerializer.Deserialize<ChatCompletionResponse>(sseItem.Data, S_jsonSerializerOptions);
 
                     if (res == null)
                     {
@@ -449,9 +415,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                 }
                 catch (Exception ex)
                 {
-                    throw new Exception(
-                        $"Failed to deserialize SSE response: {ex.Message}, Data: {sseItem.Data}"
-                    );
+                    throw new Exception($"Failed to deserialize SSE response: {ex.Message}, Data: {sseItem.Data}");
                 }
 
                 if (res != null)
@@ -527,8 +491,7 @@ public class OpenClient : BaseHttpService, IOpenClient
 
                 // Check if reasoning is empty or null
                 var hasReasoning =
-                    !string.IsNullOrEmpty(delta.Reasoning)
-                    || !string.IsNullOrEmpty(delta.ReasoningContent);
+                    !string.IsNullOrEmpty(delta.Reasoning) || !string.IsNullOrEmpty(delta.ReasoningContent);
 
                 // Check if there are tool calls present
                 var hasToolCalls = delta.ToolCalls?.Count > 0;
@@ -546,9 +509,6 @@ public class OpenClient : BaseHttpService, IOpenClient
 
     private static bool IsNoneUsage(OpenAIProviderUsage? usage)
     {
-        return usage != null
-            && usage.PromptTokens == 0
-            && usage.CompletionTokens == 0
-            && usage.TotalTokens == 0;
+        return usage != null && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0;
     }
 }

@@ -50,13 +50,10 @@ public class ProviderAgentFactory : IProviderAgentFactory
         ILoggerFactory? loggerFactory = null
     )
     {
-        _serviceProvider =
-            serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+        _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _handlerBuilder = handlerBuilder ?? throw new ArgumentNullException(nameof(handlerBuilder));
         _loggerFactory = loggerFactory;
-        _logger =
-            loggerFactory?.CreateLogger<ProviderAgentFactory>()
-            ?? NullLogger<ProviderAgentFactory>.Instance;
+        _logger = loggerFactory?.CreateLogger<ProviderAgentFactory>() ?? NullLogger<ProviderAgentFactory>.Instance;
     }
 
     public IAgent CreateAgent(ProviderResolution resolution)
@@ -78,12 +75,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
         {
             "Anthropic" => CreateAnthropicAgent(resolution),
             "OpenAI" => CreateOpenAIAgent(resolution),
-            "Replicate" => throw new NotSupportedException(
-                "Replicate provider is not yet supported"
-            ),
-            _ => throw new NotSupportedException(
-                $"Provider compatibility type '{compatibilityType}' is not supported"
-            ),
+            "Replicate" => throw new NotSupportedException("Replicate provider is not yet supported"),
+            _ => throw new NotSupportedException($"Provider compatibility type '{compatibilityType}' is not supported"),
         };
     }
 
@@ -94,8 +87,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
         return agent is IStreamingAgent streamingAgent
             ? streamingAgent
             : throw new NotSupportedException(
-            $"Provider '{resolution.EffectiveProviderName}' does not support streaming agents"
-        );
+                $"Provider '{resolution.EffectiveProviderName}' does not support streaming agents"
+            );
     }
 
     public bool CanCreateAgent(string providerName)
@@ -105,8 +98,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
             return false;
         }
 
-        return ProviderCompatibility.ContainsKey(providerName)
-            && ProviderCompatibility[providerName] != "Replicate"; // Replicate not supported yet
+        return ProviderCompatibility.ContainsKey(providerName) && ProviderCompatibility[providerName] != "Replicate"; // Replicate not supported yet
     }
 
     public bool CanCreateStreamingAgent(string providerName)
@@ -117,9 +109,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     public IReadOnlyList<string> GetSupportedProviders()
     {
-        return ProviderCompatibility
-            .Keys.Where(provider => ProviderCompatibility[provider] != "Replicate")
-            .ToList();
+        return ProviderCompatibility.Keys.Where(provider => ProviderCompatibility[provider] != "Replicate").ToList();
     }
 
     public ProviderCapabilityInfo? GetProviderCapabilities(string providerName)
@@ -150,12 +140,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         }
 
         // Fall back to provider name mapping
-        if (
-            ProviderCompatibility.TryGetValue(
-                resolution.EffectiveProviderName,
-                out var compatibility
-            )
-        )
+        if (ProviderCompatibility.TryGetValue(resolution.EffectiveProviderName, out var compatibility))
         {
             _logger.LogDebug(
                 "Using mapped compatibility: Provider={Provider}, Compatibility={Compatibility}",
@@ -195,11 +180,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to create Anthropic agent for {Provider}",
-                resolution.EffectiveProviderName
-            );
+            _logger.LogError(ex, "Failed to create Anthropic agent for {Provider}", resolution.EffectiveProviderName);
             throw new InvalidOperationException(
                 $"Failed to create Anthropic agent for provider '{resolution.EffectiveProviderName}': {ex.Message}",
                 ex
@@ -229,13 +210,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
             // Automatically inject OpenRouter usage middleware if this is an OpenRouter provider
             // and the middleware is enabled (Requirement 12.1-12.2)
-            if (
-                string.Equals(
-                    resolution.EffectiveProviderName,
-                    "OpenRouter",
-                    StringComparison.OrdinalIgnoreCase
-                )
-            )
+            if (string.Equals(resolution.EffectiveProviderName, "OpenRouter", StringComparison.OrdinalIgnoreCase))
             {
                 agent = InjectOpenRouterUsageMiddlewareIfEnabled(agent);
             }
@@ -244,11 +219,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to create OpenAI agent for {Provider}",
-                resolution.EffectiveProviderName
-            );
+            _logger.LogError(ex, "Failed to create OpenAI agent for {Provider}", resolution.EffectiveProviderName);
             throw new InvalidOperationException(
                 $"Failed to create OpenAI agent for provider '{resolution.EffectiveProviderName}': {ex.Message}",
                 ex
@@ -258,9 +229,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     private IAnthropicClient CreateAnthropicClient(ProviderResolution resolution)
     {
-        var apiKey =
-            resolution.Connection.GetApiKey()
-            ?? throw new InvalidOperationException("API key not found.");
+        var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
         var providerCfg = new Http.ProviderConfig(
             apiKey,
             resolution.Connection.EndpointUrl,
@@ -278,14 +247,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     private IOpenClient CreateOpenAIClient(ProviderResolution resolution)
     {
-        var apiKey =
-            resolution.Connection.GetApiKey()
-            ?? throw new InvalidOperationException("API key not found.");
-        var providerCfg = new Http.ProviderConfig(
-            apiKey,
-            resolution.Connection.EndpointUrl,
-            Http.ProviderType.OpenAI
-        );
+        var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
+        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, Http.ProviderType.OpenAI);
         var httpClient = Http.HttpClientFactory.Create(
             providerCfg,
             _handlerBuilder,
@@ -305,9 +268,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
     {
         try
         {
-            _logger.LogDebug(
-                "Factory configuration interaction: Checking service provider for IConfiguration"
-            );
+            _logger.LogDebug("Factory configuration interaction: Checking service provider for IConfiguration");
 
             // Get configuration from DI
             var configuration = _serviceProvider.GetService<IConfiguration>();
@@ -319,14 +280,10 @@ public class ProviderAgentFactory : IProviderAgentFactory
                 return agent;
             }
 
-            _logger.LogDebug(
-                "Factory configuration interaction: IConfiguration found, checking middleware settings"
-            );
+            _logger.LogDebug("Factory configuration interaction: IConfiguration found, checking middleware settings");
 
             // Check if usage middleware is enabled
-            var enableUsageMiddleware = EnvironmentVariables.GetEnableUsageMiddleware(
-                configuration
-            );
+            var enableUsageMiddleware = EnvironmentVariables.GetEnableUsageMiddleware(configuration);
             if (!enableUsageMiddleware)
             {
                 _logger.LogDebug("OpenRouter usage middleware is disabled");
@@ -344,16 +301,12 @@ public class ProviderAgentFactory : IProviderAgentFactory
                 return agent;
             }
 
-            _logger.LogDebug(
-                "Factory configuration interaction: Retrieving middleware logger from service provider"
-            );
+            _logger.LogDebug("Factory configuration interaction: Retrieving middleware logger from service provider");
 
             // Create and inject the usage middleware
             var middlewareLogger =
                 _serviceProvider.GetService<ILogger<OpenRouterUsageMiddleware>>()
-                ?? throw new InvalidOperationException(
-                    "Logger<OpenRouterUsageMiddleware> not found in DI container"
-                );
+                ?? throw new InvalidOperationException("Logger<OpenRouterUsageMiddleware> not found in DI container");
 
             var usageMiddleware = new OpenRouterUsageMiddleware(
                 openRouterApiKey: openRouterApiKey,
@@ -365,16 +318,11 @@ public class ProviderAgentFactory : IProviderAgentFactory
             // Wrap the agent with middleware using the extension method
             return agent is IStreamingAgent streamingAgent
                 ? (IAgent)streamingAgent.WithMiddleware(usageMiddleware)
-                : throw new InvalidOperationException(
-                "OpenRouter usage middleware requires a streaming agent"
-            );
+                : throw new InvalidOperationException("OpenRouter usage middleware requires a streaming agent");
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to inject OpenRouter usage middleware. Continuing without middleware."
-            );
+            _logger.LogError(ex, "Failed to inject OpenRouter usage middleware. Continuing without middleware.");
             return agent;
         }
     }

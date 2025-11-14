@@ -36,12 +36,7 @@ public class LoggingSystemIntegrationTests
         };
 
         // Act & Assert - Should not throw with null logger
-        var middleware = new FunctionCallMiddleware(
-            functions,
-            functionMap,
-            "test-middleware",
-            null
-        );
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", null);
         Assert.NotNull(middleware);
         Assert.Equal("test-middleware", middleware.Name);
     }
@@ -87,12 +82,7 @@ public class LoggingSystemIntegrationTests
                 }
             );
 
-        var middleware = new FunctionCallMiddleware(
-            functions,
-            functionMap,
-            "test-middleware",
-            mockLogger.Object
-        );
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", mockLogger.Object);
 
         // Act
         await middleware.InvokeAsync(context, mockAgent.Object);
@@ -218,12 +208,7 @@ public class LoggingSystemIntegrationTests
                 }
             );
 
-        var middleware = new FunctionCallMiddleware(
-            functions,
-            functionMap,
-            "perf-test",
-            mockLogger.Object
-        );
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "perf-test", mockLogger.Object);
 
         // Act - Measure performance
         const int iterations = 100;
@@ -289,12 +274,7 @@ public class LoggingSystemIntegrationTests
         var messages = new List<IMessage> { toolCallMessage };
         var context = new MiddlewareContext(messages, null);
 
-        var middleware = new FunctionCallMiddleware(
-            functions,
-            functionMap,
-            "error-test-middleware",
-            mockLogger.Object
-        );
+        var middleware = new FunctionCallMiddleware(functions, functionMap, "error-test-middleware", mockLogger.Object);
 
         // Act
         await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
@@ -341,11 +321,7 @@ public class LoggingSystemIntegrationTests
             LogEventIds.MiddlewareProcessingFailed,
         };
 
-        var providerEvents = new[]
-        {
-            LogEventIds.ProviderResolved,
-            LogEventIds.ProviderResolutionFailed,
-        };
+        var providerEvents = new[] { LogEventIds.ProviderResolved, LogEventIds.ProviderResolutionFailed };
 
         // Verify agent events are in the 1000-1999 range
         foreach (var eventId in agentEvents)
@@ -410,8 +386,7 @@ public class LoggingSystemIntegrationTests
                     LogLevel.Information,
                     LogEventIds.AgentRequestInitiated,
                     It.Is<It.IsAnyType>(
-                        (v, t) =>
-                            v.ToString()!.Contains("test-123") && v.ToString()!.Contains("gpt-4")
+                        (v, t) => v.ToString()!.Contains("test-123") && v.ToString()!.Contains("gpt-4")
                     ),
                     It.IsAny<Exception>(),
                     It.IsAny<Func<It.IsAnyType, Exception?, string>>()

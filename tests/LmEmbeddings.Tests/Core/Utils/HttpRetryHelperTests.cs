@@ -50,11 +50,7 @@ public class HttpRetryHelperTests
         // Act & Assert
         if (shouldSucceed)
         {
-            var result = await HttpRetryHelper.ExecuteWithRetryAsync(
-                operation,
-                _logger,
-                maxRetries: 3
-            );
+            var result = await HttpRetryHelper.ExecuteWithRetryAsync(operation, _logger, maxRetries: 3);
             Assert.Equal(expectedResult, result);
             Debug.WriteLine($"✓ Operation succeeded after {attemptCount} attempts");
         }
@@ -77,9 +73,7 @@ public class HttpRetryHelperTests
     )
     {
         Debug.WriteLine($"Testing ExecuteHttpWithRetryAsync: {description}");
-        Debug.WriteLine(
-            $"Status codes: [{string.Join(", ", statusCodes)}], Expected to succeed: {shouldSucceed}"
-        );
+        Debug.WriteLine($"Status codes: [{string.Join(", ", statusCodes)}], Expected to succeed: {shouldSucceed}");
 
         // Arrange
         var attemptCount = 0;
@@ -122,12 +116,7 @@ public class HttpRetryHelperTests
         else
         {
             await Assert.ThrowsAsync<HttpRequestException>(() =>
-                HttpRetryHelper.ExecuteHttpWithRetryAsync(
-                    httpOperation,
-                    responseProcessor,
-                    _logger,
-                    maxRetries: 3
-                )
+                HttpRetryHelper.ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, _logger, maxRetries: 3)
             );
             Debug.WriteLine($"✓ HTTP operation failed as expected after {attemptCount} attempts");
         }
@@ -142,9 +131,7 @@ public class HttpRetryHelperTests
     )
     {
         Debug.WriteLine($"Testing IsRetryableStatusCode: {description}");
-        Debug.WriteLine(
-            $"Status code: {statusCode} ({(int)statusCode}), Expected retryable: {expectedResult}"
-        );
+        Debug.WriteLine($"Status code: {statusCode} ({(int)statusCode}), Expected retryable: {expectedResult}");
 
         // Act
         var result = HttpRetryHelper.IsRetryableStatusCode(statusCode);
@@ -175,9 +162,7 @@ public class HttpRetryHelperTests
 
         // Assert
         Assert.Equal(expectedResult, result);
-        Debug.WriteLine(
-            $"✓ Error message correctly identified as {(result ? "retryable" : "non-retryable")}"
-        );
+        Debug.WriteLine($"✓ Error message correctly identified as {(result ? "retryable" : "non-retryable")}");
     }
 
     [Fact]
@@ -207,9 +192,7 @@ public class HttpRetryHelperTests
         var httpOperation = new Func<Task<HttpResponseMessage>>(() =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK))
         );
-        var responseProcessor = new Func<HttpResponseMessage, Task<string>>(response =>
-            Task.FromResult("Success")
-        );
+        var responseProcessor = new Func<HttpResponseMessage, Task<string>>(response => Task.FromResult("Success"));
         var checkDisposed = new Func<bool>(() => true); // Always disposed
 
         // Act & Assert
@@ -271,9 +254,7 @@ public class HttpRetryHelperTests
 
         // Should try: initial attempt + maxRetries = 1 + 2 = 3 total attempts
         Assert.Equal(maxRetries + 1, attemptCount);
-        Debug.WriteLine(
-            $"✓ Operation attempted {attemptCount} times (initial + {maxRetries} retries)"
-        );
+        Debug.WriteLine($"✓ Operation attempted {attemptCount} times (initial + {maxRetries} retries)");
     }
 
     #region Test Data
@@ -299,12 +280,7 @@ public class HttpRetryHelperTests
             },
             new object[]
             {
-                new[]
-                {
-                    HttpStatusCode.BadGateway,
-                    HttpStatusCode.ServiceUnavailable,
-                    HttpStatusCode.OK,
-                },
+                new[] { HttpStatusCode.BadGateway, HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK },
                 true,
                 "Success after retrying multiple 5xx errors",
             },
@@ -338,88 +314,33 @@ public class HttpRetryHelperTests
         new List<object[]>
         {
             // Retryable 5xx errors
-            new object[]
-            {
-                HttpStatusCode.InternalServerError,
-                true,
-                "500 Internal Server Error should be retryable",
-            },
-            new object[]
-            {
-                HttpStatusCode.NotImplemented,
-                true,
-                "501 Not Implemented should be retryable",
-            },
+            new object[] { HttpStatusCode.InternalServerError, true, "500 Internal Server Error should be retryable" },
+            new object[] { HttpStatusCode.NotImplemented, true, "501 Not Implemented should be retryable" },
             new object[] { HttpStatusCode.BadGateway, true, "502 Bad Gateway should be retryable" },
-            new object[]
-            {
-                HttpStatusCode.ServiceUnavailable,
-                true,
-                "503 Service Unavailable should be retryable",
-            },
-            new object[]
-            {
-                HttpStatusCode.GatewayTimeout,
-                true,
-                "504 Gateway Timeout should be retryable",
-            },
+            new object[] { HttpStatusCode.ServiceUnavailable, true, "503 Service Unavailable should be retryable" },
+            new object[] { HttpStatusCode.GatewayTimeout, true, "504 Gateway Timeout should be retryable" },
             new object[] { (HttpStatusCode)599, true, "599 (custom 5xx) should be retryable" },
             // Non-retryable 4xx errors
-            new object[]
-            {
-                HttpStatusCode.BadRequest,
-                false,
-                "400 Bad Request should not be retryable",
-            },
-            new object[]
-            {
-                HttpStatusCode.Unauthorized,
-                false,
-                "401 Unauthorized should not be retryable",
-            },
-            new object[]
-            {
-                HttpStatusCode.Forbidden,
-                false,
-                "403 Forbidden should not be retryable",
-            },
-            new object[]
-            {
-                HttpStatusCode.NotFound,
-                false,
-                "404 Not Found should not be retryable",
-            },
+            new object[] { HttpStatusCode.BadRequest, false, "400 Bad Request should not be retryable" },
+            new object[] { HttpStatusCode.Unauthorized, false, "401 Unauthorized should not be retryable" },
+            new object[] { HttpStatusCode.Forbidden, false, "403 Forbidden should not be retryable" },
+            new object[] { HttpStatusCode.NotFound, false, "404 Not Found should not be retryable" },
             new object[] { HttpStatusCode.Conflict, false, "409 Conflict should not be retryable" },
             // Non-retryable 2xx/3xx
             new object[] { HttpStatusCode.OK, false, "200 OK should not be retryable" },
             new object[] { HttpStatusCode.Created, false, "201 Created should not be retryable" },
             new object[] { HttpStatusCode.Redirect, false, "302 Redirect should not be retryable" },
-            new object[]
-            {
-                HttpStatusCode.NotModified,
-                false,
-                "304 Not Modified should not be retryable",
-            },
+            new object[] { HttpStatusCode.NotModified, false, "304 Not Modified should not be retryable" },
         };
 
     public static IEnumerable<object[]> IsRetryableErrorTestCases =>
         new List<object[]>
         {
             // Retryable network/timeout errors
-            new object[]
-            {
-                "Connection timeout occurred",
-                true,
-                "Timeout errors should be retryable",
-            },
+            new object[] { "Connection timeout occurred", true, "Timeout errors should be retryable" },
             new object[] { "Network error detected", true, "Network errors should be retryable" },
             new object[] { "Request timeout", true, "Request timeout should be retryable" },
-            new object[]
-            {
-                "Network connection failed",
-                true,
-                "Network connection failures should be retryable",
-            },
+            new object[] { "Network connection failed", true, "Network connection failures should be retryable" },
             // Retryable 5xx status code errors
             new object[]
             {
@@ -445,19 +366,9 @@ public class HttpRetryHelperTests
                 true,
                 "504 errors should be retryable",
             },
-            new object[]
-            {
-                "Internal Server Error occurred",
-                true,
-                "Internal Server Error text should be retryable",
-            },
+            new object[] { "Internal Server Error occurred", true, "Internal Server Error text should be retryable" },
             new object[] { "Bad Gateway detected", true, "Bad Gateway text should be retryable" },
-            new object[]
-            {
-                "Service Unavailable",
-                true,
-                "Service Unavailable text should be retryable",
-            },
+            new object[] { "Service Unavailable", true, "Service Unavailable text should be retryable" },
             new object[] { "Gateway Timeout", true, "Gateway Timeout text should be retryable" },
             // Non-retryable 4xx errors
             new object[]
@@ -479,18 +390,8 @@ public class HttpRetryHelperTests
                 "404 errors should not be retryable",
             },
             // Non-retryable generic errors
-            new object[]
-            {
-                "Invalid request format",
-                false,
-                "Generic errors should not be retryable",
-            },
-            new object[]
-            {
-                "Authentication failed",
-                false,
-                "Authentication errors should not be retryable",
-            },
+            new object[] { "Invalid request format", false, "Generic errors should not be retryable" },
+            new object[] { "Authentication failed", false, "Authentication errors should not be retryable" },
             new object[] { "Resource not found", false, "Resource errors should not be retryable" },
         };
 

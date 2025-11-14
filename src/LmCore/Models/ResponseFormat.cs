@@ -166,48 +166,31 @@ public sealed record JsonSchemaObject
     /// <summary>
     /// Creates a builder for constructing a JSON Schema object more fluently
     /// </summary>
-    public static JsonSchemaObjectBuilder Create(string type = "object") =>
-        new JsonSchemaObjectBuilder(type);
+    public static JsonSchemaObjectBuilder Create(string type = "object") => new JsonSchemaObjectBuilder(type);
 
     /// <summary>
     /// Creates a new string schema with the given description
     /// </summary>
     public static JsonSchemaObject String(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("string"),
-            Description = description,
-        };
+        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string"), Description = description };
 
     /// <summary>
     /// Creates a new number schema with the given description
     /// </summary>
     public static JsonSchemaObject Number(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("number"),
-            Description = description,
-        };
+        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number"), Description = description };
 
     /// <summary>
     /// Creates a new integer schema with the given description
     /// </summary>
     public static JsonSchemaObject Integer(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("integer"),
-            Description = description,
-        };
+        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("integer"), Description = description };
 
     /// <summary>
     /// Creates a new boolean schema with the given description
     /// </summary>
     public static JsonSchemaObject Boolean(string? description = null) =>
-        new JsonSchemaObject
-        {
-            Type = JsonSchemaTypeHelper.ToType("boolean"),
-            Description = description,
-        };
+        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("boolean"), Description = description };
 
     /// <summary>
     /// Creates a JSON Schema object for an array type
@@ -231,10 +214,7 @@ public sealed record JsonSchemaObject
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
     /// <returns>A schema object of type array with string items</returns>
-    public static JsonSchemaObject StringArray(
-        string? description = null,
-        string? itemDescription = null
-    )
+    public static JsonSchemaObject StringArray(string? description = null, string? itemDescription = null)
     {
         var items = new JsonSchemaObject
         {
@@ -251,10 +231,7 @@ public sealed record JsonSchemaObject
     /// <param name="description">Optional description of the array</param>
     /// <param name="itemDescription">Optional description of the array items</param>
     /// <returns>A schema object of type array with number items</returns>
-    public static JsonSchemaObject NumberArray(
-        string? description = null,
-        string? itemDescription = null
-    )
+    public static JsonSchemaObject NumberArray(string? description = null, string? itemDescription = null)
     {
         var items = new JsonSchemaObject { Type = "number", Description = itemDescription };
 
@@ -307,11 +284,7 @@ public class JsonSchemaObjectBuilder
     /// <summary>
     /// Adds a property to the schema
     /// </summary>
-    public JsonSchemaObjectBuilder WithProperty(
-        string name,
-        JsonSchemaObject property,
-        bool required = false
-    )
+    public JsonSchemaObjectBuilder WithProperty(string name, JsonSchemaObject property, bool required = false)
     {
         _properties.Add(name, property);
         if (required)
@@ -374,17 +347,14 @@ public static class JsonSchemaTypeHelper
 
     public static bool Contains(this Union<string, IReadOnlyList<string>> type, string value)
     {
-        return type.Is<string>()
-            ? type.Get<string>() == value
-            : type.Get<IReadOnlyList<string>>().Contains(value);
+        return type.Is<string>() ? type.Get<string>() == value : type.Get<IReadOnlyList<string>>().Contains(value);
     }
 
     public static string GetTypeString(this Union<string, IReadOnlyList<string>> type)
     {
         return type.Is<string>()
             ? type.Get<string>()
-            : type.Get<IReadOnlyList<string>>().Where(x => x != "null").FirstOrDefault()
-            ?? "object";
+            : type.Get<IReadOnlyList<string>>().Where(x => x != "null").FirstOrDefault() ?? "object";
     }
 
     public static Union<string, IReadOnlyList<string>> ToType(string typeString)

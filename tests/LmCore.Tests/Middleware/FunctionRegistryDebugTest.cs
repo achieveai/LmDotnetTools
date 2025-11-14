@@ -9,6 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 public class FunctionRegistryDebugTest
 {
     private readonly ITestOutputHelper _output;
+    private static readonly string[] functionNames = new[] { "func1" };
 
     public FunctionRegistryDebugTest(ITestOutputHelper output)
     {
@@ -20,7 +21,7 @@ public class FunctionRegistryDebugTest
     {
         // Arrange
         var registry = new FunctionRegistry();
-        var provider = FunctionRegistryTests.CreateTestProvider("test", new[] { "func1" });
+        var provider = FunctionRegistryTests.CreateTestProvider("test", functionNames);
         var explicitContract = FunctionRegistryTests.CreateTestContract("func1");
         var explicitHandler = FunctionRegistryTests.CreateTestHandler("explicit-result");
 

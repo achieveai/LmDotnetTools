@@ -38,11 +38,7 @@ public class RequestCaptureTests
                     {
                         name = "get_weather",
                         description = "Get current weather",
-                        parameters = new
-                        {
-                            type = "object",
-                            properties = new { location = new { type = "string" } },
-                        },
+                        parameters = new { type = "object", properties = new { location = new { type = "string" } } },
                     },
                 },
             },
@@ -52,10 +48,7 @@ public class RequestCaptureTests
         var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
 
         // Act - Make HTTP request to trigger capture
-        var response = await httpClient.PostAsync(
-            "https://api.openai.com/v1/chat/completions",
-            content
-        );
+        var response = await httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
 
         // Assert - Test that GetRequestAs<ChatCompletionRequest>() works
         Assert.Equal(1, requestCapture.RequestCount);
@@ -117,11 +110,7 @@ public class RequestCaptureTests
                         properties = new
                         {
                             location = new { type = "string", description = "City name" },
-                            units = new
-                            {
-                                type = "string",
-                                @enum = new string[] { "celsius", "fahrenheit" },
-                            },
+                            units = new { type = "string", @enum = new string[] { "celsius", "fahrenheit" } },
                         },
                         required = new string[] { "location" },
                     },
@@ -133,10 +122,7 @@ public class RequestCaptureTests
                     input_schema = new
                     {
                         type = "object",
-                        properties = new
-                        {
-                            code = new { type = "string", description = "Python code to execute" },
-                        },
+                        properties = new { code = new { type = "string", description = "Python code to execute" } },
                         required = new string[] { "code" },
                     },
                 },
@@ -206,11 +192,7 @@ public class RequestCaptureTests
                     input_schema = new
                     {
                         type = "object",
-                        properties = new
-                        {
-                            a = new { type = "number" },
-                            b = new { type = "number" },
-                        },
+                        properties = new { a = new { type = "number" }, b = new { type = "number" } },
                     },
                 },
             },

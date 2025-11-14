@@ -12,10 +12,7 @@ public static class MockToolCallHelperExamples
     /// <summary>
     /// Example showing how to create mock tool calls with all tools
     /// </summary>
-    public static (
-        IEnumerable<FunctionContract>,
-        IDictionary<string, Func<string, Task<string>>>
-    ) CreateAllMockTools()
+    public static (IEnumerable<FunctionContract>, IDictionary<string, Func<string, Task<string>>>) CreateAllMockTools()
     {
         var callbackOverrides = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -84,18 +81,13 @@ public static class MockToolCallHelperExamples
 
                 if (b == 0)
                 {
-                    return Task.FromResult(
-                        JsonSerializer.Serialize(new { error = "Cannot divide by zero" })
-                    );
+                    return Task.FromResult(JsonSerializer.Serialize(new { error = "Cannot divide by zero" }));
                 }
 
                 return Task.FromResult((a / b).ToString());
             },
         };
 
-        return MockToolCallHelper.CreateMockToolCalls(
-            new[] { typeof(MockCalculatorTool) },
-            callbackOverrides
-        );
+        return MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockCalculatorTool) }, callbackOverrides);
     }
 }

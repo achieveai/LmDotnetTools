@@ -27,10 +27,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         // Basic checks
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new SchemaValidationResult(
-                false,
-                new List<string> { "Input json is null or empty" }
-            );
+            return new SchemaValidationResult(false, new List<string> { "Input json is null or empty" });
         }
 
         if (schema is null)
@@ -59,44 +56,31 @@ public class JsonSchemaValidator : IJsonSchemaValidator
                     JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)
                 ),
                 FunctionContract funcContract => JsonSchemaValidator.BuildSchemaFromFunctionContract(funcContract),
-                _ => throw new InvalidOperationException(
-                    $"Unsupported schema type: {schema.GetType().Name}"
-                ),
+                _ => throw new InvalidOperationException($"Unsupported schema type: {schema.GetType().Name}"),
             };
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(
-                false,
-                new List<string> { $"Failed to parse schema: {ex.Message}" }
-            );
+            return new SchemaValidationResult(false, new List<string> { $"Failed to parse schema: {ex.Message}" });
         }
 
         Console.WriteLine($"[DEBUG] Validating JSON: {json}");
 
         try
         {
-            var evaluationOptions = new EvaluationOptions
-            {
-                OutputFormat = OutputFormat.Hierarchical,
-            };
+            var evaluationOptions = new EvaluationOptions { OutputFormat = OutputFormat.Hierarchical };
 
             var result = jsonSchema.Evaluate(dataNode, evaluationOptions);
             var isValid = result.IsValid;
             var errors = ExtractValidationErrors(result);
 
-            Console.WriteLine(
-                $"[DEBUG] Validation result: IsValid={isValid}, HasErrors={errors.Count > 0}"
-            );
+            Console.WriteLine($"[DEBUG] Validation result: IsValid={isValid}, HasErrors={errors.Count > 0}");
 
             return new SchemaValidationResult(isValid, errors);
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(
-                false,
-                new List<string> { $"Validation error: {ex.Message}" }
-            );
+            return new SchemaValidationResult(false, new List<string> { $"Validation error: {ex.Message}" });
         }
     }
 
@@ -112,10 +96,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
             foreach (var param in contract.Parameters)
             {
                 // Create a simple schema node with just the type
-                var paramSchemaNode = JsonSerializer.SerializeToNode(
-                    param.ParameterType,
-                    SchemaSerializationOptions
-                );
+                var paramSchemaNode = JsonSerializer.SerializeToNode(param.ParameterType, SchemaSerializationOptions);
                 properties[param.Name] = paramSchemaNode;
 
                 if (param.IsRequired)

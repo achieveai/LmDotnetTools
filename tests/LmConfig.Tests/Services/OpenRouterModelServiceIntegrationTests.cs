@@ -96,10 +96,10 @@ public class OpenRouterModelServiceIntegrationTests
         Assert.NotNull(result);
         Assert.Single(result);
 
-        var model = result.First();
+        var model = result[0];
         // Should only have the enabled provider, not the disabled one
         Assert.Single(model.Providers);
-        Assert.Equal("EnabledProvider", model.Providers.First().Name);
+        Assert.Equal("EnabledProvider", model.Providers[0].Name);
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public class OpenRouterModelServiceIntegrationTests
         Assert.NotNull(result);
         Assert.Single(result);
 
-        var model = result.First();
+        var model = result[0];
         Assert.Equal(2, model.Providers.Count);
 
         var freeProvider = model.Providers.FirstOrDefault(p => p.Tags?.Contains("free") == true);
@@ -141,7 +141,7 @@ public class OpenRouterModelServiceIntegrationTests
         Assert.True(paidProvider.Pricing.CompletionPerMillion > 0);
     }
 
-    private OpenRouterCache CreateComplexOpenRouterCache()
+    private static OpenRouterCache CreateComplexOpenRouterCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -247,7 +247,7 @@ public class OpenRouterModelServiceIntegrationTests
         };
     }
 
-    private OpenRouterCache CreateCacheWithDisabledProviders()
+    private static OpenRouterCache CreateCacheWithDisabledProviders()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -324,7 +324,7 @@ public class OpenRouterModelServiceIntegrationTests
         };
     }
 
-    private OpenRouterCache CreateCacheWithPricingVariations()
+    private static OpenRouterCache CreateCacheWithPricingVariations()
     {
         var modelsData = JsonNode.Parse(
             """

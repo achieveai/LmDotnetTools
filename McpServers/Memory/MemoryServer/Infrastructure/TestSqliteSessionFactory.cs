@@ -27,18 +27,13 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
     {
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _logger = _loggerFactory.CreateLogger<TestSqliteSessionFactory>();
-        _testDirectory = Path.Combine(
-            Path.GetTempPath(),
-            "MemoryServerTests",
-            Guid.NewGuid().ToString("N")[..8]
-        );
+        _testDirectory = Path.Combine(Path.GetTempPath(), "MemoryServerTests", Guid.NewGuid().ToString("N")[..8]);
         _activeSessions = new ConcurrentDictionary<string, DateTime>();
 
         // Create a single shared database file for this test factory instance
         var factoryId = Guid.NewGuid().ToString("N")[..8];
         _sharedDatabasePath = Path.Combine(_testDirectory, $"test_memory_shared_{factoryId}.db");
-        _sharedConnectionString =
-            $"Data Source={_sharedDatabasePath};Mode=ReadWriteCreate;Cache=Shared;";
+        _sharedConnectionString = $"Data Source={_sharedDatabasePath};Mode=ReadWriteCreate;Cache=Shared;";
 
         // Ensure test directory exists
         Directory.CreateDirectory(_testDirectory);
@@ -49,9 +44,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         );
     }
 
-    public async Task<ISqliteSession> CreateSessionAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<ISqliteSession> CreateSessionAsync(CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -101,11 +94,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 _failedSessionCreations++;
             }
 
-            _logger.LogError(
-                ex,
-                "Failed to create test session after {ElapsedMs}ms",
-                stopwatch.ElapsedMilliseconds
-            );
+            _logger.LogError(ex, "Failed to create test session after {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
             throw;
         }
     }
@@ -116,10 +105,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
     )
     {
         if (string.IsNullOrEmpty(connectionString))
-            throw new ArgumentException(
-                "Connection string cannot be null or empty",
-                nameof(connectionString)
-            );
+            throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
 
         var stopwatch = Stopwatch.StartNew();
 
@@ -179,9 +165,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         return Task.CompletedTask;
     }
 
-    public Task<SessionPerformanceMetrics> GetMetricsAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<SessionPerformanceMetrics> GetMetricsAsync(CancellationToken cancellationToken = default)
     {
         lock (_metricsLock)
         {
@@ -241,11 +225,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
                 }
             }
 
-            _logger.LogDebug(
-                "Test session {SessionId} disposed after {LifetimeMs}ms",
-                sessionId,
-                lifetime
-            );
+            _logger.LogDebug("Test session {SessionId} disposed after {LifetimeMs}ms", sessionId, lifetime);
         }
     }
 
@@ -265,11 +245,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to clean up test directory: {TestDirectory}",
-                _testDirectory
-            );
+            _logger.LogWarning(ex, "Failed to clean up test directory: {TestDirectory}", _testDirectory);
         }
     }
 
@@ -306,14 +282,9 @@ public class TestSqliteSession : ISqliteSession
     public string SessionId { get; }
     public bool IsDisposed => _disposed;
 
-    public TestSqliteSession(
-        string connectionString,
-        string databasePath,
-        ILogger<TestSqliteSession> logger
-    )
+    public TestSqliteSession(string connectionString, string databasePath, ILogger<TestSqliteSession> logger)
     {
-        _connectionString =
-            connectionString ?? throw new ArgumentNullException(nameof(connectionString));
+        _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _databasePath = databasePath ?? throw new ArgumentNullException(nameof(databasePath));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -348,8 +319,7 @@ public class TestSqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        if (operation == null)
-            throw new ArgumentNullException(nameof(operation));
+        ArgumentNullException.ThrowIfNull(operation);
 
         await EnsureConnectionAsync(cancellationToken);
 
@@ -391,8 +361,7 @@ public class TestSqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        if (operation == null)
-            throw new ArgumentNullException(nameof(operation));
+        ArgumentNullException.ThrowIfNull(operation);
 
         await EnsureConnectionAsync(cancellationToken);
 
@@ -508,10 +477,7 @@ public class TestSqliteSession : ISqliteSession
                     using var cmd = _connection.CreateCommand();
                     cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
                     await cmd.ExecuteNonQueryAsync();
-                    _logger.LogDebug(
-                        "WAL checkpoint completed for test session {SessionId}",
-                        SessionId
-                    );
+                    _logger.LogDebug("WAL checkpoint completed for test session {SessionId}", SessionId);
                 }
                 catch (Exception ex)
                 {
@@ -550,10 +516,7 @@ public class TestSqliteSession : ISqliteSession
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         if (_disposed)
-            throw new ObjectDisposedException(
-                nameof(TestSqliteSession),
-                $"Test session {SessionId} is disposed"
-            );
+            throw new ObjectDisposedException(nameof(TestSqliteSession), $"Test session {SessionId} is disposed");
 
         if (_connection == null)
         {
@@ -582,10 +545,7 @@ public class TestSqliteSession : ISqliteSession
         }
     }
 
-    private async Task ConfigureTestConnectionAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
+    private async Task ConfigureTestConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         // Configure SQLite pragmas for testing (optimized for speed and isolation)
         var pragmas = new[]
@@ -616,10 +576,7 @@ public class TestSqliteSession : ISqliteSession
             }
         }
 
-        _logger.LogDebug(
-            "Test connection configured with pragmas for session {SessionId}",
-            SessionId
-        );
+        _logger.LogDebug("Test connection configured with pragmas for session {SessionId}", SessionId);
     }
 
     private async Task CleanupDatabaseFilesAsync()
@@ -653,18 +610,11 @@ public class TestSqliteSession : ISqliteSession
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to clean up test database files for session {SessionId}",
-                SessionId
-            );
+            _logger.LogWarning(ex, "Failed to clean up test database files for session {SessionId}", SessionId);
         }
     }
 
-    private async Task ExecuteSchemaScriptsAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
+    private async Task ExecuteSchemaScriptsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         // Use the same schema scripts as production but optimized for testing
         var schemaScripts = GetTestSchemaScripts();
@@ -676,10 +626,7 @@ public class TestSqliteSession : ISqliteSession
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        _logger.LogDebug(
-            "Test schema scripts executed successfully for session {SessionId}",
-            SessionId
-        );
+        _logger.LogDebug("Test schema scripts executed successfully for session {SessionId}", SessionId);
     }
 
     private static string[] GetTestSchemaScripts()
@@ -844,19 +791,16 @@ internal class TrackedTestSqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
-    public Task ExecuteAsync(
-        Func<SqliteConnection, Task> operation,
-        CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
+    public Task ExecuteAsync(Func<SqliteConnection, Task> operation, CancellationToken cancellationToken = default) =>
+        _innerSession.ExecuteAsync(operation, cancellationToken);
 
     public Task ExecuteInTransactionAsync(
         Func<SqliteConnection, SqliteTransaction, Task> operation,
         CancellationToken cancellationToken = default
     ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
 
-    public Task<SessionHealthStatus> GetHealthAsync(
-        CancellationToken cancellationToken = default
-    ) => _innerSession.GetHealthAsync(cancellationToken);
+    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default) =>
+        _innerSession.GetHealthAsync(cancellationToken);
 
     public async ValueTask DisposeAsync()
     {

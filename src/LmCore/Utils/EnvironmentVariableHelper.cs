@@ -12,11 +12,7 @@ public static class EnvironmentVariableHelper
     /// <param name="fallbackKeys">Fallback environment variable names</param>
     /// <param name="defaultValue">Default value if no keys found</param>
     /// <returns>API key value</returns>
-    public static string GetApiKeyFromEnv(
-        string primaryKey,
-        string[]? fallbackKeys = null,
-        string defaultValue = ""
-    )
+    public static string GetApiKeyFromEnv(string primaryKey, string[]? fallbackKeys = null, string defaultValue = "")
     {
         var apiKey = Environment.GetEnvironmentVariable(primaryKey);
         if (!string.IsNullOrEmpty(apiKey))

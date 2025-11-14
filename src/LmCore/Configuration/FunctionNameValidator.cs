@@ -57,12 +57,11 @@ public static partial class FunctionNameValidator
     /// <returns>A descriptive error message</returns>
     public static string GetFunctionNameValidationError(string? functionName)
     {
-        return string.IsNullOrWhiteSpace(functionName)
-            ? "Function name cannot be null or empty."
+        return string.IsNullOrWhiteSpace(functionName) ? "Function name cannot be null or empty."
             : functionName.Length > MaxFunctionNameLength
-            ? $"Function name '{functionName}' exceeds maximum length of {MaxFunctionNameLength} characters."
+                ? $"Function name '{functionName}' exceeds maximum length of {MaxFunctionNameLength} characters."
             : $"Function name '{functionName}' contains invalid characters. "
-            + "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
+                + "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
     }
 
     /// <summary>
@@ -72,13 +71,12 @@ public static partial class FunctionNameValidator
     /// <returns>A descriptive error message</returns>
     public static string GetPrefixValidationError(string? prefix)
     {
-        return string.IsNullOrWhiteSpace(prefix)
-            ? "Prefix cannot be null or empty."
+        return string.IsNullOrWhiteSpace(prefix) ? "Prefix cannot be null or empty."
             : prefix.Length > MaxPrefixLength
-            ? $"Prefix '{prefix}' exceeds recommended maximum length of {MaxPrefixLength} characters. "
-                + $"This may not leave enough room for function names (total limit is {MaxFunctionNameLength} characters)."
+                ? $"Prefix '{prefix}' exceeds recommended maximum length of {MaxPrefixLength} characters. "
+                    + $"This may not leave enough room for function names (total limit is {MaxFunctionNameLength} characters)."
             : $"Prefix '{prefix}' contains invalid characters. "
-            + "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
+                + "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed.";
     }
 
     /// <summary>
@@ -88,11 +86,7 @@ public static partial class FunctionNameValidator
     /// <param name="functionName">The function name part</param>
     /// <param name="separator">The separator between prefix and name (default is "__")</param>
     /// <returns>True if the complete name is valid, false otherwise</returns>
-    public static bool IsValidPrefixedFunctionName(
-        string prefix,
-        string functionName,
-        string separator = "__"
-    )
+    public static bool IsValidPrefixedFunctionName(string prefix, string functionName, string separator = "__")
     {
         var completeName = $"{prefix}{separator}{functionName}";
         return IsValidFunctionName(completeName);

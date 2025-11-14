@@ -89,16 +89,10 @@ public class LlmProviderIntegrationTests : IDisposable
             )
             .ReturnsAsync(providerResolution);
 
-        _mockAgentFactory
-            .Setup(x => x.CreateAgent(It.IsAny<ProviderResolution>()))
-            .Returns(_mockAgent.Object);
+        _mockAgentFactory.Setup(x => x.CreateAgent(It.IsAny<ProviderResolution>())).Returns(_mockAgent.Object);
 
         // Mock successful LLM response
-        var testResponse = new TextMessage
-        {
-            Text = "{\"test\": \"response\"}",
-            Role = Role.Assistant,
-        };
+        var testResponse = new TextMessage { Text = "{\"test\": \"response\"}", Role = Role.Assistant };
 
         _mockAgent
             .Setup(x =>
@@ -122,11 +116,7 @@ public class LlmProviderIntegrationTests : IDisposable
 
         _mockPromptManager
             .Setup(x =>
-                x.GetPromptAsync(
-                    It.IsAny<SegmentationStrategy>(),
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()
-                )
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(testPrompt);
 
@@ -207,12 +197,7 @@ public class LlmProviderIntegrationTests : IDisposable
 
         // Verify that the model resolver was called
         _mockModelResolver.Verify(
-            x =>
-                x.ResolveProviderAsync(
-                    "gpt-4",
-                    It.IsAny<ProviderSelectionCriteria>(),
-                    It.IsAny<CancellationToken>()
-                ),
+            x => x.ResolveProviderAsync("gpt-4", It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()),
             Times.Once
         );
 
@@ -223,9 +208,7 @@ public class LlmProviderIntegrationTests : IDisposable
         _mockAgent.Verify(
             x =>
                 x.GenerateReplyAsync(
-                    It.Is<IReadOnlyList<IMessage>>(messages =>
-                        messages.Count == 1 && messages[0].Role == Role.User
-                    ),
+                    It.Is<IReadOnlyList<IMessage>>(messages => messages.Count == 1 && messages[0].Role == Role.User),
                     It.IsAny<GenerateReplyOptions>(),
                     It.IsAny<CancellationToken>()
                 ),
@@ -239,10 +222,7 @@ public class LlmProviderIntegrationTests : IDisposable
         // Arrange
         var configuration = new LlmProviderConfiguration
         {
-            ModelPreferences = new Dictionary<string, string>
-            {
-                ["strategy_analysis"] = "invalid-model",
-            },
+            ModelPreferences = new Dictionary<string, string> { ["strategy_analysis"] = "invalid-model" },
             MaxRetries = 3,
             TimeoutSeconds = 30,
         };
@@ -354,10 +334,7 @@ public class LlmProviderIntegrationTests : IDisposable
         );
 
         // Act
-        var result = await service.AnalyzeOptimalStrategyAsync(
-            "Test document content",
-            DocumentType.ResearchPaper
-        );
+        var result = await service.AnalyzeOptimalStrategyAsync("Test document content", DocumentType.ResearchPaper);
 
         // Assert
         result.Should().NotBeNull();
@@ -438,10 +415,7 @@ public class LlmProviderIntegrationTests : IDisposable
         );
 
         // Act
-        var result = await service.AnalyzeOptimalStrategyAsync(
-            "Test document content",
-            DocumentType.Technical
-        );
+        var result = await service.AnalyzeOptimalStrategyAsync("Test document content", DocumentType.Technical);
 
         // Assert
         result.Should().NotBeNull();
@@ -503,10 +477,7 @@ public class LlmProviderIntegrationTests : IDisposable
         );
 
         // Act
-        var result = await service.AnalyzeOptimalStrategyAsync(
-            "Test document content",
-            DocumentType.Email
-        );
+        var result = await service.AnalyzeOptimalStrategyAsync("Test document content", DocumentType.Email);
 
         // Assert
         result.Should().NotBeNull();
@@ -556,10 +527,7 @@ public class LlmProviderIntegrationTests : IDisposable
         );
 
         // Act
-        var result = await service.AnalyzeOptimalStrategyAsync(
-            "Test document content",
-            documentType
-        );
+        var result = await service.AnalyzeOptimalStrategyAsync("Test document content", documentType);
 
         // Assert
         result.Should().NotBeNull();

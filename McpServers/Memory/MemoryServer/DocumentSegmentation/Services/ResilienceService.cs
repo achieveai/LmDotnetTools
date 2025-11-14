@@ -103,8 +103,7 @@ public class ResilienceService : IResilienceService
     {
         _circuitBreaker = circuitBreaker ?? throw new ArgumentNullException(nameof(circuitBreaker));
         _retryPolicy = retryPolicy ?? throw new ArgumentNullException(nameof(retryPolicy));
-        _degradationConfig =
-            degradationConfig ?? throw new ArgumentNullException(nameof(degradationConfig));
+        _degradationConfig = degradationConfig ?? throw new ArgumentNullException(nameof(degradationConfig));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -133,12 +132,7 @@ public class ResilienceService : IResilienceService
         try
         {
             // First, try the main operation with circuit breaker and retry protection
-            var result = await ExecuteMainOperationAsync(
-                operation,
-                operationName,
-                correlationId,
-                cancellationToken
-            );
+            var result = await ExecuteMainOperationAsync(operation, operationName, correlationId, cancellationToken);
 
             var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
             RecordOperationMetrics(responseTimeMs, success: true, usedFallback: false);
@@ -195,9 +189,7 @@ public class ResilienceService : IResilienceService
             }
 
             // Execute fallback immediately when circuit is open
-            using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(
-                CancellationToken.None
-            );
+            using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
             fallbackCts.CancelAfter(_degradationConfig.FallbackTimeoutMs);
 
             try
@@ -228,8 +220,7 @@ public class ResilienceService : IResilienceService
                     CorrelationId = correlationId,
                 };
             }
-            catch (OperationCanceledException cancelEx)
-                when (cancelEx.CancellationToken == fallbackCts.Token)
+            catch (OperationCanceledException cancelEx) when (cancelEx.CancellationToken == fallbackCts.Token)
             {
                 // Fallback timed out
                 _logger.LogError(
@@ -283,8 +274,7 @@ public class ResilienceService : IResilienceService
                 };
             }
         }
-        catch (TaskCanceledException ex)
-            when (ex.Message.Contains("timeout") || ex.Message.Contains("Network timeout"))
+        catch (TaskCanceledException ex) when (ex.Message.Contains("timeout") || ex.Message.Contains("Network timeout"))
         {
             // Log the timeout warning first
             _logger.LogWarning(
@@ -306,8 +296,7 @@ public class ResilienceService : IResilienceService
                     DegradedMode = false,
                     QualityScore = 0.0,
                     StrategyUsed = "Failed",
-                    DegradationReason =
-                        $"Operation failed: {ex.Message}. No fallback operation available.",
+                    DegradationReason = $"Operation failed: {ex.Message}. No fallback operation available.",
                     ProcessingTimeMs = responseTimeMs,
                     Success = false,
                     ErrorMessage = $"Operation failed: {ex.Message}",
@@ -317,9 +306,7 @@ public class ResilienceService : IResilienceService
 
             // Try fallback for timeout - use same logic as regular exceptions
             // Ensure fallback completes within time limit (AC-4.1: 5 seconds)
-            using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(
-                CancellationToken.None
-            );
+            using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
             fallbackCts.CancelAfter(_degradationConfig.FallbackTimeoutMs);
 
             try
@@ -350,8 +337,7 @@ public class ResilienceService : IResilienceService
                     CorrelationId = correlationId,
                 };
             }
-            catch (OperationCanceledException cancelEx)
-                when (cancelEx.CancellationToken == fallbackCts.Token)
+            catch (OperationCanceledException cancelEx) when (cancelEx.CancellationToken == fallbackCts.Token)
             {
                 // Fallback timed out
                 _logger.LogError(
@@ -440,18 +426,13 @@ public class ResilienceService : IResilienceService
             if (fallbackOperation != null)
             {
                 // Ensure fallback completes within time limit (AC-4.1: 5 seconds)
-                using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken
-                );
+                using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 fallbackCts.CancelAfter(_degradationConfig.FallbackTimeoutMs);
 
                 try
                 {
-                    var fallbackResult = await fallbackOperation
-                        .Invoke()
-                        .WaitAsync(fallbackCts.Token);
-                    degradationReason =
-                        $"LLM operation failed: {ex.Message}. Fallback to rule-based segmentation.";
+                    var fallbackResult = await fallbackOperation.Invoke().WaitAsync(fallbackCts.Token);
+                    degradationReason = $"LLM operation failed: {ex.Message}. Fallback to rule-based segmentation.";
 
                     var responseTimeMs = stopwatch.Elapsed.TotalMilliseconds;
 
@@ -479,8 +460,7 @@ public class ResilienceService : IResilienceService
                         CorrelationId = correlationId,
                     };
                 }
-                catch (OperationCanceledException cancelEx)
-                    when (cancelEx.CancellationToken == fallbackCts.Token)
+                catch (OperationCanceledException cancelEx) when (cancelEx.CancellationToken == fallbackCts.Token)
                 {
                     // Fallback timed out - return failure result
                     _logger.LogError(
@@ -600,9 +580,7 @@ public class ResilienceService : IResilienceService
     {
         lock (_metricsLock)
         {
-            var recentOps = _recentOperations
-                .Where(op => op.Timestamp > DateTime.UtcNow.AddMinutes(-5))
-                .ToList();
+            var recentOps = _recentOperations.Where(op => op.Timestamp > DateTime.UtcNow.AddMinutes(-5)).ToList();
             var totalOps = recentOps.Count;
 
             if (totalOps == 0)
@@ -672,10 +650,7 @@ public class ResilienceService : IResilienceService
 
             if (usedFallback)
             {
-                _currentMetrics = _currentMetrics with
-                {
-                    FallbackUsageCount = _currentMetrics.FallbackUsageCount + 1,
-                };
+                _currentMetrics = _currentMetrics with { FallbackUsageCount = _currentMetrics.FallbackUsageCount + 1 };
             }
         }
     }
@@ -694,14 +669,13 @@ public class ResilienceService : IResilienceService
         }
     }
 
-    private string ClassifyErrorType(Exception exception)
+    private static string ClassifyErrorType(Exception exception)
     {
         return exception switch
         {
             HttpRequestException httpEx when httpEx.Message.Contains("timeout") => "timeout",
             HttpRequestException httpEx when httpEx.Message.Contains("429") => "rate_limit",
-            HttpRequestException httpEx when httpEx.Message.Contains("503") =>
-                "service_unavailable",
+            HttpRequestException httpEx when httpEx.Message.Contains("503") => "service_unavailable",
             HttpRequestException httpEx when httpEx.Message.Contains("401") => "authentication",
             TaskCanceledException => "timeout",
             CircuitBreakerOpenException => "circuit_breaker_open",
@@ -741,7 +715,7 @@ public class ResilienceService : IResilienceService
         };
     }
 
-    private double CalculatePercentile(List<double> sortedValues, double percentile)
+    private static double CalculatePercentile(List<double> sortedValues, double percentile)
     {
         if (sortedValues.Count == 0)
             return 0;
@@ -757,9 +731,7 @@ public class ResilienceService : IResilienceService
         lock (_metricsLock)
         {
             var baselineOps = _recentOperations
-                .Where(op =>
-                    !op.UsedFallback && op.Success && op.Timestamp > DateTime.UtcNow.AddMinutes(-10)
-                )
+                .Where(op => !op.UsedFallback && op.Success && op.Timestamp > DateTime.UtcNow.AddMinutes(-10))
                 .ToList();
 
             if (baselineOps.Count == 0)

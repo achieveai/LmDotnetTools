@@ -41,10 +41,7 @@ public class BaseEmbeddingServiceTests
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1)
         );
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act & Assert
@@ -57,9 +54,7 @@ public class BaseEmbeddingServiceTests
         }
         else
         {
-            var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-                service.GetEmbeddingAsync(input)
-            );
+            var exception = await Assert.ThrowsAsync<ArgumentException>(() => service.GetEmbeddingAsync(input));
             Assert.Contains(expectedErrorMessage, exception.Message);
             Debug.WriteLine($"✓ Validation failed as expected: {exception.Message}");
         }
@@ -82,10 +77,7 @@ public class BaseEmbeddingServiceTests
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1)
         );
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act & Assert
@@ -118,17 +110,14 @@ public class BaseEmbeddingServiceTests
     {
         Debug.WriteLine($"Testing request validation: {description}");
         Debug.WriteLine(
-            $"Request: Model='{request?.Model}', Inputs={request?.Inputs?.Count() ?? 0}, Expected to succeed: {shouldSucceed}"
+            $"Request: Model='{request?.Model}', Inputs={request?.Inputs?.Inputs.Count ?? 0}, Expected to succeed: {shouldSucceed}"
         );
 
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request?.Inputs?.Count() ?? 1)
+            EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request?.Inputs?.Inputs.Count ?? 1)
         );
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act & Assert
@@ -137,9 +126,7 @@ public class BaseEmbeddingServiceTests
             var result = await service.GenerateEmbeddingsAsync(request!);
             Assert.NotNull(result);
             Assert.NotNull(result.Embeddings);
-            Debug.WriteLine(
-                $"✓ Request validation passed, generated {result.Embeddings.Count} embeddings"
-            );
+            Debug.WriteLine($"✓ Request validation passed, generated {result.Embeddings.Count} embeddings");
         }
         else
         {
@@ -165,10 +152,7 @@ public class BaseEmbeddingServiceTests
 
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act
@@ -185,10 +169,7 @@ public class BaseEmbeddingServiceTests
 
         foreach (var unexpectedKey in unexpectedKeys)
         {
-            Assert.False(
-                payload.ContainsKey(unexpectedKey),
-                $"Found unexpected key: {unexpectedKey}"
-            );
+            Assert.False(payload.ContainsKey(unexpectedKey), $"Found unexpected key: {unexpectedKey}");
             Debug.WriteLine($"✓ Correctly excluded key: {unexpectedKey}");
         }
 
@@ -210,10 +191,7 @@ public class BaseEmbeddingServiceTests
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
             EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(1)
         );
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act - Dispose the service
@@ -233,10 +211,7 @@ public class BaseEmbeddingServiceTests
 
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act
@@ -256,10 +231,7 @@ public class BaseEmbeddingServiceTests
 
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("{}");
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.test.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);
 
         // Act
@@ -276,13 +248,7 @@ public class BaseEmbeddingServiceTests
         new List<object[]>
         {
             new object[] { "Valid text input", true, "", "Valid input should succeed" },
-            new object[]
-            {
-                "",
-                false,
-                "Value cannot be null, empty, or whitespace",
-                "Empty string should fail",
-            },
+            new object[] { "", false, "Value cannot be null, empty, or whitespace", "Empty string should fail" },
             new object[]
             {
                 "   ",
@@ -302,14 +268,7 @@ public class BaseEmbeddingServiceTests
     public static IEnumerable<object[]> GenerateEmbeddingAsyncTestCases =>
         new List<object[]>
         {
-            new object[]
-            {
-                "Valid text",
-                "test-model",
-                true,
-                "",
-                "Valid text and model should succeed",
-            },
+            new object[] { "Valid text", "test-model", true, "", "Valid text and model should succeed" },
             new object[]
             {
                 "",
@@ -349,35 +308,35 @@ public class BaseEmbeddingServiceTests
         {
             new object[]
             {
-                new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "text2" } },
+                new EmbeddingRequest { Model = "test-model", Inputs = item },
                 true,
                 "",
                 "Valid request should succeed",
             },
             new object[]
             {
-                new EmbeddingRequest { Model = "", Inputs = new[] { "text1" } },
+                new EmbeddingRequest { Model = "", Inputs = itemArray },
                 false,
                 "Value cannot be null, empty, or whitespace",
                 "Empty model should fail",
             },
             new object[]
             {
-                new EmbeddingRequest { Model = "test-model", Inputs = new string[0] },
+                new EmbeddingRequest { Model = "test-model", Inputs = Array.Empty<string>() },
                 false,
                 "Collection cannot be empty",
                 "Empty inputs should fail",
             },
             new object[]
             {
-                new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "" } },
+                new EmbeddingRequest { Model = "test-model", Inputs = itemArray0 },
                 false,
                 "Collection cannot contain null, empty, or whitespace elements",
                 "Empty input text should fail",
             },
             new object[]
             {
-                new EmbeddingRequest { Model = "test-model", Inputs = new[] { "text1", "   " } },
+                new EmbeddingRequest { Model = "test-model", Inputs = itemArray1 },
                 false,
                 "Collection cannot contain null, empty, or whitespace elements",
                 "Whitespace input text should fail",
@@ -392,14 +351,14 @@ public class BaseEmbeddingServiceTests
                 new EmbeddingRequest
                 {
                     Model = "test-model",
-                    Inputs = new[] { "text1" },
+                    Inputs = itemArray,
                     ApiType = EmbeddingApiType.Default,
                     EncodingFormat = "float",
                     Dimensions = 512,
                     User = "test-user",
                 },
-                new[] { "input", "model", "encoding_format", "dimensions", "user" },
-                new[] { "normalized", "embedding_type" },
+                itemArray2,
+                itemArray3,
                 "OpenAI format with all optional parameters",
             },
             new object[]
@@ -407,14 +366,14 @@ public class BaseEmbeddingServiceTests
                 new EmbeddingRequest
                 {
                     Model = "jina-model",
-                    Inputs = new[] { "text1" },
+                    Inputs = itemArray4,
                     ApiType = EmbeddingApiType.Jina,
                     Normalized = true,
                     EncodingFormat = "float",
                     Dimensions = 768,
                 },
-                new[] { "input", "model", "normalized", "embedding_type", "dimensions" },
-                new[] { "encoding_format", "user" },
+                itemArray5,
+                itemArray6,
                 "Jina format with all optional parameters",
             },
             new object[]
@@ -422,11 +381,11 @@ public class BaseEmbeddingServiceTests
                 new EmbeddingRequest
                 {
                     Model = "basic-model",
-                    Inputs = new[] { "text1" },
+                    Inputs = itemArray4,
                     ApiType = EmbeddingApiType.Default,
                 },
-                new[] { "input", "model" },
-                new[] { "normalized", "embedding_type", "encoding_format", "dimensions", "user" },
+                itemArray7,
+                itemArray8,
                 "Basic OpenAI format with minimal parameters",
             },
         };
@@ -443,22 +402,45 @@ public class BaseEmbeddingServiceTests
             new object[]
             {
                 "GenerateEmbeddingAsync",
-                new Func<TestEmbeddingService, Task>(service =>
-                    service.GenerateEmbeddingAsync("test", "model")
-                ),
+                new Func<TestEmbeddingService, Task>(service => service.GenerateEmbeddingAsync("test", "model")),
                 "GenerateEmbeddingAsync should throw after disposal",
             },
             new object[]
             {
                 "GenerateEmbeddingsAsync",
                 new Func<TestEmbeddingService, Task>(service =>
-                    service.GenerateEmbeddingsAsync(
-                        new EmbeddingRequest { Model = "test", Inputs = new[] { "text" } }
-                    )
+                    service.GenerateEmbeddingsAsync(new EmbeddingRequest { Model = "test", Inputs = request })
                 ),
                 "GenerateEmbeddingsAsync should throw after disposal",
             },
         };
+
+    private static readonly string[] item = new[] { "text1", "text2" };
+    private static readonly string[] itemArray = new[] { "text1" };
+    private static readonly string[] itemArray0 = new[] { "text1", "" };
+    private static readonly string[] itemArray1 = new[] { "text1", "   " };
+    private static readonly string[] itemArray2 = new[] { "input", "model", "encoding_format", "dimensions", "user" };
+    private static readonly string[] itemArray3 = new[] { "normalized", "embedding_type" };
+    private static readonly string[] itemArray4 = new[] { "text1" };
+    private static readonly string[] itemArray5 = new[]
+    {
+        "input",
+        "model",
+        "normalized",
+        "embedding_type",
+        "dimensions",
+    };
+    private static readonly string[] itemArray6 = new[] { "encoding_format", "user" };
+    private static readonly string[] itemArray7 = new[] { "input", "model" };
+    private static readonly string[] itemArray8 = new[]
+    {
+        "normalized",
+        "embedding_type",
+        "encoding_format",
+        "dimensions",
+        "user",
+    };
+    private static readonly string[] request = new[] { "text" };
 
     #endregion
 
@@ -484,22 +466,12 @@ public class BaseEmbeddingServiceTests
 
             // Simulate HTTP call
             var jsonContent = JsonSerializer.Serialize(payload);
-            var httpContent = new StringContent(
-                jsonContent,
-                System.Text.Encoding.UTF8,
-                "application/json"
-            );
-            var response = await HttpClient.PostAsync(
-                "/embeddings",
-                httpContent,
-                cancellationToken
-            );
+            var httpContent = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+            var response = await HttpClient.PostAsync("/embeddings", httpContent, cancellationToken);
             response.EnsureSuccessStatusCode();
 
-            var responseContent = await response.Content.ReadAsStringAsync();
-            var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(
-                responseContent
-            );
+            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseContent);
 
             return new EmbeddingResponse
             {

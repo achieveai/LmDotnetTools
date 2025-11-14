@@ -34,17 +34,12 @@ public class OpenAIEmbeddingServiceHttpTests
     )
     {
         Debug.WriteLine($"Testing successful OpenAI response: {description}");
-        Debug.WriteLine(
-            $"Request: {request.Inputs.Count} inputs, Model: {request.Model}, ApiType: {request.ApiType}"
-        );
+        Debug.WriteLine($"Request: {request.Inputs.Count} inputs, Model: {request.Model}, ApiType: {request.ApiType}");
         Debug.WriteLine($"Expected embedding count: {expectedEmbeddingCount}");
 
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(mockApiResponse);
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.openai.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.openai.com") };
 
         var options = OpenAITestHelper.CreateOpenAIOptions();
 
@@ -66,9 +61,7 @@ public class OpenAIEmbeddingServiceHttpTests
 
         foreach (var embedding in result.Embeddings)
         {
-            Debug.WriteLine(
-                $"Embedding {embedding.Index}: Vector length = {embedding.Vector.Length}"
-            );
+            Debug.WriteLine($"Embedding {embedding.Index}: Vector length = {embedding.Vector.Length}");
             Assert.NotNull(embedding.Vector);
             Assert.True(embedding.Vector.Length > 0);
             Assert.All(embedding.Vector, v => Assert.True(v >= -1.0f && v <= 1.0f));
@@ -92,24 +85,15 @@ public class OpenAIEmbeddingServiceHttpTests
         Debug.WriteLine($"Expected exception: {expectedExceptionType.Name}");
 
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            errorResponse,
-            errorStatusCode
-        );
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.openai.com"),
-        };
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(errorResponse, errorStatusCode);
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.openai.com") };
 
         var options = OpenAITestHelper.CreateOpenAIOptions();
 
         var service = new OpenAIEmbeddingService(_logger, httpClient, options);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync(
-            expectedExceptionType,
-            () => service.GenerateEmbeddingsAsync(request)
-        );
+        var exception = await Assert.ThrowsAsync(expectedExceptionType, () => service.GenerateEmbeddingsAsync(request));
 
         Debug.WriteLine($"Exception caught: {exception.Message}");
         Assert.NotNull(exception);
@@ -131,16 +115,9 @@ public class OpenAIEmbeddingServiceHttpTests
         Debug.WriteLine($"Failure count: {failureCount}, Failure status: {failureStatus}");
 
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            failureCount,
-            successResponse,
-            failureStatus
-        );
+        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(failureCount, successResponse, failureStatus);
 
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.openai.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.openai.com") };
 
         var options = OpenAITestHelper.CreateOpenAIOptions();
 
@@ -185,20 +162,13 @@ public class OpenAIEmbeddingServiceHttpTests
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            response,
-                            System.Text.Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
                     }
                 );
             }
         );
 
-        var httpClient = new HttpClient(fakeHandler)
-        {
-            BaseAddress = new Uri("https://api.openai.com"),
-        };
+        var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.openai.com") };
 
         var options = OpenAITestHelper.CreateOpenAIOptions();
 
@@ -223,10 +193,7 @@ public class OpenAIEmbeddingServiceHttpTests
 
             foreach (var expectedField in expectedPayloadFields)
             {
-                Assert.True(
-                    payload.ContainsKey(expectedField.Key),
-                    $"Missing expected field: {expectedField.Key}"
-                );
+                Assert.True(payload.ContainsKey(expectedField.Key), $"Missing expected field: {expectedField.Key}");
                 Debug.WriteLine($"✓ Found expected field: {expectedField.Key}");
             }
         }
@@ -257,7 +224,7 @@ public class OpenAIEmbeddingServiceHttpTests
                 var simpleResponse = new
                 {
                     @object = "list",
-                    data = new object[0], // Empty array to avoid processing issues
+                    data = Array.Empty<object>(), // Empty array to avoid processing issues
                     model = request.Model,
                     usage = new { prompt_tokens = 0, total_tokens = 0 },
                 };
@@ -397,7 +364,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "Hello world" },
+                    Inputs = item,
                     Model = "text-embedding-3-small",
                     ApiType = EmbeddingApiType.Default,
                 },
@@ -409,7 +376,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "Hello", "World", "Test" },
+                    Inputs = itemArray,
                     Model = "text-embedding-3-large",
                     ApiType = EmbeddingApiType.Default,
                     EncodingFormat = "float",
@@ -427,7 +394,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray0,
                     Model = "invalid-model",
                     ApiType = EmbeddingApiType.Default,
                 },
@@ -440,7 +407,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray0,
                     Model = "text-embedding-3-small",
                     ApiType = EmbeddingApiType.Default,
                 },
@@ -453,7 +420,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray1,
                     Model = "text-embedding-3-small",
                     ApiType = EmbeddingApiType.Default,
                 },
@@ -471,7 +438,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray1,
                     Model = "text-embedding-3-small",
                     ApiType = EmbeddingApiType.Default,
                 },
@@ -484,7 +451,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test1", "test2" },
+                    Inputs = itemArray2,
                     Model = "text-embedding-3-large",
                     ApiType = EmbeddingApiType.Default,
                     EncodingFormat = "float", // Explicitly set to float
@@ -503,17 +470,13 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray3,
                     Model = "text-embedding-3-small",
                     ApiType = EmbeddingApiType.Default,
                 },
                 "POST",
                 "/v1/embeddings",
-                new Dictionary<string, object>
-                {
-                    ["input"] = new[] { "test" },
-                    ["model"] = "text-embedding-3-small",
-                },
+                new Dictionary<string, object> { ["input"] = itemArray3, ["model"] = "text-embedding-3-small" },
                 "Basic POST request validation",
             },
         };
@@ -525,7 +488,7 @@ public class OpenAIEmbeddingServiceHttpTests
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray4,
                     Model = "text-embedding-3-small",
                     ApiType = EmbeddingApiType.Default,
                     EncodingFormat = "float",
@@ -533,23 +496,19 @@ public class OpenAIEmbeddingServiceHttpTests
                 },
                 new Dictionary<string, object>
                 {
-                    ["input"] = new[] { "test" },
+                    ["input"] = itemArray4,
                     ["model"] = "text-embedding-3-small",
                     ["encoding_format"] = "float",
                     ["user"] = "test-user",
                 },
-                new Dictionary<string, object>
-                {
-                    ["normalized"] = true,
-                    ["embedding_type"] = "float",
-                },
+                new Dictionary<string, object> { ["normalized"] = true, ["embedding_type"] = "float" },
                 "OpenAI API formatting with user and encoding_format",
             },
             new object[]
             {
                 new EmbeddingRequest
                 {
-                    Inputs = new[] { "test" },
+                    Inputs = itemArray5,
                     Model = "jina-embeddings-v3",
                     ApiType = EmbeddingApiType.Jina,
                     EncodingFormat = "float",
@@ -557,19 +516,24 @@ public class OpenAIEmbeddingServiceHttpTests
                 },
                 new Dictionary<string, object>
                 {
-                    ["input"] = new[] { "test" },
+                    ["input"] = itemArray5,
                     ["model"] = "jina-embeddings-v3",
                     ["embedding_type"] = "float",
                     ["normalized"] = true,
                 },
-                new Dictionary<string, object>
-                {
-                    ["encoding_format"] = "float",
-                    ["user"] = "test-user",
-                },
+                new Dictionary<string, object> { ["encoding_format"] = "float", ["user"] = "test-user" },
                 "Jina API formatting with normalized and embedding_type",
             },
         };
+
+    private static readonly string[] item = new[] { "Hello world" };
+    private static readonly string[] itemArray = new[] { "Hello", "World", "Test" };
+    private static readonly string[] itemArray0 = new[] { "test" };
+    private static readonly string[] itemArray1 = new[] { "test" };
+    private static readonly string[] itemArray2 = new[] { "test1", "test2" };
+    private static readonly string[] itemArray3 = new[] { "test" };
+    private static readonly string[] itemArray4 = new[] { "test" };
+    private static readonly string[] itemArray5 = new[] { "test" };
 
     /// <summary>
     /// Test logger implementation for capturing log output

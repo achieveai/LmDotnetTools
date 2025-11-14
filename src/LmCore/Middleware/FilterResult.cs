@@ -29,12 +29,7 @@ public class FilterResult
     /// <summary>
     /// Private constructor to enforce factory method usage.
     /// </summary>
-    private FilterResult(
-        bool isFiltered,
-        string reason,
-        FilterRuleType ruleType,
-        string? matchedPattern = null
-    )
+    private FilterResult(bool isFiltered, string reason, FilterRuleType ruleType, string? matchedPattern = null)
     {
         IsFiltered = isFiltered;
         Reason = reason;
@@ -59,11 +54,7 @@ public class FilterResult
     /// <returns>A FilterResult indicating exclusion</returns>
     public static FilterResult FilteredByDisabledProvider(string providerName)
     {
-        return new FilterResult(
-            true,
-            $"Provider '{providerName}' is disabled",
-            FilterRuleType.ProviderDisabled
-        );
+        return new FilterResult(true, $"Provider '{providerName}' is disabled", FilterRuleType.ProviderDisabled);
     }
 
     /// <summary>
@@ -117,11 +108,7 @@ public class FilterResult
     /// <returns>A FilterResult indicating exclusion</returns>
     public static FilterResult FilteredByGlobalAllowList()
     {
-        return new FilterResult(
-            true,
-            "Function not in global allow list",
-            FilterRuleType.GlobalAllowList
-        );
+        return new FilterResult(true, "Function not in global allow list", FilterRuleType.GlobalAllowList);
     }
 
     /// <summary>

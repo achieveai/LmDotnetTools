@@ -28,10 +28,8 @@ public class HybridSegmentationService : IHybridSegmentationService
         ILogger<HybridSegmentationService> logger
     )
     {
-        _structureService =
-            structureService ?? throw new ArgumentNullException(nameof(structureService));
-        _narrativeService =
-            narrativeService ?? throw new ArgumentNullException(nameof(narrativeService));
+        _structureService = structureService ?? throw new ArgumentNullException(nameof(structureService));
+        _narrativeService = narrativeService ?? throw new ArgumentNullException(nameof(narrativeService));
         _topicService = topicService ?? throw new ArgumentNullException(nameof(topicService));
         _llmService = llmService ?? throw new ArgumentNullException(nameof(llmService));
         _promptManager = promptManager ?? throw new ArgumentNullException(nameof(promptManager));
@@ -75,40 +73,27 @@ public class HybridSegmentationService : IHybridSegmentationService
 
             if (weights.StructureWeight > 0.1)
             {
-                segmentationTasks.Add(
-                    GetStructureSegmentsAsync(content, documentType, cancellationToken)
-                );
+                segmentationTasks.Add(GetStructureSegmentsAsync(content, documentType, cancellationToken));
             }
 
             if (weights.NarrativeWeight > 0.1)
             {
-                segmentationTasks.Add(
-                    GetNarrativeSegmentsAsync(content, documentType, cancellationToken)
-                );
+                segmentationTasks.Add(GetNarrativeSegmentsAsync(content, documentType, cancellationToken));
             }
 
             if (weights.TopicWeight > 0.1)
             {
-                segmentationTasks.Add(
-                    GetTopicSegmentsAsync(content, documentType, cancellationToken)
-                );
+                segmentationTasks.Add(GetTopicSegmentsAsync(content, documentType, cancellationToken));
             }
 
             var segmentationResults = await Task.WhenAll(segmentationTasks);
 
             // Step 3: Combine results using intelligent merging
             var structureSegments =
-                segmentationResults.Length > 0
-                    ? segmentationResults[0]
-                    : new List<DocumentSegment>();
+                segmentationResults.Length > 0 ? segmentationResults[0] : new List<DocumentSegment>();
             var narrativeSegments =
-                segmentationResults.Length > 1
-                    ? segmentationResults[1]
-                    : new List<DocumentSegment>();
-            var topicSegments =
-                segmentationResults.Length > 2
-                    ? segmentationResults[2]
-                    : new List<DocumentSegment>();
+                segmentationResults.Length > 1 ? segmentationResults[1] : new List<DocumentSegment>();
+            var topicSegments = segmentationResults.Length > 2 ? segmentationResults[2] : new List<DocumentSegment>();
 
             var combinedSegments = await CombineSegmentationResultsAsync(
                 structureSegments,
@@ -171,10 +156,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         CancellationToken cancellationToken = default
     )
     {
-        _logger.LogDebug(
-            "Determining strategy weights for document type {DocumentType}",
-            documentType
-        );
+        _logger.LogDebug("Determining strategy weights for document type {DocumentType}", documentType);
 
         var weights = new StrategyWeights();
 
@@ -192,11 +174,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             // Use LLM enhancement if available
             if (_llmService != null)
             {
-                var llmWeights = await GetLlmWeightRecommendationsAsync(
-                    content,
-                    documentType,
-                    cancellationToken
-                );
+                var llmWeights = await GetLlmWeightRecommendationsAsync(content, documentType, cancellationToken);
                 if (llmWeights.Confidence > 0.7)
                 {
                     weights = CombineWeights(weights, llmWeights, 0.6, 0.4);
@@ -252,11 +230,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         try
         {
             // Step 1: Identify boundary consensus
-            var boundaryConsensus = AnalyzeBoundaryConsensus(
-                structureSegments,
-                narrativeSegments,
-                topicSegments
-            );
+            var boundaryConsensus = AnalyzeBoundaryConsensus(structureSegments, narrativeSegments, topicSegments);
 
             // Step 2: Create segments based on consensus boundaries
             var consensusSegments = CreateSegmentsFromConsensus(
@@ -268,11 +242,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             );
 
             // Step 3: Fill gaps and merge overlapping segments
-            var mergedSegments = await MergeOverlappingSegmentsAsync(
-                consensusSegments,
-                weights,
-                cancellationToken
-            );
+            var mergedSegments = await MergeOverlappingSegmentsAsync(consensusSegments, weights, cancellationToken);
 
             // Step 4: Quality-based selection for remaining conflicts
             var finalSegments = ResolveSegmentConflicts(mergedSegments, weights);
@@ -284,12 +254,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             _logger.LogError(ex, "Error combining segmentation results");
 
             // Fallback: return results from highest-weighted strategy
-            return GetHighestWeightedStrategyResults(
-                structureSegments,
-                narrativeSegments,
-                topicSegments,
-                weights
-            );
+            return GetHighestWeightedStrategyResults(structureSegments, narrativeSegments, topicSegments, weights);
         }
     }
 
@@ -303,10 +268,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         CancellationToken cancellationToken = default
     )
     {
-        _logger.LogDebug(
-            "Validating hybrid segmentation quality for {Count} segments",
-            segments.Count
-        );
+        _logger.LogDebug("Validating hybrid segmentation quality for {Count} segments", segments.Count);
 
         var validation = new HybridSegmentationValidation();
 
@@ -314,19 +276,13 @@ public class HybridSegmentationService : IHybridSegmentationService
         {
             // Calculate overall quality metrics
             validation.OverallQuality = CalculateOverallQuality(segments);
-            validation.StrategyCombinationScore = CalculateStrategyCombinationScore(
-                segments,
-                weights
-            );
+            validation.StrategyCombinationScore = CalculateStrategyCombinationScore(segments, weights);
             validation.CrossStrategyConsistency = CalculateCrossStrategyConsistency(segments);
             validation.BoundaryConsensusQuality = CalculateBoundaryConsensusQuality(segments);
             validation.WeightEffectiveness = CalculateWeightEffectiveness(segments, weights);
 
             // Validate individual strategy contributions
-            validation.StrategyValidationScores = await ValidateStrategyContributionsAsync(
-                segments,
-                cancellationToken
-            );
+            validation.StrategyValidationScores = await ValidateStrategyContributionsAsync(segments, cancellationToken);
 
             // Identify issues and generate recommendations
             validation.Issues = IdentifyValidationIssues(segments, validation);
@@ -399,10 +355,7 @@ public class HybridSegmentationService : IHybridSegmentationService
 
             // Determine primary and secondary strategies
             config.PrimaryStrategy = DeterminePrimaryStrategy(config.RecommendedWeights);
-            config.SecondaryStrategy = DetermineSecondaryStrategy(
-                config.RecommendedWeights,
-                config.PrimaryStrategy
-            );
+            config.SecondaryStrategy = DetermineSecondaryStrategy(config.RecommendedWeights, config.PrimaryStrategy);
 
             // Calculate adaptation confidence
             config.AdaptationConfidence = CalculateAdaptationConfidence(config, characteristics);
@@ -444,12 +397,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     {
         try
         {
-            return await _structureService.SegmentByStructureAsync(
-                content,
-                documentType,
-                null,
-                cancellationToken
-            );
+            return await _structureService.SegmentByStructureAsync(content, documentType, null, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -469,12 +417,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     {
         try
         {
-            return await _narrativeService.SegmentByNarrativeAsync(
-                content,
-                documentType,
-                null,
-                cancellationToken
-            );
+            return await _narrativeService.SegmentByNarrativeAsync(content, documentType, null, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -494,12 +437,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     {
         try
         {
-            return await _topicService.SegmentByTopicsAsync(
-                content,
-                documentType,
-                null,
-                cancellationToken
-            );
+            return await _topicService.SegmentByTopicsAsync(content, documentType, null, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -511,7 +449,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     /// <summary>
     /// Analyzes document characteristics for weight determination.
     /// </summary>
-    private DocumentCharacteristics AnalyzeDocumentCharacteristics(string content)
+    private static DocumentCharacteristics AnalyzeDocumentCharacteristics(string content)
     {
         var characteristics = new DocumentCharacteristics();
 
@@ -525,12 +463,10 @@ public class HybridSegmentationService : IHybridSegmentationService
 
         // Structural indicators
         characteristics.HasHeadings =
-            content.Contains('#')
-            || lines.Any(l => l.Trim().All(char.IsUpper) && l.Trim().Length > 3);
-        characteristics.HasLists =
-            content.Contains("- ") || content.Contains("* ") || content.Contains("1. ");
+            content.Contains('#') || lines.Any(l => l.Trim().All(char.IsUpper) && l.Trim().Length > 3);
+        characteristics.HasLists = content.Contains("- ") || content.Contains("* ") || content.Contains("1. ");
         characteristics.HasCodeBlocks = content.Contains("```") || content.Contains("    ");
-        characteristics.HasTables = content.Contains("|") && content.Split('|').Length > 3;
+        characteristics.HasTables = content.Contains('|') && content.Split('|').Length > 3;
 
         // Narrative indicators
         characteristics.NarrativeFlow = CalculateNarrativeFlow(content);
@@ -547,7 +483,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     /// <summary>
     /// Gets base weights based on document type.
     /// </summary>
-    private StrategyWeights GetBaseWeightsByDocumentType(DocumentType documentType)
+    private static StrategyWeights GetBaseWeightsByDocumentType(DocumentType documentType)
     {
         return documentType switch
         {
@@ -599,7 +535,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     /// <summary>
     /// Adjusts weights based on document characteristics.
     /// </summary>
-    private StrategyWeights AdjustWeightsForCharacteristics(
+    private static StrategyWeights AdjustWeightsForCharacteristics(
         StrategyWeights baseWeights,
         DocumentCharacteristics characteristics
     )
@@ -668,9 +604,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     /// <summary>
     /// Converts strategy recommendation to weights.
     /// </summary>
-    private StrategyWeights ConvertStrategyRecommendationToWeights(
-        StrategyRecommendation recommendation
-    )
+    private static StrategyWeights ConvertStrategyRecommendationToWeights(StrategyRecommendation recommendation)
     {
         return recommendation.Strategy switch
         {
@@ -722,7 +656,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     /// <summary>
     /// Combines two sets of weights using specified ratios.
     /// </summary>
-    private StrategyWeights CombineWeights(
+    private static StrategyWeights CombineWeights(
         StrategyWeights weights1,
         StrategyWeights weights2,
         double ratio1,
@@ -754,20 +688,18 @@ public class HybridSegmentationService : IHybridSegmentationService
         {
             return strategy switch
             {
-                SegmentationStrategy.StructureBased =>
-                    await _structureService.SegmentByStructureAsync(
-                        content,
-                        documentType,
-                        null,
-                        cancellationToken
-                    ),
-                SegmentationStrategy.NarrativeBased =>
-                    await _narrativeService.SegmentByNarrativeAsync(
-                        content,
-                        documentType,
-                        null,
-                        cancellationToken
-                    ),
+                SegmentationStrategy.StructureBased => await _structureService.SegmentByStructureAsync(
+                    content,
+                    documentType,
+                    null,
+                    cancellationToken
+                ),
+                SegmentationStrategy.NarrativeBased => await _narrativeService.SegmentByNarrativeAsync(
+                    content,
+                    documentType,
+                    null,
+                    cancellationToken
+                ),
                 SegmentationStrategy.TopicBased => await _topicService.SegmentByTopicsAsync(
                     content,
                     documentType,
@@ -787,7 +719,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     /// <summary>
     /// Creates basic rule-based segments as ultimate fallback.
     /// </summary>
-    private List<DocumentSegment> CreateBasicRuleBasedSegments(string content)
+    private static List<DocumentSegment> CreateBasicRuleBasedSegments(string content)
     {
         var segments = new List<DocumentSegment>();
         var words = content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -807,7 +739,7 @@ public class HybridSegmentationService : IHybridSegmentationService
                     Title = $"Segment {segments.Count + 1}",
                     Summary =
                         segmentContent.Length > 100
-                            ? segmentContent.Substring(0, 97) + "..."
+                            ? string.Concat(segmentContent.AsSpan(0, 97), "...")
                             : segmentContent,
                     Quality = new SegmentQuality
                     {
@@ -829,7 +761,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     // Placeholder implementations for remaining helper methods
-    private List<BoundaryConsensus> AnalyzeBoundaryConsensus(
+    private static List<BoundaryConsensus> AnalyzeBoundaryConsensus(
         List<DocumentSegment> structureSegments,
         List<DocumentSegment> narrativeSegments,
         List<DocumentSegment> topicSegments
@@ -839,7 +771,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return new List<BoundaryConsensus>();
     }
 
-    private List<DocumentSegment> CreateSegmentsFromConsensus(
+    private static List<DocumentSegment> CreateSegmentsFromConsensus(
         List<BoundaryConsensus> boundaryConsensus,
         List<DocumentSegment> structureSegments,
         List<DocumentSegment> narrativeSegments,
@@ -848,17 +780,14 @@ public class HybridSegmentationService : IHybridSegmentationService
     )
     {
         // For now, return the strategy with highest weight
-        if (
-            weights.StructureWeight >= weights.NarrativeWeight
-            && weights.StructureWeight >= weights.TopicWeight
-        )
+        if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
             return structureSegments;
         if (weights.NarrativeWeight >= weights.TopicWeight)
             return narrativeSegments;
         return topicSegments;
     }
 
-    private Task<List<DocumentSegment>> MergeOverlappingSegmentsAsync(
+    private static Task<List<DocumentSegment>> MergeOverlappingSegmentsAsync(
         List<DocumentSegment> segments,
         StrategyWeights weights,
         CancellationToken cancellationToken
@@ -868,7 +797,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return Task.FromResult(segments);
     }
 
-    private List<DocumentSegment> ResolveSegmentConflicts(
+    private static List<DocumentSegment> ResolveSegmentConflicts(
         List<DocumentSegment> segments,
         StrategyWeights weights
     )
@@ -877,24 +806,21 @@ public class HybridSegmentationService : IHybridSegmentationService
         return segments;
     }
 
-    private List<DocumentSegment> GetHighestWeightedStrategyResults(
+    private static List<DocumentSegment> GetHighestWeightedStrategyResults(
         List<DocumentSegment> structureSegments,
         List<DocumentSegment> narrativeSegments,
         List<DocumentSegment> topicSegments,
         StrategyWeights weights
     )
     {
-        if (
-            weights.StructureWeight >= weights.NarrativeWeight
-            && weights.StructureWeight >= weights.TopicWeight
-        )
+        if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
             return structureSegments;
         if (weights.NarrativeWeight >= weights.TopicWeight)
             return narrativeSegments;
         return topicSegments;
     }
 
-    private Task<List<DocumentSegment>> OptimizeSegmentationAsync(
+    private static Task<List<DocumentSegment>> OptimizeSegmentationAsync(
         List<DocumentSegment> segments,
         string content,
         StrategyWeights weights,
@@ -905,59 +831,50 @@ public class HybridSegmentationService : IHybridSegmentationService
         return Task.FromResult(segments);
     }
 
-    private List<DocumentSegment> ApplyFinalQualityChecks(
+    private static List<DocumentSegment> ApplyFinalQualityChecks(
         List<DocumentSegment> segments,
         HybridSegmentationOptions options
     )
     {
         return segments
-            .Where(s =>
-                s.Content.Length >= options.MinSegmentSize
-                && s.Content.Length <= options.MaxSegmentSize
-            )
+            .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
             .Take(options.MaxSegments)
             .ToList();
     }
 
     // Quality calculation methods
-    private double CalculateOverallQuality(List<DocumentSegment> segments)
+    private static double CalculateOverallQuality(List<DocumentSegment> segments)
     {
-        if (!segments.Any())
+        if (segments.Count == 0)
             return 0.0;
         return segments.Average(s => s.Quality?.CoherenceScore ?? 0.5);
     }
 
-    private double CalculateStrategyCombinationScore(
-        List<DocumentSegment> segments,
-        StrategyWeights weights
-    )
+    private static double CalculateStrategyCombinationScore(List<DocumentSegment> segments, StrategyWeights weights)
     {
         // Placeholder - would calculate how well strategies were combined
         return 0.8;
     }
 
-    private double CalculateCrossStrategyConsistency(List<DocumentSegment> segments)
+    private static double CalculateCrossStrategyConsistency(List<DocumentSegment> segments)
     {
         // Placeholder - would measure consistency across strategy boundaries
         return 0.75;
     }
 
-    private double CalculateBoundaryConsensusQuality(List<DocumentSegment> segments)
+    private static double CalculateBoundaryConsensusQuality(List<DocumentSegment> segments)
     {
         // Placeholder - would measure quality of boundary consensus
         return 0.7;
     }
 
-    private double CalculateWeightEffectiveness(
-        List<DocumentSegment> segments,
-        StrategyWeights weights
-    )
+    private static double CalculateWeightEffectiveness(List<DocumentSegment> segments, StrategyWeights weights)
     {
         // Placeholder - would measure how effective the chosen weights were
         return weights.Confidence;
     }
 
-    private Task<Dictionary<SegmentationStrategy, double>> ValidateStrategyContributionsAsync(
+    private static Task<Dictionary<SegmentationStrategy, double>> ValidateStrategyContributionsAsync(
         List<DocumentSegment> segments,
         CancellationToken cancellationToken
     )
@@ -972,7 +889,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         );
     }
 
-    private List<ValidationIssue> IdentifyValidationIssues(
+    private static List<ValidationIssue> IdentifyValidationIssues(
         List<DocumentSegment> segments,
         HybridSegmentationValidation validation
     )
@@ -986,8 +903,7 @@ public class HybridSegmentationService : IHybridSegmentationService
                 {
                     Type = ValidationIssueType.PoorCoherence,
                     Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
-                    Description =
-                        $"Overall quality is below threshold: {validation.OverallQuality:F2}",
+                    Description = $"Overall quality is below threshold: {validation.OverallQuality:F2}",
                 }
             );
         }
@@ -995,7 +911,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return issues;
     }
 
-    private List<string> GenerateImprovementRecommendations(
+    private static List<string> GenerateImprovementRecommendations(
         HybridSegmentationValidation validation,
         StrategyWeights weights
     )
@@ -1016,32 +932,27 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     // Adaptive strategy methods
-    private StrategyWeights LearnFromPreviousResults(
-        List<DocumentSegmentationResult> previousResults
-    )
+    private static StrategyWeights LearnFromPreviousResults(List<DocumentSegmentationResult> previousResults)
     {
         // Placeholder - would analyze previous results to learn optimal weights
         return new StrategyWeights { Method = WeightDeterminationMethod.Learned };
     }
 
-    private void ApplyFeedbackAdjustments(AdaptiveStrategyConfig config, List<string> feedback)
+    private static void ApplyFeedbackAdjustments(AdaptiveStrategyConfig config, List<string> feedback)
     {
         // Placeholder - would adjust configuration based on feedback
     }
 
-    private SegmentationStrategy DeterminePrimaryStrategy(StrategyWeights weights)
+    private static SegmentationStrategy DeterminePrimaryStrategy(StrategyWeights weights)
     {
-        if (
-            weights.StructureWeight >= weights.NarrativeWeight
-            && weights.StructureWeight >= weights.TopicWeight
-        )
+        if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
             return SegmentationStrategy.StructureBased;
         if (weights.NarrativeWeight >= weights.TopicWeight)
             return SegmentationStrategy.NarrativeBased;
         return SegmentationStrategy.TopicBased;
     }
 
-    private SegmentationStrategy? DetermineSecondaryStrategy(
+    private static SegmentationStrategy? DetermineSecondaryStrategy(
         StrategyWeights weights,
         SegmentationStrategy primary
     )
@@ -1053,14 +964,10 @@ public class HybridSegmentationService : IHybridSegmentationService
             (SegmentationStrategy.TopicBased, weights.TopicWeight),
         };
 
-        return strategies
-            .Where(s => s.Item1 != primary)
-            .OrderByDescending(s => s.Item2)
-            .FirstOrDefault()
-            .Item1;
+        return strategies.Where(s => s.Item1 != primary).OrderByDescending(s => s.Item2).FirstOrDefault().Item1;
     }
 
-    private double CalculateAdaptationConfidence(
+    private static double CalculateAdaptationConfidence(
         AdaptiveStrategyConfig config,
         DocumentCharacteristics characteristics
     )
@@ -1069,7 +976,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return 0.8;
     }
 
-    private Dictionary<string, double> CalculatePerformanceMetrics(
+    private static Dictionary<string, double> CalculatePerformanceMetrics(
         List<DocumentSegmentationResult>? previousResults
     )
     {
@@ -1083,7 +990,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     }
 
     // Document analysis helper methods
-    private double CalculateNarrativeFlow(string content)
+    private static double CalculateNarrativeFlow(string content)
     {
         // Simple heuristic based on temporal markers and transitions
         var narrativeMarkers = new[]
@@ -1102,7 +1009,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return Math.Min(1.0, (double)markerCount / Math.Max(1, sentences) * 10);
     }
 
-    private int CountTemporalMarkers(string content)
+    private static int CountTemporalMarkers(string content)
     {
         var temporalMarkers = new[]
         {
@@ -1128,7 +1035,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return temporalMarkers.Sum(marker => CountOccurrences(content, marker));
     }
 
-    private int CountCausationIndicators(string content)
+    private static int CountCausationIndicators(string content)
     {
         var causationWords = new[]
         {
@@ -1144,7 +1051,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return causationWords.Sum(word => CountOccurrences(content, word));
     }
 
-    private int CountOccurrences(string content, string word)
+    private static int CountOccurrences(string content, string word)
     {
         int count = 0;
         int index = 0;
@@ -1156,7 +1063,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return count;
     }
 
-    private double CalculateTopicDiversity(string content)
+    private static double CalculateTopicDiversity(string content)
     {
         var words = content
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)
@@ -1168,7 +1075,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         return Math.Min(1.0, (double)uniqueWords / Math.Max(1, words.Count) * 5);
     }
 
-    private double CalculateKeywordDensity(string content)
+    private static double CalculateKeywordDensity(string content)
     {
         var words = content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var technicalWords = words.Where(w => w.Length > 6 && char.IsUpper(w[0])).Count();

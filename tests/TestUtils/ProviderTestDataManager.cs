@@ -106,20 +106,13 @@ public class ProviderTestDataManager
         var json = File.ReadAllText(filePath);
         var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, JsonOptions);
 
-        return (
-            data?.Messages ?? Array.Empty<IMessage>(),
-            data?.Options ?? new GenerateReplyOptions()
-        );
+        return (data?.Messages ?? Array.Empty<IMessage>(), data?.Options ?? new GenerateReplyOptions());
     }
 
     /// <summary>
     /// Saves a final response to a file.
     /// </summary>
-    public void SaveFinalResponse(
-        string testName,
-        ProviderType providerType,
-        IEnumerable<IMessage> response
-    )
+    public void SaveFinalResponse(string testName, ProviderType providerType, IEnumerable<IMessage> response)
     {
         string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         EnsureDirectoryExists(filePath);
@@ -139,9 +132,7 @@ public class ProviderTestDataManager
 
         var json = File.ReadAllText(filePath);
         return JsonSerializer.Deserialize<List<IMessage>>(json, JsonOptions)
-            ?? throw new InvalidOperationException(
-                $"Failed to deserialize final response from {filePath}"
-            );
+            ?? throw new InvalidOperationException($"Failed to deserialize final response from {filePath}");
     }
 
     /// <summary>

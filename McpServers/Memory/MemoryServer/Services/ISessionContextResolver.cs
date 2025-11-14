@@ -29,7 +29,5 @@ public interface ISessionContextResolver
     /// <summary>
     /// Gets the default session context based on transport context and system defaults.
     /// </summary>
-    Task<SessionContext> GetDefaultSessionContextAsync(
-        CancellationToken cancellationToken = default
-    );
+    Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default);
 }

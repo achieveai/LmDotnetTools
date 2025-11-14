@@ -28,8 +28,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Assert - Check that document_segments table exists
         var segmentsTableExists = await session.ExecuteAsync(async connection =>
         {
-            const string sql =
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='document_segments'";
+            const string sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='document_segments'";
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             var result = await command.ExecuteScalarAsync();
@@ -41,8 +40,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
         // Assert - Check that segment_relationships table exists
         var relationshipsTableExists = await session.ExecuteAsync(async connection =>
         {
-            const string sql =
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='segment_relationships'";
+            const string sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='segment_relationships'";
             using var command = connection.CreateCommand();
             command.CommandText = sql;
             var result = await command.ExecuteScalarAsync();
@@ -96,12 +94,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         foreach (var expectedColumn in expectedColumns)
         {
-            columns
-                .Should()
-                .Contain(
-                    expectedColumn,
-                    $"document_segments table should have {expectedColumn} column"
-                );
+            columns.Should().Contain(expectedColumn, $"document_segments table should have {expectedColumn} column");
         }
     }
 
@@ -146,10 +139,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
         {
             columns
                 .Should()
-                .Contain(
-                    expectedColumn,
-                    $"segment_relationships table should have {expectedColumn} column"
-                );
+                .Contain(expectedColumn, $"segment_relationships table should have {expectedColumn} column");
         }
     }
 
@@ -161,8 +151,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         var indexes = await session.ExecuteAsync(async connection =>
         {
-            const string sql =
-                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='document_segments'";
+            const string sql = "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='document_segments'";
             using var command = connection.CreateCommand();
             command.CommandText = sql;
 

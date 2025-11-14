@@ -79,10 +79,7 @@ public record AnthropicRequest
     /// <param name="messages">The messages to include in the request.</param>
     /// <param name="options">The options for the request.</param>
     /// <returns>A new AnthropicRequest.</returns>
-    public static AnthropicRequest FromMessages(
-        IEnumerable<IMessage> messages,
-        GenerateReplyOptions? options = null
-    )
+    public static AnthropicRequest FromMessages(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null)
     {
         // Get model from options or use default
         string modelName = AnthropicModelNames.Claude3Sonnet;
@@ -120,22 +117,17 @@ public record AnthropicRequest
                     var userContents = new List<AnthropicContent>();
 
                     foreach (
-                        var (
-                            toolCallContent,
-                            toolResultContent
-                        ) in ToolCallAggregateMessageToAnthropicMessage(aggregateMsg)
+                        var (toolCallContent, toolResultContent) in ToolCallAggregateMessageToAnthropicMessage(
+                            aggregateMsg
+                        )
                     )
                     {
                         assistantContents.Add(toolCallContent);
                         userContents.Add(toolResultContent);
                     }
 
-                    anthropicMessages.Add(
-                        new AnthropicMessage { Role = "assistant", Content = assistantContents }
-                    );
-                    anthropicMessages.Add(
-                        new AnthropicMessage { Role = "user", Content = userContents }
-                    );
+                    anthropicMessages.Add(new AnthropicMessage { Role = "assistant", Content = assistantContents });
+                    anthropicMessages.Add(new AnthropicMessage { Role = "user", Content = userContents });
                     break;
                 default:
                     // Regular message handling for other message types
@@ -189,10 +181,9 @@ public record AnthropicRequest
         };
     }
 
-    private static (
-        AnthropicMessage primaryMessage,
-        AnthropicMessage? secondaryMessage
-    ) AddCompositeMessage(CompositeMessage compositeMsg)
+    private static (AnthropicMessage primaryMessage, AnthropicMessage? secondaryMessage) AddCompositeMessage(
+        CompositeMessage compositeMsg
+    )
     {
         var role = compositeMsg.Role switch
         {
@@ -210,17 +201,12 @@ public record AnthropicRequest
             {
                 if (message.Role != Role.Assistant)
                 {
-                    throw new ArgumentException(
-                        "ToolsCallAggregateMessage must be from the Assistant role"
-                    );
+                    throw new ArgumentException("ToolsCallAggregateMessage must be from the Assistant role");
                 }
 
                 secondaryMessage ??= new AnthropicMessage { Role = "user" };
                 foreach (
-                    var (
-                        toolCallContent,
-                        toolResultContent
-                    ) in ToolCallAggregateMessageToAnthropicMessage(aggregateMsg)
+                    var (toolCallContent, toolResultContent) in ToolCallAggregateMessageToAnthropicMessage(aggregateMsg)
                 )
                 {
                     primaryMessage.Content.Add(toolCallContent);
@@ -241,9 +227,7 @@ public record AnthropicRequest
         // Handle different message types
         if (message is TextMessage txtMsg)
         {
-            anthropicMessage.Content.Add(
-                new AnthropicContent { Type = "text", Text = txtMsg.Text }
-            );
+            anthropicMessage.Content.Add(new AnthropicContent { Type = "text", Text = txtMsg.Text });
         }
         else if (message is ToolsCallMessage toolsCallMsg && toolsCallMsg.ToolCalls?.Any() == true)
         {
@@ -256,28 +240,19 @@ public record AnthropicRequest
                         Type = "tool_use",
                         Id = toolCall.ToolCallId,
                         Name = toolCall.FunctionName,
-                        Input = JsonSerializer.Deserialize<JsonElement>(
-                            toolCall.FunctionArgs ?? "{}"
-                        ),
+                        Input = JsonSerializer.Deserialize<JsonElement>(toolCall.FunctionArgs ?? "{}"),
                     }
                 );
             }
         }
-        else if (
-            message is ToolsCallResultMessage toolResultMsg
-            && toolResultMsg.ToolCallResults?.Any() == true
-        )
+        else if (message is ToolsCallResultMessage toolResultMsg && toolResultMsg.ToolCallResults?.Any() == true)
         {
             // Handle tool results in user messages
             // First add a text content if there is any preceding text
             if (message is ICanGetText textContent && !string.IsNullOrEmpty(textContent.GetText()))
             {
                 anthropicMessage.Content.Add(
-                    new AnthropicContent
-                    {
-                        Type = "text",
-                        Text = textContent.GetText() ?? string.Empty,
-                    }
+                    new AnthropicContent { Type = "text", Text = textContent.GetText() ?? string.Empty }
                 );
             }
 
@@ -316,9 +291,7 @@ public record AnthropicRequest
                         Type = "tool_use",
                         Id = toolCall.ToolCallId,
                         Name = toolCall.FunctionName,
-                        Input = JsonSerializer.Deserialize<JsonElement>(
-                            toolCall.FunctionArgs ?? "{}"
-                        ),
+                        Input = JsonSerializer.Deserialize<JsonElement>(toolCall.FunctionArgs ?? "{}"),
                     },
                     new AnthropicContent
                     {

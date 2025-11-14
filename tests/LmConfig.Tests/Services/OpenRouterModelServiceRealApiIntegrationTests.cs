@@ -21,9 +21,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
     public OpenRouterModelServiceRealApiIntegrationTests()
     {
         // Use real logger for integration tests to see actual behavior
-        var loggerFactory = LoggerFactory.Create(builder =>
-            builder.SetMinimumLevel(LogLevel.Debug)
-        );
+        var loggerFactory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Debug));
         _logger = loggerFactory.CreateLogger<OpenRouterModelService>();
 
         // Use real HttpClient for integration tests
@@ -64,13 +62,13 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Assert.NotEmpty(claudeModels);
 
         // Verify model structure
-        var sampleModel = result.First();
+        var sampleModel = result[0];
         Assert.NotNull(sampleModel.Id);
         Assert.NotEmpty(sampleModel.Providers);
         Assert.NotNull(sampleModel.Capabilities);
 
         // Verify provider structure
-        var sampleProvider = sampleModel.Providers.First();
+        var sampleProvider = sampleModel.Providers[0];
         Assert.NotNull(sampleProvider.Name);
         Assert.NotNull(sampleProvider.ModelName);
         Assert.NotNull(sampleProvider.Pricing);
@@ -113,9 +111,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
             $"Cached access took {stopwatch.ElapsedMilliseconds}ms, should be under 100ms per requirement 6.1"
         );
 
-        Console.WriteLine(
-            $"Cached access returned {result.Count} models in {stopwatch.ElapsedMilliseconds}ms"
-        );
+        Console.WriteLine($"Cached access returned {result.Count} models in {stopwatch.ElapsedMilliseconds}ms");
     }
 
     [Fact]
@@ -144,9 +140,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Assert.True(updatedCacheInfo.IsValid);
         Assert.True(updatedCacheInfo.SizeBytes > 0);
 
-        Console.WriteLine(
-            $"Cache refreshed: {updatedCacheInfo.SizeFormatted} at {updatedCacheInfo.LastModified}"
-        );
+        Console.WriteLine($"Cache refreshed: {updatedCacheInfo.SizeFormatted} at {updatedCacheInfo.LastModified}");
     }
 
     [Fact]
@@ -214,9 +208,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Assert.True(cacheInfo.IsValid);
         Assert.True(cacheInfo.SizeBytes > 1000); // Should be substantial size
         Assert.Contains(_tempCacheFile, cacheInfo.FilePath);
-        Assert.True(
-            cacheInfo.SizeFormatted.Contains("KB") || cacheInfo.SizeFormatted.Contains("MB")
-        ); // Should format size nicely
+        Assert.True(cacheInfo.SizeFormatted.Contains("KB") || cacheInfo.SizeFormatted.Contains("MB")); // Should format size nicely
         Assert.Null(cacheInfo.Error);
 
         Console.WriteLine($"Cache info: {cacheInfo.SizeFormatted} at {cacheInfo.FilePath}");
@@ -256,9 +248,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         Assert.NotEmpty(result);
 
         // Test a few specific models for proper mapping
-        var gpt4Model = result.FirstOrDefault(m =>
-            m.Id.Contains("gpt-4") && !m.Id.Contains("vision")
-        );
+        var gpt4Model = result.FirstOrDefault(m => m.Id.Contains("gpt-4") && !m.Id.Contains("vision"));
         if (gpt4Model != null)
         {
             Assert.False(gpt4Model.IsReasoning); // GPT-4 is not a reasoning model
@@ -266,7 +256,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
             Assert.True(gpt4Model.Capabilities.TokenLimits.MaxContextTokens > 0);
             Assert.NotEmpty(gpt4Model.Providers);
 
-            var provider = gpt4Model.Providers.First();
+            var provider = gpt4Model.Providers[0];
             Assert.True(provider.Pricing.PromptPerMillion > 0);
             Assert.True(provider.Pricing.CompletionPerMillion > 0);
             Assert.Contains("openrouter", provider.Tags!);
@@ -282,9 +272,7 @@ public class OpenRouterModelServiceRealApiIntegrationTests : IDisposable
         }
 
         // Test multimodal model if available
-        var visionModel = result.FirstOrDefault(m =>
-            m.Id.Contains("vision") || m.Id.Contains("claude-3")
-        );
+        var visionModel = result.FirstOrDefault(m => m.Id.Contains("vision") || m.Id.Contains("claude-3"));
         if (visionModel != null)
         {
             Assert.NotNull(visionModel.Capabilities?.Multimodal);

@@ -21,15 +21,11 @@ public static class FunctionCallServiceCollectionExtensions
     /// <summary>
     /// Register a function provider type
     /// </summary>
-    public static IServiceCollection AddFunctionProvider<TProvider>(
-        this IServiceCollection services
-    )
+    public static IServiceCollection AddFunctionProvider<TProvider>(this IServiceCollection services)
         where TProvider : class, IFunctionProvider
     {
         services.AddSingleton<TProvider>();
-        services.AddSingleton<IFunctionProvider, TProvider>(sp =>
-            sp.GetRequiredService<TProvider>()
-        );
+        services.AddSingleton<IFunctionProvider, TProvider>(sp => sp.GetRequiredService<TProvider>());
         return services;
     }
 

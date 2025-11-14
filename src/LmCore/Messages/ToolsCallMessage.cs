@@ -59,12 +59,10 @@ public record ToolsCallUpdateMessage : IMessage
     public string? GenerationId { get; init; } = null;
 
     [JsonPropertyName("tool_call_updates")]
-    public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } =
-        [];
+    public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = [];
 }
 
-public class ToolsCallUpdateMessageJsonConverter
-    : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>
+public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>
 {
     protected override ToolsCallUpdateMessage CreateInstance()
     {
@@ -114,11 +112,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             bool isNewToolCall = false;
 
             // Rule 0: If we have both IDs (non-null) and they're different, it's a new tool call
-            if (
-                CurrentToolCallId != null
-                && update.ToolCallId != null
-                && CurrentToolCallId != update.ToolCallId
-            )
+            if (CurrentToolCallId != null && update.ToolCallId != null && CurrentToolCallId != update.ToolCallId)
             {
                 CompleteCurrentToolCall();
                 isNewToolCall = true;

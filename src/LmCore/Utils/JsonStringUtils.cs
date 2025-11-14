@@ -17,11 +17,7 @@ public static class JsonStringUtils
     {
         return string.IsNullOrEmpty(jsonString)
             ? jsonString
-            : jsonString
-            .Replace("\\n", "\n")
-            .Replace("\\\"", "\"")
-            .Replace("\\\\", "\\")
-            .Replace("\\t", "\t");
+            : jsonString.Replace("\\n", "\n").Replace("\\\"", "\"").Replace("\\\\", "\\").Replace("\\t", "\t");
     }
 
     /// <summary>
@@ -33,11 +29,7 @@ public static class JsonStringUtils
     /// <param name="propertyName">The name of the property to extract</param>
     /// <param name="value">The extracted value if successful, default otherwise</param>
     /// <returns>True if extraction was successful, false otherwise</returns>
-    public static bool TryExtractPropertyFromPartialJson<T>(
-        string partialJson,
-        string propertyName,
-        out T? value
-    )
+    public static bool TryExtractPropertyFromPartialJson<T>(string partialJson, string propertyName, out T? value)
     {
         value = default;
         if (string.IsNullOrEmpty(partialJson))
@@ -48,10 +40,7 @@ public static class JsonStringUtils
         // First attempt: Try to parse as valid JSON
         try
         {
-            using var doc = JsonDocument.Parse(
-                partialJson,
-                new JsonDocumentOptions { AllowTrailingCommas = true }
-            );
+            using var doc = JsonDocument.Parse(partialJson, new JsonDocumentOptions { AllowTrailingCommas = true });
 
             if (doc.RootElement.TryGetProperty(propertyName, out var propElement))
             {
@@ -119,11 +108,7 @@ public static class JsonStringUtils
             int openBrackets = jsonFragment.Count(c => c == '[');
             int closeBrackets = jsonFragment.Count(c => c == ']');
 
-            if (
-                openBrackets > 0
-                && openBrackets == closeBrackets
-                && jsonFragment.TrimEnd().EndsWith("]")
-            )
+            if (openBrackets > 0 && openBrackets == closeBrackets && jsonFragment.TrimEnd().EndsWith("]"))
             {
                 return true;
             }

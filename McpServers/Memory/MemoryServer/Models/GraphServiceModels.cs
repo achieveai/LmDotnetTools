@@ -157,11 +157,7 @@ public class GraphTraversalResult
     /// <summary>
     /// Entities found during traversal with their depth.
     /// </summary>
-    public List<(
-        Entity Entity,
-        Relationship? Relationship,
-        int Depth
-    )> TraversalResults { get; set; } = new();
+    public List<(Entity Entity, Relationship? Relationship, int Depth)> TraversalResults { get; set; } = new();
 
     /// <summary>
     /// All unique entities found.

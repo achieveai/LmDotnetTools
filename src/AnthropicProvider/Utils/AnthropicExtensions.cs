@@ -132,10 +132,7 @@ public static class AnthropicExtensions
     {
         foreach (var content in response.Content)
         {
-            if (
-                content.Type == "tool_use"
-                && content is AnthropicResponseToolUseContent toolUseContent
-            )
+            if (content.Type == "tool_use" && content is AnthropicResponseToolUseContent toolUseContent)
             {
                 try
                 {

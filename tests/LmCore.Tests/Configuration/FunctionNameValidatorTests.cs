@@ -57,9 +57,7 @@ public class FunctionNameValidatorTests
     [InlineData("invalid?function")] // Contains question mark
     [InlineData("invalid`function")] // Contains backtick
     [InlineData("invalid~function")] // Contains tilde
-    [InlineData(
-        "this_is_a_really_long_function_name_that_exceeds_the_maximum_allowed_length_of_64_characters"
-    )] // Too long
+    [InlineData("this_is_a_really_long_function_name_that_exceeds_the_maximum_allowed_length_of_64_characters")] // Too long
     public void IsValidFunctionName_WithInvalidNames_ReturnsFalse(string? functionName)
     {
         // Act
@@ -145,10 +143,7 @@ public class FunctionNameValidatorTests
 
         // Assert
         Assert.Contains("contains invalid characters", error);
-        Assert.Contains(
-            "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed",
-            error
-        );
+        Assert.Contains("Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed", error);
     }
 
     [Fact]
@@ -193,10 +188,7 @@ public class FunctionNameValidatorTests
 
         // Assert
         Assert.Contains("contains invalid characters", error);
-        Assert.Contains(
-            "Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed",
-            error
-        );
+        Assert.Contains("Only letters (a-z, A-Z), numbers (0-9), underscores (_), and hyphens (-) are allowed", error);
     }
 
     [Theory]
@@ -205,12 +197,7 @@ public class FunctionNameValidatorTests
     [InlineData("weather", "get_current", "__", true)]
     [InlineData("task", "create", "_", true)]
     [InlineData("a", "b", "__", true)]
-    [InlineData(
-        "very_long_prefix",
-        "very_long_function_name_that_when_combined_exceeds_limit",
-        "__",
-        false
-    )]
+    [InlineData("very_long_prefix", "very_long_function_name_that_when_combined_exceeds_limit", "__", false)]
     [InlineData("invalid prefix", "function", "__", false)]
     [InlineData("prefix", "invalid function", "__", false)]
     public void IsValidPrefixedFunctionName_TestVariousCombinations(
@@ -221,11 +208,7 @@ public class FunctionNameValidatorTests
     )
     {
         // Act
-        var result = FunctionNameValidator.IsValidPrefixedFunctionName(
-            prefix,
-            functionName,
-            separator
-        );
+        var result = FunctionNameValidator.IsValidPrefixedFunctionName(prefix, functionName, separator);
 
         // Assert
         Assert.Equal(expectedValid, result);

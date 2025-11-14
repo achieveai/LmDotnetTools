@@ -16,6 +16,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 public class DataDrivenMultiTurnReasoningTests
 {
     private readonly ProviderTestDataManager _dm = new();
+    private static readonly string[] fallbackKeys = new[] { "LLM_API_BASE_URL" };
+    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_KEY" };
+    private static readonly string[] fallbackKeysArray0 = new[] { "LLM_API_BASE_URL" };
 
     public static IEnumerable<object[]> GetProviders() =>
         new[]
@@ -29,28 +32,19 @@ public class DataDrivenMultiTurnReasoningTests
     public async Task MultiTurn_Playback(string testName, string _)
     {
         // Skip if artefacts missing (first run must execute creation test)
-        var file = _dm.GetTestDataPath(
-            testName + "_Turn2",
-            ProviderType.OpenAI,
-            DataType.FinalResponse
-        );
+        var file = _dm.GetTestDataPath(testName + "_Turn2", ProviderType.OpenAI, DataType.FinalResponse);
         if (!File.Exists(file))
         {
             Debug.WriteLine($"Test data for {testName} not found – run creator fact first.");
             return;
         }
 
-        var (turn1Msgs, turn1Opts) = _dm.LoadLmCoreRequest(
-            testName + "_Turn1",
-            ProviderType.OpenAI
-        );
+        var (turn1Msgs, turn1Opts) = _dm.LoadLmCoreRequest(testName + "_Turn1", ProviderType.OpenAI);
         var turn2 = _dm.LoadLmCoreRequest(testName + "_Turn2", ProviderType.OpenAI);
 
         // prepare playback handler
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -61,27 +55,15 @@ public class DataDrivenMultiTurnReasoningTests
             .Create()
             .WithRecordPlayback(cassettePath, allowAdditional: false)
             .ForwardToApi(
-                EnvironmentHelper.GetApiBaseUrlFromEnv(
-                    "OPENAI_API_URL",
-                    new[] { "LLM_API_BASE_URL" },
-                    "https://api.openai.com/v1"
-                ),
-                EnvironmentHelper.GetApiKeyFromEnv(
-                    "OPENAI_API_KEY",
-                    new[] { "LLM_API_KEY" },
-                    "test"
-                )
+                EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys, "https://api.openai.com/v1"),
+                EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeysArray, "test")
             )
             .Build();
 
         var httpClient = new HttpClient(handler);
         var client = new OpenClient(
             httpClient,
-            EnvironmentHelper.GetApiBaseUrlFromEnv(
-                "OPENAI_API_URL",
-                new[] { "LLM_API_BASE_URL" },
-                "https://api.openai.com/v1"
-            )
+            EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys, "https://api.openai.com/v1")
         );
         var agent = new OpenClientAgent("TestAgent", client);
 
@@ -100,11 +82,7 @@ public class DataDrivenMultiTurnReasoningTests
     [MemberData(nameof(GetProviders))]
     public async Task CreateMultiTurnArtefacts(string testName, string model)
     {
-        var path = _dm.GetTestDataPath(
-            testName + "_Turn2",
-            ProviderType.OpenAI,
-            DataType.FinalResponse
-        );
+        var path = _dm.GetTestDataPath(testName + "_Turn2", ProviderType.OpenAI, DataType.FinalResponse);
         if (File.Exists(path))
         {
             Debug.WriteLine("Artefacts already exist. Skipping creation.");
@@ -114,11 +92,7 @@ public class DataDrivenMultiTurnReasoningTests
         // ---- turn 1 ----
         var turn1Msgs = new IMessage[]
         {
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "Which is bigger: 9.11 or 9.9? Explain your reasoning.",
-            },
+            new TextMessage { Role = Role.User, Text = "Which is bigger: 9.11 or 9.9? Explain your reasoning." },
         };
         var opts = new GenerateReplyOptions
         {
@@ -126,11 +100,7 @@ public class DataDrivenMultiTurnReasoningTests
             Temperature = 0f,
             ExtraProperties = new Dictionary<string, object?>
             {
-                ["reasoning"] = new Dictionary<string, object?>
-                {
-                    ["effort"] = "medium",
-                    ["max_tokens"] = 512,
-                },
+                ["reasoning"] = new Dictionary<string, object?> { ["effort"] = "medium", ["max_tokens"] = 512 },
             }.ToImmutableDictionary(),
         };
 
@@ -142,9 +112,7 @@ public class DataDrivenMultiTurnReasoningTests
         );
 
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -157,33 +125,23 @@ public class DataDrivenMultiTurnReasoningTests
             .ForwardToApi(
                 EnvironmentHelper.GetApiBaseUrlFromEnv(
                     "OPENAI_API_URL",
-                    new[] { "LLM_API_BASE_URL" },
+                    fallbackKeysArray0,
                     "https://api.openai.com/v1"
                 ),
-                EnvironmentHelper.GetApiKeyFromEnv(
-                    "OPENAI_API_KEY",
-                    new[] { "LLM_API_KEY" },
-                    "test"
-                )
+                EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeysArray, "test")
             )
             .Build();
 
         var httpClient = new HttpClient(handler);
         var client = new OpenClient(
             httpClient,
-            EnvironmentHelper.GetApiBaseUrlFromEnv(
-                "OPENAI_API_URL",
-                new[] { "LLM_API_BASE_URL" },
-                "https://api.openai.com/v1"
-            )
+            EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray0, "https://api.openai.com/v1")
         );
         var agent = new OpenClientAgent("Recorder", client);
 
         var turn1Resp = (await agent.GenerateReplyAsync(turn1Msgs, opts)).ToList();
         if (!turn1Resp.OfType<ReasoningMessage>().Any())
-            throw new InvalidOperationException(
-                "Provider did not return reasoning, cannot record multi-turn test."
-            );
+            throw new InvalidOperationException("Provider did not return reasoning, cannot record multi-turn test.");
 
         _dm.SaveFinalResponse(testName + "_Turn1", ProviderType.OpenAI, turn1Resp);
 

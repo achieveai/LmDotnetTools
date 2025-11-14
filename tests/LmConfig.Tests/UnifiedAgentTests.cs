@@ -55,11 +55,7 @@ public class UnifiedAgentTests
                             Name = "TestProvider",
                             ModelName = "test-model-name",
                             Priority = 1,
-                            Pricing = new PricingConfig
-                            {
-                                PromptPerMillion = 1.0,
-                                CompletionPerMillion = 2.0,
-                            },
+                            Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
                             Tags = new[] { "test" },
                         },
                     },
@@ -119,11 +115,7 @@ public class UnifiedAgentTests
                             Name = "TestProvider",
                             ModelName = "test-model-name",
                             Priority = 1,
-                            Pricing = new PricingConfig
-                            {
-                                PromptPerMillion = 1.0,
-                                CompletionPerMillion = 2.0,
-                            },
+                            Pricing = new PricingConfig { PromptPerMillion = 1.0, CompletionPerMillion = 2.0 },
                             Tags = new[] { "test" },
                         },
                     },
@@ -219,11 +211,7 @@ public class UnifiedAgentTests
                             Name = "OpenRouter",
                             ModelName = "openai/gpt-4.1", // Different from the model ID
                             Priority = 1,
-                            Pricing = new PricingConfig
-                            {
-                                PromptPerMillion = 2.0,
-                                CompletionPerMillion = 8.0,
-                            },
+                            Pricing = new PricingConfig { PromptPerMillion = 2.0, CompletionPerMillion = 8.0 },
                             Tags = new[] { "openai-compatible" },
                         },
                     },
@@ -246,8 +234,8 @@ public class UnifiedAgentTests
         var mockModelResolver = new Mock<IModelResolver>();
         var expectedResolution = new ProviderResolution
         {
-            Model = config.Models.First(),
-            Provider = config.Models.First().Providers.First(),
+            Model = config.Models[0],
+            Provider = config.Models[0].Providers[0],
             Connection = config.ProviderRegistry["OpenRouter"],
         };
 
@@ -285,9 +273,7 @@ public class UnifiedAgentTests
                 }
             );
 
-        mockAgentFactory
-            .Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>()))
-            .Returns(mockAgent.Object);
+        mockAgentFactory.Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>())).Returns(mockAgent.Object);
 
         services.AddSingleton(mockModelResolver.Object);
         services.AddSingleton(mockAgentFactory.Object);
@@ -354,11 +340,7 @@ public class UnifiedAgentTests
                             Name = "OpenRouter",
                             ModelName = "anthropic/claude-3-sonnet", // Different from the model ID
                             Priority = 1,
-                            Pricing = new PricingConfig
-                            {
-                                PromptPerMillion = 3.0,
-                                CompletionPerMillion = 15.0,
-                            },
+                            Pricing = new PricingConfig { PromptPerMillion = 3.0, CompletionPerMillion = 15.0 },
                             Tags = new[] { "openai-compatible" },
                         },
                     },
@@ -381,8 +363,8 @@ public class UnifiedAgentTests
         var mockModelResolver = new Mock<IModelResolver>();
         var expectedResolution = new ProviderResolution
         {
-            Model = config.Models.First(),
-            Provider = config.Models.First().Providers.First(),
+            Model = config.Models[0],
+            Provider = config.Models[0].Providers[0],
             Connection = config.ProviderRegistry["OpenRouter"],
         };
 
@@ -415,9 +397,7 @@ public class UnifiedAgentTests
             )
             .ReturnsAsync(CreateEmptyAsyncEnumerable());
 
-        mockAgentFactory
-            .Setup(f => f.CreateStreamingAgent(It.IsAny<ProviderResolution>()))
-            .Returns(mockAgent.Object);
+        mockAgentFactory.Setup(f => f.CreateStreamingAgent(It.IsAny<ProviderResolution>())).Returns(mockAgent.Object);
 
         services.AddSingleton(mockModelResolver.Object);
         services.AddSingleton(mockAgentFactory.Object);
@@ -486,11 +466,7 @@ public class UnifiedAgentTests
                             Name = "DeepSeek",
                             ModelName = "deepseek-reasoner", // Different from the model ID
                             Priority = 1,
-                            Pricing = new PricingConfig
-                            {
-                                PromptPerMillion = 0.55,
-                                CompletionPerMillion = 2.19,
-                            },
+                            Pricing = new PricingConfig { PromptPerMillion = 0.55, CompletionPerMillion = 2.19 },
                             Tags = new[] { "reasoning" },
                         },
                     },
@@ -513,8 +489,8 @@ public class UnifiedAgentTests
         var mockModelResolver = new Mock<IModelResolver>();
         var expectedResolution = new ProviderResolution
         {
-            Model = config.Models.First(),
-            Provider = config.Models.First().Providers.First(),
+            Model = config.Models[0],
+            Provider = config.Models[0].Providers[0],
             Connection = config.ProviderRegistry["DeepSeek"],
         };
 
@@ -552,9 +528,7 @@ public class UnifiedAgentTests
                 }
             );
 
-        mockAgentFactory
-            .Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>()))
-            .Returns(mockAgent.Object);
+        mockAgentFactory.Setup(f => f.CreateAgent(It.IsAny<ProviderResolution>())).Returns(mockAgent.Object);
 
         services.AddSingleton(mockModelResolver.Object);
         services.AddSingleton(mockAgentFactory.Object);

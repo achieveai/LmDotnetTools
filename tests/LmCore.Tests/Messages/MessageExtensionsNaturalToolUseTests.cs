@@ -19,16 +19,9 @@ public class MessageExtensionsNaturalToolUseTests
             Role = Role.Assistant,
         };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
 
-        var aggregateMessage = new ToolsCallAggregateMessage(
-            toolCallMessage,
-            toolResultMessage,
-            "test-agent"
-        );
+        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "test-agent");
 
         // Act
         var result = aggregateMessage.ToNaturalToolUse();
@@ -75,10 +68,7 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall("TestFunction", "{}");
         var toolResult = new ToolCallResult(null, "test result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[] { textMessage, aggregateMessage };
@@ -97,19 +87,12 @@ public class MessageExtensionsNaturalToolUseTests
     public void CombineAsNaturalToolUse_WithMixedMessages_CombinesCorrectly()
     {
         // Arrange
-        var prefixMessage = new TextMessage
-        {
-            Text = "Let me check that for you.",
-            Role = Role.Assistant,
-        };
+        var prefixMessage = new TextMessage { Text = "Let me check that for you.", Role = Role.Assistant };
 
         var toolCall = new ToolCall("CheckWeather", "{\"city\":\"London\"}");
         var toolResult = new ToolCallResult(null, "Cloudy, 18°C");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var suffixMessage = new TextMessage { Text = "Hope that helps!", Role = Role.Assistant };
@@ -146,7 +129,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void CombineAsNaturalToolUse_WithEmptyCollection_ReturnsEmptyTextMessage()
     {
         // Arrange
-        var emptyMessages = new IMessage[0];
+        var emptyMessages = Array.Empty<IMessage>();
 
         // Act
         var result = emptyMessages.CombineAsNaturalToolUse();
@@ -163,10 +146,7 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall("TestFunc", "{}");
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[]
@@ -219,10 +199,7 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall("TestFunc", "{}");
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -252,10 +229,7 @@ public class MessageExtensionsNaturalToolUseTests
         var toolCall = new ToolCall(null, null); // Invalid data
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act

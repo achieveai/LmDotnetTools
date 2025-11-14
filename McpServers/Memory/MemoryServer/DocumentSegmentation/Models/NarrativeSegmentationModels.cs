@@ -353,8 +353,7 @@ public class NarrativeFlowAnalysis
     /// <summary>
     /// Transition quality scores for each detected boundary.
     /// </summary>
-    public Dictionary<int, double> TransitionQualities { get; set; } =
-        new Dictionary<int, double>();
+    public Dictionary<int, double> TransitionQualities { get; set; } = new Dictionary<int, double>();
 }
 
 /// <summary>

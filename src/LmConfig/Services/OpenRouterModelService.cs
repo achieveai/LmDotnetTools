@@ -39,11 +39,7 @@ public class OpenRouterModelService
     public OpenRouterModelService(HttpClient httpClient, ILogger<OpenRouterModelService> logger)
         : this(httpClient, logger, null) { }
 
-    public OpenRouterModelService(
-        HttpClient httpClient,
-        ILogger<OpenRouterModelService> logger,
-        string? cacheFilePath
-    )
+    public OpenRouterModelService(HttpClient httpClient, ILogger<OpenRouterModelService> logger, string? cacheFilePath)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -141,8 +137,9 @@ public class OpenRouterModelService
         }
 
         return DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime)
-            ? dateTime.ToUniversalTime()
-            : DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset) ? dateTimeOffset.UtcDateTime : null;
+                ? dateTime.ToUniversalTime()
+            : DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset) ? dateTimeOffset.UtcDateTime
+            : null;
     }
 
     /// <summary>
@@ -179,10 +176,7 @@ public class OpenRouterModelService
                 );
                 if (attempt == maxRetries)
                 {
-                    throw new HttpRequestException(
-                        $"Request timed out after multiple attempts",
-                        ex
-                    );
+                    throw new HttpRequestException($"Request timed out after multiple attempts", ex);
                 }
 
                 await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
@@ -241,9 +235,7 @@ public class OpenRouterModelService
                 await DelayWithExponentialBackoff(attempt, baseDelay, cancellationToken);
             }
         }
-        throw new InvalidOperationException(
-            $"Failed to execute {operationName} after all retry attempts"
-        );
+        throw new InvalidOperationException($"Failed to execute {operationName} after all retry attempts");
     }
 
     /// <summary>
@@ -293,11 +285,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Generic validation method for JSON responses with data arrays.
     /// </summary>
-    private bool ValidateJsonResponse(
-        JsonNode? jsonData,
-        Func<JsonNode, bool> itemValidator,
-        string responseType
-    )
+    private bool ValidateJsonResponse(JsonNode? jsonData, Func<JsonNode, bool> itemValidator, string responseType)
     {
         try
         {
@@ -325,11 +313,7 @@ public class OpenRouterModelService
         }
         catch (Exception ex)
         {
-            _logger.LogTrace(
-                ex,
-                "Error validating {ResponseType} response structure",
-                responseType
-            );
+            _logger.LogTrace(ex, "Error validating {ResponseType} response structure", responseType);
             return false;
         }
     }
@@ -337,16 +321,10 @@ public class OpenRouterModelService
     /// <summary>
     /// Implements exponential backoff delay for retry logic.
     /// </summary>
-    private async Task DelayWithExponentialBackoff(
-        int attempt,
-        TimeSpan baseDelay,
-        CancellationToken cancellationToken
-    )
+    private async Task DelayWithExponentialBackoff(int attempt, TimeSpan baseDelay, CancellationToken cancellationToken)
     {
         var delay = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * Math.Pow(2, attempt));
-        var jitter = TimeSpan.FromMilliseconds(
-            Random.Shared.Next(0, (int)(delay.TotalMilliseconds * 0.1))
-        );
+        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, (int)(delay.TotalMilliseconds * 0.1)));
         var totalDelay = delay + jitter;
 
         _logger.LogTrace("Waiting {DelayMs}ms before retry", totalDelay.TotalMilliseconds);
@@ -361,9 +339,7 @@ public class OpenRouterModelService
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>List of model configurations</returns>
-    public async Task<IReadOnlyList<ModelConfig>> GetModelConfigsAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<IReadOnlyList<ModelConfig>> GetModelConfigsAsync(CancellationToken cancellationToken = default)
     {
         var totalStopwatch = System.Diagnostics.Stopwatch.StartNew();
         _logger.LogDebug("Getting OpenRouter model configurations");
@@ -373,9 +349,7 @@ public class OpenRouterModelService
 
         if (cache != null && cache.IsValid)
         {
-            _logger.LogDebug(
-                "Cache is valid, returning cached data and starting background refresh"
-            );
+            _logger.LogDebug("Cache is valid, returning cached data and starting background refresh");
 
             // Requirement 1.3: Start background refresh when returning cached configurations
             _ = StartBackgroundRefreshAsync();
@@ -483,18 +457,14 @@ public class OpenRouterModelService
 
                     _logger.LogDebug("Background cache refresh completed successfully");
                 }
-                catch (OperationCanceledException ex)
-                    when (ex.CancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested)
                 {
                     _logger.LogWarning("Background cache refresh was cancelled due to timeout");
                 }
                 catch (Exception ex)
                 {
                     // Requirement 2.3: Continue using existing cache and log errors on refresh failure
-                    _logger.LogWarning(
-                        ex,
-                        "Background cache refresh failed, continuing with existing cache"
-                    );
+                    _logger.LogWarning(ex, "Background cache refresh failed, continuing with existing cache");
                 }
                 finally
                 {
@@ -568,10 +538,7 @@ public class OpenRouterModelService
 
                 if (cache == null)
                 {
-                    _logger.LogWarning(
-                        "Cache file contains null data, deleting: {CacheFilePath}",
-                        _cacheFilePath
-                    );
+                    _logger.LogWarning("Cache file contains null data, deleting: {CacheFilePath}", _cacheFilePath);
                     await DeleteCorruptedCacheFileAsync();
                     return null;
                 }
@@ -758,11 +725,7 @@ public class OpenRouterModelService
         }
         catch (Exception deleteEx)
         {
-            _logger.LogWarning(
-                deleteEx,
-                "Failed to delete corrupted cache file: {CacheFilePath}",
-                _cacheFilePath
-            );
+            _logger.LogWarning(deleteEx, "Failed to delete corrupted cache file: {CacheFilePath}", _cacheFilePath);
         }
 
         await Task.CompletedTask; // Make method async for consistency
@@ -855,9 +818,7 @@ public class OpenRouterModelService
                 permaslug = slug;
             }
 
-            tasks.Add(
-                FetchSingleModelDetailsAsync(permaslug, modelDetails, semaphore, cancellationToken)
-            );
+            tasks.Add(FetchSingleModelDetailsAsync(permaslug, modelDetails, semaphore, cancellationToken));
         }
 
         await Task.WhenAll(tasks);
@@ -902,10 +863,7 @@ public class OpenRouterModelService
                     modelDetails[modelPermaslug] = detailsData;
                 }
 
-                _logger.LogTrace(
-                    "Successfully fetched details for model {ModelPermaslug}",
-                    modelPermaslug
-                );
+                _logger.LogTrace("Successfully fetched details for model {ModelPermaslug}", modelPermaslug);
             }
             catch (Exception ex)
             {
@@ -942,8 +900,7 @@ public class OpenRouterModelService
     {
         return ValidateJsonResponse(
             detailsData,
-            item =>
-                GetStringValue(item, "id") != null && GetStringValue(item, "provider_name") != null,
+            item => GetStringValue(item, "id") != null && GetStringValue(item, "provider_name") != null,
             "model details"
         );
     }
@@ -951,10 +908,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Handles network failures by falling back to cache or returning empty list.
     /// </summary>
-    private async Task<IReadOnlyList<ModelConfig>> HandleNetworkFailure(
-        OpenRouterCache? cache,
-        string errorType
-    )
+    private async Task<IReadOnlyList<ModelConfig>> HandleNetworkFailure(OpenRouterCache? cache, string errorType)
     {
         // If we have stale cache, use it as fallback
         if (cache != null)
@@ -968,10 +922,7 @@ public class OpenRouterModelService
         }
 
         // No cache available, return empty list
-        _logger.LogWarning(
-            "{ErrorType}: No cache available, returning empty model list",
-            errorType
-        );
+        _logger.LogWarning("{ErrorType}: No cache available, returning empty model list", errorType);
         return [];
     }
 
@@ -1014,21 +965,14 @@ public class OpenRouterModelService
                     )
                 )
                 {
-                    await JsonSerializer.SerializeAsync(
-                        fileStream,
-                        cache,
-                        _jsonOptions,
-                        cancellationToken
-                    );
+                    await JsonSerializer.SerializeAsync(fileStream, cache, _jsonOptions, cancellationToken);
                     await fileStream.FlushAsync(cancellationToken);
                 }
 
                 // Verify the written file can be read back correctly
                 if (!await VerifyWrittenCacheFile(tempFile, cancellationToken))
                 {
-                    throw new InvalidOperationException(
-                        "Cache file verification failed after write"
-                    );
+                    throw new InvalidOperationException("Cache file verification failed after write");
                 }
 
                 // Atomic move to final location
@@ -1071,11 +1015,7 @@ public class OpenRouterModelService
                 }
                 catch (Exception cleanupEx)
                 {
-                    _logger.LogWarning(
-                        cleanupEx,
-                        "Failed to clean up temporary cache file: {TempFile}",
-                        tempFile
-                    );
+                    _logger.LogWarning(cleanupEx, "Failed to clean up temporary cache file: {TempFile}", tempFile);
                 }
 
                 // Restore from backup if available
@@ -1104,19 +1044,11 @@ public class OpenRouterModelService
     /// <summary>
     /// Verifies that a written cache file can be read back correctly.
     /// </summary>
-    private async Task<bool> VerifyWrittenCacheFile(
-        string filePath,
-        CancellationToken cancellationToken
-    )
+    private async Task<bool> VerifyWrittenCacheFile(string filePath, CancellationToken cancellationToken)
     {
         try
         {
-            using var fileStream = new FileStream(
-                filePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read
-            );
+            using var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var verifyCache = await JsonSerializer.DeserializeAsync<OpenRouterCache>(
                 fileStream,
                 _jsonOptions,
@@ -1213,11 +1145,7 @@ public class OpenRouterModelService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(
-                        ex,
-                        "Failed to create ModelConfig for model {ModelSlug}",
-                        modelGroup.Key
-                    );
+                    _logger.LogWarning(ex, "Failed to create ModelConfig for model {ModelSlug}", modelGroup.Key);
                 }
             }
 
@@ -1278,14 +1206,7 @@ public class OpenRouterModelService
         // Create providers from model details endpoints
         var providers = new List<ProviderConfig>();
         var openRouterSubProviders = new List<SubProviderConfig>();
-        var specialProviders = new HashSet<string>
-        {
-            "gemini",
-            "openai",
-            "groq",
-            "deepinfra",
-            "anthropic",
-        };
+        var specialProviders = new HashSet<string> { "gemini", "openai", "groq", "deepinfra", "anthropic" };
 
         // Get the permaslug for this model to look up details
         var modelPermaslug = GetStringValue(primaryModelNode, "permaslug");
@@ -1296,10 +1217,7 @@ public class OpenRouterModelService
         }
 
         // Look up model details using permaslug
-        if (
-            cache.ModelDetails != null
-            && cache.ModelDetails.TryGetValue(modelPermaslug, out var modelDetailsNode)
-        )
+        if (cache.ModelDetails != null && cache.ModelDetails.TryGetValue(modelPermaslug, out var modelDetailsNode))
         {
             var endpointsArray = modelDetailsNode?["data"]?.AsArray();
             if (endpointsArray != null)
@@ -1313,8 +1231,7 @@ public class OpenRouterModelService
                         continue;
                     }
 
-                    var providerName = GetStringValue(endpointNode, "provider_name")
-                        ?.ToLowerInvariant();
+                    var providerName = GetStringValue(endpointNode, "provider_name")?.ToLowerInvariant();
                     var endpointId = GetStringValue(endpointNode, "id");
                     var providerDisplayName = GetStringValue(endpointNode, "provider_display_name");
                     var providerModelId = GetStringValue(endpointNode, "provider_model_id");
@@ -1499,11 +1416,7 @@ public class OpenRouterModelService
             completionPerMillion = completionPriceValue * 1_000_000; // Convert from per-token to per-million
         }
 
-        return new PricingConfig
-        {
-            PromptPerMillion = promptPerMillion,
-            CompletionPerMillion = completionPerMillion,
-        };
+        return new PricingConfig { PromptPerMillion = promptPerMillion, CompletionPerMillion = completionPerMillion };
     }
 
     /// <summary>
@@ -1646,9 +1559,7 @@ public class OpenRouterModelService
     /// <summary>
     /// Gets the best pricing from a list of sub-providers (typically the cheapest).
     /// </summary>
-    private static PricingConfig GetBestPricingFromSubProviders(
-        IReadOnlyList<SubProviderConfig> subProviders
-    )
+    private static PricingConfig GetBestPricingFromSubProviders(IReadOnlyList<SubProviderConfig> subProviders)
     {
         if (subProviders == null || subProviders.Count == 0)
         {
@@ -1662,8 +1573,7 @@ public class OpenRouterModelService
             .OrderBy(p => p.PromptPerMillion + p.CompletionPerMillion)
             .FirstOrDefault();
 
-        return bestPricing
-            ?? new PricingConfig { PromptPerMillion = 0.0, CompletionPerMillion = 0.0 };
+        return bestPricing ?? new PricingConfig { PromptPerMillion = 0.0, CompletionPerMillion = 0.0 };
     }
 
     /// <summary>
@@ -1698,15 +1608,9 @@ public class OpenRouterModelService
                 SupportsImages = inputModalities.Contains("image"),
                 SupportsAudio = inputModalities.Contains("audio"),
                 SupportsVideo = inputModalities.Contains("video"),
-                SupportedImageFormats = inputModalities.Contains("image")
-                    ? new[] { "jpeg", "png", "webp", "gif" }
-                    : [],
-                SupportedAudioFormats = inputModalities.Contains("audio")
-                    ? new[] { "mp3", "wav", "m4a" }
-                    : [],
-                SupportedVideoFormats = inputModalities.Contains("video")
-                    ? new[] { "mp4", "avi", "mov" }
-                    : [],
+                SupportedImageFormats = inputModalities.Contains("image") ? new[] { "jpeg", "png", "webp", "gif" } : [],
+                SupportedAudioFormats = inputModalities.Contains("audio") ? new[] { "mp3", "wav", "m4a" } : [],
+                SupportedVideoFormats = inputModalities.Contains("video") ? new[] { "mp4", "avi", "mov" } : [],
             };
         }
 
@@ -1746,34 +1650,21 @@ public class OpenRouterModelService
                     var supportsToolChoice = features["supports_tool_choice"];
                     if (supportsToolChoice != null)
                     {
-                        toolChoiceSupport["literal_none"] = GetBoolValue(
-                            supportsToolChoice,
-                            "literal_none",
-                            true
-                        );
-                        toolChoiceSupport["literal_auto"] = GetBoolValue(
-                            supportsToolChoice,
-                            "literal_auto",
-                            true
-                        );
+                        toolChoiceSupport["literal_none"] = GetBoolValue(supportsToolChoice, "literal_none", true);
+                        toolChoiceSupport["literal_auto"] = GetBoolValue(supportsToolChoice, "literal_auto", true);
                         toolChoiceSupport["literal_required"] = GetBoolValue(
                             supportsToolChoice,
                             "literal_required",
                             true
                         );
-                        toolChoiceSupport["type_function"] = GetBoolValue(
-                            supportsToolChoice,
-                            "type_function",
-                            true
-                        );
+                        toolChoiceSupport["type_function"] = GetBoolValue(supportsToolChoice, "type_function", true);
                     }
                 }
 
                 functionCalling = new FunctionCallingCapability
                 {
                     SupportsTools = true,
-                    SupportsToolChoice =
-                        toolChoiceSupport["literal_auto"] || toolChoiceSupport["literal_required"],
+                    SupportsToolChoice = toolChoiceSupport["literal_auto"] || toolChoiceSupport["literal_required"],
                     SupportsStructuredParameters = true,
                     SupportedToolTypes = ["function"],
                 };
@@ -1797,11 +1688,9 @@ public class OpenRouterModelService
                 var supportedParameters = features["supported_parameters"];
                 if (supportedParameters != null)
                 {
-                    hasResponseFormat =
-                        hasResponseFormat || GetBoolValue(supportedParameters, "response_format");
+                    hasResponseFormat = hasResponseFormat || GetBoolValue(supportedParameters, "response_format");
                     hasStructuredOutputs =
-                        hasStructuredOutputs
-                        || GetBoolValue(supportedParameters, "structured_outputs");
+                        hasStructuredOutputs || GetBoolValue(supportedParameters, "structured_outputs");
                 }
             }
 
@@ -1848,7 +1737,9 @@ public class OpenRouterModelService
             SupportsStreaming = true, // Most OpenRouter models support streaming
             SupportedFeatures = supportedFeatures,
             IsPreview =
-                GetStringValue(modelNode, "name")?.ToLowerInvariant().Contains("preview", StringComparison.InvariantCultureIgnoreCase) ?? false,
+                GetStringValue(modelNode, "name")
+                    ?.ToLowerInvariant()
+                    .Contains("preview", StringComparison.InvariantCultureIgnoreCase) ?? false,
             IsDeprecated = !string.IsNullOrEmpty(GetStringValue(modelNode, "warning_message")),
         };
     }
@@ -1870,9 +1761,7 @@ public class OpenRouterModelService
 
         // Check for reasoning indicators in name/slug
         var reasoningIndicators = new[] { "o1", "reasoning", "think", "deepseek-r1", "qwq", "r1" };
-        return reasoningIndicators.Any(indicator =>
-            name.Contains(indicator) || slug.Contains(indicator)
-        );
+        return reasoningIndicators.Any(indicator => name.Contains(indicator) || slug.Contains(indicator));
     }
 
     /// <summary>
@@ -1890,8 +1779,9 @@ public class OpenRouterModelService
         }
 
         return name.Contains("deepseek") || slug.Contains("deepseek") || author.Contains("deepseek")
-            ? ThinkingType.DeepSeek
-            : author.Contains("anthropic") ? ThinkingType.Anthropic : ThinkingType.Custom;
+                ? ThinkingType.DeepSeek
+            : author.Contains("anthropic") ? ThinkingType.Anthropic
+            : ThinkingType.Custom;
     }
 
     /// <summary>
@@ -1928,9 +1818,7 @@ public class OpenRouterModelService
                 FilePath = _cacheFilePath,
                 SizeBytes = fileInfo.Length,
                 LastModified = fileInfo.LastWriteTimeUtc,
-                IsValid =
-                    File.GetLastWriteTimeUtc(_cacheFilePath)
-                    > DateTime.UtcNow.Subtract(CacheExpiration),
+                IsValid = File.GetLastWriteTimeUtc(_cacheFilePath) > DateTime.UtcNow.Subtract(CacheExpiration),
             };
         }
         catch (Exception ex)

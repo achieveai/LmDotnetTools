@@ -28,10 +28,7 @@ public static class MockToolTypes
     /// <summary>
     /// Mock tool types from Python server.py sample
     /// </summary>
-    public static readonly IReadOnlyList<Type> PythonSample = new[]
-    {
-        typeof(MockPythonExecutionTool),
-    };
+    public static readonly IReadOnlyList<Type> PythonSample = new[] { typeof(MockPythonExecutionTool) };
 
     /// <summary>
     /// Weather tool types

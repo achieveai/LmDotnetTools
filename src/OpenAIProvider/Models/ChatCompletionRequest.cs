@@ -120,9 +120,7 @@ public record ChatCompletionRequest
                         ? new CompositeMessage
                         {
                             Role = cm.Role,
-                            Messages = cm
-                                .Messages.Where(mm => mm is not UsageMessage)
-                                .ToImmutableList(),
+                            Messages = cm.Messages.Where(mm => mm is not UsageMessage).ToImmutableList(),
                         }
                         : m,
                     UsageMessage _ => null, // skip usage messages
@@ -149,8 +147,7 @@ public record ChatCompletionRequest
                         ? (bool)stream
                         : false,
                 SafePrompt =
-                    options.ExtraProperties.TryGetValue("safe_prompt", out var safePrompt)
-                    && safePrompt is bool
+                    options.ExtraProperties.TryGetValue("safe_prompt", out var safePrompt) && safePrompt is bool
                         ? (bool)safePrompt
                         : null,
                 RandomSeed = options.RandomSeed,
@@ -158,16 +155,9 @@ public record ChatCompletionRequest
                 Temperature = options.Temperature ?? 0.0,
                 MaxTokens = options.MaxToken ?? 4096,
                 Stop = options.StopSequence ?? [],
-                Tools = options
-                    .Functions?.Select(fc => new FunctionTool(fc.ToOpenFunctionDefinition()))
-                    .ToList(),
+                Tools = options.Functions?.Select(fc => new FunctionTool(fc.ToOpenFunctionDefinition())).ToList(),
             }
-            : new ChatCompletionRequest(
-            model ?? "",
-            chatMessages,
-            temperature: 0.7f,
-            maxTokens: 1024
-        );
+            : new ChatCompletionRequest(model ?? "", chatMessages, temperature: 0.7f, maxTokens: 1024);
     }
 
     public static IEnumerable<ChatMessage> FromMessage(IMessage message)
@@ -177,9 +167,7 @@ public record ChatCompletionRequest
             case CompositeMessage compositeMsg:
                 if (
                     compositeMsg.Messages.Any(m =>
-                        m is ToolsCallAggregateMessage
-                        || m is ToolsCallMessage
-                        || m is ToolsCallResultMessage
+                        m is ToolsCallAggregateMessage || m is ToolsCallMessage || m is ToolsCallResultMessage
                     )
                 )
                 {
@@ -198,21 +186,13 @@ public record ChatCompletionRequest
                                     .Select(m =>
                                         m switch
                                         {
-                                            TextMessage textMessage => new Union<
-                                                TextContent,
-                                                ImageContent
-                                            >(new TextContent(textMessage.Text)),
-                                            ImageMessage imageMessage => new Union<
-                                                TextContent,
-                                                ImageContent
-                                            >(
-                                                new ImageContent(
-                                                    imageMessage.ImageData.ToDataUrl()!
-                                                )
+                                            TextMessage textMessage => new Union<TextContent, ImageContent>(
+                                                new TextContent(textMessage.Text)
                                             ),
-                                            _ => throw new ArgumentException(
-                                                "Unsupported message type"
+                                            ImageMessage imageMessage => new Union<TextContent, ImageContent>(
+                                                new ImageContent(imageMessage.ImageData.ToDataUrl()!)
                                             ),
+                                            _ => throw new ArgumentException("Unsupported message type"),
                                         }
                                     )
                                     .ToArray()
@@ -279,46 +259,42 @@ public record ChatCompletionRequest
                         {
                             Role = RoleEnum.Tool,
                             ToolCallId = toolCallId,
-                            Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                                tc.Result!
-                            ),
+                            Content = new Union<string, Union<TextContent, ImageContent>[]>(tc.Result!),
                         };
                     });
             case ToolsCallAggregateMessage toolCallAggregateMessage:
                 return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
+            {
+                var cm = new ChatMessage
                 {
-                    var cm = new ChatMessage
-                    {
-                        Role = ChatMessage.ToRoleEnum(textMessage.Role),
-                        Content =
-                            textMessage.GetText() != null
-                                ? new Union<string, Union<TextContent, ImageContent>[]>(
-                                    textMessage.GetText()!
-                                )
-                                : null,
-                    };
+                    Role = ChatMessage.ToRoleEnum(textMessage.Role),
+                    Content =
+                        textMessage.GetText() != null
+                            ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
+                            : null,
+                };
 
-                    if (
-                        textMessage.Metadata != null
-                        && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
-                        && rVal is string rStr
-                    )
-                    {
-                        cm.Reasoning = rStr;
-                    }
-                    else if (
-                        textMessage.Metadata != null
-                        && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
-                        && dVal is List<ChatMessage.ReasoningDetail> details
-                    )
-                    {
-                        cm.ReasoningDetails = details;
-                    }
-
-                    return [cm];
+                if (
+                    textMessage.Metadata != null
+                    && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
+                    && rVal is string rStr
+                )
+                {
+                    cm.Reasoning = rStr;
                 }
+                else if (
+                    textMessage.Metadata != null
+                    && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
+                    && dVal is List<ChatMessage.ReasoningDetail> details
+                )
+                {
+                    cm.ReasoningDetails = details;
+                }
+
+                return [cm];
+            }
             case ICanGetToolCalls toolCallMessage:
                 var toolChat = new ChatMessage
                 {
@@ -326,9 +302,7 @@ public record ChatCompletionRequest
                     ToolCalls = toolCallMessage
                         .GetToolCalls()!
                         .Select(tc => new FunctionContent(
-                            tc.ToolCallId
-                                ?? "call_"
-                                    + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
+                            tc.ToolCallId ?? "call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
                             new FunctionCall(tc.FunctionName!, tc.FunctionArgs!)
                         )
                         {
@@ -362,9 +336,7 @@ public record ChatCompletionRequest
         }
     }
 
-    private static IEnumerable<ChatMessage> MergeReasoningIntoAssistant(
-        IEnumerable<IMessage> source
-    )
+    private static IEnumerable<ChatMessage> MergeReasoningIntoAssistant(IEnumerable<IMessage> source)
     {
         var reasoningBuffer = new List<ReasoningMessage>();
 
@@ -391,23 +363,19 @@ public record ChatCompletionRequest
                 case TextMessage txt:
                 case ToolsCallMessage tc:
                 case ToolsCallAggregateMessage agg:
+                {
+                    var produced = FromMessage(m).ToList();
+                    foreach (var ch in produced)
                     {
-                        var produced = FromMessage(m).ToList();
-                        foreach (var ch in produced)
-                        {
-                            MergeReasoning(reasoningBuffer, ch);
-                            yield return ch;
-                        }
-                        break;
+                        MergeReasoning(reasoningBuffer, ch);
+                        yield return ch;
                     }
+                    break;
+                }
 
                 default:
                     // For other message types (system/user/tool etc.) just forward conversion without merging
-                    if (
-                        m is TextUpdateMessage
-                        || m is ToolsCallUpdateMessage
-                        || m is ReasoningUpdateMessage
-                    )
+                    if (m is TextUpdateMessage || m is ToolsCallUpdateMessage || m is ReasoningUpdateMessage)
                     {
                         // never send update messages in ChatCompletionRequest
                         continue;
@@ -447,15 +415,11 @@ public record ChatCompletionRequest
             List<ReasoningMessage> selected;
             if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted))
             {
-                selected = reasoningBuffer
-                    .Where(p => p.Visibility == ReasoningVisibility.Encrypted)
-                    .ToList();
+                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted).ToList();
             }
             else if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary))
             {
-                selected = reasoningBuffer
-                    .Where(p => p.Visibility == ReasoningVisibility.Summary)
-                    .ToList();
+                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary).ToList();
             }
             else
             {
@@ -485,9 +449,7 @@ public record ChatCompletionRequest
         }
     }
 
-    private static Dictionary<string, object>? CreateAdditionalParameters(
-        GenerateReplyOptions options
-    )
+    private static Dictionary<string, object>? CreateAdditionalParameters(GenerateReplyOptions options)
     {
         // Only create JsonObject if there are actual parameters to add
         bool hasExtraProperties = options.ExtraProperties.Count > 0;
@@ -507,9 +469,7 @@ public record ChatCompletionRequest
         {
             parameters["provider"] = new JsonObject
             {
-                ["order"] = new JsonArray(
-                    ((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p)).ToArray()
-                ),
+                ["order"] = new JsonArray(((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p)).ToArray()),
                 ["allow_fallbacks"] = false,
             };
         }
@@ -529,9 +489,7 @@ public record ChatCompletionRequest
                 else
                 {
                     // Use JsonSerializer to convert arbitrary objects (including dictionaries/arrays) into JsonNode
-                    parameters[kvp.Key] = System.Text.Json.JsonSerializer.SerializeToNode(
-                        kvp.Value
-                    );
+                    parameters[kvp.Key] = System.Text.Json.JsonSerializer.SerializeToNode(kvp.Value);
                 }
             }
         }

@@ -13,9 +13,7 @@ public class DataDrivenFunctionToolTests
     private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
 
@@ -27,10 +25,7 @@ public class DataDrivenFunctionToolTests
         Debug.WriteLine($"Starting test for {testName}");
 
         // Arrange - Load data from test files
-        var (messages, options) = _testDataManager.LoadLmCoreRequest(
-            testName,
-            ProviderType.Anthropic
-        );
+        var (messages, options) = _testDataManager.LoadLmCoreRequest(testName, ProviderType.Anthropic);
 
         Debug.WriteLine(
             $"Loaded {messages.Length} messages and options with {options.Functions?.Length ?? 0} functions"
@@ -61,17 +56,10 @@ public class DataDrivenFunctionToolTests
         Debug.WriteLine($"Generated response: {response?.GetType().Name}");
 
         // Assert - Compare with expected response
-        var expectedResponses = _testDataManager.LoadFinalResponse(
-            testName,
-            ProviderType.Anthropic
-        );
+        var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.Anthropic);
         if (expectedResponses == null)
         {
-            _testDataManager.SaveFinalResponse(
-                testName,
-                ProviderType.Anthropic,
-                response ?? new List<IMessage>()
-            );
+            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? new List<IMessage>());
             return; // Skip comparison if no expected data exists yet
         }
 
@@ -84,11 +72,9 @@ public class DataDrivenFunctionToolTests
         Assert.Single(response, r => r is UsageMessage);
 
         // Check that the remaining messages match what we expected
-        Assert.Equal(expectedResponses.Count(), responseWithoutUsage.Count);
+        Assert.Equal(expectedResponses.Count, responseWithoutUsage.Count);
 
-        foreach (
-            var (expectedResponse, responseItem) in expectedResponses.Zip(responseWithoutUsage)
-        )
+        foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseWithoutUsage))
         {
             if (expectedResponse is TextMessage expectedTextResponse)
             {
@@ -96,20 +82,12 @@ public class DataDrivenFunctionToolTests
                 Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
                 Assert.Equal(expectedTextResponse.Role, responseItem.Role);
             }
-            else if (
-                expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage
-            )
+            else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
             {
                 Assert.IsType<ToolsCallAggregateMessage>(responseItem);
                 var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
-                Assert.Equal(
-                    expectedToolsCallAggregateMessage.Role,
-                    toolsCallAggregateMessage.Role
-                );
-                Assert.Equal(
-                    expectedToolsCallAggregateMessage.FromAgent,
-                    toolsCallAggregateMessage.FromAgent
-                );
+                Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
+                Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
                 Assert.Equal(
                     expectedToolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count(),
                     toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count()
@@ -194,9 +172,7 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "Anthropic",
@@ -248,11 +224,7 @@ public class DataDrivenFunctionToolTests
                 Role = Role.System,
                 Text = "You are a helpful assistant that can use tools to help users.",
             },
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "List files in root and \"code\" directories.",
-            },
+            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." },
         };
 
         // Create multiple function definitions
@@ -301,9 +273,7 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "Anthropic",

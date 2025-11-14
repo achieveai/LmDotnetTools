@@ -14,11 +14,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         private readonly IAgent _llmAgent;
         private readonly IStreamingAgent _agentWithMcp;
 
-        public SingleToolCallExample(
-            IMcpClient mcpClient,
-            IAgent llmAgent,
-            IStreamingAgent agentWithMcp
-        )
+        public SingleToolCallExample(IMcpClient mcpClient, IAgent llmAgent, IStreamingAgent agentWithMcp)
         {
             _mcpClient = mcpClient;
             _llmAgent = llmAgent;
@@ -76,9 +72,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             }
             else if (reply2 is ToolsCallResultMessage toolsCallMessage)
             {
-                Console.WriteLine(
-                    string.Join("\n", toolsCallMessage.ToolCallResults.Select(tc => tc.Result))
-                );
+                Console.WriteLine(string.Join("\n", toolsCallMessage.ToolCallResults.Select(tc => tc.Result)));
             }
             else if (reply2 != null)
             {

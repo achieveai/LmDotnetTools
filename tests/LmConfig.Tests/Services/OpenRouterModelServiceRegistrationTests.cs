@@ -185,9 +185,7 @@ public class OpenRouterModelServiceRegistrationTests
         services.AddLmConfig(appConfig);
 
         // Assert
-        var serviceDescriptor = services.FirstOrDefault(s =>
-            s.ServiceType == typeof(OpenRouterModelService)
-        );
+        var serviceDescriptor = services.FirstOrDefault(s => s.ServiceType == typeof(OpenRouterModelService));
         Assert.NotNull(serviceDescriptor);
         Assert.Equal(ServiceLifetime.Singleton, serviceDescriptor.Lifetime);
     }

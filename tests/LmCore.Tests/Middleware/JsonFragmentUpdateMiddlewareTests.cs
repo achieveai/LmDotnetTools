@@ -108,9 +108,7 @@ public class JsonFragmentUpdateMiddlewareTests
             );
             foreach (var update in processedUpdate.JsonFragmentUpdates)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'"
-                );
+                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
             }
         }
     }
@@ -124,9 +122,7 @@ public class JsonFragmentUpdateMiddlewareTests
     )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            $"Testing streaming: '{fragment1}' + '{fragment2}' + '{fragment3}'"
-        );
+        System.Diagnostics.Debug.WriteLine($"Testing streaming: '{fragment1}' + '{fragment2}' + '{fragment3}'");
 
         var middleware = new JsonFragmentUpdateMiddleware();
 
@@ -154,21 +150,9 @@ public class JsonFragmentUpdateMiddlewareTests
 
         var messages = new List<IMessage>
         {
-            new ToolsCallUpdateMessage
-            {
-                Role = Role.Assistant,
-                ToolCallUpdates = ImmutableList.Create(update1),
-            },
-            new ToolsCallUpdateMessage
-            {
-                Role = Role.Assistant,
-                ToolCallUpdates = ImmutableList.Create(update2),
-            },
-            new ToolsCallUpdateMessage
-            {
-                Role = Role.Assistant,
-                ToolCallUpdates = ImmutableList.Create(update3),
-            },
+            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = ImmutableList.Create(update1) },
+            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = ImmutableList.Create(update2) },
+            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = ImmutableList.Create(update3) },
         };
 
         // Act
@@ -191,9 +175,7 @@ public class JsonFragmentUpdateMiddlewareTests
             );
             foreach (var update in processedUpdate.JsonFragmentUpdates)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'"
-                );
+                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
             }
         }
 
@@ -417,12 +399,8 @@ public class JsonFragmentUpdateMiddlewareTests
         Assert.Equal("root", completeEvent.Path);
         Assert.Equal("{\"message\": \"Hello World\"}", completeEvent.TextValue);
 
-        System.Diagnostics.Debug.WriteLine(
-            $"✓ JsonComplete event found: {completeEvent.TextValue}"
-        );
-        System.Diagnostics.Debug.WriteLine(
-            $"✓ Total fragment updates: {processedToolCall.JsonFragmentUpdates.Count}"
-        );
+        System.Diagnostics.Debug.WriteLine($"✓ JsonComplete event found: {completeEvent.TextValue}");
+        System.Diagnostics.Debug.WriteLine($"✓ Total fragment updates: {processedToolCall.JsonFragmentUpdates.Count}");
     }
 
     /// <summary>

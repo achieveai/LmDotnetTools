@@ -106,20 +106,17 @@ public class AnthropicRequestCapture
     /// <summary>
     /// Gets the model from the request
     /// </summary>
-    public string? Model =>
-        _requestJson.TryGetProperty("model", out var model) ? model.GetString() : null;
+    public string? Model => _requestJson.TryGetProperty("model", out var model) ? model.GetString() : null;
 
     /// <summary>
     /// Gets the max tokens from the request
     /// </summary>
-    public int? MaxTokens =>
-        _requestJson.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : null;
+    public int? MaxTokens => _requestJson.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : null;
 
     /// <summary>
     /// Gets whether streaming was requested
     /// </summary>
-    public bool? Stream =>
-        _requestJson.TryGetProperty("stream", out var stream) ? stream.GetBoolean() : null;
+    public bool? Stream => _requestJson.TryGetProperty("stream", out var stream) ? stream.GetBoolean() : null;
 
     /// <summary>
     /// Gets the thinking configuration if present
@@ -143,10 +140,7 @@ public class AnthropicRequestCapture
     {
         get
         {
-            if (
-                _requestJson.TryGetProperty("messages", out var messages)
-                && messages.ValueKind == JsonValueKind.Array
-            )
+            if (_requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
             {
                 return messages.EnumerateArray().Select(msg => new MessageCapture(msg));
             }
@@ -157,8 +151,7 @@ public class AnthropicRequestCapture
     /// <summary>
     /// Gets the system message if present
     /// </summary>
-    public string? System =>
-        _requestJson.TryGetProperty("system", out var system) ? system.GetString() : null;
+    public string? System => _requestJson.TryGetProperty("system", out var system) ? system.GetString() : null;
 
     /// <summary>
     /// Gets the tools from the request
@@ -167,22 +160,15 @@ public class AnthropicRequestCapture
     {
         get
         {
-            if (
-                _requestJson.TryGetProperty("tools", out var tools)
-                && tools.ValueKind == JsonValueKind.Array
-            )
+            if (_requestJson.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
             {
                 return tools
                     .EnumerateArray()
                     .Select(tool => new ToolCapture
                     {
                         Name = tool.TryGetProperty("name", out var name) ? name.GetString() : null,
-                        Description = tool.TryGetProperty("description", out var desc)
-                            ? desc.GetString()
-                            : null,
-                        InputSchema = tool.TryGetProperty("input_schema", out var schema)
-                            ? (object)schema
-                            : null,
+                        Description = tool.TryGetProperty("description", out var desc) ? desc.GetString() : null,
+                        InputSchema = tool.TryGetProperty("input_schema", out var schema) ? (object)schema : null,
                     });
             }
             return Enumerable.Empty<ToolCapture>();
@@ -212,26 +198,22 @@ public class OpenAIRequestCapture
     /// <summary>
     /// Gets the model from the request
     /// </summary>
-    public string? Model =>
-        _requestJson.TryGetProperty("model", out var model) ? model.GetString() : null;
+    public string? Model => _requestJson.TryGetProperty("model", out var model) ? model.GetString() : null;
 
     /// <summary>
     /// Gets the max tokens from the request
     /// </summary>
-    public int? MaxTokens =>
-        _requestJson.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : null;
+    public int? MaxTokens => _requestJson.TryGetProperty("max_tokens", out var maxTokens) ? maxTokens.GetInt32() : null;
 
     /// <summary>
     /// Gets the temperature from the request
     /// </summary>
-    public double? Temperature =>
-        _requestJson.TryGetProperty("temperature", out var temp) ? temp.GetDouble() : null;
+    public double? Temperature => _requestJson.TryGetProperty("temperature", out var temp) ? temp.GetDouble() : null;
 
     /// <summary>
     /// Gets whether streaming was requested
     /// </summary>
-    public bool? Stream =>
-        _requestJson.TryGetProperty("stream", out var stream) ? stream.GetBoolean() : null;
+    public bool? Stream => _requestJson.TryGetProperty("stream", out var stream) ? stream.GetBoolean() : null;
 
     /// <summary>
     /// Gets the messages from the request
@@ -240,10 +222,7 @@ public class OpenAIRequestCapture
     {
         get
         {
-            if (
-                _requestJson.TryGetProperty("messages", out var messages)
-                && messages.ValueKind == JsonValueKind.Array
-            )
+            if (_requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
             {
                 return messages.EnumerateArray().Select(msg => new MessageCapture(msg));
             }
@@ -291,8 +270,7 @@ public class MessageCapture
     /// <summary>
     /// Gets the role of the message
     /// </summary>
-    public string? Role =>
-        _messageJson.TryGetProperty("role", out var role) ? role.GetString() : null;
+    public string? Role => _messageJson.TryGetProperty("role", out var role) ? role.GetString() : null;
 
     /// <summary>
     /// Gets the content of the message (simplified - may be text or complex content)
@@ -312,9 +290,7 @@ public class MessageCapture
                     // Try to extract text from content array
                     var textContent = content
                         .EnumerateArray()
-                        .Where(item =>
-                            item.TryGetProperty("type", out var type) && type.GetString() == "text"
-                        )
+                        .Where(item => item.TryGetProperty("type", out var type) && type.GetString() == "text")
                         .FirstOrDefault();
 
                     if (textContent.TryGetProperty("text", out var text))
@@ -334,10 +310,7 @@ public class MessageCapture
     {
         get
         {
-            if (
-                _messageJson.TryGetProperty("content", out var content)
-                && content.ValueKind == JsonValueKind.Array
-            )
+            if (_messageJson.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
             {
                 return content.GetArrayLength();
             }

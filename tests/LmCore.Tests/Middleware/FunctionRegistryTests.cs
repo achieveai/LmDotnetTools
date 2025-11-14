@@ -26,8 +26,9 @@ public class FunctionRegistryTests
     public void Build_WithSingleProvider_ReturnsProviderFunctions()
     {
         // Arrange
+        string[] stringArray = new[] { "func1", "func2" };
         var registry = new FunctionRegistry();
-        var provider = CreateTestProvider("test", new[] { "func1", "func2" });
+        var provider = CreateTestProvider("test", stringArray);
 
         // Act
         registry.AddProvider(provider);
@@ -44,8 +45,9 @@ public class FunctionRegistryTests
     public async Task Build_WithExplicitFunction_OverridesProvider()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var provider = CreateTestProvider("test", new[] { "func1" });
+        var provider = CreateTestProvider("test", stringArray);
         var explicitContract = CreateTestContract("func1");
         var explicitHandler = CreateTestHandler("explicit-result");
 
@@ -66,9 +68,10 @@ public class FunctionRegistryTests
     public void Build_WithConflictingProviders_ThrowsException()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var provider1 = CreateTestProvider("provider1", new[] { "func1" });
-        var provider2 = CreateTestProvider("provider2", new[] { "func1" });
+        var provider1 = CreateTestProvider("provider1", stringArray);
+        var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act & Assert
         registry.AddProvider(provider1);
@@ -84,9 +87,10 @@ public class FunctionRegistryTests
     public async Task Build_WithTakeFirstConflictResolution_UsesPriorityOrder()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var provider1 = CreateTestProvider("provider1", new[] { "func1" }, priority: 200);
-        var provider2 = CreateTestProvider("provider2", new[] { "func1" }, priority: 100);
+        var provider1 = CreateTestProvider("provider1", stringArray, priority: 200);
+        var provider2 = CreateTestProvider("provider2", stringArray, priority: 100);
 
         // Act
         registry.AddProvider(provider1);
@@ -106,9 +110,10 @@ public class FunctionRegistryTests
     public async Task Build_WithTakeLastConflictResolution_UsesLastProvider()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var provider1 = CreateTestProvider("provider1", new[] { "func1" });
-        var provider2 = CreateTestProvider("provider2", new[] { "func1" });
+        var provider1 = CreateTestProvider("provider1", stringArray);
+        var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act
         registry.AddProvider(provider1);
@@ -129,9 +134,10 @@ public class FunctionRegistryTests
     {
         // Arrange - Note: MCP and natural functions will have different keys due to class name
         // So this test validates the preference logic when keys do conflict
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var naturalProvider = CreateTestProvider("natural", new[] { "func1" }, isMcp: false);
-        var mcpProvider = CreateTestProvider("mcp", new[] { "func1" }, isMcp: true);
+        var naturalProvider = CreateTestProvider("natural", stringArray, isMcp: false);
+        var mcpProvider = CreateTestProvider("mcp", stringArray, isMcp: true);
 
         // Act
         registry.AddProvider(naturalProvider);
@@ -185,16 +191,15 @@ public class FunctionRegistryTests
     public async Task Build_WithCustomConflictHandler_UsesCustomLogic()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var provider1 = CreateTestProvider("provider1", new[] { "func1" });
-        var provider2 = CreateTestProvider("provider2", new[] { "func1" });
+        var provider1 = CreateTestProvider("provider1", stringArray);
+        var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act
         registry.AddProvider(provider1);
         registry.AddProvider(provider2);
-        registry.WithConflictHandler(
-            (key, candidates) => candidates.First(c => c.ProviderName == "provider1")
-        );
+        registry.WithConflictHandler((key, candidates) => candidates.First(c => c.ProviderName == "provider1"));
 
         var (contracts, handlers) = registry.Build();
 
@@ -210,8 +215,9 @@ public class FunctionRegistryTests
     public void BuildMiddleware_CreatesWorkingMiddleware()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var provider = CreateTestProvider("test", new[] { "func1" });
+        var provider = CreateTestProvider("test", stringArray);
 
         // Act
         registry.AddProvider(provider);
@@ -243,12 +249,9 @@ public class FunctionRegistryTests
     public void GetMarkdownDocumentation_WithSingleProvider_ReturnsFormattedMarkdown()
     {
         // Arrange
+        string[] stringArray = new[] { "func1", "func2" };
         var registry = new FunctionRegistry();
-        var provider = CreateTestProvider(
-            "TestProvider",
-            new[] { "func1", "func2" },
-            priority: 100
-        );
+        var provider = CreateTestProvider("TestProvider", stringArray, priority: 100);
 
         // Act
         registry.AddProvider(provider);
@@ -274,10 +277,7 @@ public class FunctionRegistryTests
     {
         // Arrange
         var registry = new FunctionRegistry();
-        var explicitContract = CreateTestContract(
-            "explicitFunc",
-            description: "Explicit test function"
-        );
+        var explicitContract = CreateTestContract("explicitFunc", description: "Explicit test function");
         var explicitHandler = CreateTestHandler("explicit-result");
 
         // Act
@@ -296,8 +296,9 @@ public class FunctionRegistryTests
     public void GetMarkdownDocumentation_WithMcpFunction_ShowsCorrectKeyFormat()
     {
         // Arrange
+        string[] stringArray = new[] { "mcpFunc" };
         var registry = new FunctionRegistry();
-        var provider = CreateTestProvider("McpProvider", new[] { "mcpFunc" }, isMcp: true);
+        var provider = CreateTestProvider("McpProvider", stringArray, isMcp: true);
 
         // Act
         registry.AddProvider(provider);
@@ -313,9 +314,10 @@ public class FunctionRegistryTests
     public void GetMarkdownDocumentation_WithConflictResolution_ShowsResolutionStrategy()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry = new FunctionRegistry();
-        var provider1 = CreateTestProvider("provider1", new[] { "func1" });
-        var provider2 = CreateTestProvider("provider2", new[] { "func1" });
+        var provider1 = CreateTestProvider("provider1", stringArray);
+        var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act
         registry.AddProvider(provider1);
@@ -428,12 +430,7 @@ public class FunctionRegistryTests
         private readonly string[] _functionNames;
         private readonly bool _isMcp;
 
-        public TestFunctionProvider(
-            string name,
-            string[] functionNames,
-            int priority = 100,
-            bool isMcp = false
-        )
+        public TestFunctionProvider(string name, string[] functionNames, int priority = 100, bool isMcp = false)
         {
             ProviderName = name;
             Priority = priority;
@@ -543,20 +540,14 @@ public class FunctionRegistryTests
                 {
                     Name = "stringParam",
                     Description = "A string parameter",
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = JsonSchemaTypeHelper.ToType("string"),
-                    },
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
                     IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "optionalParam",
                     Description = "An optional parameter",
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = JsonSchemaTypeHelper.ToType("number"),
-                    },
+                    ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number") },
                     IsRequired = false,
                     DefaultValue = 42,
                 },

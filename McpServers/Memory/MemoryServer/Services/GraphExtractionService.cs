@@ -32,8 +32,7 @@ public class GraphExtractionService : IGraphExtractionService
         _promptReader = promptReader ?? throw new ArgumentNullException(nameof(promptReader));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
-        _lmConfigService =
-            lmConfigService ?? throw new ArgumentNullException(nameof(lmConfigService));
+        _lmConfigService = lmConfigService ?? throw new ArgumentNullException(nameof(lmConfigService));
 
         _jsonOptions = new JsonSerializerOptions
         {
@@ -65,10 +64,7 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation(
-                    "Using specific model {ModelId} for entity extraction",
-                    modelId
-                );
+                _logger.LogInformation("Using specific model {ModelId} for entity extraction", modelId);
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     modelId,
                     "entity_extraction",
@@ -96,14 +92,8 @@ public class GraphExtractionService : IGraphExtractionService
             }
 
             var promptChain = _promptReader.GetPromptChain("entity_extraction");
-            var messages = promptChain.PromptMessages(
-                new Dictionary<string, object> { ["content"] = content }
-            );
-            var response = await agent.GenerateReplyAsync(
-                messages,
-                generateOptions,
-                cancellationToken
-            );
+            var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
+            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
 
             var responseText = ExtractTextFromResponse(response);
             var extractedEntities = ParseEntitiesFromJson(responseText);
@@ -130,11 +120,7 @@ public class GraphExtractionService : IGraphExtractionService
                 })
                 .ToList();
 
-            _logger.LogInformation(
-                "Extracted {EntityCount} entities from memory {MemoryId}",
-                entities.Count,
-                memoryId
-            );
+            _logger.LogInformation("Extracted {EntityCount} entities from memory {MemoryId}", entities.Count, memoryId);
 
             return entities;
         }
@@ -145,10 +131,7 @@ public class GraphExtractionService : IGraphExtractionService
         }
     }
 
-    public async Task<(
-        IEnumerable<Entity> Entities,
-        IEnumerable<Relationship> Relationships
-    )> ExtractGraphDataAsync(
+    public async Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
         string content,
         SessionContext sessionContext,
         int memoryId,
@@ -170,10 +153,7 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation(
-                    "Using specific model {ModelId} for graph data extraction",
-                    modelId
-                );
+                _logger.LogInformation("Using specific model {ModelId} for graph data extraction", modelId);
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     modelId,
                     "combined_extraction",
@@ -187,9 +167,7 @@ public class GraphExtractionService : IGraphExtractionService
             }
             else
             {
-                _logger.LogInformation(
-                    "Using gpt-4.1-nano as default model for graph data extraction"
-                );
+                _logger.LogInformation("Using gpt-4.1-nano as default model for graph data extraction");
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     "gpt-4.1-nano",
                     "combined_extraction",
@@ -203,14 +181,8 @@ public class GraphExtractionService : IGraphExtractionService
             }
 
             var promptChain = _promptReader.GetPromptChain("combined_extraction");
-            var messages = promptChain.PromptMessages(
-                new Dictionary<string, object> { ["content"] = content }
-            );
-            var response = await agent.GenerateReplyAsync(
-                messages,
-                generateOptions,
-                cancellationToken
-            );
+            var messages = promptChain.PromptMessages(new Dictionary<string, object> { ["content"] = content });
+            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
 
             var responseText = ExtractTextFromResponse(response);
             var extractedData = ParseCombinedExtractionFromJson(responseText);
@@ -271,11 +243,7 @@ public class GraphExtractionService : IGraphExtractionService
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to extract combined graph data from memory {MemoryId}",
-                memoryId
-            );
+            _logger.LogError(ex, "Failed to extract combined graph data from memory {MemoryId}", memoryId);
             return (Enumerable.Empty<Entity>(), Enumerable.Empty<Relationship>());
         }
     }
@@ -326,10 +294,7 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation(
-                    "Using specific model {ModelId} for graph update analysis",
-                    modelId
-                );
+                _logger.LogInformation("Using specific model {ModelId} for graph update analysis", modelId);
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     modelId,
                     "graph_update_analysis",
@@ -343,9 +308,7 @@ public class GraphExtractionService : IGraphExtractionService
             }
             else
             {
-                _logger.LogInformation(
-                    "Using gpt-4.1-nano as default model for graph update analysis"
-                );
+                _logger.LogInformation("Using gpt-4.1-nano as default model for graph update analysis");
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     "gpt-4.1-nano",
                     "graph_update_analysis",
@@ -368,11 +331,7 @@ public class GraphExtractionService : IGraphExtractionService
                 }
             );
 
-            var response = await agent.GenerateReplyAsync(
-                messages,
-                generateOptions,
-                cancellationToken
-            );
+            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
             var responseText = ExtractTextFromResponse(response);
             var updateInstructions = ParseUpdateInstructionsFromJson(responseText);
 
@@ -426,10 +385,7 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation(
-                    "Using specific model {ModelId} for entity validation",
-                    modelId
-                );
+                _logger.LogInformation("Using specific model {ModelId} for entity validation", modelId);
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     modelId,
                     "entity_validation",
@@ -460,11 +416,7 @@ public class GraphExtractionService : IGraphExtractionService
             var messages = promptChain.PromptMessages(
                 new Dictionary<string, object> { ["entities_json"] = entitiesJson }
             );
-            var response = await agent.GenerateReplyAsync(
-                messages,
-                generateOptions,
-                cancellationToken
-            );
+            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
 
             var responseText = ExtractTextFromResponse(response);
             var cleanedEntities = ParseEntitiesFromJson(responseText);
@@ -502,11 +454,7 @@ public class GraphExtractionService : IGraphExtractionService
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to validate entities for session {SessionContext}",
-                sessionContext
-            );
+            _logger.LogError(ex, "Failed to validate entities for session {SessionContext}", sessionContext);
             return entities; // Return original entities if validation fails
         }
     }
@@ -547,10 +495,7 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (!string.IsNullOrEmpty(modelId))
             {
-                _logger.LogInformation(
-                    "Using specific model {ModelId} for relationship validation",
-                    modelId
-                );
+                _logger.LogInformation("Using specific model {ModelId} for relationship validation", modelId);
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     modelId,
                     "relationship_validation",
@@ -564,9 +509,7 @@ public class GraphExtractionService : IGraphExtractionService
             }
             else
             {
-                _logger.LogInformation(
-                    "Using gpt-4.1-nano as default model for relationship validation"
-                );
+                _logger.LogInformation("Using gpt-4.1-nano as default model for relationship validation");
                 agent = await _lmConfigService.CreateAgentWithModelAsync(
                     "gpt-4.1-nano",
                     "relationship_validation",
@@ -583,11 +526,7 @@ public class GraphExtractionService : IGraphExtractionService
             var messages = promptChain.PromptMessages(
                 new Dictionary<string, object> { ["relationships_json"] = relationshipsJson }
             );
-            var response = await agent.GenerateReplyAsync(
-                messages,
-                generateOptions,
-                cancellationToken
-            );
+            var response = await agent.GenerateReplyAsync(messages, generateOptions, cancellationToken);
 
             var responseText = ExtractTextFromResponse(response);
             var cleanedRelationships = ParseRelationshipsFromJson(responseText);
@@ -612,8 +551,7 @@ public class GraphExtractionService : IGraphExtractionService
                         Confidence = r.Confidence,
                         SourceMemoryId = originalRelationship?.SourceMemoryId,
                         TemporalContext = r.TemporalContext,
-                        Metadata =
-                            originalRelationship?.Metadata ?? new Dictionary<string, object>(),
+                        Metadata = originalRelationship?.Metadata ?? new Dictionary<string, object>(),
                     };
                 })
                 .ToList();
@@ -629,11 +567,7 @@ public class GraphExtractionService : IGraphExtractionService
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to validate relationships for session {SessionContext}",
-                sessionContext
-            );
+            _logger.LogError(ex, "Failed to validate relationships for session {SessionContext}", sessionContext);
             return relationships; // Return original relationships if validation fails
         }
     }
@@ -651,10 +585,7 @@ public class GraphExtractionService : IGraphExtractionService
         // Try to use LmConfig for optimal model selection
         if (_lmConfigService != null)
         {
-            var modelConfig = await _lmConfigService.GetOptimalModelAsync(
-                capability,
-                cancellationToken
-            );
+            var modelConfig = await _lmConfigService.GetOptimalModelAsync(capability, cancellationToken);
             if (modelConfig != null)
             {
                 var options = new GenerateReplyOptions
@@ -665,15 +596,9 @@ public class GraphExtractionService : IGraphExtractionService
                 };
 
                 // Add JSON schema if model supports structured output
-                if (
-                    modelConfig.HasCapability("structured_output")
-                    || modelConfig.HasCapability("json_schema")
-                )
+                if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
                 {
-                    options = options with
-                    {
-                        ResponseFormat = CreateJsonSchemaForCapability(capability),
-                    };
+                    options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
                 }
                 else if (modelConfig.HasCapability("json_mode"))
                 {
@@ -705,10 +630,7 @@ public class GraphExtractionService : IGraphExtractionService
 
             if (modelConfig == null)
             {
-                _logger.LogWarning(
-                    "Model {ModelId} not found, falling back to basic options",
-                    modelId
-                );
+                _logger.LogWarning("Model {ModelId} not found, falling back to basic options", modelId);
                 return Task.FromResult(CreateBasicGenerateReplyOptions(capability));
             }
 
@@ -720,15 +642,9 @@ public class GraphExtractionService : IGraphExtractionService
             };
 
             // Add JSON schema if model supports structured output
-            if (
-                modelConfig.HasCapability("structured_output")
-                || modelConfig.HasCapability("json_schema")
-            )
+            if (modelConfig.HasCapability("structured_output") || modelConfig.HasCapability("json_schema"))
             {
-                options = options with
-                {
-                    ResponseFormat = CreateJsonSchemaForCapability(capability),
-                };
+                options = options with { ResponseFormat = CreateJsonSchemaForCapability(capability) };
             }
             else if (modelConfig.HasCapability("json_mode"))
             {
@@ -785,10 +701,7 @@ public class GraphExtractionService : IGraphExtractionService
         // Add basic JSON mode if available
         if (
             provider == "openai"
-            && (
-                _options.LLM.OpenAI.Model.Contains("gpt-4")
-                || _options.LLM.OpenAI.Model.Contains("gpt-3.5")
-            )
+            && (_options.LLM.OpenAI.Model.Contains("gpt-4") || _options.LLM.OpenAI.Model.Contains("gpt-3.5"))
         )
         {
             options = options with { ResponseFormat = ResponseFormat.JSON };
@@ -829,11 +742,7 @@ public class GraphExtractionService : IGraphExtractionService
     private static ResponseFormat CreateRelationshipExtractionSchema()
     {
         var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(RelationshipExtractionWrapper));
-        return ResponseFormat.CreateWithSchema(
-            "relationship_extraction",
-            schema,
-            strictValidation: true
-        );
+        return ResponseFormat.CreateWithSchema("relationship_extraction", schema, strictValidation: true);
     }
 
     /// <summary>
@@ -842,11 +751,7 @@ public class GraphExtractionService : IGraphExtractionService
     private static ResponseFormat CreateCombinedExtractionSchema()
     {
         var schema = SchemaHelper.CreateJsonSchemaFromType(typeof(CombinedExtractionResult));
-        return ResponseFormat.CreateWithSchema(
-            "combined_extraction",
-            schema,
-            strictValidation: true
-        );
+        return ResponseFormat.CreateWithSchema("combined_extraction", schema, strictValidation: true);
     }
 
     /// <summary>
@@ -864,28 +769,17 @@ public class GraphExtractionService : IGraphExtractionService
             .WithProperty("entity_type", JsonSchemaObject.String("Type of entity being updated"))
             .WithProperty("entity_name", JsonSchemaObject.String("Name of entity being updated"))
             .WithProperty("reasoning", JsonSchemaObject.String("Explanation for the update"))
-            .WithProperty(
-                "confidence",
-                JsonSchemaObject.Number("Confidence in the update decision")
-            )
+            .WithProperty("confidence", JsonSchemaObject.Number("Confidence in the update decision"))
             .Build();
 
         var schema = JsonSchemaObject
             .Create("object")
-            .WithProperty(
-                "updates",
-                JsonSchemaObject.Array(updateSchema, "List of graph updates"),
-                required: true
-            )
+            .WithProperty("updates", JsonSchemaObject.Array(updateSchema, "List of graph updates"), required: true)
             .WithProperty("summary", JsonSchemaObject.String("Summary of all updates"))
             .WithDescription("Analysis of required graph updates")
             .Build();
 
-        return ResponseFormat.CreateWithSchema(
-            "graph_update_analysis",
-            schema,
-            strictValidation: true
-        );
+        return ResponseFormat.CreateWithSchema("graph_update_analysis", schema, strictValidation: true);
     }
 
     private static string ExtractTextFromResponse(IEnumerable<IMessage> response)
@@ -910,20 +804,13 @@ public class GraphExtractionService : IGraphExtractionService
             catch
             {
                 // If that fails, try to parse as wrapped object with "entities" property
-                var wrappedResult = JsonSerializer.Deserialize<EntityExtractionWrapper>(
-                    jsonContent,
-                    _jsonOptions
-                );
+                var wrappedResult = JsonSerializer.Deserialize<EntityExtractionWrapper>(jsonContent, _jsonOptions);
                 return wrappedResult?.Entities ?? new List<ExtractedEntity>();
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to parse entities from JSON response: {Response}",
-                jsonResponse
-            );
+            _logger.LogWarning(ex, "Failed to parse entities from JSON response: {Response}", jsonResponse);
             return new List<ExtractedEntity>();
         }
     }
@@ -937,10 +824,8 @@ public class GraphExtractionService : IGraphExtractionService
             // First try to parse as direct array (legacy format)
             try
             {
-                return JsonSerializer.Deserialize<List<ExtractedRelationship>>(
-                        jsonContent,
-                        _jsonOptions
-                    ) ?? new List<ExtractedRelationship>();
+                return JsonSerializer.Deserialize<List<ExtractedRelationship>>(jsonContent, _jsonOptions)
+                    ?? new List<ExtractedRelationship>();
             }
             catch
             {
@@ -954,11 +839,7 @@ public class GraphExtractionService : IGraphExtractionService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to parse relationships from JSON response: {Response}",
-                jsonResponse
-            );
+            _logger.LogWarning(ex, "Failed to parse relationships from JSON response: {Response}", jsonResponse);
             return new List<ExtractedRelationship>();
         }
     }
@@ -996,11 +877,7 @@ public class GraphExtractionService : IGraphExtractionService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to parse combined extraction from JSON response: {Response}",
-                jsonResponse
-            );
+            _logger.LogWarning(ex, "Failed to parse combined extraction from JSON response: {Response}", jsonResponse);
             return new CombinedExtractionResult();
         }
     }
@@ -1015,11 +892,7 @@ public class GraphExtractionService : IGraphExtractionService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to parse update instructions from JSON response: {Response}",
-                jsonResponse
-            );
+            _logger.LogWarning(ex, "Failed to parse update instructions from JSON response: {Response}", jsonResponse);
             return new GraphUpdateInstructions();
         }
     }

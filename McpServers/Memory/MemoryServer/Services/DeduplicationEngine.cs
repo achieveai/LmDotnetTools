@@ -8,15 +8,12 @@ namespace MemoryServer.Services;
 /// <summary>
 /// Engine for intelligent deduplication of search results while preserving valuable context
 /// </summary>
-public class DeduplicationEngine : IDeduplicationEngine
+public partial class DeduplicationEngine : IDeduplicationEngine
 {
     private readonly ILogger<DeduplicationEngine> _logger;
     private readonly DeduplicationOptions _options;
 
-    public DeduplicationEngine(
-        IOptions<MemoryServerOptions> options,
-        ILogger<DeduplicationEngine> logger
-    )
+    public DeduplicationEngine(IOptions<MemoryServerOptions> options, ILogger<DeduplicationEngine> logger)
     {
         _options = options.Value.Deduplication;
         _logger = logger;
@@ -39,8 +36,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         CancellationToken cancellationToken = default
     )
     {
-        if (results == null)
-            throw new ArgumentNullException(nameof(results));
+        ArgumentNullException.ThrowIfNull(results);
 
         var effectiveOptions = options ?? _options;
         var totalStopwatch = Stopwatch.StartNew();
@@ -67,9 +63,7 @@ public class DeduplicationEngine : IDeduplicationEngine
             }
 
             // Perform deduplication with timeout protection
-            using var timeoutCts = new CancellationTokenSource(
-                effectiveOptions.DeduplicationTimeout
-            );
+            using var timeoutCts = new CancellationTokenSource(effectiveOptions.DeduplicationTimeout);
             using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 timeoutCts.Token
@@ -113,12 +107,7 @@ public class DeduplicationEngine : IDeduplicationEngine
                 "Deduplication timed out after {Timeout}ms",
                 effectiveOptions.DeduplicationTimeout.TotalMilliseconds
             );
-            return CreateFallbackResults(
-                results,
-                metrics,
-                totalStopwatch.Elapsed,
-                "Deduplication timeout"
-            );
+            return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, "Deduplication timeout");
         }
         catch (Exception ex)
         {
@@ -140,7 +129,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         }
     }
 
-    private async Task<List<UnifiedSearchResult>> PerformDeduplicationAsync(
+    private static async Task<List<UnifiedSearchResult>> PerformDeduplicationAsync(
         List<UnifiedSearchResult> results,
         DeduplicationOptions options,
         DeduplicationMetrics metrics,
@@ -160,12 +149,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         var sourceStopwatch = Stopwatch.StartNew();
         if (options.EnableSourceRelationshipAnalysis)
         {
-            await AnalyzeSourceRelationshipsAsync(
-                results,
-                duplicateGroups,
-                options,
-                cancellationToken
-            );
+            await AnalyzeSourceRelationshipsAsync(results, duplicateGroups, options, cancellationToken);
         }
         sourceStopwatch.Stop();
         metrics.SourceAnalysisDuration = sourceStopwatch.Elapsed;
@@ -219,7 +203,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         return deduplicatedResults.OrderByDescending(r => r.Score).ToList();
     }
 
-    private async Task AnalyzeContentSimilarityAsync(
+    private static async Task AnalyzeContentSimilarityAsync(
         List<UnifiedSearchResult> results,
         List<List<UnifiedSearchResult>> duplicateGroups,
         DeduplicationOptions options,
@@ -259,7 +243,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         await Task.CompletedTask; // Make method async for future enhancements
     }
 
-    private async Task AnalyzeSourceRelationshipsAsync(
+    private static async Task AnalyzeSourceRelationshipsAsync(
         List<UnifiedSearchResult> results,
         List<List<UnifiedSearchResult>> duplicateGroups,
         DeduplicationOptions options,
@@ -269,9 +253,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         // Analyze memory-entity-relationship overlaps
         var memoryResults = results.Where(r => r.Type == UnifiedResultType.Memory).ToList();
         var entityResults = results.Where(r => r.Type == UnifiedResultType.Entity).ToList();
-        var relationshipResults = results
-            .Where(r => r.Type == UnifiedResultType.Relationship)
-            .ToList();
+        var relationshipResults = results.Where(r => r.Type == UnifiedResultType.Relationship).ToList();
 
         // Note: Memory-entity-relationship overlap detection would require additional
         // repository calls to get entities/relationships extracted from memories.
@@ -282,10 +264,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         await Task.CompletedTask; // Make method async for future enhancements
     }
 
-    private float CalculateContentSimilarity(
-        UnifiedSearchResult result1,
-        UnifiedSearchResult result2
-    )
+    private static float CalculateContentSimilarity(UnifiedSearchResult result1, UnifiedSearchResult result2)
     {
         // Normalize content for comparison
         var content1 = NormalizeContent(result1.Content);
@@ -311,22 +290,16 @@ public class DeduplicationEngine : IDeduplicationEngine
         return similarity;
     }
 
-    private string NormalizeContent(string content)
+    private static string NormalizeContent(string content)
     {
         if (string.IsNullOrEmpty(content))
             return string.Empty;
 
         // Remove extra whitespace, convert to lowercase, remove punctuation
-        return System
-            .Text.RegularExpressions.Regex.Replace(
-                content.ToLowerInvariant().Trim(),
-                @"[^\w\s]",
-                " "
-            )
-            .Replace("  ", " ");
+        return MyRegex().Replace(content.ToLowerInvariant().Trim(), " ").Replace("  ", " ");
     }
 
-    private List<UnifiedSearchResult> ApplyContextPreservationLogic(
+    private static List<UnifiedSearchResult> ApplyContextPreservationLogic(
         List<UnifiedSearchResult> duplicateGroup,
         DeduplicationOptions options
     )
@@ -370,7 +343,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         return preservedResults;
     }
 
-    private bool ProvidesComplementaryInformation(
+    private static bool ProvidesComplementaryInformation(
         UnifiedSearchResult primary,
         UnifiedSearchResult candidate,
         DeduplicationOptions options
@@ -381,10 +354,7 @@ public class DeduplicationEngine : IDeduplicationEngine
             return true;
 
         // Check if secondary content provides additional value
-        if (
-            !string.IsNullOrEmpty(candidate.SecondaryContent)
-            && string.IsNullOrEmpty(primary.SecondaryContent)
-        )
+        if (!string.IsNullOrEmpty(candidate.SecondaryContent) && string.IsNullOrEmpty(primary.SecondaryContent))
             return true;
 
         // Check if confidence levels are significantly different
@@ -409,7 +379,7 @@ public class DeduplicationEngine : IDeduplicationEngine
         return false;
     }
 
-    private DeduplicationResults CreateFallbackResults(
+    private static DeduplicationResults CreateFallbackResults(
         List<UnifiedSearchResult> results,
         DeduplicationMetrics metrics,
         TimeSpan duration,
@@ -426,4 +396,7 @@ public class DeduplicationEngine : IDeduplicationEngine
             FallbackReason = reason,
         };
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"[^\w\s]")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
 }

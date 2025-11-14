@@ -19,8 +19,7 @@ public abstract class RequestCaptureBase
     /// <summary>
     /// Shared JsonSerializerOptions that can handle both OpenAI and Anthropic provider types
     /// </summary>
-    private static readonly JsonSerializerOptions s_jsonSerializerOptions =
-        CreateUniversalOptions();
+    private static readonly JsonSerializerOptions s_jsonSerializerOptions = CreateUniversalOptions();
 
     /// <summary>
     /// Gets all captured HTTP requests
@@ -140,10 +139,7 @@ public abstract class RequestCaptureBase
                 T? deserialized = null;
                 try
                 {
-                    deserialized = JsonSerializer.Deserialize<T>(
-                        jsonResponse,
-                        s_jsonSerializerOptions
-                    );
+                    deserialized = JsonSerializer.Deserialize<T>(jsonResponse, s_jsonSerializerOptions);
                 }
                 catch (JsonException)
                 {
@@ -208,9 +204,7 @@ public abstract class RequestCaptureBase
         // Add OpenAI-specific Union converters for cross-provider compatibility
         // Note: These require OpenAI types, but LmTestUtils already references OpenAI Provider
         options.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
-        options.Converters.Add(
-            new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>()
-        );
+        options.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
 
         // Anthropic polymorphic types are handled automatically by the [JsonPolymorphic] attributes
         // No additional converters needed for AnthropicResponseContent and AnthropicStreamEvent

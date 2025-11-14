@@ -119,9 +119,7 @@ public class SimpleLoggingTests
                 x.Log(
                     LogLevel.Information,
                     It.IsAny<EventId>(),
-                    It.Is<It.IsAnyType>(
-                        (v, t) => v.ToString()!.Contains("value1") && v.ToString()!.Contains("42")
-                    ),
+                    It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("value1") && v.ToString()!.Contains("42")),
                     It.IsAny<Exception>(),
                     It.IsAny<Func<It.IsAnyType, Exception?, string>>()
                 ),
@@ -261,9 +259,7 @@ public class SimpleLoggingTests
         var mockLoggerFactory = new Mock<ILoggerFactory>();
         var mockLogger = new Mock<ILogger>();
 
-        mockLoggerFactory
-            .Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!))
-            .Returns(mockLogger.Object);
+        mockLoggerFactory.Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!)).Returns(mockLogger.Object);
 
         // Act
         var logger = mockLoggerFactory.Object.CreateLogger(typeof(SimpleLoggingTests).FullName!);
@@ -271,10 +267,7 @@ public class SimpleLoggingTests
         // Assert
         Assert.NotNull(logger);
         Assert.Same(mockLogger.Object, logger);
-        mockLoggerFactory.Verify(
-            x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!),
-            Times.Once
-        );
+        mockLoggerFactory.Verify(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!), Times.Once);
     }
 
     [Fact]
@@ -284,9 +277,7 @@ public class SimpleLoggingTests
         ILoggerFactory? nullLoggerFactory = null;
 
         // Act
-        var logger =
-            nullLoggerFactory?.CreateLogger<SimpleLoggingTests>()
-            ?? NullLogger<SimpleLoggingTests>.Instance;
+        var logger = nullLoggerFactory?.CreateLogger<SimpleLoggingTests>() ?? NullLogger<SimpleLoggingTests>.Instance;
 
         // Assert
         Assert.NotNull(logger);

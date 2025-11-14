@@ -52,27 +52,17 @@ public interface IMemoryService
     /// <summary>
     /// Deletes a memory by ID.
     /// </summary>
-    Task<bool> DeleteMemoryAsync(
-        int id,
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    );
+    Task<bool> DeleteMemoryAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Deletes all memories for a session.
     /// </summary>
-    Task<int> DeleteAllMemoriesAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    );
+    Task<int> DeleteAllMemoriesAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets memory statistics for a session.
     /// </summary>
-    Task<MemoryStats> GetMemoryStatsAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    );
+    Task<MemoryStats> GetMemoryStatsAsync(SessionContext sessionContext, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets memory history for a specific memory ID.
@@ -91,9 +81,5 @@ public interface IMemoryService
     /// <summary>
     /// Gets all run IDs for a specific user and agent.
     /// </summary>
-    Task<List<string>> GetRunsAsync(
-        string userId,
-        string agentId,
-        CancellationToken cancellationToken = default
-    );
+    Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default);
 }

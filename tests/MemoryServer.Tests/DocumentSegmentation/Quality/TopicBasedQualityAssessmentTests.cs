@@ -35,11 +35,7 @@ public class TopicBasedQualityAssessmentTests
         });
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
-        _service = new TopicBasedSegmentationService(
-            _mockLlmService.Object,
-            _mockPromptManager.Object,
-            _logger
-        );
+        _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
 
         SetupDefaultMocks();
     }
@@ -59,9 +55,7 @@ public class TopicBasedQualityAssessmentTests
         // Arrange
         System.Diagnostics.Debug.WriteLine($"Running coherence test: {testName}");
         System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Expected range: {expectedMinCoherence:F2} - {expectedMaxCoherence:F2}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Expected range: {expectedMinCoherence:F2} - {expectedMaxCoherence:F2}");
         System.Diagnostics.Debug.WriteLine($"Content length: {content.Length} characters");
 
         // Act
@@ -79,18 +73,14 @@ public class TopicBasedQualityAssessmentTests
 
         System.Diagnostics.Debug.WriteLine($"Actual coherence score: {result.CoherenceScore:F2}");
         System.Diagnostics.Debug.WriteLine($"Primary topic: {result.PrimaryTopic}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Topic keywords: [{string.Join(", ", result.TopicKeywords)}]"
-        );
+        System.Diagnostics.Debug.WriteLine($"Topic keywords: [{string.Join(", ", result.TopicKeywords)}]");
 
         // Additional quality checks
         result.SemanticUnity.Should().BeInRange(0.0, 1.0);
         result.TopicConsistency.Should().BeInRange(0.0, 1.0);
         result.PrimaryTopic.Should().NotBeNullOrWhiteSpace();
 
-        _output.WriteLine(
-            $"{testName}: Score={result.CoherenceScore:F2}, Topic={result.PrimaryTopic}"
-        );
+        _output.WriteLine($"{testName}: Score={result.CoherenceScore:F2}, Topic={result.PrimaryTopic}");
     }
 
     [Fact]
@@ -127,14 +117,10 @@ public class TopicBasedQualityAssessmentTests
             .BeLessThan(0.8, "Content with multiple distinct topics should have lower coherence");
 
         // Should identify topic diversity
-        result
-            .TopicKeywords.Should()
-            .HaveCountGreaterThan(5, "Multi-topic content should have diverse keywords");
+        result.TopicKeywords.Should().HaveCountGreaterThan(5, "Multi-topic content should have diverse keywords");
 
         System.Diagnostics.Debug.WriteLine($"Multi-topic coherence: {result.CoherenceScore:F2}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Keywords found: [{string.Join(", ", result.TopicKeywords)}]"
-        );
+        System.Diagnostics.Debug.WriteLine($"Keywords found: [{string.Join(", ", result.TopicKeywords)}]");
     }
 
     #endregion
@@ -158,17 +144,10 @@ public class TopicBasedQualityAssessmentTests
         System.Diagnostics.Debug.WriteLine($"Segment 1 length: {segment1.Length}");
         System.Diagnostics.Debug.WriteLine($"Segment 2 length: {segment2.Length}");
 
-        var segments = new List<DocumentSegment>
-        {
-            CreateSegment("1", segment1, 0),
-            CreateSegment("2", segment2, 1),
-        };
+        var segments = new List<DocumentSegment> { CreateSegment("1", segment1, 0), CreateSegment("2", segment2, 1) };
 
         // Act
-        var validation = await _service.ValidateTopicSegmentsAsync(
-            segments,
-            segment1 + "\n\n" + segment2
-        );
+        var validation = await _service.ValidateTopicSegmentsAsync(segments, segment1 + "\n\n" + segment2);
 
         // Assert
         validation.Should().NotBeNull();
@@ -188,9 +167,7 @@ public class TopicBasedQualityAssessmentTests
         System.Diagnostics.Debug.WriteLine($"Calculated similarity: {similarity:F2}");
         System.Diagnostics.Debug.WriteLine($"Segment independence: {independence:F2}");
 
-        _output.WriteLine(
-            $"{testName}: Similarity={similarity:F2}, Independence={independence:F2}"
-        );
+        _output.WriteLine($"{testName}: Similarity={similarity:F2}, Independence={independence:F2}");
     }
 
     [Fact]
@@ -205,15 +182,10 @@ public class TopicBasedQualityAssessmentTests
         };
 
         var originalContent = string.Join("\n\n", similarSegments.Select(s => s.Content));
-        System.Diagnostics.Debug.WriteLine(
-            $"Testing similar segments with content length: {originalContent.Length}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Testing similar segments with content length: {originalContent.Length}");
 
         // Act
-        var validation = await _service.ValidateTopicSegmentsAsync(
-            similarSegments,
-            originalContent
-        );
+        var validation = await _service.ValidateTopicSegmentsAsync(similarSegments, originalContent);
 
         // Assert
         validation.Should().NotBeNull();
@@ -231,16 +203,10 @@ public class TopicBasedQualityAssessmentTests
             )
             .ToList();
 
-        consolidationRecommendations
-            .Should()
-            .NotBeEmpty("Should recommend consolidating similar segments");
+        consolidationRecommendations.Should().NotBeEmpty("Should recommend consolidating similar segments");
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Independence score: {validation.SegmentIndependence:F2}"
-        );
-        System.Diagnostics.Debug.WriteLine(
-            $"Consolidation recommendations: {consolidationRecommendations.Count}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Independence score: {validation.SegmentIndependence:F2}");
+        System.Diagnostics.Debug.WriteLine($"Consolidation recommendations: {consolidationRecommendations.Count}");
     }
 
     #endregion
@@ -313,35 +279,22 @@ public class TopicBasedQualityAssessmentTests
                 "Technology has transformed modern communication. Email and messaging changed interactions.",
                 0
             ),
-            CreateSegment(
-                "2",
-                "Education systems evolved with online learning platforms for global access.",
-                1
-            ),
+            CreateSegment("2", "Education systems evolved with online learning platforms for global access.", 1),
         };
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Testing incomplete coverage with {incompleteSegments.Count} segments"
-        );
+        System.Diagnostics.Debug.WriteLine($"Testing incomplete coverage with {incompleteSegments.Count} segments");
 
         // Act
-        var validation = await _service.ValidateTopicSegmentsAsync(
-            incompleteSegments,
-            completeDocument
-        );
+        var validation = await _service.ValidateTopicSegmentsAsync(incompleteSegments, completeDocument);
 
         // Assert
         validation.Should().NotBeNull();
 
         // Should detect incomplete coverage
-        validation
-            .TopicCoverage.Should()
-            .BeLessThan(0.9, "Incomplete segmentation should have low topic coverage");
+        validation.TopicCoverage.Should().BeLessThan(0.9, "Incomplete segmentation should have low topic coverage");
 
         // Should identify content gaps
-        var gapIssues = validation
-            .Issues.Where(i => i.Type == ValidationIssueType.MissingContext)
-            .ToList();
+        var gapIssues = validation.Issues.Where(i => i.Type == ValidationIssueType.MissingContext).ToList();
         gapIssues.Should().NotBeEmpty("Should identify content gaps in incomplete segmentation");
 
         System.Diagnostics.Debug.WriteLine($"Coverage score: {validation.TopicCoverage:F2}");
@@ -368,11 +321,7 @@ public class TopicBasedQualityAssessmentTests
         System.Diagnostics.Debug.WriteLine($"Strategy: {strategy}");
         System.Diagnostics.Debug.WriteLine($"Quality description: {qualityDescription}");
 
-        var options = new TopicSegmentationOptions
-        {
-            UseLlmEnhancement = false,
-            MinSegmentSize = 50,
-        };
+        var options = new TopicSegmentationOptions { UseLlmEnhancement = false, MinSegmentSize = 50 };
 
         // Act
         var segments = await _service.SegmentByTopicsAsync(content, DocumentType.Generic, options);
@@ -390,14 +339,10 @@ public class TopicBasedQualityAssessmentTests
 
         System.Diagnostics.Debug.WriteLine($"Segments created: {segments.Count()}");
         System.Diagnostics.Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine(
-            $"Topic coherence: {validation.AverageTopicCoherence:F2}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Topic coherence: {validation.AverageTopicCoherence:F2}");
         System.Diagnostics.Debug.WriteLine($"Boundary accuracy: {validation.BoundaryAccuracy:F2}");
 
-        _output.WriteLine(
-            $"{benchmarkName}: Quality={validation.OverallQuality:F2}, Segments={segments.Count()}"
-        );
+        _output.WriteLine($"{benchmarkName}: Quality={validation.OverallQuality:F2}, Segments={segments.Count()}");
     }
 
     [Fact]
@@ -432,15 +377,10 @@ public class TopicBasedQualityAssessmentTests
       important as ML systems become more prevalent in decision-making processes.
     ";
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Testing excellent content with length: {excellentContent.Length}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Testing excellent content with length: {excellentContent.Length}");
 
         // Act
-        var segments = await _service.SegmentByTopicsAsync(
-            excellentContent,
-            DocumentType.Technical
-        );
+        var segments = await _service.SegmentByTopicsAsync(excellentContent, DocumentType.Technical);
         var validation = await _service.ValidateTopicSegmentsAsync(segments, excellentContent);
 
         // Assert
@@ -451,9 +391,7 @@ public class TopicBasedQualityAssessmentTests
             .OverallQuality.Should()
             .BeGreaterThan(0.7, "Well-structured content should achieve high overall quality");
 
-        validation
-            .AverageTopicCoherence.Should()
-            .BeGreaterThan(0.75, "Clear topics should have high coherence scores");
+        validation.AverageTopicCoherence.Should().BeGreaterThan(0.75, "Clear topics should have high coherence scores");
 
         validation
             .TopicCoverage.Should()
@@ -461,13 +399,9 @@ public class TopicBasedQualityAssessmentTests
 
         System.Diagnostics.Debug.WriteLine($"Excellent content results:");
         System.Diagnostics.Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine(
-            $"  Topic coherence: {validation.AverageTopicCoherence:F2}"
-        );
+        System.Diagnostics.Debug.WriteLine($"  Topic coherence: {validation.AverageTopicCoherence:F2}");
         System.Diagnostics.Debug.WriteLine($"  Topic coverage: {validation.TopicCoverage:F2}");
-        System.Diagnostics.Debug.WriteLine(
-            $"  Boundary accuracy: {validation.BoundaryAccuracy:F2}"
-        );
+        System.Diagnostics.Debug.WriteLine($"  Boundary accuracy: {validation.BoundaryAccuracy:F2}");
     }
 
     [Fact]
@@ -484,9 +418,7 @@ public class TopicBasedQualityAssessmentTests
       color is blue which reminds me of deep learning neural networks.
     ";
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Testing poor content with length: {poorContent.Length}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Testing poor content with length: {poorContent.Length}");
 
         // Act
         var segments = await _service.SegmentByTopicsAsync(poorContent, DocumentType.Generic);
@@ -499,9 +431,7 @@ public class TopicBasedQualityAssessmentTests
         validation.Issues.Should().NotBeEmpty("Poor content should generate quality issues");
 
         // Should identify coherence problems
-        var coherenceIssues = validation
-            .Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence)
-            .ToList();
+        var coherenceIssues = validation.Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence).ToList();
         coherenceIssues.Should().NotBeEmpty("Should identify poor coherence in mixed content");
 
         System.Diagnostics.Debug.WriteLine($"Poor content results:");
@@ -692,25 +622,18 @@ public class TopicBasedQualityAssessmentTests
     {
         _mockPromptManager
             .Setup(x =>
-                x.GetPromptAsync(
-                    It.IsAny<SegmentationStrategy>(),
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()
-                )
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(
                 new PromptTemplate
                 {
                     SystemPrompt = "You are an advanced topic analysis expert.",
-                    UserPrompt =
-                        "Analyze the following content for quality assessment: {DocumentContent}",
+                    UserPrompt = "Analyze the following content for quality assessment: {DocumentContent}",
                     ExpectedFormat = "json",
                 }
             );
 
-        _mockLlmService
-            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
     private DocumentSegment CreateSegment(string id, string content, int sequenceNumber)

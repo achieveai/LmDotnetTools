@@ -180,11 +180,7 @@ public static class MessageExtensions
                     .Where(text => !string.IsNullOrEmpty(text))
             );
 
-            return new TextMessage
-            {
-                Text = textContent,
-                Role = messages.FirstOrDefault()?.Role ?? Role.Assistant,
-            };
+            return new TextMessage { Text = textContent, Role = messages.FirstOrDefault()?.Role ?? Role.Assistant };
         }
     }
 

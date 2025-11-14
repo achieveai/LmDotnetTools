@@ -37,10 +37,7 @@ public record ChatMessage
     // Some providers (e.g., OpenAI o-series) return a duplicate field "reasoning_content"
     // that mirrors "reasoning". We need to *read* it during deserialization but must **not**
     // emit it when serializing outbound requests (it would duplicate `reasoning`).
-    [
-        JsonPropertyName("reasoning_content"),
-        JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)
-    ]
+    [JsonPropertyName("reasoning_content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string? ReasoningContent
     {
         // Write-only for deserialization; getter intentionally returns null so the
@@ -67,11 +64,7 @@ public record ChatMessage
         public string? Summary { get; set; }
     }
 
-    private IEnumerable<IMessage> ToMessages(
-        string? name,
-        RoleEnum? role = null,
-        bool isStreaming = false
-    )
+    private IEnumerable<IMessage> ToMessages(string? name, RoleEnum? role = null, bool isStreaming = false)
     {
         role = Role ?? role ?? RoleEnum.Assistant;
         if (ToolCalls?.Count > 0)
@@ -101,10 +94,7 @@ public record ChatMessage
             else
             {
                 var toolCalls = ToolCalls
-                    .Select(tc => new ToolCall(tc.Function.Name, tc.Function.Arguments)
-                    {
-                        ToolCallId = tc.Id,
-                    })
+                    .Select(tc => new ToolCall(tc.Function.Name, tc.Function.Arguments) { ToolCallId = tc.Id })
                     .ToArray();
 
                 yield return new ToolsCallMessage
@@ -125,8 +115,7 @@ public record ChatMessage
         {
             foreach (
                 var detail in ReasoningDetails.Where(d =>
-                    d.Type != null
-                    && d.Type.StartsWith("reasoning", StringComparison.OrdinalIgnoreCase)
+                    d.Type != null && d.Type.StartsWith("reasoning", StringComparison.OrdinalIgnoreCase)
                 )
             )
             {
@@ -139,8 +128,7 @@ public record ChatMessage
                 var visibility =
                     detail.Type!.EndsWith("encrypted", StringComparison.OrdinalIgnoreCase)
                         ? ReasoningVisibility.Encrypted
-                    : detail.Type.EndsWith("summary", StringComparison.OrdinalIgnoreCase)
-                        ? ReasoningVisibility.Summary
+                    : detail.Type.EndsWith("summary", StringComparison.OrdinalIgnoreCase) ? ReasoningVisibility.Summary
                     : ReasoningVisibility.Plain;
 
                 yield return isStreaming && visibility != ReasoningVisibility.Encrypted
@@ -312,13 +300,9 @@ public record ImageContent
             get
             {
                 var formattedUrl =
-                    Url.Length <= 50
-                        ? Url
-                        : $"{Url.Substring(0, 23)}...{Url.Substring(Url.Length - 24)}";
+                    Url.Length <= 50 ? Url : $"{Url.Substring(0, 23)}...{Url.Substring(Url.Length - 24)}";
 
-                return AltText != null
-                    ? $"Url = {formattedUrl}, AltText = {AltText}"
-                    : $"Url = {formattedUrl}";
+                return AltText != null ? $"Url = {formattedUrl}, AltText = {AltText}" : $"Url = {formattedUrl}";
             }
         }
     };
@@ -339,8 +323,7 @@ public record FunctionContent(
 public record FunctionCall(
     [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("arguments")] string? Arguments
-)
-{ }
+) { }
 
 [JsonConverter(typeof(JsonPropertyNameEnumConverter<RoleEnum>))]
 public enum RoleEnum

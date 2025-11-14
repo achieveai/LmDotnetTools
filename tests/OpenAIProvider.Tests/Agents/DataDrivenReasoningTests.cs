@@ -22,11 +22,12 @@ public class DataDrivenReasoningTests
 
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
+
+    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
+    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
 
     #region Playback test
 
@@ -39,9 +40,7 @@ public class DataDrivenReasoningTests
 
         // Wire HTTP client for playback only (allowAdditional = false)
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -119,20 +118,13 @@ public class DataDrivenReasoningTests
             },
         };
 
-        var reasoningDict = new Dictionary<string, object?>
-        {
-            ["effort"] = "medium",
-            ["max_tokens"] = 512,
-        };
+        var reasoningDict = new Dictionary<string, object?> { ["effort"] = "medium", ["max_tokens"] = 512 };
 
         var options = new GenerateReplyOptions
         {
             ModelId = "deepseek/deepseek-r1-0528:free", // model known to emit reasoning field via OpenRouter
             Temperature = 0f,
-            ExtraProperties = new Dictionary<string, object?>
-            {
-                ["reasoning"] = reasoningDict,
-            }.ToImmutableDictionary(),
+            ExtraProperties = new Dictionary<string, object?> { ["reasoning"] = reasoningDict }.ToImmutableDictionary(),
         };
 
         // 2) Save LmCore request artefact
@@ -145,9 +137,7 @@ public class DataDrivenReasoningTests
 
         // 3) Configure record/playback handler
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -170,9 +160,7 @@ public class DataDrivenReasoningTests
         // Sanity – make sure reasoning content present so future assertions make sense
         if (!response.OfType<ReasoningMessage>().Any())
         {
-            throw new InvalidOperationException(
-                "Provider did not return reasoning content – cannot create test data."
-            );
+            throw new InvalidOperationException("Provider did not return reasoning content – cannot create test data.");
         }
 
         // 5) Persist response for future playback
@@ -229,9 +217,7 @@ public class DataDrivenReasoningTests
         );
 
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -252,9 +238,7 @@ public class DataDrivenReasoningTests
 
         if (!response.OfType<ReasoningMessage>().Any())
         {
-            throw new InvalidOperationException(
-                "Model did not return reasoning content; cannot create test data."
-            );
+            throw new InvalidOperationException("Model did not return reasoning content; cannot create test data.");
         }
 
         _testDataManager.SaveFinalResponse(testName, ProviderType.OpenAI, response);
@@ -265,18 +249,10 @@ public class DataDrivenReasoningTests
     #region Helpers
 
     private static string GetApiKeyFromEnv() =>
-        EnvironmentHelper.GetApiKeyFromEnv(
-            "OPENAI_API_KEY",
-            new[] { "LLM_API_KEY" },
-            "test-api-key"
-        );
+        EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
 
     private static string GetApiBaseUrlFromEnv() =>
-        EnvironmentHelper.GetApiBaseUrlFromEnv(
-            "OPENAI_API_URL",
-            new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1"
-        );
+        EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
 
     #endregion
 }

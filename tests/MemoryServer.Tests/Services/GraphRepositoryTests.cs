@@ -29,9 +29,7 @@ public class GraphRepositoryTests : IDisposable
 
         // Create a simple logger factory that returns NullLogger instances
         _mockLoggerFactory = new Mock<ILoggerFactory>();
-        _mockLoggerFactory
-            .Setup(f => f.CreateLogger(It.IsAny<string>()))
-            .Returns(new Mock<ILogger>().Object);
+        _mockLoggerFactory.Setup(f => f.CreateLogger(It.IsAny<string>())).Returns(new Mock<ILogger>().Object);
 
         // Create TestSqliteSessionFactory for proper test isolation
         _sessionFactory = new TestSqliteSessionFactory(_mockLoggerFactory.Object);
@@ -44,10 +42,7 @@ public class GraphRepositoryTests : IDisposable
 
     [Theory]
     [MemberData(nameof(EntityTestCases))]
-    public async Task AddEntityAsync_WithValidData_ShouldSucceed(
-        Entity entity,
-        SessionContext sessionContext
-    )
+    public async Task AddEntityAsync_WithValidData_ShouldSucceed(Entity entity, SessionContext sessionContext)
     {
         // Arrange
         // Act
@@ -153,16 +148,10 @@ public class GraphRepositoryTests : IDisposable
     )
     {
         // Arrange
-        var addedRelationship = await _repository.AddRelationshipAsync(
-            relationship,
-            sessionContext
-        );
+        var addedRelationship = await _repository.AddRelationshipAsync(relationship, sessionContext);
 
         // Act
-        var result = await _repository.GetRelationshipByIdAsync(
-            addedRelationship.Id,
-            sessionContext
-        );
+        var result = await _repository.GetRelationshipByIdAsync(addedRelationship.Id, sessionContext);
 
         // Assert
         Assert.NotNull(result);
@@ -393,11 +382,7 @@ public class GraphRepositoryTests : IDisposable
 
     #region Timeout Helper
 
-    private async Task<T> WithTimeoutAsync<T>(
-        Task<T> task,
-        int timeoutSeconds,
-        string operationName
-    )
+    private async Task<T> WithTimeoutAsync<T>(Task<T> task, int timeoutSeconds, string operationName)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);

@@ -49,7 +49,5 @@ public interface IEmbeddingService : IDisposable
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>List of available model names</returns>
-    Task<IReadOnlyList<string>> GetAvailableModelsAsync(
-        CancellationToken cancellationToken = default
-    );
+    Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
 }

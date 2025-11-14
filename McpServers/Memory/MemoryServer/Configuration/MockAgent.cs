@@ -21,8 +21,7 @@ public class MockAgent : IAgent
     {
         var response = new TextMessage
         {
-            Text =
-                $"Mock response from {_name}. LLM features are disabled - API key not configured.",
+            Text = $"Mock response from {_name}. LLM features are disabled - API key not configured.",
             Role = Role.Assistant,
             FromAgent = _name,
         };

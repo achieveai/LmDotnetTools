@@ -23,8 +23,7 @@ public class SqliteSession : ISqliteSession
 
     public SqliteSession(string connectionString, ILogger<SqliteSession> logger)
     {
-        _connectionString =
-            connectionString ?? throw new ArgumentNullException(nameof(connectionString));
+        _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
         SessionId = Guid.NewGuid().ToString("N")[..8]; // Short session ID for logging
@@ -39,8 +38,7 @@ public class SqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        if (operation == null)
-            throw new ArgumentNullException(nameof(operation));
+        ArgumentNullException.ThrowIfNull(operation);
 
         await EnsureConnectionAsync(cancellationToken);
 
@@ -49,11 +47,7 @@ public class SqliteSession : ISqliteSession
             _operationCount++;
             _lastActivity = DateTime.UtcNow;
 
-            _logger.LogDebug(
-                "Executing operation {OperationCount} in session {SessionId}",
-                _operationCount,
-                SessionId
-            );
+            _logger.LogDebug("Executing operation {OperationCount} in session {SessionId}", _operationCount, SessionId);
 
             var result = await operation(_connection!);
 
@@ -82,8 +76,7 @@ public class SqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        if (operation == null)
-            throw new ArgumentNullException(nameof(operation));
+        ArgumentNullException.ThrowIfNull(operation);
 
         await EnsureConnectionAsync(cancellationToken);
 
@@ -201,10 +194,7 @@ public class SqliteSession : ISqliteSession
                         using var cmd = conn.CreateCommand();
                         cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
                         await cmd.ExecuteNonQueryAsync();
-                        _logger.LogDebug(
-                            "WAL checkpoint completed for session {SessionId}",
-                            SessionId
-                        );
+                        _logger.LogDebug("WAL checkpoint completed for session {SessionId}", SessionId);
                         return true;
                     });
                 }
@@ -242,10 +232,7 @@ public class SqliteSession : ISqliteSession
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         if (_disposed)
-            throw new ObjectDisposedException(
-                nameof(SqliteSession),
-                $"Session {SessionId} is disposed"
-            );
+            throw new ObjectDisposedException(nameof(SqliteSession), $"Session {SessionId} is disposed");
 
         if (_connection == null)
         {
@@ -274,10 +261,7 @@ public class SqliteSession : ISqliteSession
         }
     }
 
-    private async Task ConfigureConnectionAsync(
-        SqliteConnection connection,
-        CancellationToken cancellationToken
-    )
+    private async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         // Load sqlite-vec extension (required for vector functionality)
         try
@@ -286,10 +270,7 @@ public class SqliteSession : ISqliteSession
 
             // Load sqlite-vec extension - this is required for vector functionality
             connection.LoadExtension("vec0");
-            _logger.LogInformation(
-                "sqlite-vec extension loaded successfully for session {SessionId}",
-                SessionId
-            );
+            _logger.LogInformation("sqlite-vec extension loaded successfully for session {SessionId}", SessionId);
         }
         catch (Exception ex)
         {
@@ -334,9 +315,6 @@ public class SqliteSession : ISqliteSession
             }
         }
 
-        _logger.LogDebug(
-            "Connection configured with performance pragmas for session {SessionId}",
-            SessionId
-        );
+        _logger.LogDebug("Connection configured with performance pragmas for session {SessionId}", SessionId);
     }
 }

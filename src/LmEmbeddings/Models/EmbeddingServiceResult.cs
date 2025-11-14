@@ -130,7 +130,7 @@ public record EmbeddingServiceResult<T>
     {
         return exception switch
         {
-            HttpRequestException http when http.Message.Contains("5") => true,
+            HttpRequestException http when http.Message.Contains('5') => true,
             TimeoutException => true,
             TaskCanceledException => true,
             _ => false,
@@ -208,10 +208,7 @@ public static class EmbeddingResults
     /// <summary>
     /// Creates a rate limit error result
     /// </summary>
-    public static EmbeddingServiceResult<T> RateLimitError<T>(
-        RateLimitInfo rateLimitInfo,
-        string? requestId = null
-    )
+    public static EmbeddingServiceResult<T> RateLimitError<T>(RateLimitInfo rateLimitInfo, string? requestId = null)
     {
         var error = new EmbeddingError
         {

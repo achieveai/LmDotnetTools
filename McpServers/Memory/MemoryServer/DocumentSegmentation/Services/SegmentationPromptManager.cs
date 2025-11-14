@@ -85,17 +85,11 @@ public class SegmentationPromptManager : ISegmentationPromptManager
 
         if (_promptCache.TryGetValue(key, out var cachedPrompt))
         {
-            _logger.LogDebug(
-                "Retrieved cached quality validation prompt for language {Language}",
-                language
-            );
+            _logger.LogDebug("Retrieved cached quality validation prompt for language {Language}", language);
             return cachedPrompt;
         }
 
-        _logger.LogWarning(
-            "Quality validation prompt not found for language {Language}. Using fallback.",
-            language
-        );
+        _logger.LogWarning("Quality validation prompt not found for language {Language}. Using fallback.", language);
         return CreateFallbackQualityPrompt();
     }
 
@@ -158,21 +152,16 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     /// <summary>
     /// Validates that all required prompts are properly configured.
     /// </summary>
-    public async Task<bool> ValidatePromptConfigurationAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<bool> ValidatePromptConfigurationAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             await EnsurePromptsLoadedAsync(cancellationToken);
 
-            _logger.LogDebug(
-                "Validating prompt configuration. Cache contains {Count} prompts",
-                _promptCache.Count
-            );
+            _logger.LogDebug("Validating prompt configuration. Cache contains {Count} prompts", _promptCache.Count);
 
             // If we have any prompts loaded, consider it valid (flexible validation for testing)
-            if (_promptCache.Count > 0)
+            if (!_promptCache.IsEmpty)
             {
                 _logger.LogInformation(
                     "Prompt configuration validation passed. Found {Count} configured prompts",
@@ -182,13 +171,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
             }
 
             // More strict validation for required strategies
-            var requiredStrategies = new[]
-            {
-                "topic_based",
-                "structure_based",
-                "narrative_based",
-                "hybrid",
-            };
+            var requiredStrategies = new[] { "topic_based", "structure_based", "narrative_based", "hybrid" };
             var missingPrompts = new List<string>();
 
             foreach (var strategy in requiredStrategies)
@@ -200,7 +183,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
                 }
             }
 
-            if (missingPrompts.Any())
+            if (missingPrompts.Count != 0)
             {
                 _logger.LogWarning(
                     "Missing required prompt configurations: {MissingPrompts}",
@@ -270,9 +253,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
                     .WithNamingConvention(UnderscoredNamingConvention.Instance)
                     .Build();
 
-                var promptsConfig = deserializer.Deserialize<Dictionary<string, object>>(
-                    yamlContent
-                );
+                var promptsConfig = deserializer.Deserialize<Dictionary<string, object>>(yamlContent);
 
                 LoadPromptsFromConfig(promptsConfig);
                 LoadDomainInstructionsFromConfig(promptsConfig);
@@ -321,15 +302,8 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         }
 
         // Otherwise, make it relative to the application directory
-        var assemblyPath = Path.GetDirectoryName(
-            typeof(SegmentationPromptManager).Assembly.Location
-        )!;
-        var assemblyRelativePath = Path.Combine(
-            assemblyPath,
-            "DocumentSegmentation",
-            "Configuration",
-            configuredPath
-        );
+        var assemblyPath = Path.GetDirectoryName(typeof(SegmentationPromptManager).Assembly.Location)!;
+        var assemblyRelativePath = Path.Combine(assemblyPath, "DocumentSegmentation", "Configuration", configuredPath);
 
         return assemblyRelativePath;
     }
@@ -366,10 +340,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         foreach (var kvp in config)
         {
             var strategyName = kvp.Key.ToString();
-            if (
-                !strategies.Contains(strategyName)
-                && kvp.Value is Dictionary<object, object> additionalDict
-            )
+            if (!strategies.Contains(strategyName) && kvp.Value is Dictionary<object, object> additionalDict)
             {
                 // Skip domain_instructions as that's handled separately
                 if (strategyName != "domain_instructions")
@@ -378,10 +349,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
                     var key = $"{strategyName}_{_options.Prompts.DefaultLanguage}";
                     _promptCache.TryAdd(key, prompt);
 
-                    _logger.LogDebug(
-                        "Loaded additional prompt template for: {Strategy}",
-                        strategyName
-                    );
+                    _logger.LogDebug("Loaded additional prompt template for: {Strategy}", strategyName);
                 }
             }
         }
@@ -396,10 +364,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         {
             foreach (var kvp in domainDict)
             {
-                if (
-                    kvp.Key?.ToString() is string documentType
-                    && kvp.Value?.ToString() is string instructions
-                )
+                if (kvp.Key?.ToString() is string documentType && kvp.Value?.ToString() is string instructions)
                 {
                     var key = $"{documentType}_{_options.Prompts.DefaultLanguage}";
                     _domainInstructionsCache.TryAdd(key, instructions.Trim());
@@ -492,12 +457,9 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     {
         return documentType switch
         {
-            DocumentType.ResearchPaper =>
-                "Follow academic structure with clear methodology and results sections.",
-            DocumentType.Legal =>
-                "Preserve legal context and complete legal thoughts in each segment.",
-            DocumentType.Technical =>
-                "Group technical procedures and maintain implementation context.",
+            DocumentType.ResearchPaper => "Follow academic structure with clear methodology and results sections.",
+            DocumentType.Legal => "Preserve legal context and complete legal thoughts in each segment.",
+            DocumentType.Technical => "Group technical procedures and maintain implementation context.",
             DocumentType.Email => "Maintain conversation context and reply chains.",
             DocumentType.Chat => "Group related conversation topics together.",
             _ => "Segment based on logical content boundaries and topic coherence.",

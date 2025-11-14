@@ -63,10 +63,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             using var httpClient = new HttpClient(handler);
 
             // Make a request that matches the recorded data
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.openai.com/v1/chat/completions"
-            )
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions")
             {
                 Content = new StringContent(
                     """
@@ -154,10 +151,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             using var httpClient = new HttpClient(handler);
 
             // Make a request that doesn't match the recorded data
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.openai.com/v1/chat/completions"
-            )
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions")
             {
                 Content = new StringContent(
                     """
@@ -174,9 +168,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             };
 
             // Act & Assert
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                httpClient.SendAsync(request)
-            );
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => httpClient.SendAsync(request));
             Assert.Contains("No recorded interaction found", exception.Message);
         }
         finally
@@ -236,10 +228,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             using var httpClient = new HttpClient(handler);
 
             // Make a request with same model and messages but different formatting/extra properties
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.anthropic.com/v1/messages"
-            )
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
             {
                 Content = new StringContent(
                     """
@@ -266,10 +255,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             var responseContent = await response.Content.ReadAsStringAsync();
             var responseJson = JsonDocument.Parse(responseContent);
 
-            Assert.Equal(
-                "msg_flexible_match",
-                responseJson.RootElement.GetProperty("id").GetString()
-            );
+            Assert.Equal("msg_flexible_match", responseJson.RootElement.GetProperty("id").GetString());
         }
         finally
         {
@@ -289,22 +275,13 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
 
             using var httpClient = new HttpClient(handler);
 
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.openai.com/v1/chat/completions"
-            )
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions")
             {
-                Content = new StringContent(
-                    """{"model": "gpt-4"}""",
-                    Encoding.UTF8,
-                    "application/json"
-                ),
+                Content = new StringContent("""{"model": "gpt-4"}""", Encoding.UTF8, "application/json"),
             };
 
             // Act & Assert - Should throw since no recorded interactions and no API forwarding
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                httpClient.SendAsync(request)
-            );
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => httpClient.SendAsync(request));
             Assert.Contains("No recorded interaction found", exception.Message);
         }
         finally
@@ -331,11 +308,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var recordedRequest = JsonDocument.Parse(requestJson).RootElement;
 
         // Act
-        var matches = RequestMatcher.MatchesRecordedRequest(
-            incomingRequest,
-            recordedRequest,
-            exactMatch: true
-        );
+        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: true);
 
         // Assert
         Assert.True(matches);
@@ -369,11 +342,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var recordedRequest = JsonDocument.Parse(recordedRequestJson).RootElement;
 
         // Act
-        var matches = RequestMatcher.MatchesRecordedRequest(
-            incomingRequest,
-            recordedRequest,
-            exactMatch: false
-        );
+        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: false);
 
         // Assert
         Assert.True(matches);
@@ -405,11 +374,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var recordedRequest = JsonDocument.Parse(recordedRequestJson).RootElement;
 
         // Act
-        var matches = RequestMatcher.MatchesRecordedRequest(
-            incomingRequest,
-            recordedRequest,
-            exactMatch: false
-        );
+        var matches = RequestMatcher.MatchesRecordedRequest(incomingRequest, recordedRequest, exactMatch: false);
 
         // Assert
         Assert.False(matches);
@@ -468,10 +433,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
 
             using var httpClient = new HttpClient(handler);
 
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.anthropic.com/v1/messages"
-            )
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
             {
                 Content = new StringContent(
                     """
@@ -506,10 +468,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             // Verify response was from playback
             var responseContent = await response.Content.ReadAsStringAsync();
             var responseJson = JsonDocument.Parse(responseContent);
-            Assert.Equal(
-                "msg_weather_response",
-                responseJson.RootElement.GetProperty("id").GetString()
-            );
+            Assert.Equal("msg_weather_response", responseJson.RootElement.GetProperty("id").GetString());
         }
         finally
         {
@@ -582,10 +541,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
 
             using var httpClient = new HttpClient(handler);
 
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.anthropic.com/v1/messages"
-            )
+            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages")
             {
                 Content = new StringContent(
                     """
@@ -619,10 +575,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             var responseContent = await response.Content.ReadAsStringAsync();
             var responseJson = JsonDocument.Parse(responseContent);
 
-            Assert.Equal(
-                "msg_tool_response",
-                responseJson.RootElement.GetProperty("id").GetString()
-            );
+            Assert.Equal("msg_tool_response", responseJson.RootElement.GetProperty("id").GetString());
             var toolUse = responseJson.RootElement.GetProperty("content")[0];
             Assert.Equal("tool_use", toolUse.GetProperty("type").GetString());
             Assert.Equal("getWeather", toolUse.GetProperty("name").GetString());

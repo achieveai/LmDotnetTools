@@ -107,8 +107,7 @@ public class ReasoningMessageJsonConverter : ShadowPropertiesJsonConverter<Reaso
     }
 }
 
-public class ReasoningUpdateMessageJsonConverter
-    : ShadowPropertiesJsonConverter<ReasoningUpdateMessage>
+public class ReasoningUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ReasoningUpdateMessage>
 {
     protected override ReasoningUpdateMessage CreateInstance()
     {

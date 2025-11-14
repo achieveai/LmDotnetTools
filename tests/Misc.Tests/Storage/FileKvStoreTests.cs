@@ -15,11 +15,7 @@ public class FileKvStoreTests
     public void Setup()
     {
         // Create a unique test directory for each test
-        _testCacheDirectory = Path.Combine(
-            Path.GetTempPath(),
-            "FileKvStoreTests",
-            Guid.NewGuid().ToString()
-        );
+        _testCacheDirectory = Path.Combine(Path.GetTempPath(), "FileKvStoreTests", Guid.NewGuid().ToString());
         _store = new FileKvStore(_testCacheDirectory);
     }
 
@@ -48,11 +44,7 @@ public class FileKvStoreTests
     public void Constructor_WithValidDirectory_CreatesDirectory()
     {
         // Arrange
-        var testDir = Path.Combine(
-            Path.GetTempPath(),
-            "FileKvStoreTest_New",
-            Guid.NewGuid().ToString()
-        );
+        var testDir = Path.Combine(Path.GetTempPath(), "FileKvStoreTest_New", Guid.NewGuid().ToString());
 
         // Act
         using var store = new FileKvStore(testDir);
@@ -98,11 +90,7 @@ public class FileKvStoreTests
             WriteIndented = true,
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         };
-        var testDir = Path.Combine(
-            Path.GetTempPath(),
-            "FileKvStoreTest_CustomJson",
-            Guid.NewGuid().ToString()
-        );
+        var testDir = Path.Combine(Path.GetTempPath(), "FileKvStoreTest_CustomJson", Guid.NewGuid().ToString());
 
         // Act & Assert (no exception should be thrown)
         using var store = new FileKvStore(testDir, customOptions);
@@ -164,10 +152,7 @@ public class FileKvStoreTests
         Assert.AreEqual(testObject.Id, retrievedObject.Id);
         Assert.AreEqual(testObject.Name, retrievedObject.Name);
         CollectionAssert.AreEqual(testObject.Values, retrievedObject.Values);
-        Assert.AreEqual(
-            testObject.CreatedAt.ToString("O"),
-            retrievedObject.CreatedAt.ToString("O")
-        );
+        Assert.AreEqual(testObject.CreatedAt.ToString("O"), retrievedObject.CreatedAt.ToString("O"));
     }
 
     [TestMethod]
@@ -330,10 +315,7 @@ public class FileKvStoreTests
         foreach (var originalKey in testItems.Keys)
         {
             var expectedHash = GetSHA256Hash(originalKey);
-            Assert.IsTrue(
-                keys.Contains(expectedHash),
-                $"Expected hash {expectedHash} for key {originalKey}"
-            );
+            Assert.IsTrue(keys.Contains(expectedHash), $"Expected hash {expectedHash} for key {originalKey}");
         }
     }
 

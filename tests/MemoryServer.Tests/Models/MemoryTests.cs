@@ -21,11 +21,7 @@ public class MemoryTests
         Debug.WriteLine($"Testing GetSessionContext: {description}");
         Debug.WriteLine($"Input - UserId: {userId}, AgentId: {agentId}, RunId: {runId}");
 
-        var memory = MemoryTestDataFactory.CreateTestMemory(
-            userId: userId,
-            agentId: agentId,
-            runId: runId
-        );
+        var memory = MemoryTestDataFactory.CreateTestMemory(userId: userId, agentId: agentId, runId: runId);
 
         // Act
         var sessionContext = memory.GetSessionContext();
@@ -41,10 +37,7 @@ public class MemoryTests
 
     [Theory]
     [MemberData(nameof(GetScoreTestData))]
-    public void WithScore_WithVariousScores_ReturnsMemoryWithCorrectScore(
-        float score,
-        string description
-    )
+    public void WithScore_WithVariousScores_ReturnsMemoryWithCorrectScore(float score, string description)
     {
         // Arrange
         Debug.WriteLine($"Testing WithScore: {description}");
@@ -90,9 +83,7 @@ public class MemoryTests
 
         // Act
         var updatedMemory = originalMemory.WithUpdatedTimestamp();
-        Debug.WriteLine(
-            $"Updated - UpdatedAt: {updatedMemory.UpdatedAt}, Version: {updatedMemory.Version}"
-        );
+        Debug.WriteLine($"Updated - UpdatedAt: {updatedMemory.UpdatedAt}, Version: {updatedMemory.Version}");
 
         // Assert
         Assert.True(updatedMemory.UpdatedAt > originalUpdatedAt);
@@ -121,10 +112,7 @@ public class MemoryTests
     }
 
     [Theory]
-    [MemberData(
-        nameof(MemoryTestDataFactory.GetMetadataTestCases),
-        MemberType = typeof(MemoryTestDataFactory)
-    )]
+    [MemberData(nameof(MemoryTestDataFactory.GetMetadataTestCases), MemberType = typeof(MemoryTestDataFactory))]
     public void WithUpdatedTimestamp_WithVariousMetadata_PreservesMetadataCorrectly(
         Dictionary<string, object>? metadata,
         string description
@@ -164,16 +152,11 @@ public class MemoryTests
 
     [Theory]
     [MemberData(nameof(GetEmbeddingTestData))]
-    public void WithScore_WithEmbedding_PreservesEmbeddingCorrectly(
-        float[]? embedding,
-        string description
-    )
+    public void WithScore_WithEmbedding_PreservesEmbeddingCorrectly(float[]? embedding, string description)
     {
         // Arrange
         Debug.WriteLine($"Testing WithScore with embedding: {description}");
-        Debug.WriteLine(
-            $"Embedding: {(embedding == null ? "null" : $"array of {embedding.Length} elements")}"
-        );
+        Debug.WriteLine($"Embedding: {(embedding == null ? "null" : $"array of {embedding.Length} elements")}");
 
         var originalMemory = MemoryTestDataFactory.CreateTestMemory();
         originalMemory.Embedding = embedding;

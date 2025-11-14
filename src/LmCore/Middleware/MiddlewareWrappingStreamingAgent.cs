@@ -11,10 +11,16 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
 {
     private readonly IStreamingAgent _agent;
     private readonly Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>>? _middleware;
-    private readonly Func<MiddlewareContext, IStreamingAgent, CancellationToken, Task<IAsyncEnumerable<IMessage>>> _streamingMiddleware;
+    private readonly Func<
+        MiddlewareContext,
+        IStreamingAgent,
+        CancellationToken,
+        Task<IAsyncEnumerable<IMessage>>
+    > _streamingMiddleware;
     private readonly string _middlewareName;
     private readonly string _creationStackTrace;
-    private static ILogger<MiddlewareWrappingStreamingAgent> _logger = NullLogger<MiddlewareWrappingStreamingAgent>.Instance;
+    private static ILogger<MiddlewareWrappingStreamingAgent> _logger =
+        NullLogger<MiddlewareWrappingStreamingAgent>.Instance;
 
     /// <summary>
     /// Sets the logger to use for all MiddlewareWrappingStreamingAgent instances.
@@ -76,13 +82,17 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
     )
     {
         var correlationId = Guid.NewGuid().ToString("N")[..8];
-        _logger.LogDebug("[{CorrelationId}] Middleware '{MiddlewareName}' starting streaming invocation",
-            correlationId, _middlewareName);
+        _logger.LogDebug(
+            "[{CorrelationId}] Middleware '{MiddlewareName}' starting streaming invocation",
+            correlationId,
+            _middlewareName
+        );
 
         var messageStream = await _streamingMiddleware(
             new MiddlewareContext(messages, options),
             _agent,
-            cancellationToken);
+            cancellationToken
+        );
 
         return MonitoredStreamWrapper(messageStream, correlationId, cancellationToken);
     }
@@ -90,7 +100,8 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
     private async IAsyncEnumerable<IMessage> MonitoredStreamWrapper(
         IAsyncEnumerable<IMessage> sourceStream,
         string correlationId,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default
+    )
     {
         var startTime = DateTime.UtcNow;
         var lastYieldTime = DateTime.UtcNow;
@@ -100,52 +111,71 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
 
         // Start monitoring task
         using var monitorCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var monitorTask = Task.Run(async () =>
-        {
-            await Task.Delay(TimeSpan.FromSeconds(2), monitorCts.Token); // Initial delay
-
-            while (!monitorCts.Token.IsCancellationRequested)
+        var monitorTask = Task.Run(
+            async () =>
             {
-                try
+                await Task.Delay(TimeSpan.FromSeconds(2), monitorCts.Token); // Initial delay
+
+                while (!monitorCts.Token.IsCancellationRequested)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(5), monitorCts.Token);
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(5), monitorCts.Token);
 
-                    var timeSinceLastYield = DateTime.UtcNow - lastYieldTime;
-                    var currentActiveYields = Interlocked.CompareExchange(ref activeYieldCount, 0, 0);
+                        var timeSinceLastYield = DateTime.UtcNow - lastYieldTime;
+                        var currentActiveYields = Interlocked.CompareExchange(ref activeYieldCount, 0, 0);
 
-                    if (currentActiveYields > 0 && timeSinceLastYield > timeoutThreshold)
+                        if (currentActiveYields > 0 && timeSinceLastYield > timeoutThreshold)
+                        {
+                            _logger.LogError(
+                                "[{CorrelationId}] MIDDLEWARE STUCK: '{MiddlewareName}' has been yielding for {Duration:F1}s\n"
+                                    + "Messages yielded so far: {MessageCount}\n"
+                                    + "Creation stack trace:\n{StackTrace}",
+                                correlationId,
+                                _middlewareName,
+                                timeSinceLastYield.TotalSeconds,
+                                messageCount,
+                                _creationStackTrace
+                            );
+                        }
+                        else if (timeSinceLastYield > timeoutThreshold.Multiply(0.5))
+                        {
+                            _logger.LogWarning(
+                                "[{CorrelationId}] Middleware '{MiddlewareName}' slow: No yield for {Duration:F1}s, ActiveYields={ActiveYields}",
+                                correlationId,
+                                _middlewareName,
+                                timeSinceLastYield.TotalSeconds,
+                                currentActiveYields
+                            );
+                        }
+                        else
+                        {
+                            _logger.LogTrace(
+                                "[{CorrelationId}] Middleware '{MiddlewareName}' healthy: LastYield={Duration:F1}s ago, Messages={MessageCount}",
+                                correlationId,
+                                _middlewareName,
+                                timeSinceLastYield.TotalSeconds,
+                                messageCount
+                            );
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
                     {
                         _logger.LogError(
-                            "[{CorrelationId}] MIDDLEWARE STUCK: '{MiddlewareName}' has been yielding for {Duration:F1}s\n" +
-                            "Messages yielded so far: {MessageCount}\n" +
-                            "Creation stack trace:\n{StackTrace}",
-                            correlationId, _middlewareName, timeSinceLastYield.TotalSeconds,
-                            messageCount, _creationStackTrace);
-                    }
-                    else if (timeSinceLastYield > timeoutThreshold.Multiply(0.5))
-                    {
-                        _logger.LogWarning(
-                            "[{CorrelationId}] Middleware '{MiddlewareName}' slow: No yield for {Duration:F1}s, ActiveYields={ActiveYields}",
-                            correlationId, _middlewareName, timeSinceLastYield.TotalSeconds, currentActiveYields);
-                    }
-                    else
-                    {
-                        _logger.LogTrace(
-                            "[{CorrelationId}] Middleware '{MiddlewareName}' healthy: LastYield={Duration:F1}s ago, Messages={MessageCount}",
-                            correlationId, _middlewareName, timeSinceLastYield.TotalSeconds, messageCount);
+                            ex,
+                            "[{CorrelationId}] Monitor task error for middleware '{MiddlewareName}'",
+                            correlationId,
+                            _middlewareName
+                        );
                     }
                 }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "[{CorrelationId}] Monitor task error for middleware '{MiddlewareName}'",
-                        correlationId, _middlewareName);
-                }
-            }
-        }, monitorCts.Token);
+            },
+            monitorCts.Token
+        );
 
         try
         {
@@ -156,8 +186,12 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
 
                 try
                 {
-                    _logger.LogTrace("[{CorrelationId}] Middleware '{MiddlewareName}' yielding message #{MessageNum}",
-                        correlationId, _middlewareName, messageCount + 1);
+                    _logger.LogTrace(
+                        "[{CorrelationId}] Middleware '{MiddlewareName}' yielding message #{MessageNum}",
+                        correlationId,
+                        _middlewareName,
+                        messageCount + 1
+                    );
 
                     yield return message;
 
@@ -169,7 +203,11 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
                     {
                         _logger.LogWarning(
                             "[{CorrelationId}] Middleware '{MiddlewareName}' slow yield: Message #{MessageNum} took {Duration}ms",
-                            correlationId, _middlewareName, messageCount, yieldDuration);
+                            correlationId,
+                            _middlewareName,
+                            messageCount,
+                            yieldDuration
+                        );
                     }
                 }
                 finally
@@ -180,12 +218,20 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
 
             _logger.LogDebug(
                 "[{CorrelationId}] Middleware '{MiddlewareName}' completed: TotalMessages={MessageCount}, Duration={Duration}ms",
-                correlationId, _middlewareName, messageCount, (DateTime.UtcNow - startTime).TotalMilliseconds);
+                correlationId,
+                _middlewareName,
+                messageCount,
+                (DateTime.UtcNow - startTime).TotalMilliseconds
+            );
         }
         finally
         {
             monitorCts.Cancel();
-            try { await monitorTask.ConfigureAwait(false); } catch { }
+            try
+            {
+                await monitorTask.ConfigureAwait(false);
+            }
+            catch { }
         }
     }
 }

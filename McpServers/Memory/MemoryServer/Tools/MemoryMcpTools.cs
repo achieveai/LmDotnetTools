@@ -53,8 +53,7 @@ public class MemoryMcpTools
     )
     {
         _memoryService = memoryService ?? throw new ArgumentNullException(nameof(memoryService));
-        _sessionResolver =
-            sessionResolver ?? throw new ArgumentNullException(nameof(sessionResolver));
+        _sessionResolver = sessionResolver ?? throw new ArgumentNullException(nameof(sessionResolver));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -108,11 +107,7 @@ public class MemoryMcpTools
             // Add memory
             var memory = await _memoryService.AddMemoryAsync(content, sessionContext, metadataDict);
 
-            _logger.LogInformation(
-                "Added memory {MemoryId} for session {SessionContext}",
-                memory.Id,
-                sessionContext
-            );
+            _logger.LogInformation("Added memory {MemoryId} for session {SessionContext}", memory.Id, sessionContext);
 
             return new
             {
@@ -157,8 +152,7 @@ public class MemoryMcpTools
             string? agentId = "",
         [Description("Run identifier for session filtering")] string? runId = "",
         [Description("Maximum number of results (default: 10, max: 100)")] int limit = 10,
-        [Description("Minimum similarity score threshold (default: 0.0)")]
-            float scoreThreshold = 0.0f
+        [Description("Minimum similarity score threshold (default: 0.0)")] float scoreThreshold = 0.0f
     )
     {
         try
@@ -200,12 +194,7 @@ public class MemoryMcpTools
             );
 
             // Search memories
-            var results = await _memoryService.SearchMemoriesAsync(
-                query,
-                sessionContext,
-                limit,
-                scoreThreshold
-            );
+            var results = await _memoryService.SearchMemoriesAsync(query, sessionContext, limit, scoreThreshold);
 
             _logger.LogInformation(
                 "Found {Count} memories for query '{Query}' in session {SessionContext}",
@@ -384,23 +373,14 @@ public class MemoryMcpTools
             }
 
             // Update memory
-            var memory = await _memoryService.UpdateMemoryAsync(
-                id,
-                content,
-                sessionContext,
-                metadataDict
-            );
+            var memory = await _memoryService.UpdateMemoryAsync(id, content, sessionContext, metadataDict);
 
             if (memory == null)
             {
                 return new { success = false, error = "Memory not found or access denied" };
             }
 
-            _logger.LogInformation(
-                "Updated memory {MemoryId} for session {SessionContext}",
-                memory.Id,
-                sessionContext
-            );
+            _logger.LogInformation("Updated memory {MemoryId} for session {SessionContext}", memory.Id, sessionContext);
 
             return new
             {
@@ -464,11 +444,7 @@ public class MemoryMcpTools
                 return new { success = false, error = "Memory not found or access denied" };
             }
 
-            _logger.LogInformation(
-                "Deleted memory {MemoryId} for session {SessionContext}",
-                id,
-                sessionContext
-            );
+            _logger.LogInformation("Deleted memory {MemoryId} for session {SessionContext}", id, sessionContext);
 
             return new { success = true, message = $"Memory {id} deleted successfully" };
         }
@@ -689,11 +665,7 @@ public class MemoryMcpTools
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting memory statistics");
-            return new
-            {
-                success = false,
-                error = $"Error getting memory statistics: {ex.Message}",
-            };
+            return new { success = false, error = $"Error getting memory statistics: {ex.Message}" };
         }
     }
 
@@ -717,11 +689,7 @@ public class MemoryMcpTools
             // Get all agents for the user
             var agents = await _memoryService.GetAgentsAsync(sessionContext.UserId);
 
-            _logger.LogInformation(
-                "Retrieved {Count} agents for user {UserId}",
-                agents.Count,
-                sessionContext.UserId
-            );
+            _logger.LogInformation("Retrieved {Count} agents for user {UserId}", agents.Count, sessionContext.UserId);
 
             return new
             {
@@ -745,9 +713,7 @@ public class MemoryMcpTools
     /// <param name="agentId">Agent identifier to get runs for</param>
     /// <returns>Array of run identifiers</returns>
     [McpServerTool(Name = "memory_get_runs"), Description(GetRunsDescription)]
-    public async Task<object> GetRunsAsync(
-        [Description("Agent identifier to get runs for")] string? agentId = ""
-    )
+    public async Task<object> GetRunsAsync([Description("Agent identifier to get runs for")] string? agentId = "")
     {
         try
         {

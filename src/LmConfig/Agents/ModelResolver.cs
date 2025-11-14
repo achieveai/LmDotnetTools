@@ -43,11 +43,7 @@ public class ModelResolver : IModelResolver
             return null;
         }
 
-        var availableProviders = await GetAvailableProvidersAsync(
-            modelId,
-            criteria,
-            cancellationToken
-        );
+        var availableProviders = await GetAvailableProvidersAsync(modelId, criteria, cancellationToken);
         var bestProvider = availableProviders.FirstOrDefault();
 
         if (bestProvider != null)
@@ -104,10 +100,7 @@ public class ModelResolver : IModelResolver
             var connection = _config.GetProviderConnection(provider.Name);
             if (connection == null)
             {
-                _logger.LogWarning(
-                    "No connection info found for provider {ProviderName}",
-                    provider.Name
-                );
+                _logger.LogWarning("No connection info found for provider {ProviderName}", provider.Name);
                 continue;
             }
 
@@ -154,10 +147,7 @@ public class ModelResolver : IModelResolver
         return ModelResolver.SortProvidersByPreference(resolutions, criteria);
     }
 
-    public Task<bool> IsProviderAvailableAsync(
-        string providerName,
-        CancellationToken cancellationToken = default
-    )
+    public Task<bool> IsProviderAvailableAsync(string providerName, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(providerName))
         {
@@ -237,11 +227,7 @@ public class ModelResolver : IModelResolver
         CancellationToken cancellationToken = default
     )
     {
-        var modelsWithCapability = await GetModelsWithCapabilityAsync(
-            capability,
-            criteria,
-            cancellationToken
-        );
+        var modelsWithCapability = await GetModelsWithCapabilityAsync(capability, criteria, cancellationToken);
 
         foreach (var model in modelsWithCapability)
         {
@@ -255,9 +241,7 @@ public class ModelResolver : IModelResolver
         return null;
     }
 
-    public Task<ValidationResult> ValidateConfigurationAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<ValidationResult> ValidateConfigurationAsync(CancellationToken cancellationToken = default)
     {
         var errors = new List<string>();
         var warnings = new List<string>();
@@ -304,8 +288,7 @@ public class ModelResolver : IModelResolver
                 var connectionValidation = connection.Validate();
                 if (!connectionValidation.IsValid)
                 {
-                    providerErrors.AddRange(connectionValidation.Errors.Select(e =>
-                        $"Provider {provider.Name}: {e}"));
+                    providerErrors.AddRange(connectionValidation.Errors.Select(e => $"Provider {provider.Name}: {e}"));
                 }
                 else
                 {
@@ -313,8 +296,9 @@ public class ModelResolver : IModelResolver
                 }
 
                 // Always add warnings regardless of provider validity
-                warnings.AddRange(connectionValidation.Warnings.Select(w =>
-                    $"Provider {provider.Name} in model {model.Id}: {w}"));
+                warnings.AddRange(
+                    connectionValidation.Warnings.Select(w => $"Provider {provider.Name} in model {model.Id}: {w}")
+                );
             }
 
             // Only add model-level error if ALL providers have errors
@@ -326,7 +310,9 @@ public class ModelResolver : IModelResolver
             else if (providerErrors.Count != 0)
             {
                 // If at least one provider is valid, treat invalid providers as warnings
-                warnings.Add($"Model {model.Id} has {providerErrors.Count} invalid provider(s) but {validProviderCount} valid provider(s):");
+                warnings.Add(
+                    $"Model {model.Id} has {providerErrors.Count} invalid provider(s) but {validProviderCount} valid provider(s):"
+                );
                 warnings.AddRange(providerErrors.Select(e => $"  - {e}"));
             }
         }
@@ -350,10 +336,7 @@ public class ModelResolver : IModelResolver
         }
 
         // Check include-only providers
-        if (
-            criteria.IncludeOnlyProviders?.Any() == true
-            && !criteria.IncludeOnlyProviders.Contains(provider.Name)
-        )
+        if (criteria.IncludeOnlyProviders?.Any() == true && !criteria.IncludeOnlyProviders.Contains(provider.Name))
         {
             return true;
         }
@@ -365,18 +348,15 @@ public class ModelResolver : IModelResolver
         }
 
         // Check cost limits
-        return criteria.MaxPromptCostPerMillion.HasValue
+        return
+            criteria.MaxPromptCostPerMillion.HasValue
             && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
             ? true
             : criteria.MaxCompletionCostPerMillion.HasValue
-            && provider.Pricing.CompletionPerMillion
-                > (double)criteria.MaxCompletionCostPerMillion.Value;
+                && provider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 
-    private static bool ShouldExcludeSubProvider(
-        SubProviderConfig subProvider,
-        ProviderSelectionCriteria criteria
-    )
+    private static bool ShouldExcludeSubProvider(SubProviderConfig subProvider, ProviderSelectionCriteria criteria)
     {
         // Check excluded providers (sub-provider names)
         if (criteria.ExcludeProviders?.Contains(subProvider.Name) == true)
@@ -385,21 +365,18 @@ public class ModelResolver : IModelResolver
         }
 
         // Check include-only providers (sub-provider names)
-        if (
-            criteria.IncludeOnlyProviders?.Any() == true
-            && !criteria.IncludeOnlyProviders.Contains(subProvider.Name)
-        )
+        if (criteria.IncludeOnlyProviders?.Any() == true && !criteria.IncludeOnlyProviders.Contains(subProvider.Name))
         {
             return true;
         }
 
         // Check cost limits
-        return criteria.MaxPromptCostPerMillion.HasValue
+        return
+            criteria.MaxPromptCostPerMillion.HasValue
             && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
             ? true
             : criteria.MaxCompletionCostPerMillion.HasValue
-            && subProvider.Pricing.CompletionPerMillion
-                > (double)criteria.MaxCompletionCostPerMillion.Value;
+                && subProvider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 
     private static IReadOnlyList<ProviderResolution> SortProvidersByPreference(
@@ -410,10 +387,7 @@ public class ModelResolver : IModelResolver
         return resolutions.OrderByDescending(r => ModelResolver.CalculateProviderScore(r, criteria)).ToList();
     }
 
-    private static double CalculateProviderScore(
-        ProviderResolution resolution,
-        ProviderSelectionCriteria criteria
-    )
+    private static double CalculateProviderScore(ProviderResolution resolution, ProviderSelectionCriteria criteria)
     {
         double score = resolution.EffectivePriority * 100; // Base score from priority
 
@@ -428,21 +402,14 @@ public class ModelResolver : IModelResolver
         if (criteria.PreferLowerCost)
         {
             var totalCost =
-                resolution.EffectivePricing.PromptPerMillion
-                + resolution.EffectivePricing.CompletionPerMillion;
+                resolution.EffectivePricing.PromptPerMillion + resolution.EffectivePricing.CompletionPerMillion;
             score += Math.Max(0, 1000 - totalCost); // Higher score for lower cost
         }
 
         // Adjust for performance preference
         if (criteria.PreferHigherPerformance && resolution.Provider.Tags != null)
         {
-            var performanceTags = new[]
-            {
-                "fast",
-                "ultra-fast",
-                "high-performance",
-                "speed-optimized",
-            };
+            var performanceTags = new[] { "fast", "ultra-fast", "high-performance", "speed-optimized" };
             if (resolution.Provider.Tags.Any(tag => performanceTags.Contains(tag)))
             {
                 score += 75; // Bonus for performance tags

@@ -20,12 +20,7 @@ public class BasicConversationTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage(
-                "This is a mock response for testing.",
-                "claude-3-7-sonnet-20250219",
-                10,
-                20
-            )
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
 
@@ -37,11 +32,7 @@ public class BasicConversationTests
         // Create a simple conversation
         var messages = new[]
         {
-            new TextMessage
-            {
-                Role = Role.System,
-                Text = "You are Claude, a helpful AI assistant.",
-            },
+            new TextMessage { Role = Role.System, Text = "You are Claude, a helpful AI assistant." },
             new TextMessage { Role = Role.User, Text = "Hello Claude!" },
         };
 
@@ -84,9 +75,7 @@ public class BasicConversationTests
 
         foreach (var msg in messagesList)
         {
-            TestLogger.Log(
-                $"Captured message - Role: {msg.Role}, Content: {msg.Content ?? "null"}"
-            );
+            TestLogger.Log($"Captured message - Role: {msg.Role}, Content: {msg.Content ?? "null"}");
         }
 
         // Assert with new RequestCapture API

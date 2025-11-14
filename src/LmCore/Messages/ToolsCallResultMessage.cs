@@ -22,8 +22,7 @@ public record ToolsCallResultMessage : IMessage
     public string? GenerationId { get; init; } = null;
 
     [JsonPropertyName("tool_call_results")]
-    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } =
-        [];
+    public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = [];
 
     public static string? GetText() => null;
 
@@ -49,9 +48,7 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = ImmutableList.Create(
-                new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)
-            ),
+            ToolCallResults = ImmutableList.Create(new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)),
         };
     }
 
@@ -77,8 +74,7 @@ public record ToolsCallResultMessage : IMessage
     }
 }
 
-public class ToolsCallResultMessageJsonConverter
-    : ShadowPropertiesJsonConverter<ToolsCallResultMessage>
+public class ToolsCallResultMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallResultMessage>
 {
     protected override ToolsCallResultMessage CreateInstance()
     {

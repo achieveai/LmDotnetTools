@@ -13,10 +13,7 @@ public class OpenAIProviderUsageTests
     public OpenAIProviderUsageTests(ITestOutputHelper output)
     {
         _output = output;
-        _options = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        };
+        _options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     }
 
     [Fact]

@@ -184,16 +184,12 @@ public class LoggingIntegrationTests : IDisposable
         var logs = _middlewareLogger.LogEntries.ToList();
 
         // Verify middleware processing started
-        var processingStartedLogs = logs.Where(log =>
-                log.Message.Contains("Middleware processing started")
-            )
-            .ToList();
+        var processingStartedLogs = logs.Where(log => log.Message.Contains("Middleware processing started")).ToList();
         Assert.Single(processingStartedLogs);
         Assert.Contains("TestMiddleware", processingStartedLogs.First().Message);
 
         // Verify function execution logging
-        var functionExecutionLogs = logs.Where(log => log.Message.Contains("Function executed"))
-            .ToList();
+        var functionExecutionLogs = logs.Where(log => log.Message.Contains("Function executed")).ToList();
         Assert.Single(functionExecutionLogs);
 
         var functionLog = functionExecutionLogs.First();
@@ -201,9 +197,7 @@ public class LoggingIntegrationTests : IDisposable
         Assert.Contains("Success=True", functionLog.Message);
 
         // Verify middleware processing completed
-        var processingCompletedLogs = logs.Where(log =>
-                log.Message.Contains("Middleware processing completed")
-            )
+        var processingCompletedLogs = logs.Where(log => log.Message.Contains("Middleware processing completed"))
             .ToList();
         Assert.Single(processingCompletedLogs);
 
@@ -484,9 +478,7 @@ public class LoggingIntegrationTests : IDisposable
         Assert.True(stopwatch.ElapsedMilliseconds < 1000, "Operation took too long, suggesting logging overhead");
     } */
 
-    private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(
-        IEnumerable<IMessage> messages
-    )
+    private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(IEnumerable<IMessage> messages)
     {
         foreach (var message in messages)
         {

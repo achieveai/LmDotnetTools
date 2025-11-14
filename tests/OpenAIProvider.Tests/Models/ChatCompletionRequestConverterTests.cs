@@ -10,6 +10,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
     {
         // Small value to compensate for floating-point precision issues
         private const double FloatPrecisionDelta = 0.00001;
+        private static readonly string[] expected = new[] { "stop1", "stop2" };
 
         [Fact]
         public void Create_BasicMessages_CreatesCorrectRequest()
@@ -75,7 +76,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             Assert.NotNull(result.TopP);
             Assert.Equal(0.95d, result.TopP!.Value, precision: 5);
 
-            Assert.Equal(new[] { "stop1", "stop2" }, result.Stop);
+            Assert.Equal(expected, result.Stop);
             Assert.Equal(42, result.RandomSeed);
         }
 
@@ -89,11 +90,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             };
 
             // Create a function using the proper schema
-            var function = new FunctionContract
-            {
-                Name = "get_weather",
-                Description = "Get the current weather",
-            };
+            var function = new FunctionContract { Name = "get_weather", Description = "Get the current weather" };
 
             // Set parameters as an array of FunctionParameterContract
             function.Parameters = new List<FunctionParameterContract>
@@ -107,11 +104,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 },
             };
 
-            var options = new GenerateReplyOptions
-            {
-                ModelId = "gpt-4",
-                Functions = new[] { function },
-            };
+            var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = new[] { function } };
 
             // Act
             var result = ChatCompletionRequest.FromMessages(messages, options);
@@ -130,31 +123,20 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
         public void Create_WithVariousMessageTypes_ConvertsCorrectly()
         {
             // Arrange
-            var toolCall = new ToolCall("get_weather", "{\"location\":\"New York\"}")
-            {
-                ToolCallId = "call_123",
-            };
+            var toolCall = new ToolCall("get_weather", "{\"location\":\"New York\"}") { ToolCallId = "call_123" };
 
             var messages = new List<IMessage>
             {
                 new TextMessage { Role = Role.System, Text = "You are a helpful assistant" },
                 new TextMessage { Role = Role.User, Text = "What's the weather in New York?" },
-                new ToolsCallMessage
-                {
-                    Role = Role.Assistant,
-                    ToolCalls = new[] { toolCall }.ToImmutableList(),
-                },
+                new ToolsCallMessage { Role = Role.Assistant, ToolCalls = new[] { toolCall }.ToImmutableList() },
                 new TextMessage
                 {
                     Role = Role.Tool,
                     Text = "{\"temp\":72,\"condition\":\"sunny\"}",
                     FromAgent = "get_weather",
                 },
-                new TextMessage
-                {
-                    Role = Role.Assistant,
-                    Text = "It's 72 degrees and sunny in New York.",
-                },
+                new TextMessage { Role = Role.Assistant, Text = "It's 72 degrees and sunny in New York." },
             };
 
             var options = new GenerateReplyOptions { ModelId = "gpt-4" };

@@ -54,23 +54,16 @@ public class MessageUpdateJoinerMiddlewareTests
         // Verify files exist
         if (!File.Exists(streamingResponsePath))
         {
-            throw new FileNotFoundException(
-                $"Streaming response file not found: {streamingResponsePath}"
-            );
+            throw new FileNotFoundException($"Streaming response file not found: {streamingResponsePath}");
         }
 
         if (!File.Exists(expectedOutputPath))
         {
-            throw new FileNotFoundException(
-                $"Expected output file not found: {expectedOutputPath}"
-            );
+            throw new FileNotFoundException($"Expected output file not found: {expectedOutputPath}");
         }
 
         // Create the mock HTTP handler that reads from the file using MockHttpHandlerBuilder
-        var handler = MockHttpHandlerBuilder
-            .Create()
-            .RespondWithStreamingFile(streamingResponsePath)
-            .Build();
+        var handler = MockHttpHandlerBuilder.Create().RespondWithStreamingFile(streamingResponsePath).Build();
 
         var httpClient = new HttpClient(handler);
         var anthropicClient = new AnthropicClient("test-api-key", httpClient: httpClient);
@@ -125,22 +118,13 @@ public class MessageUpdateJoinerMiddlewareTests
             {
                 Assert.Equal(expectedText.Text, actualText.Text);
             }
-            else if (
-                expected is ToolsCallMessage expectedTool
-                && actual is ToolsCallMessage actualTool
-            )
+            else if (expected is ToolsCallMessage expectedTool && actual is ToolsCallMessage actualTool)
             {
                 Assert.Equal(expectedTool.ToolCalls.Count, actualTool.ToolCalls.Count);
-                Assert.Equal(
-                    expectedTool.ToolCalls[0].FunctionName,
-                    actualTool.ToolCalls[0].FunctionName
-                );
+                Assert.Equal(expectedTool.ToolCalls[0].FunctionName, actualTool.ToolCalls[0].FunctionName);
 
                 // Handle possible null FunctionArgs
-                if (
-                    expectedTool.ToolCalls[0].FunctionArgs != null
-                    && actualTool.ToolCalls[0].FunctionArgs != null
-                )
+                if (expectedTool.ToolCalls[0].FunctionArgs != null && actualTool.ToolCalls[0].FunctionArgs != null)
                 {
                     // Use null-forgiving operator at assignment to indicate we've verified non-null
                     var expectedArgs = expectedTool.ToolCalls[0].FunctionArgs!;
@@ -185,10 +169,7 @@ public class MessageUpdateJoinerMiddlewareTests
             }
             else if (
                 element.TryGetProperty("tool_calls", out var _)
-                || (
-                    element.TryGetProperty("source", out var sourceElement)
-                    && sourceElement.GetString() == "tool-call"
-                )
+                || (element.TryGetProperty("source", out var sourceElement) && sourceElement.GetString() == "tool-call")
             )
             {
                 // It's a ToolsCallMessage
@@ -207,9 +188,7 @@ public class MessageUpdateJoinerMiddlewareTests
                         var functionArgs = GetStringProperty(toolCallElement, "function_args");
                         var toolCallId = GetStringProperty(toolCallElement, "tool_call_id");
 
-                        toolCalls.Add(
-                            new ToolCall(functionName, functionArgs) { ToolCallId = toolCallId }
-                        );
+                        toolCalls.Add(new ToolCall(functionName, functionArgs) { ToolCallId = toolCallId });
                     }
                 }
 

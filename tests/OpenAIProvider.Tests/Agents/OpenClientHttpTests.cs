@@ -23,6 +23,8 @@ public class OpenClientHttpTests
 {
     private readonly ILogger<OpenClient> _logger;
     private readonly IPerformanceTracker _performanceTracker;
+    private static readonly string[] fallbackKeys = new[] { "OPENAI_API_KEY" };
+    private static readonly string[] fallbackKeysArray = new[] { "OPENAI_API_URL" };
 
     public OpenClientHttpTests()
     {
@@ -34,10 +36,7 @@ public class OpenClientHttpTests
     public async Task CreateChatCompletionsAsync_WithRetryOnTransientFailure_ShouldSucceed()
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse(
-            "Test response",
-            "qwen/qwen3-235b-a22b"
-        );
+        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
 
         var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
             failureCount: 2,
@@ -46,12 +45,7 @@ public class OpenClientHttpTests
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(
-            httpClient,
-            GetApiBaseUrlFromEnv(),
-            _performanceTracker,
-            _logger
-        );
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
@@ -82,18 +76,14 @@ public class OpenClientHttpTests
     public void CreateChatCompletionsAsync_WithInvalidApiKey_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            new OpenClient("test key", GetApiBaseUrlFromEnv())
-        );
+        var exception = Assert.Throws<ArgumentException>(() => new OpenClient("test key", GetApiBaseUrlFromEnv()));
     }
 
     [Fact]
     public void CreateChatCompletionsAsync_WithInvalidUrl_ShouldThrowValidationException()
     {
         // Arrange & Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() =>
-            new OpenClient("valid-api-key-test", "invalid-url")
-        );
+        var exception = Assert.Throws<ArgumentException>(() => new OpenClient("valid-api-key-test", "invalid-url"));
 
         Assert.Contains("Base URL must be a valid HTTP or HTTPS URL", exception.Message);
     }
@@ -106,23 +96,12 @@ public class OpenClientHttpTests
     )
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse(
-            "Success",
-            "qwen/qwen3-235b-a22b"
-        );
+        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Success", "qwen/qwen3-235b-a22b");
 
-        var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(
-            statusCodes,
-            successResponse
-        );
+        var fakeHandler = FakeHttpMessageHandler.CreateStatusCodeSequenceHandler(statusCodes, successResponse);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(
-            httpClient,
-            GetApiBaseUrlFromEnv(),
-            _performanceTracker,
-            _logger
-        );
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
@@ -140,9 +119,7 @@ public class OpenClientHttpTests
         }
         else
         {
-            await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
-                client.CreateChatCompletionsAsync(request)
-            );
+            await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.CreateChatCompletionsAsync(request));
         }
 
         // Verify performance tracking captured the metrics
@@ -155,22 +132,11 @@ public class OpenClientHttpTests
     public async Task CreateChatCompletionsAsync_PerformanceTracking_ShouldRecordMetrics()
     {
         // Arrange
-        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse(
-            "Test response",
-            "qwen/qwen3-235b-a22b"
-        );
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            successResponse,
-            HttpStatusCode.OK
-        );
+        var successResponse = ChatCompletionTestData.CreateSuccessfulResponse("Test response", "qwen/qwen3-235b-a22b");
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(successResponse, HttpStatusCode.OK);
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(
-            httpClient,
-            GetApiBaseUrlFromEnv(),
-            _performanceTracker,
-            _logger
-        );
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
@@ -205,12 +171,7 @@ public class OpenClientHttpTests
         );
 
         var httpClient = new HttpClient(fakeHandler);
-        var client = new OpenClient(
-            httpClient,
-            GetApiBaseUrlFromEnv(),
-            _performanceTracker,
-            _logger
-        );
+        var client = new OpenClient(httpClient, GetApiBaseUrlFromEnv(), _performanceTracker, _logger);
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
@@ -244,12 +205,7 @@ public class OpenClientHttpTests
         // Scenario: Transient failures that should retry and eventually succeed
         yield return new object[]
         {
-            new[]
-            {
-                HttpStatusCode.ServiceUnavailable,
-                HttpStatusCode.TooManyRequests,
-                HttpStatusCode.OK,
-            },
+            new[] { HttpStatusCode.ServiceUnavailable, HttpStatusCode.TooManyRequests, HttpStatusCode.OK },
             true, // should succeed
         };
 
@@ -286,11 +242,7 @@ public class OpenClientHttpTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv(
-            "LLM_API_KEY",
-            new[] { "OPENAI_API_KEY" },
-            "test-api-key"
-        );
+        return EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY", fallbackKeys, "test-api-key");
     }
 
     /// <summary>
@@ -300,7 +252,7 @@ public class OpenClientHttpTests
     {
         return EnvironmentHelper.GetApiBaseUrlFromEnv(
             "LLM_API_BASE_URL",
-            new[] { "OPENAI_API_URL" },
+            fallbackKeysArray,
             "https://api.openai.com/v1"
         );
     }

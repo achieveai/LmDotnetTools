@@ -36,9 +36,7 @@ public static class McpServiceCollectionExtensions
     /// <summary>
     /// Auto-discover and register all MCP assemblies from loaded assemblies
     /// </summary>
-    public static IServiceCollection AddMcpFunctionsFromLoadedAssemblies(
-        this IServiceCollection services
-    )
+    public static IServiceCollection AddMcpFunctionsFromLoadedAssemblies(this IServiceCollection services)
     {
         var assemblies = AppDomain.CurrentDomain.GetAssemblies().Where(HasMcpTools).ToList();
 
@@ -57,9 +55,7 @@ public static class McpServiceCollectionExtensions
     {
         try
         {
-            return assembly
-                .GetTypes()
-                .Any(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() != null);
+            return assembly.GetTypes().Any(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() != null);
         }
         catch
         {

@@ -62,10 +62,7 @@ public record GenerateReplyOptions
         // First copy the original properties
         foreach (var prop in ExtraProperties)
         {
-            mergedExtraProps = mergedExtraProps.SetItem(
-                prop.Key,
-                CloneExtraPropertyValue(prop.Value)
-            );
+            mergedExtraProps = mergedExtraProps.SetItem(prop.Key, CloneExtraPropertyValue(prop.Value));
         }
 
         // Then merge with the other properties
@@ -107,10 +104,7 @@ public record GenerateReplyOptions
         }
 
         // Both values are dictionaries - merge them recursively
-        if (
-            original is Dictionary<string, object?> originalDict
-            && other is Dictionary<string, object?> otherDict
-        )
+        if (original is Dictionary<string, object?> originalDict && other is Dictionary<string, object?> otherDict)
         {
             var result = new Dictionary<string, object?>(originalDict);
             foreach (var kv in otherDict)

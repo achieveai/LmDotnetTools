@@ -44,9 +44,7 @@ public class MockStreamingAgent : IStreamingAgent
     {
         // For non-streaming, just return the stream as a collection
         return Task.FromResult(
-            _responseStream.Any()
-                ? _responseStream
-                : new[] { new TextMessage { Text = string.Empty } }
+            _responseStream.Any() ? _responseStream : new[] { new TextMessage { Text = string.Empty } }
         );
     }
 
@@ -99,7 +97,7 @@ public class ToolCallStreamingAgent : IStreamingAgent
         return Task.FromResult(GenerateToolCallUpdatesAsync(cancellationToken));
     }
 
-    private async IAsyncEnumerable<IMessage> GenerateToolCallUpdatesAsync(
+    private static async IAsyncEnumerable<IMessage> GenerateToolCallUpdatesAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default
     )
     {
@@ -118,9 +116,7 @@ public class ToolCallStreamingAgent : IStreamingAgent
     private static ToolsCallMessage CreateFinalToolCall()
     {
         // Create a fully formed tool call
-        var jsonArgs = System.Text.Json.JsonSerializer.Serialize(
-            new { location = "San Francisco", unit = "celsius" }
-        );
+        var jsonArgs = System.Text.Json.JsonSerializer.Serialize(new { location = "San Francisco", unit = "celsius" });
 
         return new ToolsCallMessage
         {
@@ -145,11 +141,7 @@ public class ToolCallStreamingAgent : IStreamingAgent
             new ToolsCallUpdateMessage
             {
                 ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-                    new ToolCallUpdate
-                    {
-                        FunctionName = "get_weather",
-                        FunctionArgs = "{\"location\":\"San",
-                    }
+                    new ToolCallUpdate { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"San" }
                 ),
             },
             // Third update: More complete args
@@ -197,9 +189,7 @@ public class TextStreamingAgent : IStreamingAgent
     )
     {
         // For non-streaming just return the full text
-        return Task.FromResult<IEnumerable<IMessage>>(
-            new[] { new TextMessage { Text = _fullText } }
-        );
+        return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = _fullText } });
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -235,10 +225,7 @@ public class TextStreamingAgent : IStreamingAgent
             accumulated += part;
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(5, cancellationToken);
-            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.TextUpdateMessage
-            {
-                Text = accumulated,
-            };
+            yield return new AchieveAi.LmDotnetTools.LmCore.Messages.TextUpdateMessage { Text = accumulated };
         }
     }
 }

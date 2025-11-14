@@ -10,10 +10,7 @@ namespace MemoryServer.Tests.Models;
 public class SessionContextTests
 {
     [Theory]
-    [MemberData(
-        nameof(MemoryTestDataFactory.GetSessionMatchingTestCases),
-        MemberType = typeof(MemoryTestDataFactory)
-    )]
+    [MemberData(nameof(MemoryTestDataFactory.GetSessionMatchingTestCases), MemberType = typeof(MemoryTestDataFactory))]
     public void Matches_WithVariousSessionContexts_ReturnsExpectedResult(
         SessionContext context1,
         SessionContext context2,
@@ -71,9 +68,7 @@ public class SessionContextTests
     {
         // Arrange
         Debug.WriteLine($"Testing factory method: {description}");
-        Debug.WriteLine(
-            $"Method: {factoryMethod}, UserId: {userId}, AgentId: {agentId}, RunId: {runId}"
-        );
+        Debug.WriteLine($"Method: {factoryMethod}, UserId: {userId}, AgentId: {agentId}, RunId: {runId}");
 
         // Act
         SessionContext context = factoryMethod switch
@@ -126,9 +121,7 @@ public class SessionContextTests
     {
         // Arrange
         Debug.WriteLine($"Testing ToString: {description}");
-        Debug.WriteLine(
-            $"Context: UserId={context.UserId}, AgentId={context.AgentId}, RunId={context.RunId}"
-        );
+        Debug.WriteLine($"Context: UserId={context.UserId}, AgentId={context.AgentId}, RunId={context.RunId}");
 
         // Act
         var result = context.ToString();
@@ -142,11 +135,7 @@ public class SessionContextTests
 
     [Theory]
     [MemberData(nameof(GetSessionIsolationTestData))]
-    public void SessionIsolation_WithDifferentUsers_DoesNotMatch(
-        string user1,
-        string user2,
-        string description
-    )
+    public void SessionIsolation_WithDifferentUsers_DoesNotMatch(string user1, string user2, string description)
     {
         // Arrange
         Debug.WriteLine($"Testing session isolation: {description}");
@@ -191,14 +180,7 @@ public class SessionContextTests
     public static IEnumerable<object[]> GetFactoryMethodTestData()
     {
         yield return new object[] { "ForUser", "user1", null!, null!, "ForUser factory method" };
-        yield return new object[]
-        {
-            "ForAgent",
-            "user1",
-            "agent1",
-            null!,
-            "ForAgent factory method",
-        };
+        yield return new object[] { "ForAgent", "user1", "agent1", null!, "ForAgent factory method" };
         yield return new object[] { "ForRun", "user1", "agent1", "run1", "ForRun factory method" };
         yield return new object[]
         {
@@ -208,22 +190,8 @@ public class SessionContextTests
             null!,
             "ForUser with special characters",
         };
-        yield return new object[]
-        {
-            "ForAgent",
-            "user1",
-            "agent-with-dashes",
-            null!,
-            "ForAgent with dashes",
-        };
-        yield return new object[]
-        {
-            "ForRun",
-            "user1",
-            "agent1",
-            "run-123-abc",
-            "ForRun with complex run ID",
-        };
+        yield return new object[] { "ForAgent", "user1", "agent-with-dashes", null!, "ForAgent with dashes" };
+        yield return new object[] { "ForRun", "user1", "agent1", "run-123-abc", "ForRun with complex run ID" };
     }
 
     public static IEnumerable<object[]> GetSessionScopeTestData()
@@ -259,12 +227,7 @@ public class SessionContextTests
 
     public static IEnumerable<object[]> GetToStringTestData()
     {
-        yield return new object[]
-        {
-            SessionContext.ForUser("user1"),
-            "user1",
-            "User-only context toString",
-        };
+        yield return new object[] { SessionContext.ForUser("user1"), "user1", "User-only context toString" };
         yield return new object[]
         {
             SessionContext.ForAgent("user1", "agent1"),
@@ -279,12 +242,7 @@ public class SessionContextTests
         };
 
         var userRunContext = new SessionContext { UserId = "user1", RunId = "run1" };
-        yield return new object[]
-        {
-            userRunContext,
-            "user1//run1",
-            "User-run context (no agent) toString",
-        };
+        yield return new object[] { userRunContext, "user1//run1", "User-run context (no agent) toString" };
     }
 
     public static IEnumerable<object[]> GetSessionIsolationTestData()

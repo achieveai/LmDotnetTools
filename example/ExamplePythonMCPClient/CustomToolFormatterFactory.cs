@@ -8,101 +8,40 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
     /// <summary>
     /// Custom formatter factory for specialized formatting of tool outputs
     /// </summary>
-    public class CustomToolFormatterFactory : IToolFormatterFactory
+    public partial class CustomToolFormatterFactory : IToolFormatterFactory
     {
-        private readonly ConsoleColorPair _functionNameColor = new()
-        {
-            Foreground = ConsoleColor.Blue,
-        };
-        private readonly ConsoleColorPair _propertyNameColor = new()
-        {
-            Foreground = ConsoleColor.Cyan,
-        };
-        private readonly ConsoleColorPair _propertyValueColor = new()
-        {
-            Foreground = ConsoleColor.White,
-        };
-        private readonly ConsoleColorPair _punctuationColor = new()
-        {
-            Foreground = ConsoleColor.DarkGray,
-        };
-        private readonly ConsoleColorPair _pythonCodeColor = new()
-        {
-            Foreground = ConsoleColor.Green,
-        };
-        private readonly ConsoleColorPair _thinkingColor = new()
-        {
-            Foreground = ConsoleColor.Yellow,
-        };
+        private readonly ConsoleColorPair _functionNameColor = new() { Foreground = ConsoleColor.Blue };
+        private readonly ConsoleColorPair _propertyNameColor = new() { Foreground = ConsoleColor.Cyan };
+        private readonly ConsoleColorPair _propertyValueColor = new() { Foreground = ConsoleColor.White };
+        private readonly ConsoleColorPair _punctuationColor = new() { Foreground = ConsoleColor.DarkGray };
+        private readonly ConsoleColorPair _pythonCodeColor = new() { Foreground = ConsoleColor.Green };
+        private readonly ConsoleColorPair _thinkingColor = new() { Foreground = ConsoleColor.Yellow };
 
         // Markdown syntax highlighting colors
-        private readonly ConsoleColorPair _headerColor = new()
-        {
-            Foreground = ConsoleColor.Magenta,
-        };
+        private readonly ConsoleColorPair _headerColor = new() { Foreground = ConsoleColor.Magenta };
         private readonly ConsoleColorPair _boldColor = new() { Foreground = ConsoleColor.Cyan };
-        private readonly ConsoleColorPair _italicColor = new()
-        {
-            Foreground = ConsoleColor.DarkCyan,
-        };
-        private readonly ConsoleColorPair _listNumberColor = new()
-        {
-            Foreground = ConsoleColor.Green,
-        };
-        private readonly ConsoleColorPair _bulletListColor = new()
-        {
-            Foreground = ConsoleColor.DarkGreen,
-        };
-        private readonly ConsoleColorPair _blockquoteColor = new()
-        {
-            Foreground = ConsoleColor.DarkGray,
-        };
-        private readonly ConsoleColorPair _codeBlockColor = new()
-        {
-            Foreground = ConsoleColor.DarkYellow,
-        };
+        private readonly ConsoleColorPair _italicColor = new() { Foreground = ConsoleColor.DarkCyan };
+        private readonly ConsoleColorPair _listNumberColor = new() { Foreground = ConsoleColor.Green };
+        private readonly ConsoleColorPair _bulletListColor = new() { Foreground = ConsoleColor.DarkGreen };
+        private readonly ConsoleColorPair _blockquoteColor = new() { Foreground = ConsoleColor.DarkGray };
+        private readonly ConsoleColorPair _codeBlockColor = new() { Foreground = ConsoleColor.DarkYellow };
 
         // Python syntax highlighting colors
-        private readonly ConsoleColorPair _pythonKeywordColor = new()
-        {
-            Foreground = ConsoleColor.Blue,
-        };
-        private readonly ConsoleColorPair _pythonStringColor = new()
-        {
-            Foreground = ConsoleColor.Yellow,
-        };
-        private readonly ConsoleColorPair _pythonNumberColor = new()
-        {
-            Foreground = ConsoleColor.Magenta,
-        };
-        private readonly ConsoleColorPair _pythonBoolColor = new()
-        {
-            Foreground = ConsoleColor.Cyan,
-        };
-        private readonly ConsoleColorPair _pythonOperatorColor = new()
-        {
-            Foreground = ConsoleColor.DarkGray,
-        };
-        private readonly ConsoleColorPair _pythonCommentColor = new()
-        {
-            Foreground = ConsoleColor.DarkGreen,
-        };
-        private readonly ConsoleColorPair _pythonIdentifierColor = new()
-        {
-            Foreground = ConsoleColor.White,
-        };
-        private readonly ConsoleColorPair _pythonPunctuationColor = new()
-        {
-            Foreground = ConsoleColor.Green,
-        };
+        private readonly ConsoleColorPair _pythonKeywordColor = new() { Foreground = ConsoleColor.Blue };
+        private readonly ConsoleColorPair _pythonStringColor = new() { Foreground = ConsoleColor.Yellow };
+        private readonly ConsoleColorPair _pythonNumberColor = new() { Foreground = ConsoleColor.Magenta };
+        private readonly ConsoleColorPair _pythonBoolColor = new() { Foreground = ConsoleColor.Cyan };
+        private readonly ConsoleColorPair _pythonOperatorColor = new() { Foreground = ConsoleColor.DarkGray };
+        private readonly ConsoleColorPair _pythonCommentColor = new() { Foreground = ConsoleColor.DarkGreen };
+        private readonly ConsoleColorPair _pythonIdentifierColor = new() { Foreground = ConsoleColor.White };
+        private readonly ConsoleColorPair _pythonPunctuationColor = new() { Foreground = ConsoleColor.Green };
         private readonly ConsoleColorPair _errorColor = new() { Foreground = ConsoleColor.Red };
 
         // State management for JSON accumulation
         private readonly JsonFragmentToStructuredUpdateGenerator _accumulator = new("tool");
-        private readonly IToolFormatterFactory _defaultFormatterFactory =
-            new DefaultToolFormatterFactory(
-                new ConsoleColorPair { Foreground = ConsoleColor.Blue }
-            );
+        private readonly IToolFormatterFactory _defaultFormatterFactory = new DefaultToolFormatterFactory(
+            new ConsoleColorPair { Foreground = ConsoleColor.Blue }
+        );
         private ConsoleColorPair _markdownColor = new() { Foreground = ConsoleColor.White };
 
         // Cached lines for partial string processing
@@ -110,31 +49,13 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         private string _pythonLine = string.Empty;
 
         // Regular expressions for Python syntax highlighting
-        private static readonly Regex PythonKeywordRegex = new(
-            @"\b(def|class|if|else|elif|for|while|import|from|return|try|except|finally|with|as|in|is|and|or|not|True|False|None)\b",
-            RegexOptions.Compiled
-        );
-        private static readonly Regex PythonStringRegex = new(
-            @"(""[^""\\]*(?:\\.[^""\\]*)*""|'[^'\\]*(?:\\.[^'\\]*)*'|""""|''''|"""""".*?""""""|'''.*?''')",
-            RegexOptions.Compiled
-        );
-        private static readonly Regex PythonNumberRegex = new(
-            @"\b\d+(\.\d+)?([eE][+-]?\d+)?\b",
-            RegexOptions.Compiled
-        );
-        private static readonly Regex PythonBoolRegex = new(
-            @"\b(True|False|None)\b",
-            RegexOptions.Compiled
-        );
-        private static readonly Regex PythonOperatorRegex = new(
-            @"(\+|\-|\*|\/|\%|\=\=|\!\=|\<|\>|\<\=|\>\=|\=|\+\=|\-\=|\*\=|\/\=|\%\=|\&|\||\^|\~|\<\<|\>\>|\&\=|\|\=|\^=)",
-            RegexOptions.Compiled
-        );
-        private static readonly Regex PythonCommentRegex = new(@"#.*$", RegexOptions.Compiled);
-        private static readonly Regex PythonIdentifierRegex = new(
-            @"[a-zA-Z_][a-zA-Z0-9_]*",
-            RegexOptions.Compiled
-        );
+        private static readonly Regex PythonKeywordRegex = MyRegex();
+        private static readonly Regex PythonStringRegex = MyRegex1();
+        private static readonly Regex PythonNumberRegex = MyRegex2();
+        private static readonly Regex PythonBoolRegex = MyRegex3();
+        private static readonly Regex PythonOperatorRegex = MyRegex4();
+        private static readonly Regex PythonCommentRegex = MyRegex5();
+        private static readonly Regex PythonIdentifierRegex = MyRegex6();
 
         /// <summary>
         /// Creates a formatter for the specified tool
@@ -149,12 +70,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 _accumulator.Reset();
                 return SequentialThinkingFormatter;
             }
-            else if (
-                toolCallName.EndsWith(
-                    "execute_python_in_container",
-                    StringComparison.OrdinalIgnoreCase
-                )
-            )
+            else if (toolCallName.EndsWith("execute_python_in_container", StringComparison.OrdinalIgnoreCase))
             { // Reset JSON accumulation state for new tool call
                 _accumulator.Reset();
                 return PythonCodeFormatter;
@@ -179,7 +95,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             var updates = fragmentUpdates.ToList();
 
             // For empty updates, just show the function name
-            if (!updates.Any())
+            if (updates.Count == 0)
             {
                 results.Add((_functionNameColor, "Sequential Thinking" + " "));
                 return results;
@@ -241,10 +157,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         /// <summary>
         /// Formats a markdown string with syntax highlighting
         /// </summary>
-        private IEnumerable<(ConsoleColorPair, string)> FormatMarkdown(
-            string markdown,
-            bool isComplete = false
-        )
+        private IEnumerable<(ConsoleColorPair, string)> FormatMarkdown(string markdown, bool isComplete = false)
         {
             if (string.IsNullOrEmpty(markdown))
             {
@@ -301,7 +214,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             }
 
             // Numbered list detection
-            var listMatch = Regex.Match(line, @"^\s*(\d+\.\s+)");
+            var listMatch = MyRegex7().Match(line);
             if (listMatch.Success)
             {
                 yield return (_listNumberColor, listMatch.Groups[1].Value);
@@ -310,7 +223,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             }
 
             // Bullet list detection
-            var bulletMatch = Regex.Match(line, @"^\s*([*\-]\s+)");
+            var bulletMatch = MyRegex8().Match(line);
             if (bulletMatch.Success)
             {
                 yield return (_bulletListColor, bulletMatch.Groups[1].Value);
@@ -338,10 +251,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 if (pos < line.Length && line[pos] == '*' && (pos == 0 || line[pos - 1] != '*'))
                 {
                     int closeItalic = line.IndexOf("*", pos + 1);
-                    if (
-                        closeItalic != -1
-                        && (closeItalic + 1 >= line.Length || line[closeItalic + 1] != '*')
-                    )
+                    if (closeItalic != -1 && (closeItalic + 1 >= line.Length || line[closeItalic + 1] != '*'))
                     {
                         yield return (_italicColor, line.Substring(pos, closeItalic + 1 - pos));
                         pos = closeItalic + 1;
@@ -381,7 +291,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             var updates = fragmentUpdates.ToList();
 
             // For empty updates, just show the function name
-            if (!updates.Any())
+            if (updates.Count == 0)
             {
                 results.Add((_functionNameColor, "Python Code Execution" + " "));
                 return results;
@@ -444,10 +354,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         /// <summary>
         /// Formats Python code with syntax highlighting
         /// </summary>
-        private IEnumerable<(ConsoleColorPair, string)> FormatPythonCode(
-            string code,
-            bool isComplete = true
-        )
+        private IEnumerable<(ConsoleColorPair, string)> FormatPythonCode(string code, bool isComplete = true)
         {
             if (string.IsNullOrEmpty(code))
             {
@@ -567,5 +474,41 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         {
             return CreateFormatter(toolName);
         }
+
+        [GeneratedRegex(
+            @"\b(def|class|if|else|elif|for|while|import|from|return|try|except|finally|with|as|in|is|and|or|not|True|False|None)\b",
+            RegexOptions.Compiled
+        )]
+        private static partial Regex MyRegex();
+
+        [GeneratedRegex(
+            @"(""[^""\\]*(?:\\.[^""\\]*)*""|'[^'\\]*(?:\\.[^'\\]*)*'|""""|''''|"""""".*?""""""|'''.*?''')",
+            RegexOptions.Compiled
+        )]
+        private static partial Regex MyRegex1();
+
+        [GeneratedRegex(@"\b\d+(\.\d+)?([eE][+-]?\d+)?\b", RegexOptions.Compiled)]
+        private static partial Regex MyRegex2();
+
+        [GeneratedRegex(@"\b(True|False|None)\b", RegexOptions.Compiled)]
+        private static partial Regex MyRegex3();
+
+        [GeneratedRegex(
+            @"(\+|\-|\*|\/|\%|\=\=|\!\=|\<|\>|\<\=|\>\=|\=|\+\=|\-\=|\*\=|\/\=|\%\=|\&|\||\^|\~|\<\<|\>\>|\&\=|\|\=|\^=)",
+            RegexOptions.Compiled
+        )]
+        private static partial Regex MyRegex4();
+
+        [GeneratedRegex(@"#.*$", RegexOptions.Compiled)]
+        private static partial Regex MyRegex5();
+
+        [GeneratedRegex(@"[a-zA-Z_][a-zA-Z0-9_]*", RegexOptions.Compiled)]
+        private static partial Regex MyRegex6();
+
+        [GeneratedRegex(@"^\s*(\d+\.\s+)")]
+        private static partial Regex MyRegex7();
+
+        [GeneratedRegex(@"^\s*([*\-]\s+)")]
+        private static partial Regex MyRegex8();
     }
 }

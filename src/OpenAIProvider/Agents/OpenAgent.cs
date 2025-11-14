@@ -258,10 +258,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 totalCompletionTokens = item.Usage.CompletionTokens;
 
                 // Extract cost if available
-                if (
-                    item.Usage.ExtraProperties?.TryGetValue("estimated_cost", out var costValue)
-                    == true
-                )
+                if (item.Usage.ExtraProperties?.TryGetValue("estimated_cost", out var costValue) == true)
                 {
                     totalCost = costValue switch
                     {
@@ -291,10 +288,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                             PromptTokens = item.Usage.PromptTokens,
                             CompletionTokens = item.Usage.CompletionTokens,
                             TotalCost =
-                                item.Usage.ExtraProperties?.TryGetValue(
-                                    "estimated_cost",
-                                    out var cost
-                                ) == true
+                                item.Usage.ExtraProperties?.TryGetValue("estimated_cost", out var cost) == true
                                     ? cost as double?
                                     : null,
                         }
@@ -317,13 +311,9 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         }
 
         var totalDuration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        var timeToFirstToken = firstTokenTime.HasValue
-            ? (firstTokenTime.Value - startTime).TotalMilliseconds
-            : 0.0;
+        var timeToFirstToken = firstTokenTime.HasValue ? (firstTokenTime.Value - startTime).TotalMilliseconds : 0.0;
         var tokensPerSecond =
-            totalCompletionTokens > 0 && totalDuration > 0
-                ? (totalCompletionTokens / (totalDuration / 1000.0))
-                : 0.0;
+            totalCompletionTokens > 0 && totalDuration > 0 ? (totalCompletionTokens / (totalDuration / 1000.0)) : 0.0;
 
         _logger.LogDebug(
             "Streaming metrics: CompletionId={CompletionId}, TotalChunks={TotalChunks}, TimeToFirstToken={TimeToFirstToken}ms, TokensPerSecond={TokensPerSecond:F2}, HadUsageData={HadUsageData}",

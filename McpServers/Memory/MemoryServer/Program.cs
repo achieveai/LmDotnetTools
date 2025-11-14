@@ -65,11 +65,7 @@ else
 
 return 0;
 
-static async Task RunSseServerAsync(
-    string[] args,
-    MemoryServerOptions options,
-    IConfiguration configuration
-)
+static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, IConfiguration configuration)
 {
     var builder = WebApplication.CreateBuilder(args);
 
@@ -101,9 +97,7 @@ static async Task RunSseServerAsync(
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = new SymmetricSecurityKey(
-                        Encoding.UTF8.GetBytes(jwtOptions.Secret)
-                    ),
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Secret)),
                     ValidateIssuer = true,
                     ValidIssuer = jwtOptions.Issuer,
                     ValidateAudience = true,
@@ -157,10 +151,7 @@ static async Task ConfigureSseApplication(WebApplication app)
             try
             {
                 // Extract URL parameters
-                var queryParameters = context.Request.Query.ToDictionary(
-                    kvp => kvp.Key,
-                    kvp => kvp.Value.ToString()
-                );
+                var queryParameters = context.Request.Query.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
 
                 // Extract HTTP headers
                 var headers = context
@@ -168,24 +159,14 @@ static async Task ConfigureSseApplication(WebApplication app)
                     .ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
 
                 // Initialize SSE session context if we have relevant parameters or headers
-                if (queryParameters.Any(kvp => kvp.Key.EndsWith("_id")) || headers.Any())
+                if (queryParameters.Any(kvp => kvp.Key.EndsWith("_id")) || headers.Count != 0)
                 {
-                    var sessionInitializer =
-                        context.RequestServices.GetRequiredService<TransportSessionInitializer>();
-                    var sessionDefaults = await sessionInitializer.InitializeSseSessionAsync(
-                        queryParameters,
-                        headers
-                    );
+                    var sessionInitializer = context.RequestServices.GetRequiredService<TransportSessionInitializer>();
+                    var sessionDefaults = await sessionInitializer.InitializeSseSessionAsync(queryParameters, headers);
 
-                    if (
-                        sessionDefaults != null
-                        && sessionInitializer.ValidateSessionContext(sessionDefaults)
-                    )
+                    if (sessionDefaults != null && sessionInitializer.ValidateSessionContext(sessionDefaults))
                     {
-                        appLogger.LogInformation(
-                            "SSE session context initialized: {SessionDefaults}",
-                            sessionDefaults
-                        );
+                        appLogger.LogInformation("SSE session context initialized: {SessionDefaults}", sessionDefaults);
                     }
                 }
             }
@@ -207,11 +188,7 @@ static async Task ConfigureSseApplication(WebApplication app)
     appLogger.LogInformation("🌐 Memory MCP Server configured for SSE transport");
 }
 
-static async Task RunStdioServerAsync(
-    string[] args,
-    MemoryServerOptions options,
-    IConfiguration configuration
-)
+static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options, IConfiguration configuration)
 {
     var builder = Host.CreateApplicationBuilder(args);
 
@@ -277,8 +254,7 @@ public class Startup
                 ["MemoryServer:Transport:Port"] = "0",
                 ["MemoryServer:Transport:Host"] = "localhost",
                 ["MemoryServer:Transport:EnableCors"] = "true",
-                ["Jwt:Secret"] =
-                    "test-secret-key-that-is-at-least-256-bits-long-for-hmac-sha256-algorithm-testing",
+                ["Jwt:Secret"] = "test-secret-key-that-is-at-least-256-bits-long-for-hmac-sha256-algorithm-testing",
                 ["Jwt:Issuer"] = "MemoryServer",
                 ["Jwt:Audience"] = "MemoryServer",
                 ["Jwt:ExpirationMinutes"] = "60",

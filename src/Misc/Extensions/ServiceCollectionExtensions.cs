@@ -21,10 +21,7 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <param name="options">Cache configuration options</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCache(
-        this IServiceCollection services,
-        LlmCacheOptions options
-    )
+    public static IServiceCollection AddLlmFileCache(this IServiceCollection services, LlmCacheOptions options)
     {
         // Guard against duplicate registration – if cache options have already been added we assume the
         // cache pipeline has been wired up previously and simply return the collection unchanged.
@@ -58,9 +55,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IKvStore>(provider => provider.GetRequiredService<FileKvStore>());
 
         // Ensure a single IHttpHandlerBuilder and attach the cache wrapper without building a temporary provider
-        var builderDescriptor = services.FirstOrDefault(sd =>
-            sd.ServiceType == typeof(IHttpHandlerBuilder)
-        );
+        var builderDescriptor = services.FirstOrDefault(sd => sd.ServiceType == typeof(IHttpHandlerBuilder));
 
         if (builderDescriptor == null)
         {
@@ -116,20 +111,15 @@ public static class ServiceCollectionExtensions
         var section = configuration.GetSection(configurationSection);
         var options = new LlmCacheOptions
         {
-            CacheDirectory =
-                section.GetValue<string>("CacheDirectory")
-                ?? LlmCacheOptions.GetDefaultCacheDirectory(),
+            CacheDirectory = section.GetValue<string>("CacheDirectory") ?? LlmCacheOptions.GetDefaultCacheDirectory(),
             EnableCaching = section.GetValue<bool>("EnableCaching", true),
             CacheExpiration =
                 section.GetValue<int?>("CacheExpirationHours") is int hours && hours > 0
                     ? TimeSpan.FromHours(hours)
                     : TimeSpan.FromHours(24),
-            MaxCacheItems =
-                section.GetValue<int?>("MaxCacheItems") is int items && items > 0 ? items : 10_000,
+            MaxCacheItems = section.GetValue<int?>("MaxCacheItems") is int items && items > 0 ? items : 10_000,
             MaxCacheSizeBytes =
-                section.GetValue<long?>("MaxCacheSizeBytes") is long bytes && bytes > 0
-                    ? bytes
-                    : 1_073_741_824,
+                section.GetValue<long?>("MaxCacheSizeBytes") is long bytes && bytes > 0 ? bytes : 1_073_741_824,
             CleanupOnStartup = section.GetValue<bool>("CleanupOnStartup", false),
         };
 
@@ -141,9 +131,7 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddLlmFileCacheFromEnvironment(
-        this IServiceCollection services
-    )
+    public static IServiceCollection AddLlmFileCacheFromEnvironment(this IServiceCollection services)
     {
         var options = LlmCacheOptions.FromEnvironment();
         return services.AddLlmFileCache(options);
@@ -223,10 +211,7 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <param name="existingClient">The existing HttpClient to wrap</param>
     /// <returns>New HttpClient with caching capabilities</returns>
-    public static HttpClient WrapWithCache(
-        this IServiceCollection services,
-        HttpClient existingClient
-    )
+    public static HttpClient WrapWithCache(this IServiceCollection services, HttpClient existingClient)
     {
         ArgumentNullException.ThrowIfNull(existingClient);
 
@@ -256,9 +241,7 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <returns>Cache statistics</returns>
-    public static async Task<CacheStatistics> GetCacheStatisticsAsync(
-        this IServiceCollection services
-    )
+    public static async Task<CacheStatistics> GetCacheStatisticsAsync(this IServiceCollection services)
     {
         var serviceProvider = services.BuildServiceProvider();
         var cache = serviceProvider.GetService<IKvStore>();
@@ -373,6 +356,5 @@ public class CacheStatistics
     /// <summary>
     /// Size utilization as a percentage (0-100).
     /// </summary>
-    public double SizeUtilizationPercent =>
-        MaxSizeBytes > 0 ? (double)TotalSizeBytes / MaxSizeBytes * 100 : 0;
+    public double SizeUtilizationPercent => MaxSizeBytes > 0 ? (double)TotalSizeBytes / MaxSizeBytes * 100 : 0;
 }

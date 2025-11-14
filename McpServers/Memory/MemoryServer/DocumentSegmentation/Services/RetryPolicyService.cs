@@ -123,12 +123,7 @@ public class RetryPolicyService : IRetryPolicyService
                 lastException = ex;
                 var errorType = ClassifyError(ex);
 
-                context = context with
-                {
-                    LastError = ex,
-                    ErrorType = errorType,
-                    TotalElapsed = stopwatch.Elapsed,
-                };
+                context = context with { LastError = ex, ErrorType = errorType, TotalElapsed = stopwatch.Elapsed };
 
                 if (!ShouldRetry(ex, context.AttemptNumber))
                 {
@@ -200,10 +195,7 @@ public class RetryPolicyService : IRetryPolicyService
         }
         catch (InvalidOperationException ex) when (ex.Message == "Operation returned null")
         {
-            _logger.LogWarning(
-                "Operation {OperationName} returned null after all retry attempts",
-                operationName
-            );
+            _logger.LogWarning("Operation {OperationName} returned null after all retry attempts", operationName);
             return null;
         }
     }
@@ -227,10 +219,7 @@ public class RetryPolicyService : IRetryPolicyService
         // Special handling for rate limiting - should be retried
         if (errorCode == "429")
         {
-            var maxRetries = _configuration.ErrorTypeRetries.GetValueOrDefault(
-                "429",
-                _configuration.MaxRetries
-            );
+            var maxRetries = _configuration.ErrorTypeRetries.GetValueOrDefault("429", _configuration.MaxRetries);
             return attemptNumber < maxRetries + 1;
         }
 
@@ -271,8 +260,7 @@ public class RetryPolicyService : IRetryPolicyService
 
         // Calculate exponential backoff delay
         var delay = TimeSpan.FromMilliseconds(
-            _configuration.BaseDelayMs
-                * Math.Pow(_configuration.ExponentialFactor, attemptNumber - 1)
+            _configuration.BaseDelayMs * Math.Pow(_configuration.ExponentialFactor, attemptNumber - 1)
         );
 
         // Apply jitter to prevent thundering herd (±10% as per AC-3.3)
@@ -304,17 +292,14 @@ public class RetryPolicyService : IRetryPolicyService
 
     #region Private Helper Methods
 
-    private ErrorType ClassifyError(Exception exception)
+    private static ErrorType ClassifyError(Exception exception)
     {
         return exception switch
         {
-            HttpRequestException httpEx when httpEx.Message.Contains("timeout") =>
-                ErrorType.NetworkTimeout,
+            HttpRequestException httpEx when httpEx.Message.Contains("timeout") => ErrorType.NetworkTimeout,
             HttpRequestException httpEx when httpEx.Message.Contains("429") => ErrorType.RateLimit,
-            HttpRequestException httpEx when httpEx.Message.Contains("401") =>
-                ErrorType.Authentication,
-            HttpRequestException httpEx when httpEx.Message.Contains("503") =>
-                ErrorType.ServiceUnavailable,
+            HttpRequestException httpEx when httpEx.Message.Contains("401") => ErrorType.Authentication,
+            HttpRequestException httpEx when httpEx.Message.Contains("503") => ErrorType.ServiceUnavailable,
             TaskCanceledException => ErrorType.NetworkTimeout,
             ArgumentException => ErrorType.MalformedResponse,
             JsonException => ErrorType.MalformedResponse,
@@ -323,7 +308,7 @@ public class RetryPolicyService : IRetryPolicyService
         };
     }
 
-    private string GetErrorCode(Exception exception)
+    private static string GetErrorCode(Exception exception)
     {
         return exception switch
         {
@@ -337,7 +322,7 @@ public class RetryPolicyService : IRetryPolicyService
         };
     }
 
-    private TimeSpan? ExtractRetryAfterHeader(HttpRequestException httpException)
+    private static TimeSpan? ExtractRetryAfterHeader(HttpRequestException httpException)
     {
         // In a real implementation, this would parse the Retry-After header from the HTTP response
         // For now, return null to use exponential backoff
@@ -345,7 +330,7 @@ public class RetryPolicyService : IRetryPolicyService
         return null;
     }
 
-    private ImmutableDictionary<string, object> ExtractRequestParameters()
+    private static ImmutableDictionary<string, object> ExtractRequestParameters()
     {
         // In a real implementation, this would capture the original request parameters
         // For now, return empty dictionary

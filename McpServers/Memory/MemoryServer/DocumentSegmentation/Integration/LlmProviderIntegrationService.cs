@@ -36,8 +36,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         _modelResolver = modelResolver ?? throw new ArgumentNullException(nameof(modelResolver));
         _promptManager = promptManager ?? throw new ArgumentNullException(nameof(promptManager));
         _documentAnalysisService =
-            documentAnalysisService
-            ?? throw new ArgumentNullException(nameof(documentAnalysisService));
+            documentAnalysisService ?? throw new ArgumentNullException(nameof(documentAnalysisService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
     }
@@ -125,19 +124,12 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
             // Test with a simple prompt
             var testMessages = new List<IMessage>
             {
-                new TextMessage
-                {
-                    Text = "Test connectivity. Respond with 'OK'.",
-                    Role = Role.User,
-                },
+                new TextMessage { Text = "Test connectivity. Respond with 'OK'.", Role = Role.User },
             };
 
             var response = await agent.GenerateReplyAsync(
                 testMessages,
-                new GenerateReplyOptions
-                {
-                    ModelId = _configuration.ModelPreferences["strategy_analysis"],
-                },
+                new GenerateReplyOptions { ModelId = _configuration.ModelPreferences["strategy_analysis"] },
                 cancellationToken
             );
 
@@ -163,17 +155,11 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         try
         {
             // Get strategy analysis prompt (using a special key for strategy analysis)
-            var prompt = await _promptManager.GetPromptAsync(
-                SegmentationStrategy.Hybrid,
-                "en",
-                cancellationToken
-            );
+            var prompt = await _promptManager.GetPromptAsync(SegmentationStrategy.Hybrid, "en", cancellationToken);
 
             if (prompt == null)
             {
-                _logger.LogWarning(
-                    "Strategy analysis prompt not found, using analysis service result"
-                );
+                _logger.LogWarning("Strategy analysis prompt not found, using analysis service result");
                 return initialAnalysis;
             }
 
@@ -183,12 +169,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
                 new TextMessage { Text = prompt.SystemPrompt, Role = Role.System },
                 new TextMessage
                 {
-                    Text = FormatStrategyAnalysisPrompt(
-                        content,
-                        documentType,
-                        initialAnalysis,
-                        prompt.UserPrompt
-                    ),
+                    Text = FormatStrategyAnalysisPrompt(content, documentType, initialAnalysis, prompt.UserPrompt),
                     Role = Role.User,
                 },
             };
@@ -203,10 +184,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Error during LLM strategy enhancement, using analysis service result"
-            );
+            _logger.LogError(ex, "Error during LLM strategy enhancement, using analysis service result");
             return initialAnalysis;
         }
     }
@@ -261,26 +239,20 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
                 }
 
                 // Wait before retry
-                await Task.Delay(
-                    TimeSpan.FromMilliseconds(Math.Pow(2, attempt) * 1000),
-                    cancellationToken
-                );
+                await Task.Delay(TimeSpan.FromMilliseconds(Math.Pow(2, attempt) * 1000), cancellationToken);
             }
         }
 
         throw new InvalidOperationException("All attempts failed");
     }
 
-    private StrategyRecommendation ParseStrategyAnalysisResponse(
-        IMessage response,
-        StrategyRecommendation fallback
-    )
+    private StrategyRecommendation ParseStrategyAnalysisResponse(IMessage response, StrategyRecommendation fallback)
     {
         try
         {
             // Try to parse structured JSON response
             var content = ExtractTextFromMessage(response);
-            if (content.Contains("{") && content.Contains("}"))
+            if (content.Contains('{') && content.Contains('}'))
             {
                 var jsonStart = content.IndexOf('{');
                 var jsonEnd = content.LastIndexOf('}');
@@ -340,7 +312,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         }
     }
 
-    private string ExtractTextFromMessage(IMessage message)
+    private static string ExtractTextFromMessage(IMessage message)
     {
         return message switch
         {
@@ -350,7 +322,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         };
     }
 
-    private string FormatStrategyAnalysisPrompt(
+    private static string FormatStrategyAnalysisPrompt(
         string content,
         DocumentType documentType,
         StrategyRecommendation initialAnalysis,
@@ -360,7 +332,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         return template
             .Replace(
                 "{DocumentContent}",
-                content.Length > 2000 ? content.Substring(0, 2000) + "..." : content
+                content.Length > 2000 ? string.Concat(content.AsSpan(0, 2000), "...") : content
             )
             .Replace("{DocumentType}", documentType.ToString())
             .Replace("{InitialStrategy}", initialAnalysis.Strategy.ToString())
@@ -368,7 +340,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
             .Replace("{InitialReasoning}", initialAnalysis.Reasoning);
     }
 
-    private StrategyRecommendation CreateDefaultStrategyRecommendation(DocumentType documentType)
+    private static StrategyRecommendation CreateDefaultStrategyRecommendation(DocumentType documentType)
     {
         return new StrategyRecommendation
         {

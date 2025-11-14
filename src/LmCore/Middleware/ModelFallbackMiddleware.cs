@@ -52,11 +52,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         // Check if options is null or doesn't contain ModelId
         if (context.Options?.ModelId == null)
         {
-            return await agent.GenerateReplyAsync(
-                context.Messages,
-                context.Options,
-                cancellationToken
-            );
+            return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
         }
 
         // Get the model name from options
@@ -72,11 +68,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
             {
                 try
                 {
-                    return await mappedAgent.GenerateReplyAsync(
-                        context.Messages,
-                        context.Options,
-                        cancellationToken
-                    );
+                    return await mappedAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -90,11 +82,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
             {
                 try
                 {
-                    return await _defaultAgent.GenerateReplyAsync(
-                        context.Messages,
-                        context.Options,
-                        cancellationToken
-                    );
+                    return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
                 }
                 catch (Exception) when (lastException != null)
                 {
@@ -111,11 +99,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
 
         // If no mapping was found for the model, use the default agent
-        return await _defaultAgent.GenerateReplyAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken
-        );
+        return await _defaultAgent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 
     /// <summary>
@@ -130,11 +114,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         // Check if options is null or doesn't contain ModelId
         if (context.Options?.ModelId == null)
         {
-            return await agent.GenerateReplyStreamingAsync(
-                context.Messages,
-                context.Options,
-                cancellationToken
-            );
+            return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
         }
 
         // Get the model name from options
@@ -241,11 +221,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
 
         // Fall back to using the provided agent if all else fails
-        return await agent.GenerateReplyStreamingAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken
-        );
+        return await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
     }
 
     /// <summary>

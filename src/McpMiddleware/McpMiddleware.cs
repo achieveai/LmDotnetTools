@@ -99,14 +99,7 @@ public partial class McpMiddleware : IStreamingMiddleware
         );
 
         // Create and return the middleware instance
-        return new McpMiddleware(
-            mcpClients,
-            functions,
-            functionMap,
-            name,
-            logger,
-            functionCallLogger
-        );
+        return new McpMiddleware(mcpClients, functions, functionMap, name, logger, functionCallLogger);
     }
 
     /// <summary>
@@ -116,9 +109,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     /// <param name="logger">Logger instance</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Dictionary of function delegates</returns>
-    private static async Task<
-        IDictionary<string, Func<string, Task<string>>>
-    > CreateFunctionMapAsync(
+    private static async Task<IDictionary<string, Func<string, Task<string>>>> CreateFunctionMapAsync(
         Dictionary<string, IMcpClient> mcpClients,
         ILogger<McpMiddleware> logger,
         CancellationToken cancellationToken = default
@@ -180,10 +171,7 @@ public partial class McpMiddleware : IStreamingMiddleware
                             Dictionary<string, object?> args;
                             try
                             {
-                                args =
-                                    JsonSerializer.Deserialize<Dictionary<string, object?>>(
-                                        argsJson
-                                    ) ?? [];
+                                args = JsonSerializer.Deserialize<Dictionary<string, object?>>(argsJson) ?? [];
                             }
                             catch (JsonException jsonEx)
                             {
@@ -219,9 +207,7 @@ public partial class McpMiddleware : IStreamingMiddleware
                                 response.Content != null
                                     ? response
                                         .Content.Where(c => c?.Type == "text")
-                                        .Select(c =>
-                                            (c is TextContentBlock tb) ? tb.Text : string.Empty
-                                        )
+                                        .Select(c => (c is TextContentBlock tb) ? tb.Text : string.Empty)
                                     : []
                             );
 
@@ -268,11 +254,7 @@ public partial class McpMiddleware : IStreamingMiddleware
             }
             catch (Exception ex)
             {
-                logger.LogError(
-                    ex,
-                    "MCP client tool discovery failed: ClientId={ClientId}",
-                    clientId
-                );
+                logger.LogError(ex, "MCP client tool discovery failed: ClientId={ClientId}", clientId);
                 // Continue with other clients even if one fails
                 continue;
             }
@@ -331,11 +313,7 @@ public partial class McpMiddleware : IStreamingMiddleware
             }
             catch (Exception ex)
             {
-                logger.LogError(
-                    ex,
-                    "Failed to list tools for MCP client: ClientId={ClientId}",
-                    kvp.Key
-                );
+                logger.LogError(ex, "Failed to list tools for MCP client: ClientId={ClientId}", kvp.Key);
                 // Continue with other clients even if one fails
                 continue;
             }
@@ -356,8 +334,7 @@ public partial class McpMiddleware : IStreamingMiddleware
         }
 
         // Replace invalid characters with underscores
-        var sanitized = MyRegex().Replace(toolName, "_"
-);
+        var sanitized = MyRegex().Replace(toolName, "_");
 
         // Ensure it doesn't start with a number (optional, but good practice)
         if (char.IsDigit(sanitized[0]))
@@ -411,9 +388,7 @@ public partial class McpMiddleware : IStreamingMiddleware
     {
         if (inputSchema == null)
         {
-            logger?.LogDebug(
-                "JSON schema processing: InputSchema is null, returning null parameters"
-            );
+            logger?.LogDebug("JSON schema processing: InputSchema is null, returning null parameters");
             return null;
         }
 
@@ -475,10 +450,7 @@ public partial class McpMiddleware : IStreamingMiddleware
                     {
                         isRequired = requiredElement
                             .EnumerateArray()
-                            .Any(item =>
-                                item.ValueKind == JsonValueKind.String
-                                && item.GetString() == paramName
-                            );
+                            .Any(item => item.ValueKind == JsonValueKind.String && item.GetString() == paramName);
                     }
 
                     logger?.LogDebug(
@@ -510,9 +482,7 @@ public partial class McpMiddleware : IStreamingMiddleware
                 JsonSerializer.Serialize(inputSchema)
             );
             // Log the error or handle it as needed
-            Console.Error.WriteLine(
-                $"Failed to extract parameters from input schema: {ex.Message}"
-            );
+            Console.Error.WriteLine($"Failed to extract parameters from input schema: {ex.Message}");
         }
 
         logger?.LogDebug(

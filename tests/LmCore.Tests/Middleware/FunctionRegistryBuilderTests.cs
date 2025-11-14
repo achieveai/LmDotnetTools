@@ -19,9 +19,9 @@ public class FunctionRegistryBuilderTests
         var registry = new FunctionRegistry();
 
         // Act & Assert
-        Assert.IsAssignableFrom<IFunctionRegistryBuilder>(registry);
-        Assert.IsAssignableFrom<IFunctionRegistryWithProviders>(registry);
-        Assert.IsAssignableFrom<IConfiguredFunctionRegistry>(registry);
+        Assert.IsType<IFunctionRegistryBuilder>(registry, exactMatch: false);
+        Assert.IsType<IFunctionRegistryWithProviders>(registry, exactMatch: false);
+        Assert.IsType<IConfiguredFunctionRegistry>(registry, exactMatch: false);
     }
 
     [Fact]
@@ -35,7 +35,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.AddProvider(provider);
 
         // Assert
-        Assert.IsAssignableFrom<IFunctionRegistryWithProviders>(result);
+        Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.AddFunction(contract, handler);
 
         // Assert
-        Assert.IsAssignableFrom<IFunctionRegistryBuilder>(result);
+        Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
     }
 
     [Fact]
@@ -64,76 +64,70 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithLogger(logger);
 
         // Assert
-        Assert.IsAssignableFrom<IFunctionRegistryBuilder>(result);
+        Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
     }
 
     [Fact]
     public void WithConflictResolution_ReturnsIFunctionRegistryWithProviders()
     {
         // Arrange
-        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(
-            CreateTestProvider("Provider1")
-        );
+        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(CreateTestProvider("Provider1"));
 
         // Act
         var result = builder.WithConflictResolution(ConflictResolution.TakeFirst);
 
         // Assert
-        Assert.IsAssignableFrom<IFunctionRegistryWithProviders>(result);
+        Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
     }
 
     [Fact]
     public void WithConflictHandler_ReturnsIFunctionRegistryWithProviders()
     {
         // Arrange
-        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(
-            CreateTestProvider("Provider1")
-        );
+        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(CreateTestProvider("Provider1"));
 
         // Act
         var result = builder.WithConflictHandler((key, candidates) => candidates.First());
 
         // Assert
-        Assert.IsAssignableFrom<IFunctionRegistryWithProviders>(result);
+        Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
     }
 
     [Fact]
     public void WithFilterConfig_ReturnsIConfiguredFunctionRegistry()
     {
         // Arrange
-        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(
-            CreateTestProvider("Provider1")
-        );
+        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(CreateTestProvider("Provider1"));
         var config = new FunctionFilterConfig { EnableFiltering = true };
 
         // Act
         var result = builder.WithFilterConfig(config);
 
         // Assert
-        Assert.IsAssignableFrom<IConfiguredFunctionRegistry>(result);
+        Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
     }
 
     [Fact]
     public void Configure_ReturnsIConfiguredFunctionRegistry()
     {
         // Arrange
-        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(
-            CreateTestProvider("Provider1")
-        );
+        IFunctionRegistryWithProviders builder = new FunctionRegistry().AddProvider(CreateTestProvider("Provider1"));
 
         // Act
         var result = builder.Configure();
 
         // Assert
-        Assert.IsAssignableFrom<IConfiguredFunctionRegistry>(result);
+        Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
     }
 
     [Fact]
     public void FluentChaining_WorksCorrectly()
     {
         // Arrange
-        var provider1 = CreateTestProvider("Provider1", new[] { "func1" });
-        var provider2 = CreateTestProvider("Provider2", new[] { "func2" });
+        string[] stringArray = new[] { "func1" };
+        string[] stringArray0 = new[] { "func2" };
+        var provider1 = CreateTestProvider("Provider1", stringArray);
+        var provider2 = CreateTestProvider("Provider2", stringArray0);
         var contract = CreateTestContract("func3");
         var handler = CreateTestHandler("result3");
 
@@ -152,7 +146,7 @@ public class FunctionRegistryBuilderTests
             );
 
         // Assert
-        Assert.IsAssignableFrom<IConfiguredFunctionRegistry>(configured);
+        Assert.IsType<IConfiguredFunctionRegistry>(configured, exactMatch: false);
 
         // Verify we can build
         var (contracts, handlers) = configured.Build();
@@ -173,10 +167,7 @@ public class FunctionRegistryBuilderTests
                         EnableFiltering = true,
                         ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
                         {
-                            ["valid_provider"] = new ProviderFilterConfig
-                            {
-                                CustomPrefix = "valid_prefix",
-                            },
+                            ["valid_provider"] = new ProviderFilterConfig { CustomPrefix = "valid_prefix" },
                         },
                     }
                 ) as IConfiguredFunctionRegistry;
@@ -269,10 +260,10 @@ public class FunctionRegistryBuilderTests
     public void GetMarkdownDocumentation_ReturnsDocumentation()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry =
-            new FunctionRegistry()
-                .AddProvider(CreateTestProvider("Provider1", new[] { "func1" }))
-                .Configure() as IConfiguredFunctionRegistry;
+            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure()
+            as IConfiguredFunctionRegistry;
 
         // Act
         var markdown = registry.GetMarkdownDocumentation();
@@ -288,10 +279,10 @@ public class FunctionRegistryBuilderTests
     public void BuildMiddleware_CreatesMiddleware()
     {
         // Arrange
+        string[] stringArray = new[] { "func1" };
         var registry =
-            new FunctionRegistry()
-                .AddProvider(CreateTestProvider("Provider1", new[] { "func1" }))
-                .Configure() as IConfiguredFunctionRegistry;
+            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure()
+            as IConfiguredFunctionRegistry;
 
         // Act
         var middleware = registry.BuildMiddleware("TestMiddleware");
@@ -307,8 +298,11 @@ public class FunctionRegistryBuilderTests
         // This test demonstrates a complete workflow using the fluent interface
 
         // Arrange
-        var provider1 = CreateTestProvider("MCP", new[] { "search", "list" });
-        var provider2 = CreateTestProvider("Weather", new[] { "getCurrentWeather", "getForecast" });
+        string[] stringArray = new[] { "search", "list" };
+        string[] stringArray0 = new[] { "func2" };
+        string[] stringArray1 = new[] { "getCurrentWeather", "getForecast" };
+        var provider1 = CreateTestProvider("MCP", stringArray);
+        var provider2 = CreateTestProvider("Weather", stringArray1);
 
         // Act - Use fluent interface to configure and build
         var registry =

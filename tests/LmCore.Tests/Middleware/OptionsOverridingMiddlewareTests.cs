@@ -134,11 +134,7 @@ public class OptionsOverridingMiddlewareTests
         // Set up overriding options with different functions array
         var overridingFunctions = new[]
         {
-            new FunctionContract
-            {
-                Name = "overridingFunction",
-                Description = "Overriding function",
-            },
+            new FunctionContract { Name = "overridingFunction", Description = "Overriding function" },
         };
 
         var overridingOptions = new GenerateReplyOptions { Functions = overridingFunctions };

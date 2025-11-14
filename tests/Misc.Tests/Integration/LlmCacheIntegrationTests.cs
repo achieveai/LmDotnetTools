@@ -24,11 +24,7 @@ public class LlmCacheIntegrationTests
     public void Setup()
     {
         // Create a unique test directory for each test
-        _testCacheDirectory = Path.Combine(
-            Path.GetTempPath(),
-            "LlmCacheIntegrationTests",
-            Guid.NewGuid().ToString()
-        );
+        _testCacheDirectory = Path.Combine(Path.GetTempPath(), "LlmCacheIntegrationTests", Guid.NewGuid().ToString());
 
         _services = new ServiceCollection();
     }
@@ -242,11 +238,7 @@ public class LlmCacheIntegrationTests
     public async Task ClearLlmCacheAsync_WithConfiguredCache_ClearsCache()
     {
         // Arrange
-        var options = new LlmCacheOptions
-        {
-            CacheDirectory = _testCacheDirectory,
-            EnableCaching = true,
-        };
+        var options = new LlmCacheOptions { CacheDirectory = _testCacheDirectory, EnableCaching = true };
 
         _services.AddLlmFileCache(options);
         _serviceProvider = _services.BuildServiceProvider();
@@ -285,11 +277,7 @@ public class LlmCacheIntegrationTests
     public void IHttpHandlerBuilder_RegistersCacheWrapper()
     {
         // Arrange
-        var options = new LlmCacheOptions
-        {
-            CacheDirectory = _testCacheDirectory,
-            EnableCaching = true,
-        };
+        var options = new LlmCacheOptions { CacheDirectory = _testCacheDirectory, EnableCaching = true };
 
         _services.AddLlmFileCache(options);
         _serviceProvider = _services.BuildServiceProvider();
@@ -421,8 +409,7 @@ public class LlmCacheIntegrationTests
 
         public async IAsyncEnumerable<AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionResponse> StreamingChatCompletionsAsync(
             AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionRequest chatCompletionRequest,
-            [System.Runtime.CompilerServices.EnumeratorCancellation]
-                CancellationToken cancellationToken = default
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default
         )
         {
             var response = new AchieveAi.LmDotnetTools.OpenAIProvider.Models.ChatCompletionResponse

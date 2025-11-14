@@ -53,9 +53,7 @@ public class BaseHttpServiceTests
         Debug.WriteLine($"Testing constructor with invalid parameters: {description}");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentNullException>(() =>
-            new TestHttpService(logger!, httpClient!)
-        );
+        var exception = Assert.Throws<ArgumentNullException>(() => new TestHttpService(logger!, httpClient!));
 
         Assert.Equal(expectedParameterName, exception.ParamName);
         Debug.WriteLine($"✓ Expected ArgumentNullException thrown for: {description}");
@@ -114,9 +112,7 @@ public class BaseHttpServiceTests
             service.TestExecuteWithRetryAsync(() => Task.FromResult("test"))
         );
 
-        Debug.WriteLine(
-            "✓ ExecuteWithRetryAsync correctly throws ObjectDisposedException after disposal"
-        );
+        Debug.WriteLine("✓ ExecuteWithRetryAsync correctly throws ObjectDisposedException after disposal");
     }
 
     [Fact]
@@ -137,9 +133,7 @@ public class BaseHttpServiceTests
             )
         );
 
-        Debug.WriteLine(
-            "✓ ExecuteHttpWithRetryAsync correctly throws ObjectDisposedException after disposal"
-        );
+        Debug.WriteLine("✓ ExecuteHttpWithRetryAsync correctly throws ObjectDisposedException after disposal");
     }
 
     #endregion
@@ -212,10 +206,7 @@ public class BaseHttpServiceTests
         var result = await service.TestExecuteHttpWithRetryAsync(
             () =>
                 Task.FromResult(
-                    new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(expectedContent),
-                    }
+                    new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(expectedContent) }
                 ),
             async response =>
             {
@@ -233,9 +224,7 @@ public class BaseHttpServiceTests
     [Trait("Category", "Resiliency")]
     public async Task ExecuteHttpWithRetryAsync_WithRetryableHttpFailure_RetriesAndSucceeds()
     {
-        Debug.WriteLine(
-            "Testing ExecuteHttpWithRetryAsync with retryable HTTP failure then success"
-        );
+        Debug.WriteLine("Testing ExecuteHttpWithRetryAsync with retryable HTTP failure then success");
 
         // Arrange
         var httpClient = new HttpClient();
@@ -249,22 +238,15 @@ public class BaseHttpServiceTests
             {
                 attempts++;
                 if (attempts < 3)
-                    return Task.FromResult(
-                        new HttpResponseMessage(HttpStatusCode.InternalServerError)
-                    );
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
                 return Task.FromResult(
-                    new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("success"),
-                    }
+                    new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("success") }
                 );
             },
             async response =>
             {
                 if (response.StatusCode == HttpStatusCode.InternalServerError)
-                    throw new HttpRequestException(
-                        $"HTTP {(int)response.StatusCode} {response.StatusCode}"
-                    );
+                    throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
                 return await response.Content.ReadAsStringAsync();
             }
         );
@@ -310,9 +292,7 @@ public class BaseHttpServiceTests
         );
 
         Assert.Equal(expectedAttempts, attempts);
-        Debug.WriteLine(
-            $"✓ ExecuteWithRetryAsync made {attempts} attempts with maxRetries={maxRetries}"
-        );
+        Debug.WriteLine($"✓ ExecuteWithRetryAsync made {attempts} attempts with maxRetries={maxRetries}");
     }
 
     #endregion
@@ -359,13 +339,7 @@ public class BaseHttpServiceTests
         new List<object[]>
         {
             new object[] { null!, new HttpClient(), "logger", "Null logger" },
-            new object[]
-            {
-                TestLoggerFactory.CreateLogger<TestHttpService>(),
-                null!,
-                "httpClient",
-                "Null HttpClient",
-            },
+            new object[] { TestLoggerFactory.CreateLogger<TestHttpService>(), null!, "httpClient", "Null HttpClient" },
         };
 
     public static IEnumerable<object[]> RetryParametersTestCases =>
@@ -411,12 +385,7 @@ public class BaseHttpServiceTests
             CancellationToken cancellationToken = default
         )
         {
-            return await ExecuteHttpWithRetryAsync(
-                httpOperation,
-                responseProcessor,
-                maxRetries,
-                cancellationToken
-            );
+            return await ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, maxRetries, cancellationToken);
         }
     }
 

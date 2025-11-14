@@ -41,10 +41,7 @@ public class MemoryRepository : IMemoryRepository
             throw new ArgumentException("Memory content cannot be empty", nameof(content));
 
         if (content.Length > 10000)
-            throw new ArgumentException(
-                "Memory content cannot exceed 10,000 characters",
-                nameof(content)
-            );
+            throw new ArgumentException("Memory content cannot exceed 10,000 characters", nameof(content));
 
         // Generate unique integer ID
         var id = await _idGenerator.GenerateNextIdAsync(cancellationToken);
@@ -89,13 +86,10 @@ public class MemoryRepository : IMemoryRepository
 
                 await command.ExecuteNonQueryAsync(cancellationToken);
 
-                _logger.LogInformation(
-                    "Added memory {Id} for session {SessionContext}",
-                    memory.Id,
-                    sessionContext
-                );
+                _logger.LogInformation("Added memory {Id} for session {SessionContext}", memory.Id, sessionContext);
                 return memory;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -110,39 +104,42 @@ public class MemoryRepository : IMemoryRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, content, user_id, agent_id, run_id, metadata, created_at, updated_at, version
                 FROM memories 
                 WHERE id = @id AND user_id = @userId";
 
-            // Add session context filters
-            if (!string.IsNullOrEmpty(sessionContext.AgentId))
-            {
-                command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
-            }
+                // Add session context filters
+                if (!string.IsNullOrEmpty(sessionContext.AgentId))
+                {
+                    command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
+                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                }
 
-            if (!string.IsNullOrEmpty(sessionContext.RunId))
-            {
-                command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                command.Parameters.AddWithValue("@runId", sessionContext.RunId);
-            }
+                if (!string.IsNullOrEmpty(sessionContext.RunId))
+                {
+                    command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
+                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                }
 
-            command.Parameters.AddWithValue("@id", id);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@id", id);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                return ReadMemoryFromReader(reader);
-            }
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    return ReadMemoryFromReader(reader);
+                }
 
-            return null;
-        });
+                return null;
+            },
+            cancellationToken
+        );
     }
 
     /// <summary>
@@ -160,10 +157,7 @@ public class MemoryRepository : IMemoryRepository
             throw new ArgumentException("Memory content cannot be empty", nameof(content));
 
         if (content.Length > 10000)
-            throw new ArgumentException(
-                "Memory content cannot exceed 10,000 characters",
-                nameof(content)
-            );
+            throw new ArgumentException("Memory content cannot exceed 10,000 characters", nameof(content));
 
         // First get the existing memory to check permissions and get current version
         var existingMemory = await GetByIdAsync(id, sessionContext, cancellationToken);
@@ -222,13 +216,10 @@ public class MemoryRepository : IMemoryRepository
                 updatedMemory.Metadata = metadata;
                 updatedMemory.UpdatedAt = updatedAt;
 
-                _logger.LogInformation(
-                    "Updated memory {Id} for session {SessionContext}",
-                    id,
-                    sessionContext
-                );
+                _logger.LogInformation("Updated memory {Id} for session {SessionContext}", id, sessionContext);
                 return updatedMemory;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -274,15 +265,12 @@ public class MemoryRepository : IMemoryRepository
 
                 if (deleted)
                 {
-                    _logger.LogInformation(
-                        "Deleted memory {Id} for session {SessionContext}",
-                        id,
-                        sessionContext
-                    );
+                    _logger.LogInformation("Deleted memory {Id} for session {SessionContext}", id, sessionContext);
                 }
 
                 return deleted;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -298,43 +286,46 @@ public class MemoryRepository : IMemoryRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT id, content, user_id, agent_id, run_id, metadata, created_at, updated_at, version
                 FROM memories 
                 WHERE user_id = @userId";
 
-            // Add session context filters
-            if (!string.IsNullOrEmpty(sessionContext.AgentId))
-            {
-                command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
-            }
+                // Add session context filters
+                if (!string.IsNullOrEmpty(sessionContext.AgentId))
+                {
+                    command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
+                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                }
 
-            if (!string.IsNullOrEmpty(sessionContext.RunId))
-            {
-                command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                command.Parameters.AddWithValue("@runId", sessionContext.RunId);
-            }
+                if (!string.IsNullOrEmpty(sessionContext.RunId))
+                {
+                    command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
+                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                }
 
-            command.CommandText += " ORDER BY created_at DESC LIMIT @limit OFFSET @offset";
+                command.CommandText += " ORDER BY created_at DESC LIMIT @limit OFFSET @offset";
 
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue("@limit", limit);
-            command.Parameters.AddWithValue("@offset", offset);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@limit", limit);
+                command.Parameters.AddWithValue("@offset", offset);
 
-            var memories = new List<Memory>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                memories.Add(ReadMemoryFromReader(reader));
-            }
+                var memories = new List<Memory>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    memories.Add(ReadMemoryFromReader(reader));
+                }
 
-            return memories;
-        });
+                return memories;
+            },
+            cancellationToken
+        );
     }
 
     /// <summary>
@@ -353,32 +344,23 @@ public class MemoryRepository : IMemoryRepository
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            try
+        return await session.ExecuteAsync(
+            async connection =>
             {
-                // Try FTS5 search first
-                return await SearchWithFts5Async(
-                    connection,
-                    query,
-                    sessionContext,
-                    limit,
-                    cancellationToken
-                );
-            }
-            catch (SqliteException ex) when (ex.Message.Contains("no such table: memory_fts"))
-            {
-                // Fallback to LIKE search if FTS5 is not available
-                _logger.LogWarning("FTS5 table not available, falling back to LIKE search");
-                return await SearchWithLikeAsync(
-                    connection,
-                    query,
-                    sessionContext,
-                    limit,
-                    cancellationToken
-                );
-            }
-        });
+                try
+                {
+                    // Try FTS5 search first
+                    return await SearchWithFts5Async(connection, query, sessionContext, limit, cancellationToken);
+                }
+                catch (SqliteException ex) when (ex.Message.Contains("no such table: memory_fts"))
+                {
+                    // Fallback to LIKE search if FTS5 is not available
+                    _logger.LogWarning("FTS5 table not available, falling back to LIKE search");
+                    return await SearchWithLikeAsync(connection, query, sessionContext, limit, cancellationToken);
+                }
+            },
+            cancellationToken
+        );
     }
 
     private async Task<List<Memory>> SearchWithFts5Async(
@@ -496,11 +478,12 @@ public class MemoryRepository : IMemoryRepository
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT 
                     COUNT(*) as total_count,
                     SUM(LENGTH(content)) as total_content_size,
@@ -510,59 +493,58 @@ public class MemoryRepository : IMemoryRepository
                 FROM memories 
                 WHERE user_id = @userId";
 
-            // Add session context filters
-            if (!string.IsNullOrEmpty(sessionContext.AgentId))
-            {
-                command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
-            }
-
-            if (!string.IsNullOrEmpty(sessionContext.RunId))
-            {
-                command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                command.Parameters.AddWithValue("@runId", sessionContext.RunId);
-            }
-
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                var totalCountOrdinal = reader.GetOrdinal("total_count");
-                var totalContentSizeOrdinal = reader.GetOrdinal("total_content_size");
-                var avgContentLengthOrdinal = reader.GetOrdinal("avg_content_length");
-                var oldestMemoryOrdinal = reader.GetOrdinal("oldest_memory");
-                var newestMemoryOrdinal = reader.GetOrdinal("newest_memory");
-
-                return new MemoryStats
+                // Add session context filters
+                if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
-                    TotalMemories = reader.GetInt32(totalCountOrdinal),
-                    TotalContentSize = reader.IsDBNull(totalContentSizeOrdinal)
-                        ? 0
-                        : reader.GetInt64(totalContentSizeOrdinal),
-                    AverageContentLength = reader.IsDBNull(avgContentLengthOrdinal)
-                        ? 0
-                        : reader.GetDouble(avgContentLengthOrdinal),
-                    OldestMemory = reader.IsDBNull(oldestMemoryOrdinal)
-                        ? (DateTime?)null
-                        : reader.GetDateTime(oldestMemoryOrdinal),
-                    NewestMemory = reader.IsDBNull(newestMemoryOrdinal)
-                        ? (DateTime?)null
-                        : reader.GetDateTime(newestMemoryOrdinal),
-                };
-            }
+                    command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
+                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                }
 
-            return new MemoryStats();
-        });
+                if (!string.IsNullOrEmpty(sessionContext.RunId))
+                {
+                    command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
+                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                }
+
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    var totalCountOrdinal = reader.GetOrdinal("total_count");
+                    var totalContentSizeOrdinal = reader.GetOrdinal("total_content_size");
+                    var avgContentLengthOrdinal = reader.GetOrdinal("avg_content_length");
+                    var oldestMemoryOrdinal = reader.GetOrdinal("oldest_memory");
+                    var newestMemoryOrdinal = reader.GetOrdinal("newest_memory");
+
+                    return new MemoryStats
+                    {
+                        TotalMemories = reader.GetInt32(totalCountOrdinal),
+                        TotalContentSize = reader.IsDBNull(totalContentSizeOrdinal)
+                            ? 0
+                            : reader.GetInt64(totalContentSizeOrdinal),
+                        AverageContentLength = reader.IsDBNull(avgContentLengthOrdinal)
+                            ? 0
+                            : reader.GetDouble(avgContentLengthOrdinal),
+                        OldestMemory = reader.IsDBNull(oldestMemoryOrdinal)
+                            ? (DateTime?)null
+                            : reader.GetDateTime(oldestMemoryOrdinal),
+                        NewestMemory = reader.IsDBNull(newestMemoryOrdinal)
+                            ? (DateTime?)null
+                            : reader.GetDateTime(newestMemoryOrdinal),
+                    };
+                }
+
+                return new MemoryStats();
+            },
+            cancellationToken
+        );
     }
 
     /// <summary>
     /// Deletes all memories for a session context.
     /// </summary>
-    public async Task<int> DeleteAllAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<int> DeleteAllAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
@@ -603,7 +585,8 @@ public class MemoryRepository : IMemoryRepository
                 }
 
                 return deletedCount;
-            }
+            },
+            cancellationToken
         );
     }
 
@@ -648,9 +631,7 @@ public class MemoryRepository : IMemoryRepository
         var updatedAtOrdinal = reader.GetOrdinal("updated_at");
         var versionOrdinal = reader.GetOrdinal("version");
 
-        var metadataJson = reader.IsDBNull(metadataOrdinal)
-            ? null
-            : reader.GetString(metadataOrdinal);
+        var metadataJson = reader.IsDBNull(metadataOrdinal) ? null : reader.GetString(metadataOrdinal);
         Dictionary<string, object>? metadata = null;
 
         if (!string.IsNullOrEmpty(metadataJson))
@@ -661,23 +642,15 @@ public class MemoryRepository : IMemoryRepository
             }
             catch (JsonException ex)
             {
-                _logger.LogWarning(
-                    ex,
-                    "Failed to deserialize metadata for memory {Id}",
-                    reader.GetInt32(idOrdinal)
-                );
+                _logger.LogWarning(ex, "Failed to deserialize metadata for memory {Id}", reader.GetInt32(idOrdinal));
             }
         }
 
         return new Memory
         {
             Id = reader.GetInt32(idOrdinal),
-            Content = reader.IsDBNull(contentOrdinal)
-                ? string.Empty
-                : reader.GetString(contentOrdinal),
-            UserId = reader.IsDBNull(userIdOrdinal)
-                ? string.Empty
-                : reader.GetString(userIdOrdinal),
+            Content = reader.IsDBNull(contentOrdinal) ? string.Empty : reader.GetString(contentOrdinal),
+            UserId = reader.IsDBNull(userIdOrdinal) ? string.Empty : reader.GetString(userIdOrdinal),
             AgentId = reader.IsDBNull(agentIdOrdinal) ? null : reader.GetString(agentIdOrdinal),
             RunId = reader.IsDBNull(runIdOrdinal) ? null : reader.GetString(runIdOrdinal),
             Metadata = metadata,
@@ -712,7 +685,7 @@ public class MemoryRepository : IMemoryRepository
     /// <summary>
     /// Checks if the memory_embeddings table is using vec0 virtual table.
     /// </summary>
-    private async Task<bool> CheckForVec0TableAsync(
+    private static async Task<bool> CheckForVec0TableAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken
     )
@@ -730,7 +703,7 @@ public class MemoryRepository : IMemoryRepository
     /// <summary>
     /// Checks if a specific table exists in the database.
     /// </summary>
-    private async Task<bool> CheckForTableAsync(
+    private static async Task<bool> CheckForTableAsync(
         SqliteConnection connection,
         string tableName,
         CancellationToken cancellationToken
@@ -773,12 +746,7 @@ public class MemoryRepository : IMemoryRepository
             {
                 // Convert embedding to JSON format for sqlite-vec (more reliable than byte conversion)
                 var embeddingJson =
-                    "["
-                    + string.Join(
-                        ",",
-                        embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))
-                    )
-                    + "]";
+                    "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
 
                 // Check if we're using vec0 virtual table or regular table with dimension column
                 bool hasVec0Table = await CheckForVec0TableAsync(connection, cancellationToken);
@@ -833,47 +801,48 @@ public class MemoryRepository : IMemoryRepository
                     modelName,
                     embedding.Length
                 );
-            }
+            },
+            cancellationToken
         );
     }
 
     /// <summary>
     /// Gets the embedding for a specific memory.
     /// </summary>
-    public async Task<float[]?> GetEmbeddingAsync(
-        int memoryId,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<float[]?> GetEmbeddingAsync(int memoryId, CancellationToken cancellationToken = default)
     {
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT embedding 
                 FROM memory_embeddings 
                 WHERE memory_id = @memoryId";
 
-            command.Parameters.AddWithValue("@memoryId", memoryId);
+                command.Parameters.AddWithValue("@memoryId", memoryId);
 
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                var embeddingOrdinal = reader.GetOrdinal("embedding");
-                if (!reader.IsDBNull(embeddingOrdinal))
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
                 {
-                    // sqlite-vec stores embeddings as BLOB, convert to float array
-                    var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
-                    var embedding = new float[embeddingBytes.Length / sizeof(float)];
-                    Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
-                    return embedding;
+                    var embeddingOrdinal = reader.GetOrdinal("embedding");
+                    if (!reader.IsDBNull(embeddingOrdinal))
+                    {
+                        // sqlite-vec stores embeddings as BLOB, convert to float array
+                        var embeddingBytes = (byte[])reader.GetValue(embeddingOrdinal);
+                        var embedding = new float[embeddingBytes.Length / sizeof(float)];
+                        Buffer.BlockCopy(embeddingBytes, 0, embedding, 0, embeddingBytes.Length);
+                        return embedding;
+                    }
                 }
-            }
 
-            return null;
-        });
+                return null;
+            },
+            cancellationToken
+        );
     }
 
     /// <summary>
@@ -892,13 +861,14 @@ public class MemoryRepository : IMemoryRepository
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
 
-            // Use sqlite-vec for similarity search with session filtering
-            command.CommandText =
-                @"
+                // Use sqlite-vec for similarity search with session filtering
+                command.CommandText =
+                    @"
                 SELECT m.id, m.content, m.user_id, m.agent_id, m.run_id, m.metadata, 
                        m.created_at, m.updated_at, m.version,
                        vec_distance_cosine(e.embedding, @queryEmbedding) as distance
@@ -907,69 +877,68 @@ public class MemoryRepository : IMemoryRepository
                 WHERE m.user_id = @userId
                   AND vec_distance_cosine(e.embedding, @queryEmbedding) <= @distanceThreshold";
 
-            // Add session context filters
-            if (!string.IsNullOrEmpty(sessionContext.AgentId))
-            {
-                command.CommandText += " AND (m.agent_id = @agentId OR m.agent_id IS NULL)";
-                command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
-            }
+                // Add session context filters
+                if (!string.IsNullOrEmpty(sessionContext.AgentId))
+                {
+                    command.CommandText += " AND (m.agent_id = @agentId OR m.agent_id IS NULL)";
+                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                }
 
-            if (!string.IsNullOrEmpty(sessionContext.RunId))
-            {
-                command.CommandText += " AND (m.run_id = @runId OR m.run_id IS NULL)";
-                command.Parameters.AddWithValue("@runId", sessionContext.RunId);
-            }
+                if (!string.IsNullOrEmpty(sessionContext.RunId))
+                {
+                    command.CommandText += " AND (m.run_id = @runId OR m.run_id IS NULL)";
+                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                }
 
-            command.CommandText +=
-                @"
+                command.CommandText +=
+                    @"
                 ORDER BY distance ASC
                 LIMIT @limit";
 
-            // Convert similarity threshold to distance threshold (cosine distance = 1 - cosine similarity)
-            var distanceThreshold = 1.0f - threshold;
+                // Convert similarity threshold to distance threshold (cosine distance = 1 - cosine similarity)
+                var distanceThreshold = 1.0f - threshold;
 
-            // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
-            var queryEmbeddingJson =
-                "["
-                + string.Join(
-                    ",",
-                    queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))
-                )
-                + "]";
+                // Convert query embedding to JSON format for sqlite-vec (more reliable than byte conversion)
+                var queryEmbeddingJson =
+                    "["
+                    + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture)))
+                    + "]";
 
-            command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
-            command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-            command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
-            command.Parameters.AddWithValue("@limit", limit);
+                command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
+                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
+                command.Parameters.AddWithValue("@limit", limit);
 
-            var results = new List<VectorSearchResult>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var memory = ReadMemoryFromReader(reader);
-                var distanceOrdinal = reader.GetOrdinal("distance");
-                var distance = reader.GetFloat(distanceOrdinal);
-                var similarity = 1.0f - distance; // Convert distance back to similarity
+                var results = new List<VectorSearchResult>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var memory = ReadMemoryFromReader(reader);
+                    var distanceOrdinal = reader.GetOrdinal("distance");
+                    var distance = reader.GetFloat(distanceOrdinal);
+                    var similarity = 1.0f - distance; // Convert distance back to similarity
 
-                results.Add(
-                    new VectorSearchResult
-                    {
-                        Memory = memory,
-                        Score = similarity,
-                        Distance = distance,
-                    }
+                    results.Add(
+                        new VectorSearchResult
+                        {
+                            Memory = memory,
+                            Score = similarity,
+                            Distance = distance,
+                        }
+                    );
+                }
+
+                _logger.LogDebug(
+                    "Vector search returned {Count} results for session {SessionContext} with threshold {Threshold}",
+                    results.Count,
+                    sessionContext,
+                    threshold
                 );
-            }
 
-            _logger.LogDebug(
-                "Vector search returned {Count} results for session {SessionContext} with threshold {Threshold}",
-                results.Count,
-                sessionContext,
-                threshold
-            );
-
-            return results;
-        });
+                return results;
+            },
+            cancellationToken
+        );
     }
 
     /// <summary>
@@ -992,20 +961,8 @@ public class MemoryRepository : IMemoryRepository
             throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
 
         // Perform both searches in parallel
-        var traditionalSearchTask = SearchAsync(
-            query,
-            sessionContext,
-            limit * 2,
-            0.0f,
-            cancellationToken
-        );
-        var vectorSearchTask = SearchVectorAsync(
-            queryEmbedding,
-            sessionContext,
-            limit * 2,
-            0.5f,
-            cancellationToken
-        );
+        var traditionalSearchTask = SearchAsync(query, sessionContext, limit * 2, 0.0f, cancellationToken);
+        var vectorSearchTask = SearchVectorAsync(queryEmbedding, sessionContext, limit * 2, 0.5f, cancellationToken);
 
         await Task.WhenAll(traditionalSearchTask, vectorSearchTask);
 
@@ -1032,10 +989,10 @@ public class MemoryRepository : IMemoryRepository
             var vectorScore = vectorResult.Score;
             var weightedScore = vectorScore * vectorWeight;
 
-            if (combinedResults.ContainsKey(memory.Id))
+            if (combinedResults.TryGetValue(memory.Id, out var value))
             {
                 // Combine scores for memories found in both searches
-                var (existingMemory, existingScore) = combinedResults[memory.Id];
+                var (existingMemory, existingScore) = value;
                 combinedResults[memory.Id] = (existingMemory, existingScore + weightedScore);
             }
             else
@@ -1066,21 +1023,19 @@ public class MemoryRepository : IMemoryRepository
     /// <summary>
     /// Gets all agents for a specific user.
     /// </summary>
-    public async Task<List<string>> GetAgentsAsync(
-        string userId,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(userId))
             throw new ArgumentException("UserId cannot be empty", nameof(userId));
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT DISTINCT agent_id
                 FROM memories 
                 WHERE user_id = @userId 
@@ -1088,26 +1043,28 @@ public class MemoryRepository : IMemoryRepository
                   AND agent_id != ''
                 ORDER BY agent_id";
 
-            command.Parameters.AddWithValue("@userId", userId);
+                command.Parameters.AddWithValue("@userId", userId);
 
-            var agents = new List<string>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var agentIdOrdinal = reader.GetOrdinal("agent_id");
-                if (!reader.IsDBNull(agentIdOrdinal))
+                var agents = new List<string>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
                 {
-                    var agentId = reader.GetString(agentIdOrdinal);
-                    if (!string.IsNullOrWhiteSpace(agentId))
+                    var agentIdOrdinal = reader.GetOrdinal("agent_id");
+                    if (!reader.IsDBNull(agentIdOrdinal))
                     {
-                        agents.Add(agentId);
+                        var agentId = reader.GetString(agentIdOrdinal);
+                        if (!string.IsNullOrWhiteSpace(agentId))
+                        {
+                            agents.Add(agentId);
+                        }
                     }
                 }
-            }
 
-            _logger.LogDebug("Found {Count} agents for user {UserId}", agents.Count, userId);
-            return agents;
-        });
+                _logger.LogDebug("Found {Count} agents for user {UserId}", agents.Count, userId);
+                return agents;
+            },
+            cancellationToken
+        );
     }
 
     /// <summary>
@@ -1127,11 +1084,12 @@ public class MemoryRepository : IMemoryRepository
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
-        return await session.ExecuteAsync(async connection =>
-        {
-            using var command = connection.CreateCommand();
-            command.CommandText =
-                @"
+        return await session.ExecuteAsync(
+            async connection =>
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText =
+                    @"
                 SELECT DISTINCT run_id
                 FROM memories 
                 WHERE user_id = @userId 
@@ -1140,31 +1098,33 @@ public class MemoryRepository : IMemoryRepository
                   AND run_id != ''
                 ORDER BY run_id";
 
-            command.Parameters.AddWithValue("@userId", userId);
-            command.Parameters.AddWithValue("@agentId", agentId);
+                command.Parameters.AddWithValue("@userId", userId);
+                command.Parameters.AddWithValue("@agentId", agentId);
 
-            var runs = new List<string>();
-            using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                var runIdOrdinal = reader.GetOrdinal("run_id");
-                if (!reader.IsDBNull(runIdOrdinal))
+                var runs = new List<string>();
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
                 {
-                    var runId = reader.GetString(runIdOrdinal);
-                    if (!string.IsNullOrWhiteSpace(runId))
+                    var runIdOrdinal = reader.GetOrdinal("run_id");
+                    if (!reader.IsDBNull(runIdOrdinal))
                     {
-                        runs.Add(runId);
+                        var runId = reader.GetString(runIdOrdinal);
+                        if (!string.IsNullOrWhiteSpace(runId))
+                        {
+                            runs.Add(runId);
+                        }
                     }
                 }
-            }
 
-            _logger.LogDebug(
-                "Found {Count} runs for user {UserId} and agent {AgentId}",
-                runs.Count,
-                userId,
-                agentId
-            );
-            return runs;
-        });
+                _logger.LogDebug(
+                    "Found {Count} runs for user {UserId} and agent {AgentId}",
+                    runs.Count,
+                    userId,
+                    agentId
+                );
+                return runs;
+            },
+            cancellationToken
+        );
     }
 }

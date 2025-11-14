@@ -21,9 +21,7 @@ public class McpMiddlewareFactory
     public McpMiddlewareFactory(ILoggerFactory? loggerFactory = null)
     {
         _loggerFactory = loggerFactory;
-        _logger =
-            loggerFactory?.CreateLogger<McpMiddlewareFactory>()
-            ?? NullLogger<McpMiddlewareFactory>.Instance;
+        _logger = loggerFactory?.CreateLogger<McpMiddlewareFactory>() ?? NullLogger<McpMiddlewareFactory>.Instance;
     }
 
     /// <summary>
@@ -42,10 +40,7 @@ public class McpMiddlewareFactory
             configFilePath
         );
 
-        _logger.LogDebug(
-            "Factory initialization: Reading configuration file: {ConfigFilePath}",
-            configFilePath
-        );
+        _logger.LogDebug("Factory initialization: Reading configuration file: {ConfigFilePath}", configFilePath);
 
         // Read and parse the configuration file
         var configJson = await File.ReadAllTextAsync(configFilePath, cancellationToken);
@@ -54,14 +49,9 @@ public class McpMiddlewareFactory
 
         var config =
             JsonSerializer.Deserialize<McpMiddlewareConfiguration>(configJson)
-            ?? throw new InvalidOperationException(
-                $"Failed to deserialize config file: {configFilePath}"
-            );
+            ?? throw new InvalidOperationException($"Failed to deserialize config file: {configFilePath}");
 
-        _logger.LogDebug(
-            "Configuration deserialized: ClientCount={ClientCount}",
-            config.Clients.Count
-        );
+        _logger.LogDebug("Configuration deserialized: ClientCount={ClientCount}", config.Clients.Count);
 
         return await CreateFromConfigAsync(config, cancellationToken);
     }
@@ -77,10 +67,7 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default
     )
     {
-        _logger.LogInformation(
-            "Creating MCP middleware from config with {ClientCount} clients",
-            config.Clients.Count
-        );
+        _logger.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
 
         _logger.LogDebug(
             "MCP client configuration validation: ClientIds={ClientIds}",
@@ -107,7 +94,10 @@ public class McpMiddlewareFactory
                 // Create transport from configuration
                 if (clientSettings == null)
                 {
-                    throw new ArgumentNullException(nameof(clientSettings), $"Client settings for '{clientId}' cannot be null");
+                    throw new ArgumentNullException(
+                        nameof(clientSettings),
+                        $"Client settings for '{clientId}' cannot be null"
+                    );
                 }
                 var transport = CreateTransportFromConfig(clientId, clientSettings);
                 _logger.LogDebug(
@@ -179,8 +169,8 @@ public class McpMiddlewareFactory
         return clientSettings is Dictionary<string, object> configDict
             ? CreateTransportFromDictionary(clientId, configDict)
             : throw new InvalidOperationException(
-            $"Unsupported client configuration type for client '{clientId}': {clientSettings.GetType()}"
-        );
+                $"Unsupported client configuration type for client '{clientId}': {clientSettings.GetType()}"
+            );
     }
 
     /// <summary>
@@ -189,10 +179,7 @@ public class McpMiddlewareFactory
     /// <param name="clientId">The client ID</param>
     /// <param name="jsonElement">The JSON configuration</param>
     /// <returns>The created transport</returns>
-    private static IClientTransport CreateTransportFromJsonElement(
-        string clientId,
-        JsonElement jsonElement
-    )
+    private static IClientTransport CreateTransportFromJsonElement(string clientId, JsonElement jsonElement)
     {
         string? command = null;
         string[]? arguments = null;
@@ -213,30 +200,18 @@ public class McpMiddlewareFactory
             && argsElement.ValueKind == JsonValueKind.Array
         )
         {
-            arguments = argsElement
-                .EnumerateArray()
-                .Select(e => e.GetString() ?? string.Empty)
-                .ToArray();
+            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
         }
         else if (
             jsonElement.TryGetProperty("Arguments", out argsElement)
             && argsElement.ValueKind == JsonValueKind.Array
         )
         {
-            arguments = argsElement
-                .EnumerateArray()
-                .Select(e => e.GetString() ?? string.Empty)
-                .ToArray();
+            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
         }
-        else if (
-            jsonElement.TryGetProperty("args", out argsElement)
-            && argsElement.ValueKind == JsonValueKind.Array
-        )
+        else if (jsonElement.TryGetProperty("args", out argsElement) && argsElement.ValueKind == JsonValueKind.Array)
         {
-            arguments = argsElement
-                .EnumerateArray()
-                .Select(e => e.GetString() ?? string.Empty)
-                .ToArray();
+            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
         }
 
         // If no command found, try to parse from a single command string that might include arguments
@@ -263,17 +238,16 @@ public class McpMiddlewareFactory
         }
 
         return string.IsNullOrEmpty(command)
-            ? throw new InvalidOperationException(
-                $"No command found in configuration for client '{clientId}'"
-            )
-            : (IClientTransport)new StdioClientTransport(
-            new StdioClientTransportOptions
-            {
-                Name = clientId,
-                Command = command,
-                Arguments = arguments ?? [],
-            }
-        );
+            ? throw new InvalidOperationException($"No command found in configuration for client '{clientId}'")
+            : (IClientTransport)
+                new StdioClientTransport(
+                    new StdioClientTransportOptions
+                    {
+                        Name = clientId,
+                        Command = command,
+                        Arguments = arguments ?? [],
+                    }
+                );
     }
 
     /// <summary>
@@ -291,15 +265,11 @@ public class McpMiddlewareFactory
         string[]? arguments = null;
 
         // Try to extract command
-        if (
-            configDict.TryGetValue("command", out var commandObj) && commandObj is string commandStr
-        )
+        if (configDict.TryGetValue("command", out var commandObj) && commandObj is string commandStr)
         {
             command = commandStr;
         }
-        else if (
-            configDict.TryGetValue("Command", out commandObj) && commandObj is string commandStr2
-        )
+        else if (configDict.TryGetValue("Command", out commandObj) && commandObj is string commandStr2)
         {
             command = commandStr2;
         }
@@ -319,17 +289,16 @@ public class McpMiddlewareFactory
         }
 
         return string.IsNullOrEmpty(command)
-            ? throw new InvalidOperationException(
-                $"No command found in configuration for client '{clientId}'"
-            )
-            : (IClientTransport)new StdioClientTransport(
-            new StdioClientTransportOptions
-            {
-                Name = clientId,
-                Command = command,
-                Arguments = arguments ?? [],
-            }
-        );
+            ? throw new InvalidOperationException($"No command found in configuration for client '{clientId}'")
+            : (IClientTransport)
+                new StdioClientTransport(
+                    new StdioClientTransportOptions
+                    {
+                        Name = clientId,
+                        Command = command,
+                        Arguments = arguments ?? [],
+                    }
+                );
     }
 
     /// <summary>
@@ -362,10 +331,7 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default
     )
     {
-        _logger.LogInformation(
-            "Creating MCP middleware from {ClientCount} clients asynchronously",
-            mcpClients.Count
-        );
+        _logger.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
 
         _logger.LogDebug(
             "Client validation: Validating {ClientCount} provided clients: {ClientIds}",
@@ -378,10 +344,7 @@ public class McpMiddlewareFactory
         {
             if (kvp.Value == null)
             {
-                _logger.LogDebug(
-                    "Client validation failed: ClientId={ClientId} has null client instance",
-                    kvp.Key
-                );
+                _logger.LogDebug("Client validation failed: ClientId={ClientId} has null client instance", kvp.Key);
                 throw new ArgumentException($"Client '{kvp.Key}' is null", nameof(mcpClients));
             }
             _logger.LogDebug(
@@ -403,9 +366,7 @@ public class McpMiddlewareFactory
             functionCallMiddlewareLogger != null
         );
 
-        _logger.LogDebug(
-            "Function contract processing: Starting automatic contract extraction from clients"
-        );
+        _logger.LogDebug("Function contract processing: Starting automatic contract extraction from clients");
 
         // Use the async factory pattern from McpMiddleware with loggers
         // This will automatically extract function contracts from the clients

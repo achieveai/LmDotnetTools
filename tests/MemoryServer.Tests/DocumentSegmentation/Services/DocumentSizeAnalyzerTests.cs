@@ -149,9 +149,7 @@ public class DocumentSizeAnalyzerTests
     [InlineData(SegmentationStrategy.NarrativeBased)]
     [InlineData(SegmentationStrategy.Hybrid)]
     [InlineData(SegmentationStrategy.Custom)]
-    public void EstimateProcessingTime_WithDifferentStrategies_ReturnsPositiveTime(
-        SegmentationStrategy strategy
-    )
+    public void EstimateProcessingTime_WithDifferentStrategies_ReturnsPositiveTime(SegmentationStrategy strategy)
     {
         // Arrange
         var statistics = new DocumentStatistics { WordCount = 1000 };
@@ -186,10 +184,7 @@ public class DocumentSizeAnalyzerTests
         _options.LlmOptions.EnableLlmSegmentation = false;
 
         // Act
-        var result = _analyzer.EstimateProcessingTime(
-            statistics,
-            SegmentationStrategy.StructureBased
-        );
+        var result = _analyzer.EstimateProcessingTime(statistics, SegmentationStrategy.StructureBased);
 
         // Assert
         result.Should().BeLessThan(1000); // Should not include LLM overhead

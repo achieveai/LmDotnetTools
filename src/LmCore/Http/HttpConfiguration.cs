@@ -34,8 +34,7 @@ public class HttpConfiguration
     /// <summary>
     /// Base delay for exponential backoff retry logic
     /// </summary>
-    public TimeSpan BaseDelay { get; set; } =
-        TimeSpan.FromMilliseconds(DefaultBaseDelayMilliseconds);
+    public TimeSpan BaseDelay { get; set; } = TimeSpan.FromMilliseconds(DefaultBaseDelayMilliseconds);
 
     /// <summary>
     /// Whether to enable detailed HTTP logging
@@ -98,10 +97,7 @@ public class HttpConfiguration
 
         if (string.IsNullOrWhiteSpace(UserAgent))
         {
-            throw new ArgumentException(
-                "UserAgent cannot be null or whitespace",
-                nameof(UserAgent)
-            );
+            throw new ArgumentException("UserAgent cannot be null or whitespace", nameof(UserAgent));
         }
     }
 

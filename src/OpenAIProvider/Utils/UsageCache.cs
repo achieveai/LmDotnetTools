@@ -47,9 +47,10 @@ public class UsageCache : IDisposable
             // Mark as cached in the returned usage (use with pattern to avoid key collision)
             return cachedUsage with
             {
-                ExtraProperties = (
-                    cachedUsage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty
-                ).SetItem("is_cached", true),
+                ExtraProperties = (cachedUsage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty).SetItem(
+                    "is_cached",
+                    true
+                ),
             };
         }
 
@@ -71,9 +72,10 @@ public class UsageCache : IDisposable
         // Store with TTL, mark as not cached in stored version (cache flag is added on retrieval)
         var storedUsage = usage with
         {
-            ExtraProperties = (
-                usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty
-            ).SetItem("is_cached", false),
+            ExtraProperties = (usage.ExtraProperties ?? ImmutableDictionary<string, object?>.Empty).SetItem(
+                "is_cached",
+                false
+            ),
         };
 
         _cache.Set(
@@ -127,11 +129,7 @@ public class UsageCache : IDisposable
     /// <returns>Basic cache statistics</returns>
     public CacheStatistics GetStatistics()
     {
-        return new CacheStatistics
-        {
-            TtlSeconds = (int)_defaultTtl.TotalSeconds,
-            IsDisposed = _disposed,
-        };
+        return new CacheStatistics { TtlSeconds = (int)_defaultTtl.TotalSeconds, IsDisposed = _disposed };
     }
 
     public void Dispose()

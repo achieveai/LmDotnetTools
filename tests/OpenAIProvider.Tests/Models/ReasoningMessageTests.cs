@@ -28,10 +28,7 @@ public class ReasoningMessageTests
         Assert.IsType<TextMessage>(coreMessages[1]);
 
         var reasoning = (ReasoningMessage)coreMessages[0];
-        Assert.Equal(
-            "I compare 9.11 and 9.9; 9.9 has a greater tenths digit.",
-            reasoning.Reasoning
-        );
+        Assert.Equal("I compare 9.11 and 9.9; 9.9 has a greater tenths digit.", reasoning.Reasoning);
         Assert.Equal(ReasoningVisibility.Plain, reasoning.Visibility);
 
         var answer = (TextMessage)coreMessages[1];
@@ -66,11 +63,7 @@ public class ReasoningMessageTests
     public void ReasoningMessageBuilder_AccumulatesStreamingUpdates()
     {
         // Arrange
-        var builder = new ReasoningMessageBuilder
-        {
-            FromAgent = "Assistant",
-            GenerationId = "gen-123",
-        };
+        var builder = new ReasoningMessageBuilder { FromAgent = "Assistant", GenerationId = "gen-123" };
 
         var updates = new[]
         {

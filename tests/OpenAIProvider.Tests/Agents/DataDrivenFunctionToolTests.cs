@@ -17,11 +17,12 @@ public class DataDrivenFunctionToolTests
     private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
+
+    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
+    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
 
     [Theory]
     [MemberData(nameof(GetFunctionToolTestCases))]
@@ -37,9 +38,7 @@ public class DataDrivenFunctionToolTests
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -64,9 +63,7 @@ public class DataDrivenFunctionToolTests
         // Assert - Compare with expected response
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.OpenAI);
 
-        Debug.WriteLine(
-            $"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses?.Count() ?? 0}"
-        );
+        Debug.WriteLine($"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses?.Count ?? 0}");
         Debug.WriteLine(
             $"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}"
         );
@@ -84,10 +81,10 @@ public class DataDrivenFunctionToolTests
 
         // The expected count in the test files is 2, but the actual response now has 3 items due to the UsageMessage
         // Modify the assertion to expect 3 items instead of 2
-        Assert.Equal(expectedResponses.Count() + 1, response.Count());
+        Assert.Equal(expectedResponses.Count + 1, response.Count());
 
         // Match the first two messages from the response with the expected messages
-        var responseToTest = response.Take(expectedResponses.Count()).ToList();
+        var responseToTest = response.Take(expectedResponses.Count).ToList();
         foreach (var (expectedResponse, responseItem) in expectedResponses.Zip(responseToTest))
         {
             if (expectedResponse is TextMessage expectedTextResponse)
@@ -96,20 +93,12 @@ public class DataDrivenFunctionToolTests
                 Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
                 Assert.Equal(expectedTextResponse.Role, responseItem.Role);
             }
-            else if (
-                expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage
-            )
+            else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
             {
                 Assert.IsType<ToolsCallAggregateMessage>(responseItem);
                 var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
-                Assert.Equal(
-                    expectedToolsCallAggregateMessage.Role,
-                    toolsCallAggregateMessage.Role
-                );
-                Assert.Equal(
-                    expectedToolsCallAggregateMessage.FromAgent,
-                    toolsCallAggregateMessage.FromAgent
-                );
+                Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
+                Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
                 Assert.Equal(
                     expectedToolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count(),
                     toolsCallAggregateMessage.ToolsCallMessage!.GetToolCalls()!.Count()
@@ -153,11 +142,7 @@ public class DataDrivenFunctionToolTests
     {
         // Skip if the test data already exists
         string testName = "WeatherFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(
-            testName,
-            ProviderType.OpenAI,
-            DataType.LmCoreRequest
-        );
+        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
 
         if (File.Exists(testDataPath))
         {
@@ -187,20 +172,14 @@ public class DataDrivenFunctionToolTests
             },
         };
 
-        var options = new GenerateReplyOptions
-        {
-            ModelId = "gpt-4",
-            Functions = new[] { weatherFunction },
-        };
+        var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = new[] { weatherFunction } };
 
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages, options);
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -232,11 +211,7 @@ public class DataDrivenFunctionToolTests
     {
         // Skip if the test data already exists
         string testName = "MultiFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(
-            testName,
-            ProviderType.OpenAI,
-            DataType.LmCoreRequest
-        );
+        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
 
         if (File.Exists(testDataPath))
         {
@@ -252,11 +227,7 @@ public class DataDrivenFunctionToolTests
                 Role = Role.System,
                 Text = "You are a helpful assistant that can use tools to help users.",
             },
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "List files in root and \"code\" directories.",
-            },
+            new TextMessage { Role = Role.User, Text = "List files in root and \"code\" directories." },
         };
 
         // Create multiple function definitions
@@ -305,9 +276,7 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -336,11 +305,7 @@ public class DataDrivenFunctionToolTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv(
-            "OPENAI_API_KEY",
-            new[] { "LLM_API_KEY" },
-            "test-api-key"
-        );
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
     }
 
     /// <summary>
@@ -348,10 +313,6 @@ public class DataDrivenFunctionToolTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv(
-            "OPENAI_API_URL",
-            new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1"
-        );
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
     }
 }

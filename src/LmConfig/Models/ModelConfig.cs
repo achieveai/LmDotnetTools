@@ -71,8 +71,8 @@ public record ModelConfig
         return tags.Count == 0
             ? Providers
             : Providers
-            .Where(p => tags.All(tag => p.Tags?.Contains(tag) == true))
-            .OrderByDescending(p => p.Priority)
-            .ToList();
+                .Where(p => tags.All(tag => p.Tags?.Contains(tag) == true))
+                .OrderByDescending(p => p.Priority)
+                .ToList();
     }
 }

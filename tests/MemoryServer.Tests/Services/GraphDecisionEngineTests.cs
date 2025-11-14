@@ -90,19 +90,11 @@ public class GraphDecisionEngineTests
         Debug.WriteLine($"New: {newEntity.Name} (conf: {newEntity.Confidence})");
 
         // Act
-        var instruction = await _decisionEngine.ResolveEntityConflictAsync(
-            existingEntity,
-            newEntity,
-            sessionContext
-        );
+        var instruction = await _decisionEngine.ResolveEntityConflictAsync(existingEntity, newEntity, sessionContext);
 
         // Assert
         Assert.Equal(expectedOperation, instruction.Operation);
-        Assert.Contains(
-            expectedReasoningContains,
-            instruction.Reasoning,
-            StringComparison.OrdinalIgnoreCase
-        );
+        Assert.Contains(expectedReasoningContains, instruction.Reasoning, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(sessionContext.UserId, instruction.SessionContext.UserId);
 
         Debug.WriteLine($"✅ Conflict resolved with operation: {instruction.Operation}");
@@ -142,11 +134,7 @@ public class GraphDecisionEngineTests
 
         // Assert
         Assert.Equal(expectedOperation, instruction.Operation);
-        Assert.Contains(
-            expectedReasoningContains,
-            instruction.Reasoning,
-            StringComparison.OrdinalIgnoreCase
-        );
+        Assert.Contains(expectedReasoningContains, instruction.Reasoning, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(sessionContext.UserId, instruction.SessionContext.UserId);
 
         Debug.WriteLine($"✅ Conflict resolved with operation: {instruction.Operation}");
@@ -169,18 +157,12 @@ public class GraphDecisionEngineTests
     {
         // Arrange
         Debug.WriteLine($"Testing confidence calculation: {testName}");
-        Debug.WriteLine(
-            $"Existing confidence: {existingEntity.Confidence}, New confidence: {newEntity.Confidence}"
-        );
+        Debug.WriteLine($"Existing confidence: {existingEntity.Confidence}, New confidence: {newEntity.Confidence}");
 
         var sessionContext = new SessionContext { UserId = "user123" };
 
         // Act
-        var instruction = await _decisionEngine.ResolveEntityConflictAsync(
-            existingEntity,
-            newEntity,
-            sessionContext
-        );
+        var instruction = await _decisionEngine.ResolveEntityConflictAsync(existingEntity, newEntity, sessionContext);
 
         // Assert
         Assert.True(
@@ -209,25 +191,14 @@ public class GraphDecisionEngineTests
         foreach (var entity in existingEntities)
         {
             _mockRepository
-                .Setup(r =>
-                    r.GetEntityByNameAsync(
-                        entity.Name,
-                        sessionContext,
-                        It.IsAny<CancellationToken>()
-                    )
-                )
+                .Setup(r => r.GetEntityByNameAsync(entity.Name, sessionContext, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(entity);
         }
 
         // Setup relationship lookups
         _mockRepository
             .Setup(r =>
-                r.GetRelationshipsAsync(
-                    sessionContext,
-                    It.IsAny<int>(),
-                    It.IsAny<int>(),
-                    It.IsAny<CancellationToken>()
-                )
+                r.GetRelationshipsAsync(sessionContext, It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(existingRelationships);
 
@@ -328,11 +299,7 @@ public class GraphDecisionEngineTests
                 new List<Relationship>(),
                 new SessionContext { UserId = "user123" },
                 2, // 1 UPDATE existing + 1 ADD new
-                new List<GraphDecisionOperation>
-                {
-                    GraphDecisionOperation.UPDATE,
-                    GraphDecisionOperation.ADD,
-                },
+                new List<GraphDecisionOperation> { GraphDecisionOperation.UPDATE, GraphDecisionOperation.ADD },
             },
         };
 

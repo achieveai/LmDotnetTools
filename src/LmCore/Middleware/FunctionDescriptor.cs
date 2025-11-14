@@ -20,14 +20,12 @@ public record FunctionDescriptor
     /// <summary>
     /// Unique key for this function (handles class name prefixing for MCP functions)
     /// </summary>
-    public string Key =>
-        Contract.ClassName != null ? $"{Contract.ClassName}-{Contract.Name}" : Contract.Name;
+    public string Key => Contract.ClassName != null ? $"{Contract.ClassName}-{Contract.Name}" : Contract.Name;
 
     /// <summary>
     /// Display name for error messages and logging
     /// </summary>
-    public string DisplayName =>
-        Contract.ClassName != null ? $"{Contract.ClassName}.{Contract.Name}" : Contract.Name;
+    public string DisplayName => Contract.ClassName != null ? $"{Contract.ClassName}.{Contract.Name}" : Contract.Name;
 
     /// <summary>
     /// Provider name for debugging and conflict resolution

@@ -43,9 +43,7 @@ public class RerankingService : IRerankService, IDisposable
         _apiKey = !string.IsNullOrWhiteSpace(apiKey)
             ? apiKey
             : throw new ArgumentException("API key cannot be null or empty", nameof(apiKey));
-        _logger =
-            logger
-            ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RerankingService>.Instance;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RerankingService>.Instance;
 
         if (httpClient != null)
         {
@@ -60,8 +58,10 @@ public class RerankingService : IRerankService, IDisposable
 
         // Configure HttpClient
         _httpClient.BaseAddress = new Uri(_endpoint);
-        _httpClient.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+        _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Bearer",
+            _apiKey
+        );
     }
 
     /// <summary>
@@ -79,10 +79,7 @@ public class RerankingService : IRerankService, IDisposable
             endpoint: options?.BaseUrl ?? throw new ArgumentNullException(nameof(options)),
             model: options.DefaultModel,
             apiKey: string.IsNullOrWhiteSpace(options.ApiKey)
-                ? throw new ArgumentException(
-                    "API key cannot be null or empty",
-                    nameof(options.ApiKey)
-                )
+                ? throw new ArgumentException("API key cannot be null or empty", nameof(options.ApiKey))
                 : options.ApiKey,
             logger: logger,
             httpClient: httpClient
@@ -107,8 +104,7 @@ public class RerankingService : IRerankService, IDisposable
     {
         if (string.IsNullOrWhiteSpace(query))
             throw new ArgumentException("Query cannot be null or empty", nameof(query));
-        if (documents == null)
-            throw new ArgumentNullException(nameof(documents));
+        ArgumentNullException.ThrowIfNull(documents);
 
         var docList = documents.ToList();
         if (docList.Count == 0)
@@ -126,17 +122,9 @@ public class RerankingService : IRerankService, IDisposable
                 };
 
                 var json = JsonSerializer.Serialize(requestPayload);
-                var content = new StringContent(
-                    json,
-                    System.Text.Encoding.UTF8,
-                    "application/json"
-                );
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.PostAsync(
-                    "/v1/rerank",
-                    content,
-                    cancellationToken
-                );
+                var response = await _httpClient.PostAsync("/v1/rerank", content, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -149,9 +137,7 @@ public class RerankingService : IRerankService, IDisposable
                     response.EnsureSuccessStatusCode(); // This will throw
                 }
 
-                throw new HttpRequestException(
-                    $"HTTP {(int)response.StatusCode} {response.StatusCode}"
-                );
+                throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
             },
             cancellationToken
         );
@@ -195,8 +181,7 @@ public class RerankingService : IRerankService, IDisposable
 
                 await Task.Delay(delay, cancellationToken);
             }
-            catch (TaskCanceledException ex)
-                when (ex.InnerException is TimeoutException && attempt <= _maxRetries)
+            catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException && attempt <= _maxRetries)
             {
                 lastException = ex;
                 attempt++;
@@ -213,8 +198,7 @@ public class RerankingService : IRerankService, IDisposable
             }
         }
 
-        throw lastException
-            ?? new InvalidOperationException("Operation failed after all retry attempts");
+        throw lastException ?? new InvalidOperationException("Operation failed after all retry attempts");
     }
 
     /// <summary>
@@ -234,9 +218,7 @@ public class RerankingService : IRerankService, IDisposable
             if (response?.Results == null)
             {
                 _logger.LogError("Invalid response structure. Response: {Response}", responseJson);
-                throw new InvalidOperationException(
-                    $"Invalid response from rerank API: missing results"
-                );
+                throw new InvalidOperationException($"Invalid response from rerank API: missing results");
             }
 
             var rankedDocs = new List<RankedDocument>();
@@ -267,24 +249,14 @@ public class RerankingService : IRerankService, IDisposable
             // Sort by score descending (highest relevance first)
             rankedDocs.Sort((a, b) => b.Score.CompareTo(a.Score));
 
-            _logger.LogDebug(
-                "Parsed {ResultCount} ranked documents from API response",
-                rankedDocs.Count
-            );
+            _logger.LogDebug("Parsed {ResultCount} ranked documents from API response", rankedDocs.Count);
 
             return rankedDocs;
         }
         catch (JsonException ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to deserialize JSON response: {ResponseJson}",
-                responseJson
-            );
-            throw new InvalidOperationException(
-                $"Failed to parse rerank API response: {ex.Message}",
-                ex
-            );
+            _logger.LogError(ex, "Failed to deserialize JSON response: {ResponseJson}", responseJson);
+            throw new InvalidOperationException($"Failed to parse rerank API response: {ex.Message}", ex);
         }
     }
 
@@ -312,7 +284,7 @@ public class RerankingService : IRerankService, IDisposable
         var message = exception.Message.ToLowerInvariant();
         return message.Contains("timeout")
             || message.Contains("network")
-            || message.Contains("5")
+            || message.Contains('5')
             || // 5xx errors
             message.Contains("429"); // Rate limiting
     }
@@ -328,16 +300,9 @@ public class RerankingService : IRerankService, IDisposable
         }
     }
 
-    public async Task<RerankResponse> RerankAsync(
-        RerankRequest request,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
     {
-        var rankedDocuments = await RerankAsync(
-            request.Query,
-            request.Documents,
-            cancellationToken
-        );
+        var rankedDocuments = await RerankAsync(request.Query, request.Documents, cancellationToken);
 
         return new RerankResponse
         {
@@ -377,9 +342,7 @@ public class RerankingService : IRerankService, IDisposable
         };
     }
 
-    public Task<IReadOnlyList<string>> GetAvailableModelsAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
     {
         return Task.FromResult<IReadOnlyList<string>>(new List<string> { _model });
     }

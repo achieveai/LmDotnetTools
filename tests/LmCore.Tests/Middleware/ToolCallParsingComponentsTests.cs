@@ -30,8 +30,7 @@ public class ToolCallParsingComponentsTests
     {
         // Arrange
         var parser = new ToolCallTextParser();
-        var text =
-            "<tool_call name=\"GetWeather\">\n```json\n{\"location\": \"San Francisco\"}\n```\n</tool_call>";
+        var text = "<tool_call name=\"GetWeather\">\n```json\n{\"location\": \"San Francisco\"}\n```\n</tool_call>";
 
         // Act
         var result = ToolCallTextParser.Parse(text);
@@ -169,44 +168,20 @@ public class ToolCallParsingComponentsTests
     [InlineData("Text ending with <", "Text ending with ", "<")] // Partial opening bracket
     [InlineData("Text ending with <t", "Text ending with ", "<t")] // Partial tool start
     [InlineData("Text ending with <tool_call", "Text ending with ", "<tool_call")] // Partial tool call
-    [InlineData(
-        "Text ending with <tool_call name=\"Test\"",
-        "Text ending with ",
-        "<tool_call name=\"Test\""
-    )] // Partial with attributes
-    [InlineData(
-        "Text ending with <tool_call name=\"Test\">",
-        "Text ending with ",
-        "<tool_call name=\"Test\">"
-    )] // Complete opening but incomplete
-    [InlineData(
-        "Text with <tool_call name=\"Test\">content",
-        "Text with ",
-        "<tool_call name=\"Test\">content"
-    )] // Has content but no closing
+    [InlineData("Text ending with <tool_call name=\"Test\"", "Text ending with ", "<tool_call name=\"Test\"")] // Partial with attributes
+    [InlineData("Text ending with <tool_call name=\"Test\">", "Text ending with ", "<tool_call name=\"Test\">")] // Complete opening but incomplete
+    [InlineData("Text with <tool_call name=\"Test\">content", "Text with ", "<tool_call name=\"Test\">content")] // Has content but no closing
     [InlineData(
         "Text with <tool_call name=\"Test\">content</tool_call",
         "Text with ",
         "<tool_call name=\"Test\">content</tool_call"
     )] // Missing final >
-    [InlineData(
-        "Text with <tool_call name=\"Test\">content</t",
-        "Text with ",
-        "<tool_call name=\"Test\">content</t"
-    )] // Partial closing tag
-    [InlineData(
-        "Text with <tool_call name=\"Test\">content</",
-        "Text with ",
-        "<tool_call name=\"Test\">content</"
-    )] // Just closing bracket
+    [InlineData("Text with <tool_call name=\"Test\">content</t", "Text with ", "<tool_call name=\"Test\">content</t")] // Partial closing tag
+    [InlineData("Text with <tool_call name=\"Test\">content</", "Text with ", "<tool_call name=\"Test\">content</")] // Just closing bracket
     [InlineData("<tool_call", "", "<tool_call")] // Just partial tool call
     [InlineData("<tool_call name=\"Test\">", "", "<tool_call name=\"Test\">")] // Just complete opening
     [InlineData("Multiple <tool_call calls", "Multiple ", "<tool_call calls")] // Partial in middle
-    [InlineData(
-        "Before <other>tag</other> then <tool_call",
-        "Before <other>tag</other> then ",
-        "<tool_call"
-    )] // Mixed content
+    [InlineData("Before <other>tag</other> then <tool_call", "Before <other>tag</other> then ", "<tool_call")] // Mixed content
     public void SafeTextExtractor_VariousInputs_ReturnsExpectedSafeTextAndBuffer(
         string input,
         string expectedSafe,
@@ -227,11 +202,7 @@ public class ToolCallParsingComponentsTests
 
     [Theory]
     [InlineData("Simple text", 1, typeof(TextChunk))] // Just text
-    [InlineData(
-        "<tool_call name=\"Test\">```json\n{\"arg\": \"value\"}\n```</tool_call>",
-        1,
-        typeof(ToolCallChunk)
-    )] // Just tool call
+    [InlineData("<tool_call name=\"Test\">```json\n{\"arg\": \"value\"}\n```</tool_call>", 1, typeof(ToolCallChunk))] // Just tool call
     [InlineData(
         "Before <tool_call name=\"Test\">```json\n{\"arg\": \"value\"}\n```</tool_call> after",
         3,
@@ -480,5 +451,3 @@ public class ToolCallParsingComponentsTests
         Assert.Equal("Here's the weather: ", allEmittedText);
     }
 }
-
-

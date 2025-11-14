@@ -37,11 +37,7 @@ public class TopicBasedPerformanceTests
         });
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
-        _service = new TopicBasedSegmentationService(
-            _mockLlmService.Object,
-            _mockPromptManager.Object,
-            _logger
-        );
+        _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
 
         SetupDefaultMocks();
     }
@@ -63,11 +59,7 @@ public class TopicBasedPerformanceTests
         var stopwatch = Stopwatch.StartNew();
 
         // Act
-        var result = await _service.SegmentByTopicsAsync(
-            largeDocument,
-            DocumentType.Generic,
-            options
-        );
+        var result = await _service.SegmentByTopicsAsync(largeDocument, DocumentType.Generic, options);
 
         stopwatch.Stop();
         var processingTimeMs = stopwatch.ElapsedMilliseconds;
@@ -80,15 +72,10 @@ public class TopicBasedPerformanceTests
         // Performance requirements: Should process at least 1000 words/second
         wordsPerSecond
             .Should()
-            .BeGreaterThan(
-                1000,
-                $"Processing speed was {wordsPerSecond:F2} words/second, should be >1000"
-            );
+            .BeGreaterThan(1000, $"Processing speed was {wordsPerSecond:F2} words/second, should be >1000");
 
         // Should complete within reasonable time (< 30 seconds for 10k words)
-        processingTimeMs
-            .Should()
-            .BeLessThan(30000, $"Processing took {processingTimeMs}ms, should be <30000ms");
+        processingTimeMs.Should().BeLessThan(30000, $"Processing took {processingTimeMs}ms, should be <30000ms");
 
         // Memory validation - each segment should have reasonable content
         result.All(s => s.Content.Length >= options.MinSegmentSize).Should().BeTrue();
@@ -97,14 +84,10 @@ public class TopicBasedPerformanceTests
         _output.WriteLine($"Large Document Performance:");
         _output.WriteLine($"  Document size: {largeDocument.Length:N0} characters");
         _output.WriteLine($"  Word count: {largeDocument.Split(' ').Length:N0} words");
-        _output.WriteLine(
-            $"  Processing time: {processingTimeMs:N0}ms ({processingTimeMs / 1000.0:F2}s)"
-        );
+        _output.WriteLine($"  Processing time: {processingTimeMs:N0}ms ({processingTimeMs / 1000.0:F2}s)");
         _output.WriteLine($"  Processing speed: {wordsPerSecond:F2} words/second");
         _output.WriteLine($"  Segments created: {result.Count}");
-        _output.WriteLine(
-            $"  Average segment size: {result.Average(s => s.Content.Length):F0} characters"
-        );
+        _output.WriteLine($"  Average segment size: {result.Average(s => s.Content.Length):F0} characters");
     }
 
     [Theory]
@@ -168,9 +151,7 @@ public class TopicBasedPerformanceTests
         var stopwatch = Stopwatch.StartNew();
 
         // Act - Process documents concurrently
-        var tasks = documents
-            .Select(doc => _service.SegmentByTopicsAsync(doc, DocumentType.Generic, options))
-            .ToList();
+        var tasks = documents.Select(doc => _service.SegmentByTopicsAsync(doc, DocumentType.Generic, options)).ToList();
 
         var results = await Task.WhenAll(tasks);
 
@@ -186,10 +167,7 @@ public class TopicBasedPerformanceTests
         // Concurrent processing should be significantly faster
         totalProcessingTime
             .Should()
-            .BeLessThan(
-                2000,
-                $"Concurrent processing took {totalProcessingTime}ms, should be <2000ms"
-            );
+            .BeLessThan(2000, $"Concurrent processing took {totalProcessingTime}ms, should be <2000ms");
 
         // Verify no resource contention issues
         var allSegments = results.SelectMany(r => r).ToList();
@@ -199,9 +177,7 @@ public class TopicBasedPerformanceTests
         _output.WriteLine($"Concurrent Processing Test:");
         _output.WriteLine($"  Documents processed: {documentCount}");
         _output.WriteLine($"  Total time: {totalProcessingTime:N0}ms");
-        _output.WriteLine(
-            $"  Average per document: {totalProcessingTime / (double)documentCount:F0}ms"
-        );
+        _output.WriteLine($"  Average per document: {totalProcessingTime / (double)documentCount:F0}ms");
         _output.WriteLine($"  Total segments: {allSegments.Count}");
     }
 
@@ -210,10 +186,7 @@ public class TopicBasedPerformanceTests
     {
         // Arrange
         var documentCount = 10;
-        var documents = Enumerable
-            .Range(0, documentCount)
-            .Select(i => GenerateMediumDocument(i))
-            .ToList();
+        var documents = Enumerable.Range(0, documentCount).Select(i => GenerateMediumDocument(i)).ToList();
 
         var options = new TopicSegmentationOptions { UseLlmEnhancement = false };
 
@@ -249,10 +222,7 @@ public class TopicBasedPerformanceTests
         // Should maintain reasonable performance under high concurrency
         averageTimePerDocument
             .Should()
-            .BeLessThan(
-                1000,
-                $"Average processing time was {averageTimePerDocument:F0}ms, should be <1000ms"
-            );
+            .BeLessThan(1000, $"Average processing time was {averageTimePerDocument:F0}ms, should be <1000ms");
 
         _output.WriteLine($"High Concurrency Test:");
         _output.WriteLine($"  Documents: {documentCount}");
@@ -279,11 +249,7 @@ public class TopicBasedPerformanceTests
         var memoryBefore = GC.GetTotalMemory(false);
 
         // Act
-        var result = await _service.SegmentByTopicsAsync(
-            largeDocument,
-            DocumentType.Generic,
-            options
-        );
+        var result = await _service.SegmentByTopicsAsync(largeDocument, DocumentType.Generic, options);
 
         // Measure memory after
         var memoryAfter = GC.GetTotalMemory(false);
@@ -294,9 +260,7 @@ public class TopicBasedPerformanceTests
 
         // Memory usage should be reasonable (< 50MB for a 20k word document)
         var memoryUsedMB = memoryUsed / (1024.0 * 1024.0);
-        memoryUsedMB
-            .Should()
-            .BeLessThan(50, $"Memory usage was {memoryUsedMB:F2}MB, should be <50MB");
+        memoryUsedMB.Should().BeLessThan(50, $"Memory usage was {memoryUsedMB:F2}MB, should be <50MB");
 
         // Memory per word should be reasonable
         var memoryPerWord = memoryUsed / (double)largeDocument.Split(' ').Length;
@@ -331,11 +295,7 @@ public class TopicBasedPerformanceTests
         // Act - Multiple iterations
         for (int i = 0; i < iterations; i++)
         {
-            var result = await _service.SegmentByTopicsAsync(
-                document,
-                DocumentType.Generic,
-                options
-            );
+            var result = await _service.SegmentByTopicsAsync(document, DocumentType.Generic, options);
             result.Should().NotBeEmpty();
         }
 
@@ -371,10 +331,7 @@ public class TopicBasedPerformanceTests
     [InlineData(1000, 100)] // Small: 1k words, <100ms
     [InlineData(5000, 500)] // Medium: 5k words, <500ms
     [InlineData(10000, 1000)] // Large: 10k words, <1000ms
-    public async Task SegmentByTopicsAsync_PerformanceBenchmarks_MeetsTargets(
-        int wordCount,
-        int maxTimeMs
-    )
+    public async Task SegmentByTopicsAsync_PerformanceBenchmarks_MeetsTargets(int wordCount, int maxTimeMs)
     {
         // Arrange
         var document = GenerateLargeMultiTopicDocument(wordCount);
@@ -414,10 +371,7 @@ public class TopicBasedPerformanceTests
         for (int i = 0; i < iterations; i++)
         {
             var stopwatch = Stopwatch.StartNew();
-            var boundaries = await _service.DetectTopicBoundariesAsync(
-                document,
-                DocumentType.Generic
-            );
+            var boundaries = await _service.DetectTopicBoundariesAsync(document, DocumentType.Generic);
             stopwatch.Stop();
 
             boundaries.Should().NotBeNull();
@@ -432,17 +386,12 @@ public class TopicBasedPerformanceTests
         // Boundary detection should be fast (< 200ms average for 5k words)
         averageTime
             .Should()
-            .BeLessThan(
-                200,
-                $"Average boundary detection time was {averageTime:F0}ms, should be <200ms"
-            );
+            .BeLessThan(200, $"Average boundary detection time was {averageTime:F0}ms, should be <200ms");
 
         _output.WriteLine($"Boundary Detection Benchmark (5k words, {iterations} runs):");
         _output.WriteLine($"  Average: {averageTime:F0}ms");
         _output.WriteLine($"  Min: {minTime}ms, Max: {maxTime}ms");
-        _output.WriteLine(
-            $"  Std Dev: {Math.Sqrt(times.Select(t => Math.Pow(t - averageTime, 2)).Average()):F0}ms"
-        );
+        _output.WriteLine($"  Std Dev: {Math.Sqrt(times.Select(t => Math.Pow(t - averageTime, 2)).Average()):F0}ms");
     }
 
     #endregion
@@ -453,11 +402,7 @@ public class TopicBasedPerformanceTests
     {
         _mockPromptManager
             .Setup(x =>
-                x.GetPromptAsync(
-                    It.IsAny<SegmentationStrategy>(),
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()
-                )
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(
                 new PromptTemplate
@@ -468,9 +413,7 @@ public class TopicBasedPerformanceTests
                 }
             );
 
-        _mockLlmService
-            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
     private string GenerateLargeMultiTopicDocument(int approximateWordCount)

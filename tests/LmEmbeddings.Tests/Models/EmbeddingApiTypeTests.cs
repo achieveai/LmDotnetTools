@@ -27,10 +27,7 @@ public class EmbeddingApiTypeTests
 
     [Theory]
     [MemberData(nameof(ApiTypeStringTestCases))]
-    public void EmbeddingApiType_ToString_ShouldReturnCorrectString(
-        EmbeddingApiType apiType,
-        string expectedString
-    )
+    public void EmbeddingApiType_ToString_ShouldReturnCorrectString(EmbeddingApiType apiType, string expectedString)
     {
         Debug.WriteLine($"Testing API type string representation: {apiType}");
 
@@ -44,15 +41,9 @@ public class EmbeddingApiTypeTests
 
     [Theory]
     [MemberData(nameof(ApiTypeParsingTestCases))]
-    public void EmbeddingApiType_Parse_ShouldParseCorrectly(
-        string input,
-        EmbeddingApiType expected,
-        bool shouldSucceed
-    )
+    public void EmbeddingApiType_Parse_ShouldParseCorrectly(string input, EmbeddingApiType expected, bool shouldSucceed)
     {
-        Debug.WriteLine(
-            $"Testing API type parsing: '{input}' -> {expected} (should succeed: {shouldSucceed})"
-        );
+        Debug.WriteLine($"Testing API type parsing: '{input}' -> {expected} (should succeed: {shouldSucceed})");
 
         // Act & Assert
         if (shouldSucceed)
@@ -70,10 +61,7 @@ public class EmbeddingApiTypeTests
             if (success && int.TryParse(input, out var numericValue))
             {
                 var isDefined = Enum.IsDefined(typeof(EmbeddingApiType), numericValue);
-                Assert.False(
-                    isDefined,
-                    $"Numeric value {input} should not be a defined enum value"
-                );
+                Assert.False(isDefined, $"Numeric value {input} should not be a defined enum value");
                 Debug.WriteLine($"✓ Correctly identified '{input}' as undefined enum value");
             }
             else
@@ -107,9 +95,7 @@ public class EmbeddingApiTypeTests
         var allValues = Enum.GetValues<EmbeddingApiType>();
         var intValues = allValues.Select(v => (int)v).ToArray();
 
-        Debug.WriteLine(
-            $"All API type values: {string.Join(", ", allValues.Select(v => $"{v}({(int)v})"))}"
-        );
+        Debug.WriteLine($"All API type values: {string.Join(", ", allValues.Select(v => $"{v}({(int)v})"))}");
 
         // Act & Assert
         var uniqueValues = intValues.Distinct().ToArray();

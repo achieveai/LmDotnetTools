@@ -134,7 +134,7 @@ public class LmConfigTestBuilder
     public AppConfig BuildConfig()
     {
         // Add default provider if none specified
-        if (!_providerRegistry.Any())
+        if (_providerRegistry.Count == 0)
         {
             WithProvider("TestProvider");
         }
@@ -266,7 +266,7 @@ public static class TestData
     /// Creates a simple test model configuration.
     /// </summary>
     public static ModelConfig CreateTestModel(string id = "test-model") =>
-        LmConfigTestBuilder.Create().WithModel(id).BuildConfig().Models.First();
+        LmConfigTestBuilder.Create().WithModel(id).BuildConfig().Models[0];
 
     /// <summary>
     /// Creates a test provider connection.

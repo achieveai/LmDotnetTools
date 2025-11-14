@@ -27,16 +27,11 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
         ILogger<UnifiedSearchEngine> logger
     )
     {
-        _memoryRepository =
-            memoryRepository ?? throw new ArgumentNullException(nameof(memoryRepository));
-        _graphRepository =
-            graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
-        _embeddingManager =
-            embeddingManager ?? throw new ArgumentNullException(nameof(embeddingManager));
-        _rerankingEngine =
-            rerankingEngine ?? throw new ArgumentNullException(nameof(rerankingEngine));
-        _deduplicationEngine =
-            deduplicationEngine ?? throw new ArgumentNullException(nameof(deduplicationEngine));
+        _memoryRepository = memoryRepository ?? throw new ArgumentNullException(nameof(memoryRepository));
+        _graphRepository = graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
+        _embeddingManager = embeddingManager ?? throw new ArgumentNullException(nameof(embeddingManager));
+        _rerankingEngine = rerankingEngine ?? throw new ArgumentNullException(nameof(rerankingEngine));
+        _deduplicationEngine = deduplicationEngine ?? throw new ArgumentNullException(nameof(deduplicationEngine));
         _resultEnricher = resultEnricher ?? throw new ArgumentNullException(nameof(resultEnricher));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -70,10 +65,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             {
                 try
                 {
-                    queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(
-                        query,
-                        cancellationToken
-                    );
+                    queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(query, cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -88,13 +80,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 }
             }
 
-            return await SearchAllSourcesAsync(
-                query,
-                queryEmbedding,
-                sessionContext,
-                options,
-                cancellationToken
-            );
+            return await SearchAllSourcesAsync(query, queryEmbedding, sessionContext, options, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -145,14 +131,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             {
                 _logger.LogTrace("Adding memory FTS search task");
                 searchTasks.Add(
-                    ExecuteMemoryFtsSearchAsync(
-                        query,
-                        sessionContext,
-                        options,
-                        metrics,
-                        results,
-                        cancellationToken
-                    )
+                    ExecuteMemoryFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken)
                 );
             }
 
@@ -176,14 +155,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             {
                 _logger.LogTrace("Adding entity FTS search task");
                 searchTasks.Add(
-                    ExecuteEntityFtsSearchAsync(
-                        query,
-                        sessionContext,
-                        options,
-                        metrics,
-                        results,
-                        cancellationToken
-                    )
+                    ExecuteEntityFtsSearchAsync(query, sessionContext, options, metrics, results, cancellationToken)
                 );
             }
 
@@ -234,9 +206,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             }
 
             // Execute all searches in parallel with timeout
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken
-            );
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(options.SearchTimeout);
 
             try
@@ -249,24 +219,16 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                 );
             }
             catch (OperationCanceledException)
-                when (timeoutCts.Token.IsCancellationRequested
-                    && !cancellationToken.IsCancellationRequested
-                )
+                when (timeoutCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                _logger.LogWarning(
-                    "Unified search timed out after {Timeout}",
-                    options.SearchTimeout
-                );
+                _logger.LogWarning("Unified search timed out after {Timeout}", options.SearchTimeout);
                 metrics.HasFailures = true;
                 metrics.Errors.Add($"Search timed out after {options.SearchTimeout}");
             }
 
             // Apply type weights to results
             ApplyTypeWeights(results, options.TypeWeights);
-            _logger.LogTrace(
-                "Applied type weights. Results after weighting: {ResultCount}",
-                results.Count
-            );
+            _logger.LogTrace("Applied type weights. Results after weighting: {ResultCount}", results.Count);
 
             // Apply reranking BEFORE result cutoffs (Phase 7 requirement)
             var finalResults = results;
@@ -312,10 +274,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             // Apply deduplication AFTER reranking but BEFORE final cutoffs (Phase 8)
             if (finalResults.Count > 0)
             {
-                _logger.LogTrace(
-                    "Starting deduplication with {ResultCount} results",
-                    finalResults.Count
-                );
+                _logger.LogTrace("Starting deduplication with {ResultCount} results", finalResults.Count);
                 try
                 {
                     var deduplicationResults = await _deduplicationEngine.DeduplicateResultsAsync(
@@ -353,10 +312,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             List<EnrichedSearchResult> enrichedResults = new();
             if (finalResults.Count > 0)
             {
-                _logger.LogTrace(
-                    "Starting enrichment with {ResultCount} results",
-                    finalResults.Count
-                );
+                _logger.LogTrace("Starting enrichment with {ResultCount} results", finalResults.Count);
                 try
                 {
                     var enrichmentResults = await _resultEnricher.EnrichResultsAsync(
@@ -715,8 +671,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                         {
                             Type = UnifiedResultType.Relationship,
                             Id = relationship.Id,
-                            Content =
-                                $"{relationship.Source} {relationship.RelationshipType} {relationship.Target}",
+                            Content = $"{relationship.Source} {relationship.RelationshipType} {relationship.Target}",
                             SecondaryContent = relationship.TemporalContext,
                             Score = 1.0f, // FTS5 doesn't provide scores, use default
                             Source = "FTS5",

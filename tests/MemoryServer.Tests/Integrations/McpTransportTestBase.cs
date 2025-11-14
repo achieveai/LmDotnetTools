@@ -125,9 +125,7 @@ public abstract class McpTransportTestBase : IDisposable
         var client = await GetClientAsync();
         var testUserId = GenerateTestUserId("add-auto");
 
-        _output.WriteLine(
-            $"🧪 Testing memory_add with auto-generated connection ID via {GetTransportName()}"
-        );
+        _output.WriteLine($"🧪 Testing memory_add with auto-generated connection ID via {GetTransportName()}");
 
         // Act - Call memory_add without explicit userId/agentId (they come from JWT token)
         var response = await client.CallToolAsync(
@@ -249,9 +247,7 @@ public abstract class McpTransportTestBase : IDisposable
         var user1 = GenerateTestUserId("isolation1");
         var user2 = GenerateTestUserId("isolation2");
 
-        _output.WriteLine(
-            $"🔒 Testing session isolation via {GetTransportName()}: {user1} vs {user2}"
-        );
+        _output.WriteLine($"🔒 Testing session isolation via {GetTransportName()}: {user1} vs {user2}");
 
         // Note: With JWT authentication, session isolation is handled by the JWT token
         // For testing purposes, we'll add memories and verify they're isolated by the default user from JWT
@@ -259,42 +255,28 @@ public abstract class McpTransportTestBase : IDisposable
         // Add memories - userId/agentId come from JWT token
         var add1Response = await client.CallToolAsync(
             "memory_add",
-            new Dictionary<string, object?>
-            {
-                ["content"] = $"Memory for user 1 via {GetTransportName()}",
-            }
+            new Dictionary<string, object?> { ["content"] = $"Memory for user 1 via {GetTransportName()}" }
         );
-        _output.WriteLine(
-            $"📝 {GetTransportName()} add1: {((TextContentBlock)add1Response.Content[0]).Text}"
-        );
+        _output.WriteLine($"📝 {GetTransportName()} add1: {((TextContentBlock)add1Response.Content[0]).Text}");
 
         var add2Response = await client.CallToolAsync(
             "memory_add",
-            new Dictionary<string, object?>
-            {
-                ["content"] = $"Memory for user 2 via {GetTransportName()}",
-            }
+            new Dictionary<string, object?> { ["content"] = $"Memory for user 2 via {GetTransportName()}" }
         );
-        _output.WriteLine(
-            $"📝 {GetTransportName()} add2: {((TextContentBlock)add2Response.Content[0]).Text}"
-        );
+        _output.WriteLine($"📝 {GetTransportName()} add2: {((TextContentBlock)add2Response.Content[0]).Text}");
 
         // Search memories - userId comes from JWT token
         var search1Response = await client.CallToolAsync(
             "memory_search",
             new Dictionary<string, object?> { ["query"] = "memory" }
         );
-        _output.WriteLine(
-            $"📝 {GetTransportName()} search1: {((TextContentBlock)search1Response.Content[0]).Text}"
-        );
+        _output.WriteLine($"📝 {GetTransportName()} search1: {((TextContentBlock)search1Response.Content[0]).Text}");
 
         var search2Response = await client.CallToolAsync(
             "memory_search",
             new Dictionary<string, object?> { ["query"] = "memory" }
         );
-        _output.WriteLine(
-            $"📝 {GetTransportName()} search2: {((TextContentBlock)search2Response.Content[0]).Text}"
-        );
+        _output.WriteLine($"📝 {GetTransportName()} search2: {((TextContentBlock)search2Response.Content[0]).Text}");
 
         // Assert - Since both operations use the same JWT token, they should see the same memories
         var search1Result = JsonSerializer.Deserialize<JsonElement>(
@@ -329,26 +311,17 @@ public abstract class McpTransportTestBase : IDisposable
         // Add multiple memories - userId/agentId come from JWT token
         var memory1Response = await client.CallToolAsync(
             "memory_add",
-            new Dictionary<string, object?>
-            {
-                ["content"] = $"First memory for stats test via {GetTransportName()}",
-            }
+            new Dictionary<string, object?> { ["content"] = $"First memory for stats test via {GetTransportName()}" }
         );
 
         var memory2Response = await client.CallToolAsync(
             "memory_add",
-            new Dictionary<string, object?>
-            {
-                ["content"] = $"Second memory for stats test via {GetTransportName()}",
-            }
+            new Dictionary<string, object?> { ["content"] = $"Second memory for stats test via {GetTransportName()}" }
         );
 
         var memory3Response = await client.CallToolAsync(
             "memory_add",
-            new Dictionary<string, object?>
-            {
-                ["content"] = $"Third memory for stats test via {GetTransportName()}",
-            }
+            new Dictionary<string, object?> { ["content"] = $"Third memory for stats test via {GetTransportName()}" }
         );
 
         // Get memory statistics - userId comes from JWT token
@@ -377,9 +350,7 @@ public abstract class McpTransportTestBase : IDisposable
         // Should have at least 3 memories (the ones we just added)
         Assert.True(totalMemories >= 3, $"Expected at least 3 memories, but got {totalMemories}");
 
-        _output.WriteLine(
-            $"✅ {GetTransportName()}: Memory stats test passed with {totalMemories} total memories"
-        );
+        _output.WriteLine($"✅ {GetTransportName()}: Memory stats test passed with {totalMemories} total memories");
     }
 
     [Fact]
@@ -387,9 +358,7 @@ public abstract class McpTransportTestBase : IDisposable
     {
         // Arrange
         var client = await GetClientAsync();
-        _output.WriteLine(
-            $"🚫 Testing error handling for invalid tool name via {GetTransportName()}"
-        );
+        _output.WriteLine($"🚫 Testing error handling for invalid tool name via {GetTransportName()}");
 
         // Act & Assert - Expect ModelContextProtocol.McpException which is what 0.2.x actually throws
         await Assert.ThrowsAsync<ModelContextProtocol.McpException>(async () =>
@@ -397,9 +366,7 @@ public abstract class McpTransportTestBase : IDisposable
             await client.CallToolAsync("invalid_tool_name", new Dictionary<string, object?>());
         });
 
-        _output.WriteLine(
-            $"✅ {GetTransportName()}: Invalid tool name error handling works correctly"
-        );
+        _output.WriteLine($"✅ {GetTransportName()}: Invalid tool name error handling works correctly");
     }
 
     [Fact]
@@ -407,9 +374,7 @@ public abstract class McpTransportTestBase : IDisposable
     {
         // Arrange
         var client = await GetClientAsync();
-        _output.WriteLine(
-            $"🚫 Testing error handling for missing parameters via {GetTransportName()}"
-        );
+        _output.WriteLine($"🚫 Testing error handling for missing parameters via {GetTransportName()}");
 
         // Act - memory_add requires content parameter
         var response = await client.CallToolAsync(
@@ -430,9 +395,7 @@ public abstract class McpTransportTestBase : IDisposable
         Assert.Contains("An error occurred invoking", responseText);
         Assert.Contains("memory_add", responseText);
 
-        _output.WriteLine(
-            $"✅ {GetTransportName()}: Missing parameters error handling works correctly"
-        );
+        _output.WriteLine($"✅ {GetTransportName()}: Missing parameters error handling works correctly");
     }
 
     #endregion

@@ -18,11 +18,12 @@ public class OpenAiAgentTests
 {
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
+
+    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
+    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
 
     [Fact]
     public async Task SimpleConversation_ShouldReturnResponse()
@@ -30,9 +31,7 @@ public class OpenAiAgentTests
         // Create HTTP client with record/playback functionality
         string testCaseName = "SimpleConversation_ShouldReturnResponse";
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "OpenAIProvider.Tests",
             "TestData",
@@ -51,11 +50,7 @@ public class OpenAiAgentTests
         var agent = new OpenClientAgent("TestAgent", client);
 
         // Create a system message
-        var systemMessage = new TextMessage
-        {
-            Role = Role.System,
-            Text = "You're a helpful AI Agent",
-        };
+        var systemMessage = new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent" };
 
         // Create a user message
         var userMessage = new TextMessage { Role = Role.User, Text = "Hello Bot" };
@@ -70,7 +65,7 @@ public class OpenAiAgentTests
         Assert.NotNull(response);
 
         // Verify it's a text message with content
-        Assert.IsAssignableFrom<ICanGetText>(response.First());
+        Assert.IsType<ICanGetText>(response.First(), exactMatch: false);
         var textMessage = (ICanGetText)response!.First();
         Assert.True(textMessage.CanGetText());
         Assert.NotNull(textMessage.GetText());
@@ -133,11 +128,7 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-            new TextMessage
-            {
-                Role = Role.System,
-                Text = "You're a helpful AI Agent that can use tools",
-            },
+            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
@@ -173,9 +164,7 @@ public class OpenAiAgentTests
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "OpenAIProvider.Tests",
             "TestData",
@@ -225,11 +214,7 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-            new TextMessage
-            {
-                Role = Role.System,
-                Text = "You're a helpful AI Agent that can use tools",
-            },
+            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
@@ -265,9 +250,7 @@ public class OpenAiAgentTests
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "FunctionToolCall_ShouldReturnToolMessage_streaming.json"
@@ -298,8 +281,7 @@ public class OpenAiAgentTests
         Assert.NotEmpty(responses);
 
         var firstResponse = responses.First(m =>
-            m is ToolsCallMessage
-            || (m is TextMessage textMessage && !string.IsNullOrEmpty(textMessage.Text))
+            m is ToolsCallMessage || (m is TextMessage textMessage && !string.IsNullOrEmpty(textMessage.Text))
         );
         Assert.NotNull(firstResponse);
 
@@ -329,11 +311,7 @@ public class OpenAiAgentTests
         // Arrange
         var messages = new[]
         {
-            new TextMessage
-            {
-                Role = Role.System,
-                Text = "You're a helpful AI Agent that can use tools",
-            },
+            new TextMessage { Role = Role.System, Text = "You're a helpful AI Agent that can use tools" },
             new TextMessage { Role = Role.User, Text = "What's the weather in San Francisco?" },
         };
 
@@ -369,9 +347,7 @@ public class OpenAiAgentTests
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(
-                AppDomain.CurrentDomain.BaseDirectory
-            ),
+            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "OpenAIProvider.Tests",
             "TestData",
@@ -423,11 +399,7 @@ public class OpenAiAgentTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return EnvironmentHelper.GetApiKeyFromEnv(
-            "OPENAI_API_KEY",
-            new[] { "LLM_API_KEY" },
-            "test-api-key"
-        );
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
     }
 
     /// <summary>
@@ -435,10 +407,6 @@ public class OpenAiAgentTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return EnvironmentHelper.GetApiBaseUrlFromEnv(
-            "OPENAI_API_URL",
-            new[] { "LLM_API_BASE_URL" },
-            "https://api.openai.com/v1"
-        );
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
     }
 }

@@ -25,11 +25,7 @@ public class StructureBasedSegmentationServiceTests
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
         _logger = new LoggerFactory().CreateLogger<StructureBasedSegmentationService>();
 
-        _service = new StructureBasedSegmentationService(
-            _mockLlmService.Object,
-            _mockPromptManager.Object,
-            _logger
-        );
+        _service = new StructureBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
 
         SetupDefaultMocks();
     }
@@ -39,18 +35,13 @@ public class StructureBasedSegmentationServiceTests
         // Setup default prompt manager response
         _mockPromptManager
             .Setup(x =>
-                x.GetPromptAsync(
-                    It.IsAny<SegmentationStrategy>(),
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()
-                )
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(
                 new PromptTemplate
                 {
                     SystemPrompt = "You are a structure analysis expert.",
-                    UserPrompt =
-                        "Analyze the following content for structural boundaries: {DocumentContent}",
+                    UserPrompt = "Analyze the following content for structural boundaries: {DocumentContent}",
                     ExpectedFormat = "json",
                     Metadata = new Dictionary<string, object>
                     {
@@ -61,9 +52,7 @@ public class StructureBasedSegmentationServiceTests
             );
 
         // Setup default LLM service responses
-        _mockLlmService
-            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         // Setup strategy analysis mock
         _mockLlmService
@@ -109,10 +98,7 @@ public class StructureBasedSegmentationServiceTests
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
             segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment
-                .Metadata["segmentation_strategy"]
-                .Should()
-                .Be(SegmentationStrategy.StructureBased.ToString());
+            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.StructureBased.ToString());
         }
     }
 
@@ -147,11 +133,7 @@ This is the conclusion section.
         };
 
         // Act
-        var result = await _service.SegmentByStructureAsync(
-            content,
-            DocumentType.ResearchPaper,
-            options
-        );
+        var result = await _service.SegmentByStructureAsync(content, DocumentType.ResearchPaper, options);
 
         // Assert
         result.Should().NotBeEmpty();

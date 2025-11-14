@@ -11,28 +11,18 @@ public class ModelCapabilitiesTests
         // Arrange
         System.Diagnostics.Debug.WriteLine("Testing ModelCapabilities with thinking capability");
 
-        var thinkingCapability = new ThinkingCapability
-        {
-            Type = ThinkingType.Anthropic,
-            SupportsBudgetTokens = true,
-        };
+        var thinkingCapability = new ThinkingCapability { Type = ThinkingType.Anthropic, SupportsBudgetTokens = true };
 
         var tokenLimits = new TokenLimits { MaxContextTokens = 200000, MaxOutputTokens = 8192 };
 
-        var capabilities = new ModelCapabilities
-        {
-            Thinking = thinkingCapability,
-            TokenLimits = tokenLimits,
-        };
+        var capabilities = new ModelCapabilities { Thinking = thinkingCapability, TokenLimits = tokenLimits };
 
         // Act
         var hasThinking = capabilities.HasCapability("thinking");
         var allCapabilities = capabilities.GetAllCapabilities();
 
         System.Diagnostics.Debug.WriteLine($"Has thinking capability: {hasThinking}");
-        System.Diagnostics.Debug.WriteLine(
-            $"All capabilities: {string.Join(", ", allCapabilities)}"
-        );
+        System.Diagnostics.Debug.WriteLine($"All capabilities: {string.Join(", ", allCapabilities)}");
 
         // Assert
         Assert.True(hasThinking);
@@ -54,20 +44,14 @@ public class ModelCapabilitiesTests
 
         var tokenLimits = new TokenLimits { MaxContextTokens = 128000, MaxOutputTokens = 4096 };
 
-        var capabilities = new ModelCapabilities
-        {
-            Multimodal = multimodalCapability,
-            TokenLimits = tokenLimits,
-        };
+        var capabilities = new ModelCapabilities { Multimodal = multimodalCapability, TokenLimits = tokenLimits };
 
         // Act
         var hasMultimodal = capabilities.HasCapability("multimodal");
         var allCapabilities = capabilities.GetAllCapabilities();
 
         System.Diagnostics.Debug.WriteLine($"Has multimodal capability: {hasMultimodal}");
-        System.Diagnostics.Debug.WriteLine(
-            $"All capabilities: {string.Join(", ", allCapabilities)}"
-        );
+        System.Diagnostics.Debug.WriteLine($"All capabilities: {string.Join(", ", allCapabilities)}");
 
         // Assert
         Assert.True(hasMultimodal);
@@ -78,9 +62,7 @@ public class ModelCapabilitiesTests
     public void ModelCapabilities_WithFunctionCallingCapability_HasFunctionCallingCapability()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            "Testing ModelCapabilities with function calling capability"
-        );
+        System.Diagnostics.Debug.WriteLine("Testing ModelCapabilities with function calling capability");
 
         var functionCallingCapability = new FunctionCallingCapability
         {
@@ -102,13 +84,9 @@ public class ModelCapabilitiesTests
         var hasTools = capabilities.HasCapability("tools");
         var allCapabilities = capabilities.GetAllCapabilities();
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Has function calling capability: {hasFunctionCalling}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Has function calling capability: {hasFunctionCalling}");
         System.Diagnostics.Debug.WriteLine($"Has tools capability: {hasTools}");
-        System.Diagnostics.Debug.WriteLine(
-            $"All capabilities: {string.Join(", ", allCapabilities)}"
-        );
+        System.Diagnostics.Debug.WriteLine($"All capabilities: {string.Join(", ", allCapabilities)}");
 
         // Assert
         Assert.True(hasFunctionCalling);
@@ -137,9 +115,7 @@ public class ModelCapabilitiesTests
         var allCapabilities = capabilities.GetAllCapabilities();
 
         System.Diagnostics.Debug.WriteLine($"Has json_schema capability: {hasJsonSchema}");
-        System.Diagnostics.Debug.WriteLine(
-            $"All capabilities: {string.Join(", ", allCapabilities)}"
-        );
+        System.Diagnostics.Debug.WriteLine($"All capabilities: {string.Join(", ", allCapabilities)}");
 
         // Assert
         Assert.True(hasJsonSchema);
@@ -172,9 +148,7 @@ public class ModelCapabilitiesTests
         // Act
         var allCapabilities = capabilities.GetAllCapabilities();
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Complete capability list: {string.Join(", ", allCapabilities)}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Complete capability list: {string.Join(", ", allCapabilities)}");
 
         // Assert
         Assert.Contains("thinking", allCapabilities);
@@ -197,30 +171,19 @@ public class ModelCapabilitiesTests
     [InlineData("function_calling", false, false)]
     [InlineData("streaming", true, true)]
     [InlineData("streaming", false, false)]
-    public void ModelCapabilities_HasCapability_ReturnsCorrectValue(
-        string capability,
-        object setupValue,
-        bool expected
-    )
+    public void ModelCapabilities_HasCapability_ReturnsCorrectValue(string capability, object setupValue, bool expected)
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            $"Testing HasCapability for {capability} with setup value {setupValue}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Testing HasCapability for {capability} with setup value {setupValue}");
 
         var tokenLimits = new TokenLimits { MaxContextTokens = 128000, MaxOutputTokens = 4096 };
 
         var capabilities = new ModelCapabilities
         {
             TokenLimits = tokenLimits,
-            Thinking =
-                capability == "thinking"
-                    ? new ThinkingCapability { Type = (ThinkingType)setupValue }
-                    : null,
+            Thinking = capability == "thinking" ? new ThinkingCapability { Type = (ThinkingType)setupValue } : null,
             Multimodal =
-                capability == "multimodal"
-                    ? new MultimodalCapability { SupportsImages = (bool)setupValue }
-                    : null,
+                capability == "multimodal" ? new MultimodalCapability { SupportsImages = (bool)setupValue } : null,
             FunctionCalling =
                 capability == "function_calling"
                     ? new FunctionCallingCapability { SupportsTools = (bool)setupValue }

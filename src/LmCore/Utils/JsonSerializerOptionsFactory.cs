@@ -93,15 +93,13 @@ public static class JsonSerializerOptionsFactory
     /// Creates JsonSerializerOptions with case-insensitive property matching.
     /// Useful for scenarios where JSON property casing might vary.
     /// </summary>
-    public static JsonSerializerOptions CreateCaseInsensitive() =>
-        CreateBase(caseInsensitive: true);
+    public static JsonSerializerOptions CreateCaseInsensitive() => CreateBase(caseInsensitive: true);
 
     /// <summary>
     /// Creates JsonSerializerOptions with camelCase property naming.
     /// Commonly used for web APIs and JavaScript interop.
     /// </summary>
-    public static JsonSerializerOptions CreateWithCamelCase() =>
-        CreateBase(namingPolicy: JsonNamingPolicy.CamelCase);
+    public static JsonSerializerOptions CreateWithCamelCase() => CreateBase(namingPolicy: JsonNamingPolicy.CamelCase);
 
     /// <summary>
     /// Creates JsonSerializerOptions with snake_case property naming.
@@ -114,10 +112,7 @@ public static class JsonSerializerOptionsFactory
     /// Creates minimal JsonSerializerOptions with only basic settings.
     /// No LmCore converters are registered - useful for simple scenarios.
     /// </summary>
-    public static JsonSerializerOptions CreateMinimal(
-        bool writeIndented = false,
-        JsonNamingPolicy? namingPolicy = null
-    )
+    public static JsonSerializerOptions CreateMinimal(bool writeIndented = false, JsonNamingPolicy? namingPolicy = null)
     {
         var options = new JsonSerializerOptions
         {

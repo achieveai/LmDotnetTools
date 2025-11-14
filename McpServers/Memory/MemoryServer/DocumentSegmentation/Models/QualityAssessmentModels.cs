@@ -93,18 +93,14 @@ public class QualityMetricWeights
     /// Validates that weights sum to approximately 1.0.
     /// </summary>
     public bool AreValid =>
-        Math.Abs(
-            (CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight)
-                - 1.0
-        ) < 0.01;
+        Math.Abs((CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight) - 1.0) < 0.01;
 
     /// <summary>
     /// Normalizes weights to sum to 1.0.
     /// </summary>
     public void Normalize()
     {
-        var total =
-            CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight;
+        var total = CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight;
         if (total > 0)
         {
             CoherenceWeight /= total;
@@ -114,11 +110,7 @@ public class QualityMetricWeights
         }
         else
         {
-            CoherenceWeight =
-                IndependenceWeight =
-                TopicConsistencyWeight =
-                CompletenessWeight =
-                    0.25;
+            CoherenceWeight = IndependenceWeight = TopicConsistencyWeight = CompletenessWeight = 0.25;
         }
     }
 }
@@ -412,8 +404,7 @@ public class QualityIssueAnalysis
     /// <summary>
     /// Issues categorized by severity.
     /// </summary>
-    public Dictionary<QualityIssueSeverity, List<QualityIssue>> IssuesBySeverity { get; set; } =
-        new();
+    public Dictionary<QualityIssueSeverity, List<QualityIssue>> IssuesBySeverity { get; set; } = new();
 
     /// <summary>
     /// Issues categorized by type.
@@ -459,10 +450,7 @@ public class ImprovementRecommendations
     /// <summary>
     /// Strategy-specific recommendations.
     /// </summary>
-    public Dictionary<
-        SegmentationStrategy,
-        List<QualityRecommendation>
-    > StrategyRecommendations { get; set; } = new();
+    public Dictionary<SegmentationStrategy, List<QualityRecommendation>> StrategyRecommendations { get; set; } = new();
 
     /// <summary>
     /// Implementation guidance for recommendations.
@@ -488,8 +476,7 @@ public class ComparativeQualityAnalysis
     /// <summary>
     /// Detailed metric comparison across strategies.
     /// </summary>
-    public Dictionary<SegmentationStrategy, QualityMetricScores> MetricComparison { get; set; } =
-        new();
+    public Dictionary<SegmentationStrategy, QualityMetricScores> MetricComparison { get; set; } = new();
 
     /// <summary>
     /// Best performing strategy overall.

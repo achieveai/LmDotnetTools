@@ -25,17 +25,12 @@ public static class EnvironmentHelper
 
             if (envFilePath != null)
             {
-                Console.WriteLine(
-                    $"Loading environment variables from specified path: {envFilePath}"
-                );
+                Console.WriteLine($"Loading environment variables from specified path: {envFilePath}");
                 if (File.Exists(envFilePath))
                 {
                     Console.WriteLine($"File exists at {envFilePath}");
                     DotEnv.Load(
-                        options: new DotEnvOptions(
-                            envFilePaths: new[] { envFilePath },
-                            ignoreExceptions: false
-                        )
+                        options: new DotEnvOptions(envFilePaths: new[] { envFilePath }, ignoreExceptions: false)
                     );
                 }
                 else
@@ -49,17 +44,12 @@ public static class EnvironmentHelper
                 string workspaceRoot = FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
                 string workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
 
-                Console.WriteLine(
-                    $"Loading environment variables from workspace root: {workspaceEnvPath}"
-                );
+                Console.WriteLine($"Loading environment variables from workspace root: {workspaceEnvPath}");
                 if (File.Exists(workspaceEnvPath))
                 {
                     Console.WriteLine($"File exists at {workspaceEnvPath}");
                     DotEnv.Load(
-                        options: new DotEnvOptions(
-                            envFilePaths: new[] { workspaceEnvPath },
-                            ignoreExceptions: false
-                        )
+                        options: new DotEnvOptions(envFilePaths: new[] { workspaceEnvPath }, ignoreExceptions: false)
                     );
                 }
                 else

@@ -178,10 +178,7 @@ public static class PerformanceLoggingUtilities
     {
         if (durationMs <= 0)
         {
-            logger.LogWarning(
-                "Invalid duration for tokens per second calculation: {Duration}ms",
-                durationMs
-            );
+            logger.LogWarning("Invalid duration for tokens per second calculation: {Duration}ms", durationMs);
             return 0;
         }
 
@@ -229,8 +226,7 @@ public static class PerformanceLoggingUtilities
     )
     {
         var totalTokens = (promptTokens ?? 0) + (completionTokens ?? 0);
-        var tokensPerSecond =
-            totalTokens > 0 ? CalculateTokensPerSecond(totalTokens, totalDurationMs) : 0;
+        var tokensPerSecond = totalTokens > 0 ? CalculateTokensPerSecond(totalTokens, totalDurationMs) : 0;
 
         logger.LogDebug(
             LogEventIds.TokenMetrics,
@@ -256,11 +252,7 @@ public static class PerformanceLoggingUtilities
     /// <param name="componentName">The name of the component.</param>
     /// <param name="operation">The operation that triggered the measurement.</param>
     /// <returns>The current memory usage in bytes.</returns>
-    public static long MeasureAndLogMemoryUsage(
-        ILogger logger,
-        string componentName,
-        string operation
-    )
+    public static long MeasureAndLogMemoryUsage(ILogger logger, string componentName, string operation)
     {
         var memoryUsage = GC.GetTotalMemory(false);
 
@@ -331,12 +323,7 @@ public static class PerformanceLoggingUtilities
     /// <param name="cacheType">The type of cache.</param>
     /// <param name="key">The cache key.</param>
     /// <param name="retrievalTimeMs">The time taken to retrieve from cache in milliseconds.</param>
-    public static void LogCacheHit(
-        ILogger logger,
-        string cacheType,
-        string key,
-        long? retrievalTimeMs = null
-    )
+    public static void LogCacheHit(ILogger logger, string cacheType, string key, long? retrievalTimeMs = null)
     {
         logger.LogDebug(
             LogEventIds.CacheMetrics,
@@ -354,12 +341,7 @@ public static class PerformanceLoggingUtilities
     /// <param name="cacheType">The type of cache.</param>
     /// <param name="key">The cache key.</param>
     /// <param name="reason">The reason for the cache miss (optional).</param>
-    public static void LogCacheMiss(
-        ILogger logger,
-        string cacheType,
-        string key,
-        string? reason = null
-    )
+    public static void LogCacheMiss(ILogger logger, string cacheType, string key, string? reason = null)
     {
         logger.LogDebug(
             LogEventIds.CacheMetrics,
@@ -491,9 +473,7 @@ public static class PerformanceLoggingUtilities
 
             _totalStopwatch.Stop();
 
-            var timeToFirstToken = _firstTokenReceived
-                ? _firstTokenStopwatch.ElapsedMilliseconds
-                : (long?)null;
+            var timeToFirstToken = _firstTokenReceived ? _firstTokenStopwatch.ElapsedMilliseconds : (long?)null;
             var tokensPerSecond =
                 _totalTokens > 0 && _totalStopwatch.ElapsedMilliseconds > 0
                     ? CalculateTokensPerSecond(_totalTokens, _totalStopwatch.ElapsedMilliseconds)
@@ -520,10 +500,7 @@ public static class PerformanceLoggingUtilities
     /// <param name="logger">The logger instance.</param>
     /// <param name="operationName">The name of the streaming operation.</param>
     /// <returns>A disposable streaming metrics tracker.</returns>
-    public static StreamingMetricsTracker CreateStreamingTracker(
-        ILogger logger,
-        string operationName
-    )
+    public static StreamingMetricsTracker CreateStreamingTracker(ILogger logger, string operationName)
     {
         return new StreamingMetricsTracker(logger, operationName);
     }

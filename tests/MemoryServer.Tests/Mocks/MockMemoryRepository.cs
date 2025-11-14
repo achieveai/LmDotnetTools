@@ -119,11 +119,7 @@ public class MockMemoryRepository : IMemoryRepository
         return Task.FromResult<Memory?>(updatedMemory);
     }
 
-    public Task<bool> DeleteAsync(
-        int id,
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    )
+    public Task<bool> DeleteAsync(int id, SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         MethodCalls.Add(nameof(DeleteAsync));
         LastCallParameters["id"] = id;
@@ -205,54 +201,37 @@ public class MockMemoryRepository : IMemoryRepository
         return Task.FromResult(memories);
     }
 
-    public Task<MemoryStats> GetStatsAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    )
+    public Task<MemoryStats> GetStatsAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         MethodCalls.Add(nameof(GetStatsAsync));
         LastCallParameters["sessionContext"] = sessionContext;
 
-        var sessionMemories = _memories
-            .Values.Where(m => m.GetSessionContext().Matches(sessionContext))
-            .ToList();
+        var sessionMemories = _memories.Values.Where(m => m.GetSessionContext().Matches(sessionContext)).ToList();
 
         var stats = new MemoryStats
         {
             TotalMemories = sessionMemories.Count,
             TotalContentSize = sessionMemories.Sum(m => m.Content.Length),
-            AverageContentLength =
-                sessionMemories.Count > 0 ? sessionMemories.Average(m => m.Content.Length) : 0,
+            AverageContentLength = sessionMemories.Count > 0 ? sessionMemories.Average(m => m.Content.Length) : 0,
             OldestMemory = sessionMemories.Count > 0 ? sessionMemories.Min(m => m.CreatedAt) : null,
             NewestMemory = sessionMemories.Count > 0 ? sessionMemories.Max(m => m.CreatedAt) : null,
             MemoryCountByScope = new Dictionary<string, int>
             {
-                ["User"] = sessionMemories.Count(m =>
-                    m.GetSessionContext().GetScope() == SessionScope.User
-                ),
-                ["Agent"] = sessionMemories.Count(m =>
-                    m.GetSessionContext().GetScope() == SessionScope.Agent
-                ),
-                ["Run"] = sessionMemories.Count(m =>
-                    m.GetSessionContext().GetScope() == SessionScope.Run
-                ),
+                ["User"] = sessionMemories.Count(m => m.GetSessionContext().GetScope() == SessionScope.User),
+                ["Agent"] = sessionMemories.Count(m => m.GetSessionContext().GetScope() == SessionScope.Agent),
+                ["Run"] = sessionMemories.Count(m => m.GetSessionContext().GetScope() == SessionScope.Run),
             },
         };
 
         return Task.FromResult(stats);
     }
 
-    public Task<int> DeleteAllAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken = default
-    )
+    public Task<int> DeleteAllAsync(SessionContext sessionContext, CancellationToken cancellationToken = default)
     {
         MethodCalls.Add(nameof(DeleteAllAsync));
         LastCallParameters["sessionContext"] = sessionContext;
 
-        var toDelete = _memories
-            .Values.Where(m => m.GetSessionContext().Matches(sessionContext))
-            .ToList();
+        var toDelete = _memories.Values.Where(m => m.GetSessionContext().Matches(sessionContext)).ToList();
 
         foreach (var memory in toDelete)
         {
@@ -304,8 +283,7 @@ public class MockMemoryRepository : IMemoryRepository
 
     public bool HasMemory(int id) => _memories.ContainsKey(id);
 
-    public Memory? GetMemoryById(int id) =>
-        _memories.TryGetValue(id, out var memory) ? memory : null;
+    public Memory? GetMemoryById(int id) => _memories.TryGetValue(id, out var memory) ? memory : null;
 
     // Vector storage and search methods (mock implementations)
 
@@ -325,10 +303,7 @@ public class MockMemoryRepository : IMemoryRepository
         return Task.CompletedTask;
     }
 
-    public Task<float[]?> GetEmbeddingAsync(
-        int memoryId,
-        CancellationToken cancellationToken = default
-    )
+    public Task<float[]?> GetEmbeddingAsync(int memoryId, CancellationToken cancellationToken = default)
     {
         MethodCalls.Add(nameof(GetEmbeddingAsync));
         LastCallParameters["memoryId"] = memoryId;
@@ -377,10 +352,7 @@ public class MockMemoryRepository : IMemoryRepository
         return SearchAsync(query, sessionContext, limit, 0.0f, cancellationToken);
     }
 
-    public Task<List<string>> GetAgentsAsync(
-        string userId,
-        CancellationToken cancellationToken = default
-    )
+    public Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
     {
         MethodCalls.Add(nameof(GetAgentsAsync));
         LastCallParameters["userId"] = userId;
@@ -394,20 +366,14 @@ public class MockMemoryRepository : IMemoryRepository
         return Task.FromResult(agents);
     }
 
-    public Task<List<string>> GetRunsAsync(
-        string userId,
-        string agentId,
-        CancellationToken cancellationToken = default
-    )
+    public Task<List<string>> GetRunsAsync(string userId, string agentId, CancellationToken cancellationToken = default)
     {
         MethodCalls.Add(nameof(GetRunsAsync));
         LastCallParameters["userId"] = userId;
         LastCallParameters["agentId"] = agentId;
 
         var runs = _memories
-            .Values.Where(m =>
-                m.UserId == userId && m.AgentId == agentId && !string.IsNullOrEmpty(m.RunId)
-            )
+            .Values.Where(m => m.UserId == userId && m.AgentId == agentId && !string.IsNullOrEmpty(m.RunId))
             .Select(m => m.RunId!)
             .Distinct()
             .ToList();

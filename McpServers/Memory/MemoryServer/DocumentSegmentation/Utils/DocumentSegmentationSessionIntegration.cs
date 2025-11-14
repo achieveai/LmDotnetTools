@@ -64,14 +64,8 @@ public class DocumentSegmentationSessionIntegration
         {
             // Step 1: Analyze document size
             _logger.LogDebug("Step 1: Analyzing document size...");
-            result.DocumentStatistics = await _sizeAnalyzer.AnalyzeDocumentAsync(
-                content,
-                cancellationToken
-            );
-            result.ShouldSegment = _sizeAnalyzer.ShouldSegmentDocument(
-                result.DocumentStatistics,
-                documentType
-            );
+            result.DocumentStatistics = await _sizeAnalyzer.AnalyzeDocumentAsync(content, cancellationToken);
+            result.ShouldSegment = _sizeAnalyzer.ShouldSegmentDocument(result.DocumentStatistics, documentType);
 
             if (!result.ShouldSegment)
             {
@@ -86,9 +80,7 @@ public class DocumentSegmentationSessionIntegration
 
             // Step 2: Validate prompt configuration
             _logger.LogDebug("Step 2: Validating prompt configuration...");
-            result.PromptsValid = await _promptManager.ValidatePromptConfigurationAsync(
-                cancellationToken
-            );
+            result.PromptsValid = await _promptManager.ValidatePromptConfigurationAsync(cancellationToken);
 
             if (!result.PromptsValid)
             {
@@ -96,9 +88,7 @@ public class DocumentSegmentationSessionIntegration
                     "Prompt configuration validation failed for document {DocumentId}",
                     parentDocumentId
                 );
-                result.Warnings.Add(
-                    "Prompt configuration validation failed - using fallback prompts"
-                );
+                result.Warnings.Add("Prompt configuration validation failed - using fallback prompts");
             }
 
             // Step 3: Get prompts for different strategies
@@ -114,20 +104,12 @@ public class DocumentSegmentationSessionIntegration
             {
                 try
                 {
-                    var prompt = await _promptManager.GetPromptAsync(
-                        strategy,
-                        "en",
-                        cancellationToken
-                    );
+                    var prompt = await _promptManager.GetPromptAsync(strategy, "en", cancellationToken);
                     result.AvailablePrompts.Add(strategy, prompt);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(
-                        ex,
-                        "Failed to load prompt for strategy {Strategy}",
-                        strategy
-                    );
+                    _logger.LogWarning(ex, "Failed to load prompt for strategy {Strategy}", strategy);
                 }
             }
 
@@ -141,11 +123,7 @@ public class DocumentSegmentationSessionIntegration
 
             // Step 5: Create sample segments (in a real implementation, this would use LLM)
             _logger.LogDebug("Step 5: Creating sample segments...");
-            result.Segments = CreateSampleSegments(
-                content,
-                result.DocumentStatistics,
-                sessionContext
-            );
+            result.Segments = CreateSampleSegments(content, result.DocumentStatistics, sessionContext);
 
             // Step 6: Store segments in database using session pattern
             _logger.LogDebug("Step 6: Storing segments in database...");
@@ -204,11 +182,7 @@ public class DocumentSegmentationSessionIntegration
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Document segmentation workflow failed for document {DocumentId}",
-                parentDocumentId
-            );
+            _logger.LogError(ex, "Document segmentation workflow failed for document {DocumentId}", parentDocumentId);
             result.Error = ex.Message;
             return result;
         }
@@ -216,7 +190,7 @@ public class DocumentSegmentationSessionIntegration
 
     #region Private Helper Methods
 
-    private List<DocumentSegment> CreateSampleSegments(
+    private static List<DocumentSegment> CreateSampleSegments(
         string content,
         DocumentStatistics statistics,
         SessionContext sessionContext
@@ -260,7 +234,7 @@ public class DocumentSegmentationSessionIntegration
         return segments;
     }
 
-    private List<SegmentRelationship> CreateSampleRelationships(List<DocumentSegment> segments)
+    private static List<SegmentRelationship> CreateSampleRelationships(List<DocumentSegment> segments)
     {
         var relationships = new List<SegmentRelationship>();
 

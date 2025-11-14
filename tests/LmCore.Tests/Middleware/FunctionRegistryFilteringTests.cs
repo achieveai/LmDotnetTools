@@ -18,6 +18,15 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 public class FunctionRegistryFilteringTests
 {
     private readonly Mock<ILogger> _mockLogger;
+    private static readonly string[] expectation = new[]
+    {
+        "read_file",
+        "list_directory",
+        "list_repos",
+        "list_tables",
+        "get_file",
+    };
+    private static readonly string[] expectationArray = new[] { "func1", "func2" };
 
     public FunctionRegistryFilteringTests()
     {
@@ -62,33 +71,15 @@ public class FunctionRegistryFilteringTests
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
         registry.AddProvider(
-            new TestFunctionProvider(
-                "GitHub",
-                "search_repositories",
-                "create_issue",
-                "get_file",
-                "list_repos"
-            )
+            new TestFunctionProvider("GitHub", "search_repositories", "create_issue", "get_file", "list_repos")
         );
 
         registry.AddProvider(
-            new TestFunctionProvider(
-                "FileSystem",
-                "read_file",
-                "write_file",
-                "list_directory",
-                "search"
-            )
+            new TestFunctionProvider("FileSystem", "read_file", "write_file", "list_directory", "search")
         );
 
         registry.AddProvider(
-            new TestFunctionProvider(
-                "Database",
-                "execute_query",
-                "list_tables",
-                "search",
-                "create_table"
-            )
+            new TestFunctionProvider("Database", "execute_query", "list_tables", "search", "create_table")
         );
 
         return registry;
@@ -183,11 +174,7 @@ public class FunctionRegistryFilteringTests
         // Assert
         // Should include: read_file, list_directory, list_repos, list_tables, get_file = 5
         contracts.Should().HaveCount(5);
-        handlers
-            .Keys.Should()
-            .BeEquivalentTo(
-                new[] { "read_file", "list_directory", "list_repos", "list_tables", "get_file" }
-            );
+        handlers.Keys.Should().BeEquivalentTo(expectation);
     }
 
     #endregion
@@ -273,12 +260,8 @@ public class FunctionRegistryFilteringTests
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
         // Add providers with colliding function names
-        registry.AddProvider(
-            new TestFunctionProvider("Provider1", "commonFunc", "unique1", "filtered")
-        );
-        registry.AddProvider(
-            new TestFunctionProvider("Provider2", "commonFunc", "unique2", "filtered")
-        );
+        registry.AddProvider(new TestFunctionProvider("Provider1", "commonFunc", "unique1", "filtered"));
+        registry.AddProvider(new TestFunctionProvider("Provider2", "commonFunc", "unique2", "filtered"));
 
         var filterConfig = new FunctionFilterConfig
         {
@@ -314,12 +297,8 @@ public class FunctionRegistryFilteringTests
         // Arrange
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
-        registry.AddProvider(
-            new TestFunctionProvider("VeryLongProviderName", "func1", "func2", "blockedFunc")
-        );
-        registry.AddProvider(
-            new TestFunctionProvider("AnotherLongName", "func1", "func3", "blockedFunc")
-        );
+        registry.AddProvider(new TestFunctionProvider("VeryLongProviderName", "func1", "func2", "blockedFunc"));
+        registry.AddProvider(new TestFunctionProvider("AnotherLongName", "func1", "func3", "blockedFunc"));
 
         var filterConfig = new FunctionFilterConfig
         {
@@ -377,7 +356,7 @@ public class FunctionRegistryFilteringTests
         // Assert
         contracts.Should().HaveCount(2);
         handlers.Should().HaveCount(2);
-        handlers.Keys.Should().BeEquivalentTo(new[] { "func1", "func2" });
+        handlers.Keys.Should().BeEquivalentTo(expectationArray);
     }
 
     [Fact]
@@ -546,13 +525,7 @@ public class FunctionRegistryFilteringTests
                     Enabled = true,
                     CustomPrefix = "db",
                     // Database operations are restricted
-                    AllowedFunctions = new List<string>
-                    {
-                        "execute_query",
-                        "list_*",
-                        "describe_*",
-                        "search",
-                    },
+                    AllowedFunctions = new List<string> { "execute_query", "list_*", "describe_*", "search" },
                 },
                 ["memory"] = new ProviderFilterConfig
                 {
@@ -632,9 +605,7 @@ public class FunctionRegistryFilteringTests
         var elapsed = DateTime.UtcNow - startTime;
 
         // Assert
-        elapsed
-            .Should()
-            .BeLessThan(TimeSpan.FromSeconds(2), "Build should be fast even with many functions");
+        elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2), "Build should be fast even with many functions");
         contracts.Should().HaveCount(850); // 1000 - 150 blocked (3 per provider * 50)
         handlers.Should().HaveCount(850);
     }

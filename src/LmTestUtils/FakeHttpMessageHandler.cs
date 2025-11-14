@@ -11,15 +11,9 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils;
 /// </summary>
 public class FakeHttpMessageHandler : HttpMessageHandler
 {
-    private readonly Func<
-        HttpRequestMessage,
-        CancellationToken,
-        Task<HttpResponseMessage>
-    > _handlerFunc;
+    private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handlerFunc;
 
-    public FakeHttpMessageHandler(
-        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handlerFunc
-    )
+    public FakeHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handlerFunc)
     {
         _handlerFunc = handlerFunc ?? throw new ArgumentNullException(nameof(handlerFunc));
     }
@@ -37,9 +31,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     /// </summary>
     /// <param name="responseFunc">Function to generate responses</param>
     /// <returns>A configured fake handler</returns>
-    public static FakeHttpMessageHandler CreateSimpleHandler(
-        Func<HttpRequestMessage, HttpResponseMessage> responseFunc
-    )
+    public static FakeHttpMessageHandler CreateSimpleHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFunc)
     {
         return new FakeHttpMessageHandler(
             (request, cancellationToken) =>
@@ -90,11 +82,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 {
                     var httpResponse = new HttpResponseMessage(response.status)
                     {
-                        Content = new StringContent(
-                            response.json,
-                            Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(response.json, Encoding.UTF8, "application/json"),
                     };
                     return Task.FromResult(httpResponse);
                 }
@@ -150,11 +138,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                     return Task.FromResult(
                         new HttpResponseMessage(failureStatus)
                         {
-                            Content = new StringContent(
-                                $"Failure attempt {attemptCount}",
-                                Encoding.UTF8,
-                                "text/plain"
-                            ),
+                            Content = new StringContent($"Failure attempt {attemptCount}", Encoding.UTF8, "text/plain"),
                         }
                     );
                 }
@@ -162,11 +146,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            successResponse,
-                            Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(successResponse, Encoding.UTF8, "application/json"),
                     }
                 );
             }
@@ -199,11 +179,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                         return Task.FromResult(
                             new HttpResponseMessage(statusCode)
                             {
-                                Content = new StringContent(
-                                    successResponse,
-                                    Encoding.UTF8,
-                                    "application/json"
-                                ),
+                                Content = new StringContent(successResponse, Encoding.UTF8, "application/json"),
                             }
                         );
                     }
@@ -211,11 +187,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                     return Task.FromResult(
                         new HttpResponseMessage(statusCode)
                         {
-                            Content = new StringContent(
-                                $"Error {(int)statusCode}",
-                                Encoding.UTF8,
-                                "text/plain"
-                            ),
+                            Content = new StringContent($"Error {(int)statusCode}", Encoding.UTF8, "text/plain"),
                         }
                     );
                 }
@@ -224,11 +196,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            successResponse,
-                            Encoding.UTF8,
-                            "application/json"
-                        ),
+                        Content = new StringContent(successResponse, Encoding.UTF8, "application/json"),
                     }
                 );
             }
@@ -257,9 +225,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             {
                 container.Request = request;
                 container.RequestBody =
-                    request.Content != null
-                        ? await request.Content.ReadAsStringAsync(cancellationToken)
-                        : string.Empty;
+                    request.Content != null ? await request.Content.ReadAsStringAsync(cancellationToken) : string.Empty;
 
                 return new HttpResponseMessage(statusCode)
                 {
@@ -442,11 +408,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        Content = new StringContent(
-                            streamData.ToString(),
-                            Encoding.UTF8,
-                            "text/plain"
-                        ),
+                        Content = new StringContent(streamData.ToString(), Encoding.UTF8, "text/plain"),
                     }
                 );
             }
@@ -493,11 +455,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             {
                 var response = new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent(
-                        streamData.ToString(),
-                        Encoding.UTF8,
-                        "text/event-stream"
-                    ),
+                    Content = new StringContent(streamData.ToString(), Encoding.UTF8, "text/event-stream"),
                 };
 
                 // Set SSE-specific headers

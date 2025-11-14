@@ -16,6 +16,9 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 public class FunctionCollisionDetectorTests
 {
     private readonly Mock<ILogger> _mockLogger;
+    private static readonly string[] expected = new[] { "func1", "func2", "func3" };
+    private static readonly string[] expectedArray = new[] { "Provider1", "Provider2" };
+    private static readonly string[] expectedArray0 = new[] { "Provider2", "Provider3" };
 
     public FunctionCollisionDetectorTests()
     {
@@ -24,18 +27,11 @@ public class FunctionCollisionDetectorTests
 
     #region Helper Methods
 
-    private static FunctionDescriptor CreateTestDescriptor(
-        string functionName,
-        string providerName = "TestProvider"
-    )
+    private static FunctionDescriptor CreateTestDescriptor(string functionName, string providerName = "TestProvider")
     {
         return new FunctionDescriptor
         {
-            Contract = new FunctionContract
-            {
-                Name = functionName,
-                Description = $"Test function {functionName}",
-            },
+            Contract = new FunctionContract { Name = functionName, Description = $"Test function {functionName}" },
             Handler = _ => Task.FromResult($"Result from {functionName}"),
             ProviderName = providerName,
         };
@@ -74,7 +70,7 @@ public class FunctionCollisionDetectorTests
 
         // Assert
         Assert.Equal(3, namingMap.Count);
-        Assert.Equal(new[] { "func1", "func2", "func3" }, namingMap.Values.OrderBy(v => v));
+        Assert.Equal(expected, namingMap.Values.OrderBy(v => v));
     }
 
     [Fact]
@@ -91,14 +87,10 @@ public class FunctionCollisionDetectorTests
         Assert.Equal(5, namingMap.Count);
 
         // Functions with collisions should have prefixes
-        var getUserProvider1 = functions.First(f =>
-            f.Contract.Name == "getUser" && f.ProviderName == "Provider1"
-        );
+        var getUserProvider1 = functions.First(f => f.Contract.Name == "getUser" && f.ProviderName == "Provider1");
         Assert.Equal("Provider1-getUser", namingMap[getUserProvider1.Key]);
 
-        var getUserProvider2 = functions.First(f =>
-            f.Contract.Name == "getUser" && f.ProviderName == "Provider2"
-        );
+        var getUserProvider2 = functions.First(f => f.Contract.Name == "getUser" && f.ProviderName == "Provider2");
         Assert.Equal("Provider2-getUser", namingMap[getUserProvider2.Key]);
 
         // Function without collision should not have prefix (when UsePrefixOnlyForCollisions is true)
@@ -280,19 +272,11 @@ public class FunctionCollisionDetectorTests
 
         var getUserCollision = report.Collisions.First(c => c.FunctionName == "getUser");
         Assert.Equal(2, getUserCollision.Count);
-        Assert.Equal(
-            new[] { "Provider1", "Provider2" },
-            getUserCollision.Providers.OrderBy(p => p)
-        );
+        Assert.Equal(expectedArray, getUserCollision.Providers.OrderBy(p => p));
 
-        var createResourceCollision = report.Collisions.First(c =>
-            c.FunctionName == "createResource"
-        );
+        var createResourceCollision = report.Collisions.First(c => c.FunctionName == "createResource");
         Assert.Equal(2, createResourceCollision.Count);
-        Assert.Equal(
-            new[] { "Provider2", "Provider3" },
-            createResourceCollision.Providers.OrderBy(p => p)
-        );
+        Assert.Equal(expectedArray0, createResourceCollision.Providers.OrderBy(p => p));
     }
 
     [Fact]
@@ -318,7 +302,7 @@ public class FunctionCollisionDetectorTests
         var collision = report.Collisions.Single();
         Assert.Equal("func1", collision.FunctionName);
         Assert.Equal(3, collision.Count);
-        Assert.Equal(new[] { "Provider1", "Provider2" }, collision.Providers.OrderBy(p => p));
+        Assert.Equal(expectedArray, collision.Providers.OrderBy(p => p));
     }
 
     #endregion
@@ -513,51 +497,31 @@ public class FunctionCollisionDetectorTests
             "search_repositories",
             namingMap[functions.First(f => f.Contract.Name == "search_repositories").Key]
         );
-        Assert.Equal(
-            "read_file",
-            namingMap[functions.First(f => f.Contract.Name == "read_file").Key]
-        );
-        Assert.Equal(
-            "execute_query",
-            namingMap[functions.First(f => f.Contract.Name == "execute_query").Key]
-        );
+        Assert.Equal("read_file", namingMap[functions.First(f => f.Contract.Name == "read_file").Key]);
+        Assert.Equal("execute_query", namingMap[functions.First(f => f.Contract.Name == "execute_query").Key]);
 
         // Colliding functions should have prefixes
         Assert.Equal(
             "github-search",
-            namingMap[
-                functions.First(f => f.Contract.Name == "search" && f.ProviderName == "github").Key
-            ]
+            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "github").Key]
         );
         Assert.Equal(
             "filesystem-search",
-            namingMap[
-                functions
-                    .First(f => f.Contract.Name == "search" && f.ProviderName == "filesystem")
-                    .Key
-            ]
+            namingMap[functions.First(f => f.Contract.Name == "search" && f.ProviderName == "filesystem").Key]
         );
 
         // All "list" functions should have prefixes
         Assert.Equal(
             "github-list",
-            namingMap[
-                functions.First(f => f.Contract.Name == "list" && f.ProviderName == "github").Key
-            ]
+            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "github").Key]
         );
         Assert.Equal(
             "filesystem-list",
-            namingMap[
-                functions
-                    .First(f => f.Contract.Name == "list" && f.ProviderName == "filesystem")
-                    .Key
-            ]
+            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "filesystem").Key]
         );
         Assert.Equal(
             "database-list",
-            namingMap[
-                functions.First(f => f.Contract.Name == "list" && f.ProviderName == "database").Key
-            ]
+            namingMap[functions.First(f => f.Contract.Name == "list" && f.ProviderName == "database").Key]
         );
     }
 

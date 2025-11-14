@@ -63,18 +63,9 @@ public class MemoryService : IMemoryService
             content.Length
         );
 
-        var memory = await _memoryRepository.AddAsync(
-            content,
-            sessionContext,
-            metadata,
-            cancellationToken
-        );
+        var memory = await _memoryRepository.AddAsync(content, sessionContext, metadata, cancellationToken);
 
-        _logger.LogInformation(
-            "Added memory {Id} for session {SessionContext}",
-            memory.Id,
-            sessionContext
-        );
+        _logger.LogInformation("Added memory {Id} for session {SessionContext}", memory.Id, sessionContext);
 
         // Generate and store embedding if enabled
         if (_embeddingOptions.EnableVectorStorage && _embeddingOptions.AutoGenerateEmbeddings)
@@ -82,10 +73,7 @@ public class MemoryService : IMemoryService
             try
             {
                 _logger.LogDebug("Generating embedding for memory {MemoryId}", memory.Id);
-                var embedding = await _embeddingManager.GenerateEmbeddingAsync(
-                    content,
-                    cancellationToken
-                );
+                var embedding = await _embeddingManager.GenerateEmbeddingAsync(content, cancellationToken);
                 await _memoryRepository.StoreEmbeddingAsync(
                     memory.Id,
                     embedding,
@@ -128,7 +116,7 @@ public class MemoryService : IMemoryService
                     graphSummary.ProcessingTimeMs
                 );
 
-                if (graphSummary.Warnings.Any())
+                if (graphSummary.Warnings.Count != 0)
                 {
                     _logger.LogWarning(
                         "Graph processing warnings for memory {MemoryId}: {Warnings}",
@@ -162,10 +150,7 @@ public class MemoryService : IMemoryService
 
                 if (shouldSegment)
                 {
-                    _logger.LogDebug(
-                        "Starting document segmentation for memory {MemoryId}",
-                        memory.Id
-                    );
+                    _logger.LogDebug("Starting document segmentation for memory {MemoryId}", memory.Id);
 
                     var segmentationRequest = new DocumentSegmentationRequest
                     {
@@ -173,15 +158,14 @@ public class MemoryService : IMemoryService
                         Strategy = SegmentationStrategy.TopicBased, // Default strategy
                     };
 
-                    var segmentationResult =
-                        await _documentSegmentationService.SegmentDocumentAsync(
-                            content,
-                            segmentationRequest,
-                            sessionContext,
-                            cancellationToken
-                        );
+                    var segmentationResult = await _documentSegmentationService.SegmentDocumentAsync(
+                        content,
+                        segmentationRequest,
+                        sessionContext,
+                        cancellationToken
+                    );
 
-                    if (segmentationResult.IsComplete && segmentationResult.Segments.Any())
+                    if (segmentationResult.IsComplete && segmentationResult.Segments.Count != 0)
                     {
                         _logger.LogInformation(
                             "Document segmentation completed for memory {MemoryId}: {SegmentCount} segments created",
@@ -214,10 +198,7 @@ public class MemoryService : IMemoryService
         }
         else
         {
-            _logger.LogDebug(
-                "Document segmentation service is not available for memory {MemoryId}",
-                memory.Id
-            );
+            _logger.LogDebug("Document segmentation service is not available for memory {MemoryId}", memory.Id);
         }
 
         return memory;
@@ -259,10 +240,7 @@ public class MemoryService : IMemoryService
                 _logger.LogDebug("Using hybrid search for query: '{Query}'", query);
 
                 // Generate embedding for the query
-                var queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(
-                    query,
-                    cancellationToken
-                );
+                var queryEmbedding = await _embeddingManager.GenerateEmbeddingAsync(query, cancellationToken);
 
                 // Perform hybrid search
                 memories = await _memoryRepository.SearchHybridAsync(
@@ -350,12 +328,7 @@ public class MemoryService : IMemoryService
             offset
         );
 
-        var memories = await _memoryRepository.GetAllAsync(
-            sessionContext,
-            limit,
-            offset,
-            cancellationToken
-        );
+        var memories = await _memoryRepository.GetAllAsync(sessionContext, limit, offset, cancellationToken);
 
         _logger.LogInformation(
             "Retrieved {Count} memories for session {SessionContext}",
@@ -392,35 +365,19 @@ public class MemoryService : IMemoryService
             content.Length
         );
 
-        var memory = await _memoryRepository.UpdateAsync(
-            id,
-            content,
-            sessionContext,
-            metadata,
-            cancellationToken
-        );
+        var memory = await _memoryRepository.UpdateAsync(id, content, sessionContext, metadata, cancellationToken);
 
         if (memory != null)
         {
-            _logger.LogInformation(
-                "Updated memory {Id} for session {SessionContext}",
-                id,
-                sessionContext
-            );
+            _logger.LogInformation("Updated memory {Id} for session {SessionContext}", id, sessionContext);
 
             // Regenerate and store embedding if enabled
             if (_embeddingOptions.EnableVectorStorage && _embeddingOptions.AutoGenerateEmbeddings)
             {
                 try
                 {
-                    _logger.LogDebug(
-                        "Regenerating embedding for updated memory {MemoryId}",
-                        memory.Id
-                    );
-                    var embedding = await _embeddingManager.GenerateEmbeddingAsync(
-                        content,
-                        cancellationToken
-                    );
+                    _logger.LogDebug("Regenerating embedding for updated memory {MemoryId}", memory.Id);
+                    var embedding = await _embeddingManager.GenerateEmbeddingAsync(content, cancellationToken);
                     await _memoryRepository.StoreEmbeddingAsync(
                         memory.Id,
                         embedding,
@@ -449,10 +406,7 @@ public class MemoryService : IMemoryService
             {
                 try
                 {
-                    _logger.LogDebug(
-                        "Starting graph processing for updated memory {MemoryId}",
-                        memory.Id
-                    );
+                    _logger.LogDebug("Starting graph processing for updated memory {MemoryId}", memory.Id);
                     var graphSummary = await _graphMemoryService.ProcessMemoryAsync(
                         memory,
                         sessionContext,
@@ -466,7 +420,7 @@ public class MemoryService : IMemoryService
                         graphSummary.ProcessingTimeMs
                     );
 
-                    if (graphSummary.Warnings.Any())
+                    if (graphSummary.Warnings.Count != 0)
                     {
                         _logger.LogWarning(
                             "Graph processing warnings for updated memory {MemoryId}: {Warnings}",
@@ -487,10 +441,7 @@ public class MemoryService : IMemoryService
             }
             else
             {
-                _logger.LogDebug(
-                    "Graph processing is disabled for updated memory {MemoryId}",
-                    memory.Id
-                );
+                _logger.LogDebug("Graph processing is disabled for updated memory {MemoryId}", memory.Id);
             }
         }
         else
@@ -520,11 +471,7 @@ public class MemoryService : IMemoryService
 
         if (deleted)
         {
-            _logger.LogInformation(
-                "Deleted memory {Id} for session {SessionContext}",
-                id,
-                sessionContext
-            );
+            _logger.LogInformation("Deleted memory {Id} for session {SessionContext}", id, sessionContext);
         }
         else
         {
@@ -548,16 +495,9 @@ public class MemoryService : IMemoryService
     {
         _logger.LogDebug("Deleting all memories for session {SessionContext}", sessionContext);
 
-        var deletedCount = await _memoryRepository.DeleteAllAsync(
-            sessionContext,
-            cancellationToken
-        );
+        var deletedCount = await _memoryRepository.DeleteAllAsync(sessionContext, cancellationToken);
 
-        _logger.LogInformation(
-            "Deleted {Count} memories for session {SessionContext}",
-            deletedCount,
-            sessionContext
-        );
+        _logger.LogInformation("Deleted {Count} memories for session {SessionContext}", deletedCount, sessionContext);
         return deletedCount;
     }
 
@@ -591,17 +531,9 @@ public class MemoryService : IMemoryService
         CancellationToken cancellationToken = default
     )
     {
-        _logger.LogDebug(
-            "Getting memory history for memory {Id} in session {SessionContext}",
-            id,
-            sessionContext
-        );
+        _logger.LogDebug("Getting memory history for memory {Id} in session {SessionContext}", id, sessionContext);
 
-        var history = await _memoryRepository.GetHistoryAsync(
-            id,
-            sessionContext,
-            cancellationToken
-        );
+        var history = await _memoryRepository.GetHistoryAsync(id, sessionContext, cancellationToken);
 
         _logger.LogDebug(
             "Retrieved {Count} history entries for memory {Id} in session {SessionContext}",
@@ -616,10 +548,7 @@ public class MemoryService : IMemoryService
     /// <summary>
     /// Gets all agents for a specific user.
     /// </summary>
-    public async Task<List<string>> GetAgentsAsync(
-        string userId,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(userId))
             throw new ArgumentException("UserId cannot be empty", nameof(userId));
@@ -652,12 +581,7 @@ public class MemoryService : IMemoryService
 
         var runs = await _memoryRepository.GetRunsAsync(userId, agentId, cancellationToken);
 
-        _logger.LogDebug(
-            "Retrieved {Count} runs for user {UserId} and agent {AgentId}",
-            runs.Count,
-            userId,
-            agentId
-        );
+        _logger.LogDebug("Retrieved {Count} runs for user {UserId} and agent {AgentId}", runs.Count, userId, agentId);
 
         return runs;
     }

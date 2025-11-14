@@ -33,9 +33,7 @@ public class ExtraPropertiesSerializationTests
         };
 
         // Add extra properties
-        var withExtras = usage
-            .SetExtraProperty("estimated_cost", 0.05)
-            .SetExtraProperty("cached", true);
+        var withExtras = usage.SetExtraProperty("estimated_cost", 0.05).SetExtraProperty("cached", true);
 
         // Act
         var json = JsonSerializer.Serialize(withExtras, options);
@@ -48,9 +46,7 @@ public class ExtraPropertiesSerializationTests
         Assert.True(doc.RootElement.TryGetProperty("prompt_tokens", out var promptTokensElement));
         Assert.Equal(10, promptTokensElement.GetInt32());
 
-        Assert.True(
-            doc.RootElement.TryGetProperty("completion_tokens", out var completionTokensElement)
-        );
+        Assert.True(doc.RootElement.TryGetProperty("completion_tokens", out var completionTokensElement));
         Assert.Equal(20, completionTokensElement.GetInt32());
 
         Assert.True(doc.RootElement.TryGetProperty("total_tokens", out var totalTokensElement));
@@ -90,9 +86,7 @@ public class ExtraPropertiesSerializationTests
             ModelId = "gpt-4",
             Temperature = 0.7f,
             MaxToken = 1000,
-            ExtraProperties = ImmutableDictionary<string, object?>
-                .Empty.Add("function_call", "auto")
-                .Add("top_k", 50),
+            ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("function_call", "auto").Add("top_k", 50),
         };
 
         // Act

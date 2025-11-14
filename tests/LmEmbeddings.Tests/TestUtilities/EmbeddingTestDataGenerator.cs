@@ -52,10 +52,7 @@ public static class EmbeddingTestDataGenerator
     /// <param name="documentCount">Number of documents in the response</param>
     /// <param name="model">Model name to include in response (default: "test-rerank-model")</param>
     /// <returns>JSON string representing a valid rerank response</returns>
-    public static string CreateValidRerankResponse(
-        int documentCount,
-        string model = "test-rerank-model"
-    )
+    public static string CreateValidRerankResponse(int documentCount, string model = "test-rerank-model")
     {
         var results = new List<object>();
         for (int i = 0; i < documentCount; i++)
@@ -141,8 +138,7 @@ public static class EmbeddingTestDataGenerator
         var documents = new string[count];
         for (int i = 0; i < count; i++)
         {
-            documents[i] =
-                $"{prefix}_{i} - This is a test document with some content for testing purposes.";
+            documents[i] = $"{prefix}_{i} - This is a test document with some content for testing purposes.";
         }
         return documents;
     }
@@ -192,11 +188,7 @@ public static class EmbeddingTestDataGenerator
     /// <returns>JSON string representing an authentication error</returns>
     public static string CreateAuthErrorResponse()
     {
-        return CreateErrorResponse(
-            "invalid_api_key",
-            "Invalid API key provided.",
-            "authentication_error"
-        );
+        return CreateErrorResponse("invalid_api_key", "Invalid API key provided.", "authentication_error");
     }
 
     /// <summary>
@@ -223,20 +215,10 @@ public static class EmbeddingTestDataGenerator
     {
         return new List<object[]>
         {
-            new object[]
-            {
-                "rate_limit_exceeded",
-                "Rate limit exceeded",
-                "Rate limit error scenario",
-            },
+            new object[] { "rate_limit_exceeded", "Rate limit exceeded", "Rate limit error scenario" },
             new object[] { "invalid_api_key", "Invalid API key", "Authentication error scenario" },
             new object[] { "model_not_found", "Model not found", "Model error scenario" },
-            new object[]
-            {
-                "invalid_input",
-                "Invalid input format",
-                "Input validation error scenario",
-            },
+            new object[] { "invalid_input", "Invalid input format", "Input validation error scenario" },
         };
     }
 }

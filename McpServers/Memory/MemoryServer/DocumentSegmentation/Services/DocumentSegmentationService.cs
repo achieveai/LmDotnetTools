@@ -66,10 +66,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         {
             // Step 1: Analyze document size and determine if segmentation is needed
             var statistics = await _sizeAnalyzer.AnalyzeDocumentAsync(content, cancellationToken);
-            var shouldSegment = _sizeAnalyzer.ShouldSegmentDocument(
-                statistics,
-                request.DocumentType
-            );
+            var shouldSegment = _sizeAnalyzer.ShouldSegmentDocument(statistics, request.DocumentType);
 
             _logger.LogDebug(
                 "Document analysis complete: {WordCount} words, should segment: {ShouldSegment}",
@@ -91,14 +88,10 @@ public class DocumentSegmentationService : IDocumentSegmentationService
             }
 
             // Step 2: Validate prompt configuration
-            var promptsValid = await _promptManager.ValidatePromptConfigurationAsync(
-                cancellationToken
-            );
+            var promptsValid = await _promptManager.ValidatePromptConfigurationAsync(cancellationToken);
             if (!promptsValid)
             {
-                result.Warnings.Add(
-                    "Prompt configuration validation failed, using fallback segmentation"
-                );
+                result.Warnings.Add("Prompt configuration validation failed, using fallback segmentation");
             }
 
             // Step 3: Use the requested strategy
@@ -107,12 +100,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
             _logger.LogDebug("Using segmentation strategy: {Strategy}", strategy);
 
             // Step 4: Perform segmentation (using rule-based fallback for now)
-            result.Segments = await PerformRuleBasedSegmentationAsync(
-                content,
-                statistics,
-                strategy,
-                cancellationToken
-            );
+            result.Segments = await PerformRuleBasedSegmentationAsync(content, statistics, strategy, cancellationToken);
 
             // Step 5: Generate relationships between segments
             result.Relationships = GenerateSegmentRelationships(result.Segments);
@@ -128,7 +116,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
                 cancellationToken
             );
 
-            if (result.Relationships.Any())
+            if (result.Relationships.Count != 0)
             {
                 await _repository.StoreSegmentRelationshipsAsync(
                     session,
@@ -170,11 +158,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         {
             result.Warnings.Add($"Error during segmentation: {ex.Message}");
 
-            _logger.LogError(
-                ex,
-                "Error during document segmentation for document {DocumentId}",
-                pseudoDocumentId
-            );
+            _logger.LogError(ex, "Error during document segmentation for document {DocumentId}", pseudoDocumentId);
             throw;
         }
     }
@@ -230,7 +214,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     {
         var assessment = new SegmentationQualityAssessment();
 
-        if (!result.Segments.Any())
+        if (result.Segments.Count == 0)
         {
             assessment.QualityFeedback.Add("No segments found in result");
             assessment.MeetsQualityStandards = false;
@@ -240,12 +224,8 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         // Calculate aggregate quality scores
         var segments = result.Segments;
         assessment.AverageCoherenceScore = segments.Average(s => s.Quality?.CoherenceScore ?? 0.0);
-        assessment.AverageIndependenceScore = segments.Average(s =>
-            s.Quality?.IndependenceScore ?? 0.0
-        );
-        assessment.AverageTopicConsistencyScore = segments.Average(s =>
-            s.Quality?.TopicConsistencyScore ?? 0.0
-        );
+        assessment.AverageIndependenceScore = segments.Average(s => s.Quality?.IndependenceScore ?? 0.0);
+        assessment.AverageTopicConsistencyScore = segments.Average(s => s.Quality?.TopicConsistencyScore ?? 0.0);
 
         // Calculate pass rate
         var passingSegments = segments.Count(s => s.Quality?.PassesQualityThreshold == true);
@@ -266,9 +246,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         // Provide feedback
         if (assessment.AverageCoherenceScore < 0.7)
         {
-            assessment.QualityFeedback.Add(
-                "Low coherence scores detected - consider refining segmentation boundaries"
-            );
+            assessment.QualityFeedback.Add("Low coherence scores detected - consider refining segmentation boundaries");
         }
 
         if (assessment.AverageIndependenceScore < 0.6)
@@ -280,9 +258,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
 
         if (assessment.QualityPassRate < 0.8)
         {
-            assessment.QualityFeedback.Add(
-                $"Only {assessment.QualityPassRate:P0} of segments pass quality thresholds"
-            );
+            assessment.QualityFeedback.Add($"Only {assessment.QualityPassRate:P0} of segments pass quality thresholds");
         }
 
         if (assessment.MeetsQualityStandards)
@@ -350,7 +326,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         return segments;
     }
 
-    private List<SegmentRelationship> GenerateSegmentRelationships(List<DocumentSegment> segments)
+    private static List<SegmentRelationship> GenerateSegmentRelationships(List<DocumentSegment> segments)
     {
         var relationships = new List<SegmentRelationship>();
 
@@ -381,7 +357,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     {
         // Simple summary: first sentence or first 100 characters
         var sentences = content.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        if (sentences.Any() && sentences[0].Length <= 100)
+        if (sentences.Length != 0 && sentences[0].Length <= 100)
         {
             return sentences[0].Trim() + ".";
         }

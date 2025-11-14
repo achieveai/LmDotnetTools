@@ -51,10 +51,7 @@ public class SessionContextResolver : ISessionContextResolver
                 ?? GetFromJwtClaims("userId")
                 ?? GetFromTransportContext("userId")
                 ?? _options.DefaultUserId,
-            AgentId =
-                explicitAgentId
-                ?? GetFromJwtClaims("agentId")
-                ?? GetFromTransportContext("agentId"),
+            AgentId = explicitAgentId ?? GetFromJwtClaims("agentId") ?? GetFromTransportContext("agentId"),
             RunId = explicitRunId ?? GetFromTransportContext("runId") ?? GenerateDefaultRunId(),
         };
 
@@ -111,9 +108,7 @@ public class SessionContextResolver : ISessionContextResolver
     /// <summary>
     /// Gets the default session context based on transport context and system defaults.
     /// </summary>
-    public Task<SessionContext> GetDefaultSessionContextAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<SessionContext> GetDefaultSessionContextAsync(CancellationToken cancellationToken = default)
     {
         return ResolveSessionContextAsync(cancellationToken: cancellationToken);
     }
@@ -131,11 +126,7 @@ public class SessionContextResolver : ISessionContextResolver
                 var claimValue = httpContext.User.FindFirst(claimName)?.Value;
                 if (!string.IsNullOrWhiteSpace(claimValue))
                 {
-                    _logger.LogDebug(
-                        "Found {ClaimName} in JWT claims: {Value}",
-                        claimName,
-                        claimValue
-                    );
+                    _logger.LogDebug("Found {ClaimName} in JWT claims: {Value}", claimName, claimValue);
                     return claimValue;
                 }
             }
@@ -156,25 +147,15 @@ public class SessionContextResolver : ISessionContextResolver
         // Try environment variables first (STDIO transport)
         var envValue = parameterName.ToLowerInvariant() switch
         {
-            "userid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-                "MCP_MEMORY_USER_ID"
-            ),
-            "agentid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-                "MCP_MEMORY_AGENT_ID"
-            ),
-            "runid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-                "MCP_MEMORY_RUN_ID"
-            ),
+            "userid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID"),
+            "agentid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID"),
+            "runid" => EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"),
             _ => null,
         };
 
         if (!string.IsNullOrWhiteSpace(envValue))
         {
-            _logger.LogDebug(
-                "Found {ParameterName} in environment variables: {Value}",
-                parameterName,
-                envValue
-            );
+            _logger.LogDebug("Found {ParameterName} in environment variables: {Value}", parameterName, envValue);
             return envValue;
         }
 

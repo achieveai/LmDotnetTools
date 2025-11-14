@@ -11,10 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public static class ToolsCallAggregateTransformer
 {
-    private static readonly JsonSerializerOptions PrettyJsonOptions = new()
-    {
-        WriteIndented = true,
-    };
+    private static readonly JsonSerializerOptions PrettyJsonOptions = new() { WriteIndented = true };
 
     /// <summary>
     /// Transforms a ToolsCallAggregateMessage to natural language format with XML-style tool calls.
@@ -109,9 +106,7 @@ public static class ToolsCallAggregateTransformer
             string messageText = message switch
             {
                 TextMessage textMsg => textMsg.Text,
-                ToolsCallAggregateMessage aggregateMsg => TransformToNaturalFormat(
-                    aggregateMsg
-                ).Text,
+                ToolsCallAggregateMessage aggregateMsg => TransformToNaturalFormat(aggregateMsg).Text,
                 ICanGetText textInterface => textInterface.GetText() ?? string.Empty,
                 _ => string.Empty,
             };
@@ -213,10 +208,7 @@ public static class ToolsCallAggregateTransformer
         text = text.Trim();
 
         // Quick check if it looks like JSON
-        if (
-            !(text.StartsWith('{') && text.EndsWith('}'))
-            && !(text.StartsWith('[') && text.EndsWith(']'))
-        )
+        if (!(text.StartsWith('{') && text.EndsWith('}')) && !(text.StartsWith('[') && text.EndsWith(']')))
         {
             return null;
         }

@@ -12,10 +12,7 @@ public class FunctionCallMiddlewareFactory : IFunctionCallMiddlewareFactory
         _registry = registry;
     }
 
-    public FunctionCallMiddleware Create(
-        string? name = null,
-        Action<FunctionRegistry>? configure = null
-    )
+    public FunctionCallMiddleware Create(string? name = null, Action<FunctionRegistry>? configure = null)
     {
         return Create(null, name, configure);
     }

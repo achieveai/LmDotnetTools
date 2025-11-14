@@ -60,9 +60,7 @@ public class ConfigurationLoadingTests
         services.AddLogging();
 
         // Act
-        services.AddLmConfigFromStream(() =>
-            new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson))
-        );
+        services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson)));
 
         // Assert
         var serviceProvider = services.BuildServiceProvider();
@@ -112,9 +110,7 @@ public class ConfigurationLoadingTests
 
         // Act & Assert
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            services.AddLmConfigFromStream(() =>
-                new MemoryStream(Encoding.UTF8.GetBytes(invalidJson))
-            )
+            services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(invalidJson)))
         );
 
         Assert.Contains("Failed to parse LmConfig from stream", exception.Message);
@@ -130,9 +126,7 @@ public class ConfigurationLoadingTests
 
         // Act & Assert
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            services.AddLmConfigFromStream(() =>
-                new MemoryStream(Encoding.UTF8.GetBytes(emptyConfig))
-            )
+            services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(emptyConfig)))
         );
 
         Assert.Contains("Invalid or empty LmConfig stream", exception.Message);
@@ -162,9 +156,7 @@ public class ConfigurationLoadingTests
         // Arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddLmConfigFromStream(() =>
-            new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson))
-        );
+        services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson)));
 
         var serviceProvider = services.BuildServiceProvider();
         var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
@@ -182,9 +174,7 @@ public class ConfigurationLoadingTests
         // Arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddLmConfigFromStream(() =>
-            new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson))
-        );
+        services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson)));
 
         var serviceProvider = services.BuildServiceProvider();
         var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
@@ -213,9 +203,7 @@ public class ConfigurationLoadingTests
         // Arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddLmConfigFromStream(() =>
-            new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson))
-        );
+        services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson)));
 
         var serviceProvider = services.BuildServiceProvider();
         var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
@@ -233,9 +221,7 @@ public class ConfigurationLoadingTests
         // Arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddLmConfigFromStream(() =>
-            new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson))
-        );
+        services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(_testConfigJson)));
 
         var serviceProvider = services.BuildServiceProvider();
         var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
@@ -308,9 +294,7 @@ public class ConfigurationLoadingTests
             """;
 
         // Act & Assert - Should not throw exception
-        services.AddLmConfigFromStream(() =>
-            new MemoryStream(Encoding.UTF8.GetBytes(configWithComments))
-        );
+        services.AddLmConfigFromStream(() => new MemoryStream(Encoding.UTF8.GetBytes(configWithComments)));
 
         var serviceProvider = services.BuildServiceProvider();
         var agent = serviceProvider.GetService<IAgent>();

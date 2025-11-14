@@ -24,11 +24,7 @@ public interface IPerformanceTracker
     /// <param name="model">Optional model filter</param>
     /// <param name="since">Optional time filter (defaults to last 24 hours)</param>
     /// <returns>Performance profile for the specified criteria</returns>
-    PerformanceProfile GetPerformanceProfile(
-        string provider,
-        string model = "",
-        DateTimeOffset? since = null
-    );
+    PerformanceProfile GetPerformanceProfile(string provider, string model = "", DateTimeOffset? since = null);
 
     /// <summary>Gets performance profiles for all providers</summary>
     /// <param name="since">Optional time filter (defaults to last 24 hours)</param>
@@ -80,12 +76,10 @@ public record OverallStatistics
     public long RetriedRequests { get; init; }
 
     /// <summary>Overall success rate as percentage</summary>
-    public double OverallSuccessRate =>
-        TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double OverallSuccessRate => TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
 
     /// <summary>Overall retry rate as percentage</summary>
-    public double OverallRetryRate =>
-        TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
+    public double OverallRetryRate => TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
 
     /// <summary>Total tokens processed across all providers</summary>
     public long TotalTokensProcessed { get; init; }
@@ -95,9 +89,7 @@ public record OverallStatistics
 
     /// <summary>Average request duration across all providers</summary>
     public TimeSpan AverageRequestDuration =>
-        TotalRequests > 0
-            ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests)
-            : TimeSpan.Zero;
+        TotalRequests > 0 ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests) : TimeSpan.Zero;
 
     /// <summary>Provider performance breakdown</summary>
     public Dictionary<string, ProviderSummary> ProviderSummaries { get; init; } = [];

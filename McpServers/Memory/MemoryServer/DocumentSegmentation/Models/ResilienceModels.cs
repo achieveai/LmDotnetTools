@@ -92,8 +92,7 @@ public record RetryConfiguration
     /// Error types that should not be retried.
     /// </summary>
     [JsonPropertyName("non_retryable_errors")]
-    public ImmutableList<string> NonRetryableErrors { get; init; } =
-        ImmutableList.Create("401", "400", "403");
+    public ImmutableList<string> NonRetryableErrors { get; init; } = ImmutableList.Create("401", "400", "403");
 
     /// <summary>
     /// Different retry counts for different error types.
@@ -179,8 +178,7 @@ public record ErrorMetrics
     /// <summary>
     /// Total number of errors by type.
     /// </summary>
-    public ImmutableDictionary<string, int> ErrorCounts { get; init; } =
-        ImmutableDictionary<string, int>.Empty;
+    public ImmutableDictionary<string, int> ErrorCounts { get; init; } = ImmutableDictionary<string, int>.Empty;
 
     /// <summary>
     /// Circuit breaker state duration tracking.

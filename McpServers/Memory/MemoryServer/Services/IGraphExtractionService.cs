@@ -35,10 +35,7 @@ public interface IGraphExtractionService
     /// <param name="modelId">Optional specific model ID to use instead of automatic selection.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Tuple containing extracted entities and relationships.</returns>
-    Task<(
-        IEnumerable<Entity> Entities,
-        IEnumerable<Relationship> Relationships
-    )> ExtractGraphDataAsync(
+    Task<(IEnumerable<Entity> Entities, IEnumerable<Relationship> Relationships)> ExtractGraphDataAsync(
         string content,
         SessionContext sessionContext,
         int memoryId,

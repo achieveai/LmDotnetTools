@@ -10,52 +10,26 @@ namespace MemoryServer.DocumentSegmentation.Services;
 /// Implementation of document analysis service that uses heuristics and pattern recognition
 /// to determine document types and recommend segmentation strategies.
 /// </summary>
-public class DocumentAnalysisService : IDocumentAnalysisService
+public partial class DocumentAnalysisService : IDocumentAnalysisService
 {
     private readonly ILogger<DocumentAnalysisService> _logger;
     private readonly DocumentSegmentationOptions _options;
 
     // Pattern regex for different document characteristics
-    private static readonly Regex EmailHeaderPattern = new(
-        @"(From:|To:|Subject:|Date:|Reply-To:)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled
-    );
-    private static readonly Regex ChatTimestampPattern = new(
-        @"\d{1,2}:\d{2}(\s?[AP]M)?|\d{4}-\d{2}-\d{2}",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled
-    );
-    private static readonly Regex LegalCitationPattern = new(
-        @"\d+\s+[A-Z][a-z]+\.?\s+\d+|\§\s*\d+|Art\.?\s*\d+",
-        RegexOptions.Compiled
-    );
-    private static readonly Regex HeadingPattern = new(
-        @"^#{1,6}\s+.+$|^[A-Z][A-Z\s\d\.\)]{2,50}$",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex CodeBlockPattern = new(
-        @"```[\s\S]*?```|`[^`]+`",
-        RegexOptions.Compiled
-    );
-    private static readonly Regex ListPattern = new(
-        @"^\s*[-*+•]\s+.+$|^\s*\d+[\.\)]\s+.+$",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex TablePattern = new(
-        @"\|.*?\|",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
-    private static readonly Regex LinkPattern = new(
-        @"\[([^\]]+)\]\(([^\)]+)\)|https?://[^\s]+",
-        RegexOptions.Compiled
-    );
-    private static readonly Regex MethodologyPattern = new(
-        @"\b(methodology|methods?|experiment|analysis|results?|conclusion|abstract|introduction)\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled
-    );
-    private static readonly Regex ConversationPattern = new(
-        @"^\s*[A-Za-z][A-Za-z\s]*:\s|^\s*\[[^\]]+\]\s*:",
-        RegexOptions.Multiline | RegexOptions.Compiled
-    );
+    private static readonly Regex EmailHeaderPattern = MyRegex();
+    private static readonly Regex ChatTimestampPattern = MyRegex1();
+    private static readonly Regex LegalCitationPattern = MyRegex2();
+    private static readonly Regex HeadingPattern = MyRegex3();
+    private static readonly Regex CodeBlockPattern = MyRegex4();
+    private static readonly Regex ListPattern = MyRegex5();
+    private static readonly Regex TablePattern = MyRegex6();
+    private static readonly Regex LinkPattern = MyRegex7();
+    private static readonly Regex MethodologyPattern = MyRegex8();
+    private static readonly Regex ConversationPattern = MyRegex9();
+    private static readonly char[] separator = new[] { ' ', '\t', '\n', '\r' };
+    private static readonly string[] separatorArray = new[] { "\n\n", "\r\n\r\n" };
+    private static readonly char[] separatorArray0 = new[] { '.', '!', '?' };
+    private static readonly char[] separatorArray1 = new[] { ' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?' };
 
     public DocumentAnalysisService(
         ILogger<DocumentAnalysisService> logger,
@@ -158,10 +132,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
             };
         }
 
-        _logger.LogDebug(
-            "Analyzing optimal segmentation strategy for content length: {Length}",
-            content.Length
-        );
+        _logger.LogDebug("Analyzing optimal segmentation strategy for content length: {Length}", content.Length);
 
         // Detect document type if not provided
         var typeDetection = documentType.HasValue
@@ -222,10 +193,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
             };
         }
 
-        _logger.LogDebug(
-            "Analyzing document complexity for content length: {Length}",
-            content.Length
-        );
+        _logger.LogDebug("Analyzing document complexity for content length: {Length}", content.Length);
 
         var features = AnalyzeDocumentFeatures(content);
 
@@ -234,8 +202,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         var semanticComplexity = CalculateSemanticComplexity(features, content);
         var lengthComplexity = CalculateLengthComplexity(features);
 
-        var overallComplexity =
-            (structuralComplexity + semanticComplexity + lengthComplexity) / 3.0;
+        var overallComplexity = (structuralComplexity + semanticComplexity + lengthComplexity) / 3.0;
 
         var recommendations = GenerateComplexityRecommendations(overallComplexity, features);
 
@@ -262,7 +229,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
 
     #region Private Helper Methods
 
-    private void AnalyzeEmailCharacteristics(
+    private static void AnalyzeEmailCharacteristics(
         string content,
         List<string> characteristics,
         Dictionary<DocumentType, double> scores
@@ -276,25 +243,21 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         }
 
         // Look for email signature patterns
-        if (content.Contains("--") && (content.Contains("@") || content.Contains("mailto:")))
+        if (content.Contains("--") && (content.Contains('@') || content.Contains("mailto:")))
         {
             characteristics.Add("Email signature patterns");
             scores[DocumentType.Email] += 0.3;
         }
 
         // Reply/forward patterns
-        if (
-            content.Contains("Re:")
-            || content.Contains("Fwd:")
-            || content.Contains("Original Message")
-        )
+        if (content.Contains("Re:") || content.Contains("Fwd:") || content.Contains("Original Message"))
         {
             characteristics.Add("Email thread patterns");
             scores[DocumentType.Email] += 0.4;
         }
     }
 
-    private void AnalyzeChatCharacteristics(
+    private static void AnalyzeChatCharacteristics(
         string content,
         List<string> characteristics,
         Dictionary<DocumentType, double> scores
@@ -325,7 +288,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         }
     }
 
-    private void AnalyzeLegalCharacteristics(
+    private static void AnalyzeLegalCharacteristics(
         string content,
         List<string> characteristics,
         Dictionary<DocumentType, double> scores
@@ -350,9 +313,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
             "whereas",
             "jurisdiction",
         };
-        var legalTermCount = legalTerms.Count(term =>
-            content.Contains(term, StringComparison.OrdinalIgnoreCase)
-        );
+        var legalTermCount = legalTerms.Count(term => content.Contains(term, StringComparison.OrdinalIgnoreCase));
 
         if (legalTermCount >= 3)
         {
@@ -361,18 +322,14 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         }
 
         // Formal structure indicators
-        if (
-            content.Contains("WHEREAS")
-            || content.Contains("THEREFORE")
-            || content.Contains("IN WITNESS WHEREOF")
-        )
+        if (content.Contains("WHEREAS") || content.Contains("THEREFORE") || content.Contains("IN WITNESS WHEREOF"))
         {
             characteristics.Add("Formal legal structure");
             scores[DocumentType.Legal] += 0.8;
         }
     }
 
-    private void AnalyzeResearchCharacteristics(
+    private static void AnalyzeResearchCharacteristics(
         string content,
         List<string> characteristics,
         Dictionary<DocumentType, double> scores
@@ -413,7 +370,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         }
     }
 
-    private void AnalyzeTechnicalCharacteristics(
+    private static void AnalyzeTechnicalCharacteristics(
         string content,
         List<string> characteristics,
         Dictionary<DocumentType, double> scores
@@ -438,9 +395,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
             "algorithm",
             "implementation",
         };
-        var techTermCount = techTerms.Count(term =>
-            content.Contains(term, StringComparison.OrdinalIgnoreCase)
-        );
+        var techTermCount = techTerms.Count(term => content.Contains(term, StringComparison.OrdinalIgnoreCase));
 
         if (techTermCount >= 4)
         {
@@ -460,7 +415,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         }
     }
 
-    private Dictionary<SegmentationStrategy, double> CalculateStrategyScores(
+    private static Dictionary<SegmentationStrategy, double> CalculateStrategyScores(
         DocumentTypeDetection typeDetection,
         DocumentComplexityAnalysis complexity,
         string content
@@ -536,17 +491,13 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         return scores;
     }
 
-    private DocumentFeatures AnalyzeDocumentFeatures(string content)
+    private static DocumentFeatures AnalyzeDocumentFeatures(string content)
     {
         var features = new DocumentFeatures();
 
         // Basic counts
-        features.WordCount = content
-            .Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-            .Length;
-        features.ParagraphCount = content
-            .Split(new[] { "\n\n", "\r\n\r\n" }, StringSplitOptions.RemoveEmptyEntries)
-            .Length;
+        features.WordCount = content.Split(separator, StringSplitOptions.RemoveEmptyEntries).Length;
+        features.ParagraphCount = content.Split(separatorArray, StringSplitOptions.RemoveEmptyEntries).Length;
 
         // Structural features
         features.HeadingCount = HeadingPattern.Matches(content).Count;
@@ -568,22 +519,14 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         }
 
         // Linguistic features
-        var sentences = content.Split(
-            new[] { '.', '!', '?' },
-            StringSplitOptions.RemoveEmptyEntries
-        );
+        var sentences = content.Split(separatorArray0, StringSplitOptions.RemoveEmptyEntries);
         features.AverageSentenceLength =
             sentences.Length > 0
                 ? sentences.Average(s => s.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length)
                 : 0;
 
         // Vocabulary diversity
-        var words = content
-            .ToLower()
-            .Split(
-                new[] { ' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?' },
-                StringSplitOptions.RemoveEmptyEntries
-            );
+        var words = content.ToLower().Split(separatorArray1, StringSplitOptions.RemoveEmptyEntries);
         var uniqueWords = words.Distinct().Count();
         features.VocabularyDiversity = words.Length > 0 ? (double)uniqueWords / words.Length : 0;
 
@@ -595,7 +538,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         return features;
     }
 
-    private bool DetectNarrativeFlow(string content)
+    private static bool DetectNarrativeFlow(string content)
     {
         // Look for narrative indicators
         var narrativeIndicators = new[]
@@ -620,16 +563,13 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         );
 
         // Look for temporal references
-        var temporalPattern = new Regex(
-            @"\b(yesterday|today|tomorrow|last\s+\w+|next\s+\w+|\d+\s+(days?|weeks?|months?|years?)\s+(ago|later))\b",
-            RegexOptions.IgnoreCase
-        );
+        var temporalPattern = MyRegex10();
         var temporalMatches = temporalPattern.Matches(content).Count;
 
         return indicatorCount >= 3 || temporalMatches >= 2;
     }
 
-    private double CalculateStructuralComplexity(DocumentFeatures features)
+    private static double CalculateStructuralComplexity(DocumentFeatures features)
     {
         var score = 0.0;
 
@@ -654,7 +594,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         return Math.Min(score, 1.0);
     }
 
-    private double CalculateSemanticComplexity(DocumentFeatures features, string content)
+    private static double CalculateSemanticComplexity(DocumentFeatures features, string content)
     {
         var score = 0.0;
 
@@ -673,7 +613,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         return Math.Min(score, 1.0);
     }
 
-    private double CalculateLengthComplexity(DocumentFeatures features)
+    private static double CalculateLengthComplexity(DocumentFeatures features)
     {
         var score = 0.0;
 
@@ -686,17 +626,14 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         // Structure vs length ratio
         if (features.WordCount > 0)
         {
-            var structureRatio =
-                (features.HeadingCount + features.ListItemCount)
-                / (double)features.WordCount
-                * 1000;
+            var structureRatio = (features.HeadingCount + features.ListItemCount) / (double)features.WordCount * 1000;
             score += Math.Min(structureRatio, 0.2);
         }
 
         return Math.Min(score, 1.0);
     }
 
-    private string GenerateStrategyReasoning(
+    private static string GenerateStrategyReasoning(
         SegmentationStrategy strategy,
         DocumentTypeDetection typeDetection,
         DocumentComplexityAnalysis complexity
@@ -719,13 +656,9 @@ public class DocumentAnalysisService : IDocumentAnalysisService
                 break;
 
             case SegmentationStrategy.StructureBased:
-                reasons.Add(
-                    "Structure-based segmentation recommended due to formal document organization"
-                );
+                reasons.Add("Structure-based segmentation recommended due to formal document organization");
                 if (complexity.StructuralComplexity > 0.6)
-                    reasons.Add(
-                        $"High structural complexity detected (headings: {complexity.Features.HeadingCount})"
-                    );
+                    reasons.Add($"High structural complexity detected (headings: {complexity.Features.HeadingCount})");
                 break;
 
             case SegmentationStrategy.NarrativeBased:
@@ -735,9 +668,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
                 break;
 
             case SegmentationStrategy.Hybrid:
-                reasons.Add(
-                    "Hybrid approach recommended for complex content requiring multiple strategies"
-                );
+                reasons.Add("Hybrid approach recommended for complex content requiring multiple strategies");
                 if (complexity.ComplexityScore > 0.7)
                     reasons.Add("High overall complexity justifies multi-strategy approach");
                 break;
@@ -752,10 +683,7 @@ public class DocumentAnalysisService : IDocumentAnalysisService
         return string.Join(". ", reasons) + ".";
     }
 
-    private List<string> GenerateComplexityRecommendations(
-        double complexity,
-        DocumentFeatures features
-    )
+    private static List<string> GenerateComplexityRecommendations(double complexity, DocumentFeatures features)
     {
         var recommendations = new List<string>();
 
@@ -793,6 +721,51 @@ public class DocumentAnalysisService : IDocumentAnalysisService
 
         return recommendations;
     }
+
+    [GeneratedRegex(@"(From:|To:|Subject:|Date:|Reply-To:)", RegexOptions.IgnoreCase | RegexOptions.Compiled, "en-US")]
+    private static partial Regex MyRegex();
+
+    [GeneratedRegex(
+        @"\d{1,2}:\d{2}(\s?[AP]M)?|\d{4}-\d{2}-\d{2}",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        "en-US"
+    )]
+    private static partial Regex MyRegex1();
+
+    [GeneratedRegex(@"\d+\s+[A-Z][a-z]+\.?\s+\d+|\§\s*\d+|Art\.?\s*\d+", RegexOptions.Compiled)]
+    private static partial Regex MyRegex2();
+
+    [GeneratedRegex(@"^#{1,6}\s+.+$|^[A-Z][A-Z\s\d\.\)]{2,50}$", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex3();
+
+    [GeneratedRegex(@"```[\s\S]*?```|`[^`]+`", RegexOptions.Compiled)]
+    private static partial Regex MyRegex4();
+
+    [GeneratedRegex(@"^\s*[-*+•]\s+.+$|^\s*\d+[\.\)]\s+.+$", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex5();
+
+    [GeneratedRegex(@"\|.*?\|", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex6();
+
+    [GeneratedRegex(@"\[([^\]]+)\]\(([^\)]+)\)|https?://[^\s]+", RegexOptions.Compiled)]
+    private static partial Regex MyRegex7();
+
+    [GeneratedRegex(
+        @"\b(methodology|methods?|experiment|analysis|results?|conclusion|abstract|introduction)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        "en-US"
+    )]
+    private static partial Regex MyRegex8();
+
+    [GeneratedRegex(@"^\s*[A-Za-z][A-Za-z\s]*:\s|^\s*\[[^\]]+\]\s*:", RegexOptions.Multiline | RegexOptions.Compiled)]
+    private static partial Regex MyRegex9();
+
+    [GeneratedRegex(
+        @"\b(yesterday|today|tomorrow|last\s+\w+|next\s+\w+|\d+\s+(days?|weeks?|months?|years?)\s+(ago|later))\b",
+        RegexOptions.IgnoreCase,
+        "en-US"
+    )]
+    private static partial Regex MyRegex10();
 
     #endregion
 }

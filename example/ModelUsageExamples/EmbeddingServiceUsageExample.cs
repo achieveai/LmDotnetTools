@@ -12,6 +12,8 @@ namespace AchieveAi.LmDotnetTools.Example.ModelUsageExamples;
 public class EmbeddingServiceUsageExample
 {
     private readonly ServerEmbeddings _embeddingService;
+    private static readonly string[] sourceArray = new[] { "float" };
+    private static readonly string[] values = new[] { "N/A" };
 
     public EmbeddingServiceUsageExample(ServerEmbeddings embeddingService)
     {
@@ -22,9 +24,7 @@ public class EmbeddingServiceUsageExample
     /// Example 1: Structured Error Handling for Production Systems
     /// Shows how ErrorModels provide actionable error information for monitoring systems
     /// </summary>
-    public async Task<string> ProcessDocumentsWithStructuredErrorHandlingAsync(
-        List<string> documents
-    )
+    public async Task<string> ProcessDocumentsWithStructuredErrorHandlingAsync(List<string> documents)
     {
         var result = await _embeddingService.GenerateEmbeddingsWithMetricsAsync(documents);
 
@@ -36,10 +36,7 @@ public class EmbeddingServiceUsageExample
             // 3. Used for automated retry logic
             // 4. Parsed by alerting systems
 
-            var errorJson = JsonSerializer.Serialize(
-                result.Error,
-                new JsonSerializerOptions { WriteIndented = true }
-            );
+            var errorJson = JsonSerializer.Serialize(result.Error, new JsonSerializerOptions { WriteIndented = true });
 
             // Example: Automated retry decision based on structured error
             if (result.Error?.IsRetryable == true)
@@ -66,13 +63,9 @@ public class EmbeddingServiceUsageExample
 
         // Success case with performance metrics
         var metrics = result.Metrics;
-        var performanceJson = JsonSerializer.Serialize(
-            metrics,
-            new JsonSerializerOptions { WriteIndented = true }
-        );
+        var performanceJson = JsonSerializer.Serialize(metrics, new JsonSerializerOptions { WriteIndented = true });
 
-        return $"Successfully processed {result.Data?.Count} documents.\n"
-            + $"Performance Metrics:\n{performanceJson}";
+        return $"Successfully processed {result.Data?.Count} documents.\n" + $"Performance Metrics:\n{performanceJson}";
     }
 
     /// <summary>
@@ -91,10 +84,7 @@ public class EmbeddingServiceUsageExample
         };
 
         var profile = await _embeddingService.AnalyzePerformanceAsync(testCases);
-        var profileJson = JsonSerializer.Serialize(
-            profile,
-            new JsonSerializerOptions { WriteIndented = true }
-        );
+        var profileJson = JsonSerializer.Serialize(profile, new JsonSerializerOptions { WriteIndented = true });
 
         // The PerformanceModels enable:
         // 1. Performance regression detection
@@ -116,10 +106,7 @@ public class EmbeddingServiceUsageExample
     public async Task<string> PerformHealthCheckAsync()
     {
         var healthResult = await _embeddingService.GetHealthAsync();
-        var healthJson = JsonSerializer.Serialize(
-            healthResult,
-            new JsonSerializerOptions { WriteIndented = true }
-        );
+        var healthJson = JsonSerializer.Serialize(healthResult, new JsonSerializerOptions { WriteIndented = true });
 
         // The ConfigurationModels (HealthCheckResult) enable:
         // 1. Automated health monitoring
@@ -196,7 +183,7 @@ public class EmbeddingServiceUsageExample
         }
     }
 
-    private string GenerateOptimizationRecommendations(PerformanceProfile profile)
+    private static string GenerateOptimizationRecommendations(PerformanceProfile profile)
     {
         var recommendations = new List<string>();
 
@@ -208,17 +195,13 @@ public class EmbeddingServiceUsageExample
 
         if (profile.ResponseTimes.P99Ms > profile.ResponseTimes.AverageMs * 3)
         {
-            recommendations.Add(
-                "• High tail latency detected - investigate retry logic and timeouts"
-            );
+            recommendations.Add("• High tail latency detected - investigate retry logic and timeouts");
         }
 
         // Throughput analysis
         if (profile.Throughput.RequestsPerSecond < 10)
         {
-            recommendations.Add(
-                "• Low throughput detected - consider connection pooling or parallel requests"
-            );
+            recommendations.Add("• Low throughput detected - consider connection pooling or parallel requests");
         }
 
         // Error rate analysis
@@ -243,7 +226,7 @@ public class EmbeddingServiceUsageExample
     /// Example 5: Configuration Validation
     /// Shows how ConfigurationModels can validate service setup
     /// </summary>
-    public Task<ServiceConfiguration> ValidateAndCreateConfigurationAsync()
+    public static Task<ServiceConfiguration> ValidateAndCreateConfigurationAsync()
     {
         // The ConfigurationModels enable comprehensive service configuration
         // that can be validated, versioned, and managed centrally
@@ -281,7 +264,7 @@ public class EmbeddingServiceUsageExample
                 SupportsBatch = true,
                 SupportsReranking = false,
                 MaxBatchSize = 100,
-                EncodingFormats = new[] { "float" }.ToImmutableList(),
+                EncodingFormats = sourceArray.ToImmutableList(),
             },
         };
 
@@ -333,11 +316,7 @@ public class EmbeddingServiceUsageExample
                     + $"• Validation Time: {result.Metrics?.TimingBreakdown?.ValidationMs:F2}ms\n"
                     + $"• Server Processing: {result.Metrics?.TimingBreakdown?.ServerProcessingMs:F2}ms\n\n"
                     + "📋 Sample Embedding Vector (first 10 dimensions):\n"
-                    + string.Join(
-                        ", ",
-                        result.Data.FirstOrDefault()?.Take(10)?.Select(f => f.ToString("F4"))
-                        ?? new[] { "N/A" }
-                    )
+                    + string.Join(", ", result.Data.FirstOrDefault()?.Take(10)?.Select(f => f.ToString("F4")) ?? values)
                     + "...\n\n"
                     + "🎯 This demonstrates how ErrorModels and PerformanceModels provide:\n"
                     + "• Structured success/failure handling\n"
@@ -402,9 +381,7 @@ public class Program
             // Demonstrate structured error handling
             Console.WriteLine("=== Structured Error Handling ===");
             var documents = new List<string> { "Example document", "Another document" };
-            var errorResult = await examples.ProcessDocumentsWithStructuredErrorHandlingAsync(
-                documents
-            );
+            var errorResult = await examples.ProcessDocumentsWithStructuredErrorHandlingAsync(documents);
             Console.WriteLine(errorResult);
             Console.WriteLine("\n" + new string('-', 50) + "\n");
 
@@ -427,18 +404,13 @@ public class Program
 
             // Demonstrate configuration management
             Console.WriteLine("=== Configuration Management ===");
-            var config = await examples.ValidateAndCreateConfigurationAsync();
-            var configJson = JsonSerializer.Serialize(
-                config,
-                new JsonSerializerOptions { WriteIndented = true }
-            );
+            var config = await EmbeddingServiceUsageExample.ValidateAndCreateConfigurationAsync();
+            var configJson = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
             Console.WriteLine($"Service Configuration:\n{configJson}");
         }
         else
         {
-            Console.WriteLine(
-                "⚠️  Integration test failed. Check if the embedding server is running at:"
-            );
+            Console.WriteLine("⚠️  Integration test failed. Check if the embedding server is running at:");
             Console.WriteLine("   http://192.168.11.139:8078/v1/embeddings");
             Console.WriteLine("\nThe structured error handling above demonstrates how ErrorModels");
             Console.WriteLine("provide actionable information for debugging and monitoring.");

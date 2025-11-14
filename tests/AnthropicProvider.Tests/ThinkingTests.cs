@@ -31,9 +31,7 @@ public class ThinkingTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-3-7-sonnet-20250219",
-            ExtraProperties = ImmutableDictionary
-                .Create<string, object?>()
-                .Add("Thinking", thinking),
+            ExtraProperties = ImmutableDictionary.Create<string, object?>().Add("Thinking", thinking),
         };
 
         // Create the request

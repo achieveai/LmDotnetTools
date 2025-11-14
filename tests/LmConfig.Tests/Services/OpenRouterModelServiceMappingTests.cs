@@ -43,13 +43,13 @@ public class OpenRouterModelServiceMappingTests
         Assert.NotNull(result);
         Assert.NotEmpty(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.Equal("test/model", modelConfig.Id);
         Assert.NotNull(modelConfig.Capabilities);
         Assert.NotEmpty(modelConfig.Providers);
 
         // First provider should always be OpenRouter with our new architecture
-        var openRouterProvider = modelConfig.Providers.First();
+        var openRouterProvider = modelConfig.Providers[0];
         Assert.Equal("OpenRouter", openRouterProvider.Name);
         Assert.Contains("openrouter", openRouterProvider.Tags!);
         Assert.Contains("aggregator", openRouterProvider.Tags!);
@@ -77,14 +77,14 @@ public class OpenRouterModelServiceMappingTests
         Assert.NotNull(result);
         Assert.NotEmpty(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.True(modelConfig.IsReasoning);
         Assert.NotNull(modelConfig.Capabilities?.Thinking);
         Assert.Equal(ThinkingType.OpenAI, modelConfig.Capabilities.Thinking.Type);
 
         // Should have both OpenRouter (primary) and OpenAI (special) providers
         Assert.True(modelConfig.Providers.Count >= 2);
-        Assert.Equal("OpenRouter", modelConfig.Providers.First().Name);
+        Assert.Equal("OpenRouter", modelConfig.Providers[0].Name);
         Assert.Contains(modelConfig.Providers, p => p.Name == "OpenAI");
     }
 
@@ -109,13 +109,13 @@ public class OpenRouterModelServiceMappingTests
         Assert.NotNull(result);
         Assert.NotEmpty(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.NotNull(modelConfig.Capabilities?.Multimodal);
         Assert.True(modelConfig.Capabilities.Multimodal.SupportsImages);
         Assert.Contains("multimodal", modelConfig.Capabilities.SupportedFeatures);
     }
 
-    private OpenRouterCache CreateTestCache()
+    private static OpenRouterCache CreateTestCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -177,7 +177,7 @@ public class OpenRouterModelServiceMappingTests
         };
     }
 
-    private OpenRouterCache CreateReasoningModelCache()
+    private static OpenRouterCache CreateReasoningModelCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -239,7 +239,7 @@ public class OpenRouterModelServiceMappingTests
         };
     }
 
-    private OpenRouterCache CreateMultimodalModelCache()
+    private static OpenRouterCache CreateMultimodalModelCache()
     {
         var modelsData = JsonNode.Parse(
             """

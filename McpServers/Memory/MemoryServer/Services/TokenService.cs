@@ -71,11 +71,7 @@ public class TokenService : ITokenService
         var token = tokenHandler.CreateToken(tokenDescriptor);
         var tokenString = tokenHandler.WriteToken(token);
 
-        _logger.LogDebug(
-            "Generated JWT token for userId: {UserId}, agentId: {AgentId}",
-            userId,
-            agentId
-        );
+        _logger.LogDebug("Generated JWT token for userId: {UserId}, agentId: {AgentId}", userId, agentId);
 
         return tokenString;
     }
@@ -105,11 +101,7 @@ public class TokenService : ITokenService
                 ClockSkew = TimeSpan.Zero,
             };
 
-            tokenHandler.ValidateToken(
-                token,
-                validationParameters,
-                out SecurityToken validatedToken
-            );
+            tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
             return true;
         }
         catch (Exception ex)

@@ -33,17 +33,11 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
             );
     }
 
-    public override T? Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options
-    )
+    public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
-            throw new JsonException(
-                $"Expected {JsonTokenType.StartObject} but got {reader.TokenType}"
-            );
+            throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
         }
 
         var extraProperties = ImmutableDictionary.CreateBuilder<string, object?>();
@@ -58,21 +52,14 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
 
             if (reader.TokenType != JsonTokenType.PropertyName)
             {
-                throw new JsonException(
-                    $"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}"
-                );
+                throw new JsonException($"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}");
             }
 
             string propertyName = reader.GetString()!;
             reader.Read();
 
             // Try to handle via the virtual method first
-            var (customHandled, customInstance) = ReadProperty(
-                ref reader,
-                instance,
-                propertyName,
-                options
-            );
+            var (customHandled, customInstance) = ReadProperty(ref reader, instance, propertyName, options);
             if (customHandled)
             {
                 instance = customInstance;
@@ -88,11 +75,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
 
                 if (property != null)
                 {
-                    var value = JsonSerializer.Deserialize(
-                        ref reader,
-                        property.PropertyType,
-                        options
-                    );
+                    var value = JsonSerializer.Deserialize(ref reader, property.PropertyType, options);
                     if (property.SetMethod != null)
                     {
                         // Readonly properties can't be set via reflection
@@ -132,12 +115,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
                     if (propertyValue != null)
                     {
                         writer.WritePropertyName(attr.Name!);
-                        JsonSerializer.Serialize(
-                            writer,
-                            propertyValue,
-                            property.PropertyType,
-                            options
-                        );
+                        JsonSerializer.Serialize(writer, propertyValue, property.PropertyType, options);
                     }
                 }
             }
@@ -178,10 +156,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     /// Sets the extra properties dictionary on the instance.
     /// Can be overridden if the property can't be found via reflection.
     /// </summary>
-    protected virtual T SetExtraProperties(
-        T instance,
-        ImmutableDictionary<string, object?> extraProperties
-    )
+    protected virtual T SetExtraProperties(T instance, ImmutableDictionary<string, object?> extraProperties)
     {
         if (_extraPropertiesProperty != null)
         {
@@ -209,12 +184,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     /// <summary>
     /// Writes the known properties to the JSON writer. Override this to handle properties that can't be handled via reflection.
     /// </summary>
-    protected virtual void WriteProperties(
-        Utf8JsonWriter writer,
-        T value,
-        JsonSerializerOptions options
-    )
-    { }
+    protected virtual void WriteProperties(Utf8JsonWriter writer, T value, JsonSerializerOptions options) { }
 
     private static object? ReadValue(ref Utf8JsonReader reader, JsonSerializerOptions options)
     {

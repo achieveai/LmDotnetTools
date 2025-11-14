@@ -11,8 +11,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 /// </summary>
 public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
 {
-    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators =
-        [];
+    private readonly Dictionary<string, JsonFragmentToStructuredUpdateGenerator> _generators = [];
 
     public string? Name => "JsonFragmentUpdateMiddleware";
 
@@ -25,7 +24,9 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     {
         await foreach (var message in messageStream)
         {
-            yield return message is ToolsCallUpdateMessage toolsCallUpdateMessage ? ProcessToolsCallUpdateMessage(toolsCallUpdateMessage) : message;
+            yield return message is ToolsCallUpdateMessage toolsCallUpdateMessage
+                ? ProcessToolsCallUpdateMessage(toolsCallUpdateMessage)
+                : message;
         }
     }
 
@@ -73,16 +74,12 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         // Get or create generator for this tool call
         if (!_generators.TryGetValue(generatorKey, out var generator))
         {
-            generator = new JsonFragmentToStructuredUpdateGenerator(
-                toolCallUpdate.FunctionName ?? "unknown"
-            );
+            generator = new JsonFragmentToStructuredUpdateGenerator(toolCallUpdate.FunctionName ?? "unknown");
             _generators[generatorKey] = generator;
         }
 
         // Process the function args fragment and get updates
-        var jsonFragmentUpdates = generator
-            .AddFragment(toolCallUpdate.FunctionArgs)
-            .ToImmutableList();
+        var jsonFragmentUpdates = generator.AddFragment(toolCallUpdate.FunctionArgs).ToImmutableList();
 
         // Return updated ToolCallUpdate with JsonFragmentUpdates
         return new ToolCallUpdate
@@ -103,9 +100,9 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     private static string GetGeneratorKey(ToolCallUpdate toolCallUpdate)
     {
         // Prefer ToolCallId if available, otherwise use Index, otherwise use FunctionName
-        return !string.IsNullOrEmpty(toolCallUpdate.ToolCallId)
-            ? $"id:{toolCallUpdate.ToolCallId}"
-            : toolCallUpdate.Index.HasValue ? $"index:{toolCallUpdate.Index.Value}" : $"name:{toolCallUpdate.FunctionName ?? "unknown"}";
+        return !string.IsNullOrEmpty(toolCallUpdate.ToolCallId) ? $"id:{toolCallUpdate.ToolCallId}"
+            : toolCallUpdate.Index.HasValue ? $"index:{toolCallUpdate.Index.Value}"
+            : $"name:{toolCallUpdate.FunctionName ?? "unknown"}";
     }
 
     /// <summary>
@@ -122,11 +119,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
-        var stream = await agent.GenerateReplyStreamingAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken
-        );
+        var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
         return ProcessAsync(stream);
     }
 

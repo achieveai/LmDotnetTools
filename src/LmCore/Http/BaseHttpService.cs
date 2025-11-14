@@ -51,12 +51,7 @@ public abstract class BaseHttpService : IDisposable
     {
         ThrowIfDisposed();
 
-        return await HttpRetryHelper.ExecuteWithRetryAsync(
-            operation,
-            Logger,
-            maxRetries,
-            cancellationToken
-        );
+        return await HttpRetryHelper.ExecuteWithRetryAsync(operation, Logger, maxRetries, cancellationToken);
     }
 
     /// <summary>

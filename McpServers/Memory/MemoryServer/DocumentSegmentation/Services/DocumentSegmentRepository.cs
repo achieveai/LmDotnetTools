@@ -30,7 +30,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
-        if (segments == null || !segments.Any())
+        if (segments == null || segments.Count == 0)
         {
             return new List<int>();
         }
@@ -42,9 +42,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
             await session.ExecuteAsync(
                 async connection =>
                 {
-                    using var transaction = await connection.BeginTransactionAsync(
-                        cancellationToken
-                    );
+                    using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
                     try
                     {
@@ -84,11 +82,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to store segments for document {DocumentId}",
-                parentDocumentId
-            );
+            _logger.LogError(ex, "Failed to store segments for document {DocumentId}", parentDocumentId);
             throw;
         }
     }
@@ -126,14 +120,8 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                     command.CommandText = sql;
                     command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
                     command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                    command.Parameters.AddWithValue(
-                        "@agentId",
-                        sessionContext.AgentId ?? (object)DBNull.Value
-                    );
-                    command.Parameters.AddWithValue(
-                        "@runId",
-                        sessionContext.RunId ?? (object)DBNull.Value
-                    );
+                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                    command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                     using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -152,23 +140,15 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 : reader.GetString(reader.GetOrdinal("summary")),
                             Quality = new SegmentQuality
                             {
-                                CoherenceScore = reader.IsDBNull(
-                                    reader.GetOrdinal("coherence_score")
-                                )
+                                CoherenceScore = reader.IsDBNull(reader.GetOrdinal("coherence_score"))
                                     ? 0.0
                                     : reader.GetDouble(reader.GetOrdinal("coherence_score")),
-                                IndependenceScore = reader.IsDBNull(
-                                    reader.GetOrdinal("independence_score")
-                                )
+                                IndependenceScore = reader.IsDBNull(reader.GetOrdinal("independence_score"))
                                     ? 0.0
                                     : reader.GetDouble(reader.GetOrdinal("independence_score")),
-                                TopicConsistencyScore = reader.IsDBNull(
-                                    reader.GetOrdinal("topic_consistency_score")
-                                )
+                                TopicConsistencyScore = reader.IsDBNull(reader.GetOrdinal("topic_consistency_score"))
                                     ? 0.0
-                                    : reader.GetDouble(
-                                        reader.GetOrdinal("topic_consistency_score")
-                                    ),
+                                    : reader.GetDouble(reader.GetOrdinal("topic_consistency_score")),
                             },
                         };
 
@@ -182,9 +162,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 try
                                 {
                                     segment.Metadata =
-                                        JsonSerializer.Deserialize<Dictionary<string, object>>(
-                                            metadataJson
-                                        ) ?? new();
+                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? new();
                                 }
                                 catch (JsonException ex)
                                 {
@@ -213,11 +191,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to retrieve segments for document {DocumentId}",
-                parentDocumentId
-            );
+            _logger.LogError(ex, "Failed to retrieve segments for document {DocumentId}", parentDocumentId);
             throw;
         }
     }
@@ -232,7 +206,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
-        if (relationships == null || !relationships.Any())
+        if (relationships == null || relationships.Count == 0)
         {
             return 0;
         }
@@ -244,20 +218,13 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
             await session.ExecuteAsync(
                 async connection =>
                 {
-                    using var transaction = await connection.BeginTransactionAsync(
-                        cancellationToken
-                    );
+                    using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
                     try
                     {
                         foreach (var relationship in relationships)
                         {
-                            await InsertRelationshipAsync(
-                                connection,
-                                relationship,
-                                sessionContext,
-                                cancellationToken
-                            );
+                            await InsertRelationshipAsync(connection, relationship, sessionContext, cancellationToken);
                             storedCount++;
                         }
 
@@ -324,14 +291,8 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                     command.CommandText = sql;
                     command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
                     command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                    command.Parameters.AddWithValue(
-                        "@agentId",
-                        sessionContext.AgentId ?? (object)DBNull.Value
-                    );
-                    command.Parameters.AddWithValue(
-                        "@runId",
-                        sessionContext.RunId ?? (object)DBNull.Value
-                    );
+                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                    command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                     using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -340,12 +301,8 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                         var relationship = new SegmentRelationship
                         {
                             Id = reader.GetInt32(reader.GetOrdinal("id")).ToString(),
-                            SourceSegmentId = reader.GetString(
-                                reader.GetOrdinal("source_segment_id")
-                            ),
-                            TargetSegmentId = reader.GetString(
-                                reader.GetOrdinal("target_segment_id")
-                            ),
+                            SourceSegmentId = reader.GetString(reader.GetOrdinal("source_segment_id")),
+                            TargetSegmentId = reader.GetString(reader.GetOrdinal("target_segment_id")),
                             RelationshipType = Enum.Parse<SegmentRelationshipType>(
                                 reader.GetString(reader.GetOrdinal("relationship_type")),
                                 true
@@ -365,9 +322,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 try
                                 {
                                     relationship.Metadata =
-                                        JsonSerializer.Deserialize<Dictionary<string, object>>(
-                                            metadataJson
-                                        ) ?? new();
+                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? new();
                                 }
                                 catch (JsonException ex)
                                 {
@@ -422,9 +377,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
             await session.ExecuteAsync(
                 async connection =>
                 {
-                    using var transaction = await connection.BeginTransactionAsync(
-                        cancellationToken
-                    );
+                    using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
                     try
                     {
@@ -457,10 +410,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                             "@agentId",
                             sessionContext.AgentId ?? (object)DBNull.Value
                         );
-                        deleteRelCmd.Parameters.AddWithValue(
-                            "@runId",
-                            sessionContext.RunId ?? (object)DBNull.Value
-                        );
+                        deleteRelCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                         await deleteRelCmd.ExecuteNonQueryAsync(cancellationToken);
 
@@ -481,10 +431,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                             "@agentId",
                             sessionContext.AgentId ?? (object)DBNull.Value
                         );
-                        deleteSegCmd.Parameters.AddWithValue(
-                            "@runId",
-                            sessionContext.RunId ?? (object)DBNull.Value
-                        );
+                        deleteSegCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                         deletedCount = await deleteSegCmd.ExecuteNonQueryAsync(cancellationToken);
 
@@ -512,11 +459,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to delete segments for document {DocumentId}",
-                parentDocumentId
-            );
+            _logger.LogError(ex, "Failed to delete segments for document {DocumentId}", parentDocumentId);
             throw;
         }
     }
@@ -602,14 +545,8 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                     }
 
                     command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                    command.Parameters.AddWithValue(
-                        "@agentId",
-                        sessionContext.AgentId ?? (object)DBNull.Value
-                    );
-                    command.Parameters.AddWithValue(
-                        "@runId",
-                        sessionContext.RunId ?? (object)DBNull.Value
-                    );
+                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                    command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
                     command.Parameters.AddWithValue("@limit", limit);
 
                     using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -629,23 +566,15 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 : reader.GetString(reader.GetOrdinal("summary")),
                             Quality = new SegmentQuality
                             {
-                                CoherenceScore = reader.IsDBNull(
-                                    reader.GetOrdinal("coherence_score")
-                                )
+                                CoherenceScore = reader.IsDBNull(reader.GetOrdinal("coherence_score"))
                                     ? 0.0
                                     : reader.GetDouble(reader.GetOrdinal("coherence_score")),
-                                IndependenceScore = reader.IsDBNull(
-                                    reader.GetOrdinal("independence_score")
-                                )
+                                IndependenceScore = reader.IsDBNull(reader.GetOrdinal("independence_score"))
                                     ? 0.0
                                     : reader.GetDouble(reader.GetOrdinal("independence_score")),
-                                TopicConsistencyScore = reader.IsDBNull(
-                                    reader.GetOrdinal("topic_consistency_score")
-                                )
+                                TopicConsistencyScore = reader.IsDBNull(reader.GetOrdinal("topic_consistency_score"))
                                     ? 0.0
-                                    : reader.GetDouble(
-                                        reader.GetOrdinal("topic_consistency_score")
-                                    ),
+                                    : reader.GetDouble(reader.GetOrdinal("topic_consistency_score")),
                             },
                         };
 
@@ -659,9 +588,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 try
                                 {
                                     segment.Metadata =
-                                        JsonSerializer.Deserialize<Dictionary<string, object>>(
-                                            metadataJson
-                                        ) ?? new();
+                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? new();
                                 }
                                 catch (JsonException ex)
                                 {
@@ -676,9 +603,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                         }
 
                         // Add search rank to metadata
-                        segment.Metadata["search_rank"] = reader.GetDouble(
-                            reader.GetOrdinal("rank")
-                        );
+                        segment.Metadata["search_rank"] = reader.GetDouble(reader.GetOrdinal("rank"));
 
                         segments.Add(segment);
                     }
@@ -686,11 +611,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                 cancellationToken
             );
 
-            _logger.LogDebug(
-                "Found {SegmentCount} segments matching query '{Query}'",
-                segments.Count,
-                query
-            );
+            _logger.LogDebug("Found {SegmentCount} segments matching query '{Query}'", segments.Count, query);
             return segments;
         }
         catch (Exception ex)
@@ -702,7 +623,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
     #region Private Methods
 
-    private async Task<int> InsertSegmentAsync(
+    private static async Task<int> InsertSegmentAsync(
         SqliteConnection connection,
         DocumentSegment segment,
         int parentDocumentId,
@@ -733,25 +654,20 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         command.Parameters.AddWithValue("@summary", segment.Summary ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("@coherenceScore", segment.Quality.CoherenceScore);
         command.Parameters.AddWithValue("@independenceScore", segment.Quality.IndependenceScore);
-        command.Parameters.AddWithValue(
-            "@topicConsistencyScore",
-            segment.Quality.TopicConsistencyScore
-        );
+        command.Parameters.AddWithValue("@topicConsistencyScore", segment.Quality.TopicConsistencyScore);
         command.Parameters.AddWithValue("@userId", sessionContext.UserId);
         command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
         // Serialize metadata
-        var metadataJson = segment.Metadata.Any()
-            ? JsonSerializer.Serialize(segment.Metadata)
-            : null;
+        var metadataJson = segment.Metadata.Count != 0 ? JsonSerializer.Serialize(segment.Metadata) : null;
         command.Parameters.AddWithValue("@metadata", metadataJson ?? (object)DBNull.Value);
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt32(result);
     }
 
-    private async Task InsertRelationshipAsync(
+    private static async Task InsertRelationshipAsync(
         SqliteConnection connection,
         SegmentRelationship relationship,
         SessionContext sessionContext,
@@ -772,19 +688,14 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         command.CommandText = sql;
         command.Parameters.AddWithValue("@sourceSegmentId", relationship.SourceSegmentId);
         command.Parameters.AddWithValue("@targetSegmentId", relationship.TargetSegmentId);
-        command.Parameters.AddWithValue(
-            "@relationshipType",
-            relationship.RelationshipType.ToString()
-        );
+        command.Parameters.AddWithValue("@relationshipType", relationship.RelationshipType.ToString());
         command.Parameters.AddWithValue("@strength", relationship.Strength);
         command.Parameters.AddWithValue("@userId", sessionContext.UserId);
         command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
         // Serialize metadata
-        var metadataJson = relationship.Metadata.Any()
-            ? JsonSerializer.Serialize(relationship.Metadata)
-            : null;
+        var metadataJson = relationship.Metadata.Count != 0 ? JsonSerializer.Serialize(relationship.Metadata) : null;
         command.Parameters.AddWithValue("@metadata", metadataJson ?? (object)DBNull.Value);
 
         await command.ExecuteNonQueryAsync(cancellationToken);

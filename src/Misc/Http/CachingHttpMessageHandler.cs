@@ -133,10 +133,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
     /// <summary>
     /// Retrieves a cached response if it exists and is not expired.
     /// </summary>
-    private async Task<HttpResponseMessage?> GetFromCacheAsync(
-        string cacheKey,
-        CancellationToken cancellationToken
-    )
+    private async Task<HttpResponseMessage?> GetFromCacheAsync(string cacheKey, CancellationToken cancellationToken)
     {
         try
         {
@@ -158,11 +155,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
             // Reconstruct HttpResponseMessage
             var response = new HttpResponseMessage((System.Net.HttpStatusCode)cachedItem.StatusCode)
             {
-                Content = new StringContent(
-                    cachedItem.Content,
-                    Encoding.UTF8,
-                    cachedItem.ContentType
-                ),
+                Content = new StringContent(cachedItem.Content, Encoding.UTF8, cachedItem.ContentType),
                 ReasonPhrase = cachedItem.ReasonPhrase,
             };
 
@@ -282,8 +275,7 @@ public class CachingHttpContent : HttpContent
         SemaphoreSlim semaphore
     )
     {
-        _originalContent =
-            originalContent ?? throw new ArgumentNullException(nameof(originalContent));
+        _originalContent = originalContent ?? throw new ArgumentNullException(nameof(originalContent));
         _cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -376,12 +368,7 @@ public class CachingStream : Stream
         set => throw new NotSupportedException("Seeking is not supported");
     }
 
-    public override async Task<int> ReadAsync(
-        byte[] buffer,
-        int offset,
-        int count,
-        CancellationToken cancellationToken
-    )
+    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         var bytesRead = await _originalStream.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
 
@@ -497,8 +484,7 @@ public class CachingStream : Stream
     public override long Seek(long offset, SeekOrigin origin) =>
         throw new NotSupportedException("Seeking is not supported");
 
-    public override void SetLength(long value) =>
-        throw new NotSupportedException("SetLength is not supported");
+    public override void SetLength(long value) => throw new NotSupportedException("SetLength is not supported");
 
     public override void Write(byte[] buffer, int offset, int count) =>
         throw new NotSupportedException("Writing is not supported");

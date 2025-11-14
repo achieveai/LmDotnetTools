@@ -40,11 +40,7 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
         var newContext = new MiddlewareContext(context.Messages, overriddenOptions);
 
         // Forward to the next agent
-        return await agent.GenerateReplyAsync(
-            newContext.Messages,
-            overriddenOptions,
-            cancellationToken
-        );
+        return await agent.GenerateReplyAsync(newContext.Messages, overriddenOptions, cancellationToken);
     }
 
     /// <summary>
@@ -61,11 +57,7 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
         var newContext = new MiddlewareContext(context.Messages, overriddenOptions);
 
         // Forward to the next agent
-        return await agent.GenerateReplyStreamingAsync(
-            newContext.Messages,
-            overriddenOptions,
-            cancellationToken
-        );
+        return await agent.GenerateReplyStreamingAsync(newContext.Messages, overriddenOptions, cancellationToken);
     }
 
     private GenerateReplyOptions OverrideOptions(GenerateReplyOptions? currentOptions)

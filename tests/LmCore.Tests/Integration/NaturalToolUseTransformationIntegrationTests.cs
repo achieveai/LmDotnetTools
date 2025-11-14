@@ -45,11 +45,7 @@ public class NaturalToolUseTransformationIntegrationTests
                 .Add("tool_version", "1.2.0"),
         };
 
-        var aggregateMessage = new ToolsCallAggregateMessage(
-            toolCallMessage,
-            toolResultMessage,
-            "weather-agent"
-        );
+        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "weather-agent");
 
         // Act - Transform using the core transformer
         var transformed = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
@@ -91,10 +87,7 @@ public class NaturalToolUseTransformationIntegrationTests
     public void FullPipeline_MultipleToolCalls_WithSeparators()
     {
         // Arrange - Create a scenario with multiple tool calls
-        var searchCall = new ToolCall(
-            "SearchDatabase",
-            "{\"query\":\"customers in California\",\"limit\":5}"
-        );
+        var searchCall = new ToolCall("SearchDatabase", "{\"query\":\"customers in California\",\"limit\":5}");
         var analysisCall = new ToolCall(
             "AnalyzeResults",
             "{\"data_source\":\"customer_search\",\"metrics\":[\"count\",\"revenue\"]}"
@@ -121,11 +114,7 @@ public class NaturalToolUseTransformationIntegrationTests
             ToolCallResults = ImmutableList.Create(searchResult, analysisResult),
         };
 
-        var aggregateMessage = new ToolsCallAggregateMessage(
-            toolCallMessage,
-            toolResultMessage,
-            "data-agent"
-        );
+        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "data-agent");
 
         // Act
         var transformed = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
@@ -174,10 +163,7 @@ public class NaturalToolUseTransformationIntegrationTests
         );
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var suffixMessage = new TextMessage
@@ -234,15 +220,8 @@ public class NaturalToolUseTransformationIntegrationTests
         );
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
-        var aggregateMessage = new ToolsCallAggregateMessage(
-            toolCallMessage,
-            toolResultMessage,
-            "payment-processor"
-        );
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "payment-processor");
 
         var conversationMessages = new IMessage[]
         {
@@ -301,18 +280,12 @@ public class NaturalToolUseTransformationIntegrationTests
         var problematicToolCall = new ToolCall(null, "invalid json {"); // Null name, invalid JSON
         var problematicToolResult = new ToolCallResult(null, "simple text result");
 
-        var toolCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = ImmutableList.Create(problematicToolCall),
-        };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(problematicToolCall) };
         var toolResultMessage = new ToolsCallResultMessage
         {
             ToolCallResults = ImmutableList.Create(problematicToolResult),
         };
-        var problematicAggregate = new ToolsCallAggregateMessage(
-            toolCallMessage,
-            toolResultMessage
-        );
+        var problematicAggregate = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act & Assert - Test graceful handling
 
@@ -369,10 +342,7 @@ public class NaturalToolUseTransformationIntegrationTests
         );
 
         var salesCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(salesCall) };
-        var salesResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(salesResult),
-        };
+        var salesResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(salesResult) };
         var salesAggregate = new ToolsCallAggregateMessage(salesCallMessage, salesResultMessage);
 
         var analysisMessage = new TextMessage
@@ -392,14 +362,8 @@ public class NaturalToolUseTransformationIntegrationTests
             "Q1 2024 Sales Summary:\\n\\nTotal Revenue: $1,750,000\\nTransactions: 156\\nAverage Order Value: $11,218\\n\\nMonthly Breakdown:\\n- January: $580,000 (33.1%)\\n- February: $620,000 (35.4%)\\n- March: $550,000 (31.4%)\\n\\nKey Insights:\\n- February was the strongest month\\n- Consistent performance across the quarter\\n- High average order value indicates quality customer base"
         );
 
-        var reportCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = ImmutableList.Create(reportCall),
-        };
-        var reportResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(reportResult),
-        };
+        var reportCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(reportCall) };
+        var reportResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(reportResult) };
         var reportAggregate = new ToolsCallAggregateMessage(reportCallMessage, reportResultMessage);
 
         var finalMessage = new TextMessage
@@ -458,9 +422,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var helpIndex = combinedResponse.Text.IndexOf("I'll help you get");
         var firstToolCallIndex = combinedResponse.Text.IndexOf("<tool_call name=\"GetSalesData\">");
         var greatIndex = combinedResponse.Text.IndexOf("Great! Now let me");
-        var secondToolCallIndex = combinedResponse.Text.IndexOf(
-            "<tool_call name=\"CreateSummaryReport\">"
-        );
+        var secondToolCallIndex = combinedResponse.Text.IndexOf("<tool_call name=\"CreateSummaryReport\">");
         var perfectIndex = combinedResponse.Text.IndexOf("Perfect! I've compiled");
 
         Assert.True(helpIndex < firstToolCallIndex);

@@ -67,19 +67,12 @@ public class McpToolFilter
     /// <param name="originalToolName">The original tool name from the server</param>
     /// <param name="registeredToolName">The registered name (possibly with prefix)</param>
     /// <returns>True if the tool should be filtered out (excluded), false if it should be included</returns>
-    public bool ShouldFilterTool(
-        string serverId,
-        string originalToolName,
-        string registeredToolName
-    )
+    public bool ShouldFilterTool(string serverId, string originalToolName, string registeredToolName)
     {
         // Create a temporary descriptor to pass to the generalized filter
         var descriptor = new FunctionDescriptor
         {
-            Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract
-            {
-                Name = originalToolName,
-            },
+            Contract = new AchieveAi.LmDotnetTools.LmCore.Agents.FunctionContract { Name = originalToolName },
             Handler = _ => Task.FromResult(string.Empty), // Dummy handler
             ProviderName = serverId,
         };

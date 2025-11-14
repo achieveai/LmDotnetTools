@@ -80,9 +80,7 @@ public static class SchemaHelper
             foreach (var kvp in transformedProperties)
             {
                 requiredPropertyNames.Add(kvp.Key);
-                Console.WriteLine(
-                    $"[DEBUG] Added '{kvp.Key}' to required array (OpenAI requires all properties)"
-                );
+                Console.WriteLine($"[DEBUG] Added '{kvp.Key}' to required array (OpenAI requires all properties)");
             }
         }
 
@@ -129,10 +127,7 @@ public static class SchemaHelper
             {
                 Type = TransformUnionType(originalProperty.Type),
                 Properties = TransformPropertiesDictionary(originalProperty.Properties),
-                Items =
-                    originalProperty.Items != null
-                        ? TransformSchemaUnions(originalProperty.Items)
-                        : null,
+                Items = originalProperty.Items != null ? TransformSchemaUnions(originalProperty.Items) : null,
                 // Always set AdditionalProperties = false for OpenAI structured outputs
                 AdditionalProperties = false,
             };

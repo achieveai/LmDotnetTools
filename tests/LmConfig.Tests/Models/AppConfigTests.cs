@@ -34,11 +34,7 @@ public class AppConfigTests
             },
         };
 
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>(),
-            ProviderRegistry = providerRegistry,
-        };
+        var appConfig = new AppConfig { Models = new List<ModelConfig>(), ProviderRegistry = providerRegistry };
 
         // Act
         var openAIConnection = appConfig.GetProviderConnection("OpenAI");
@@ -46,12 +42,8 @@ public class AppConfigTests
         var nonExistentConnection = appConfig.GetProviderConnection("NonExistent");
 
         System.Diagnostics.Debug.WriteLine($"OpenAI connection found: {openAIConnection != null}");
-        System.Diagnostics.Debug.WriteLine(
-            $"OpenRouter connection found: {openRouterConnection != null}"
-        );
-        System.Diagnostics.Debug.WriteLine(
-            $"NonExistent connection found: {nonExistentConnection != null}"
-        );
+        System.Diagnostics.Debug.WriteLine($"OpenRouter connection found: {openRouterConnection != null}");
+        System.Diagnostics.Debug.WriteLine($"NonExistent connection found: {nonExistentConnection != null}");
 
         // Assert
         Assert.NotNull(openAIConnection);
@@ -89,18 +81,12 @@ public class AppConfigTests
             },
         };
 
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>(),
-            ProviderRegistry = providerRegistry,
-        };
+        var appConfig = new AppConfig { Models = new List<ModelConfig>(), ProviderRegistry = providerRegistry };
 
         // Act
         var registeredProviders = appConfig.GetRegisteredProviders();
 
-        System.Diagnostics.Debug.WriteLine(
-            $"Registered providers count: {registeredProviders.Count}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Registered providers count: {registeredProviders.Count}");
         System.Diagnostics.Debug.WriteLine($"Providers: {string.Join(", ", registeredProviders)}");
 
         // Assert
@@ -125,11 +111,7 @@ public class AppConfigTests
             },
         };
 
-        var appConfig = new AppConfig
-        {
-            Models = new List<ModelConfig>(),
-            ProviderRegistry = providerRegistry,
-        };
+        var appConfig = new AppConfig { Models = new List<ModelConfig>(), ProviderRegistry = providerRegistry };
 
         // Act & Assert
         Assert.True(appConfig.IsProviderRegistered("OpenAI"));
@@ -159,9 +141,7 @@ public class AppConfigTests
     public void ProviderConnectionInfo_Validate_CatchesInvalidConfiguration()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            "Testing ProviderConnectionInfo validation with invalid configuration"
-        );
+        System.Diagnostics.Debug.WriteLine("Testing ProviderConnectionInfo validation with invalid configuration");
 
         var invalidConnection = new ProviderConnectionInfo
         {
@@ -191,9 +171,7 @@ public class AppConfigTests
     public void ProviderConnectionInfo_Validate_PassesForValidConfiguration()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            "Testing ProviderConnectionInfo validation with valid configuration"
-        );
+        System.Diagnostics.Debug.WriteLine("Testing ProviderConnectionInfo validation with valid configuration");
 
         Environment.SetEnvironmentVariable("TEST_API_KEY", "test-key-value");
 
@@ -261,9 +239,7 @@ public class AppConfigTests
     public void AppConfig_DeserializesFromJson_WithProviderRegistry()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            "Testing AppConfig JSON deserialization with ProviderRegistry"
-        );
+        System.Diagnostics.Debug.WriteLine("Testing AppConfig JSON deserialization with ProviderRegistry");
 
         var json = """
             {

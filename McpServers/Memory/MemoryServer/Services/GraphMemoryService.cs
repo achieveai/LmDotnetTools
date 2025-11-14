@@ -28,13 +28,10 @@ public class GraphMemoryService : IGraphMemoryService
         ILogger<GraphMemoryService> logger
     )
     {
-        _extractionService =
-            extractionService ?? throw new ArgumentNullException(nameof(extractionService));
+        _extractionService = extractionService ?? throw new ArgumentNullException(nameof(extractionService));
         _decisionEngine = decisionEngine ?? throw new ArgumentNullException(nameof(decisionEngine));
-        _graphRepository =
-            graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
-        _memoryRepository =
-            memoryRepository ?? throw new ArgumentNullException(nameof(memoryRepository));
+        _graphRepository = graphRepository ?? throw new ArgumentNullException(nameof(graphRepository));
+        _memoryRepository = memoryRepository ?? throw new ArgumentNullException(nameof(memoryRepository));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -73,27 +70,16 @@ public class GraphMemoryService : IGraphMemoryService
                 cancellationToken
             );
 
-            _logger.LogDebug(
-                "Generated {InstructionCount} update instructions",
-                instructions.Count
-            );
+            _logger.LogDebug("Generated {InstructionCount} update instructions", instructions.Count);
 
             // Execute entity instructions first to ensure entities exist before relationships
             var entityInstructions = instructions.Where(i => i.EntityData != null).ToList();
-            var relationshipInstructions = instructions
-                .Where(i => i.RelationshipData != null)
-                .ToList();
+            var relationshipInstructions = instructions.Where(i => i.RelationshipData != null).ToList();
 
             // Process entities first
             foreach (var instruction in entityInstructions)
             {
-                if (
-                    !await _decisionEngine.ValidateGraphUpdateAsync(
-                        instruction,
-                        sessionContext,
-                        cancellationToken
-                    )
-                )
+                if (!await _decisionEngine.ValidateGraphUpdateAsync(instruction, sessionContext, cancellationToken))
                 {
                     summary.Warnings.Add($"Skipped invalid instruction: {instruction.Reasoning}");
                     continue;
@@ -134,10 +120,7 @@ public class GraphMemoryService : IGraphMemoryService
 
             // Track processed entities and relationships
             summary.ProcessedEntities = entities.Select(e => e.Name).Distinct().ToList();
-            summary.ProcessedRelationshipTypes = relationships
-                .Select(r => r.RelationshipType)
-                .Distinct()
-                .ToList();
+            summary.ProcessedRelationshipTypes = relationships.Select(r => r.RelationshipType).Distinct().ToList();
 
             stopwatch.Stop();
             summary.ProcessingTimeMs = stopwatch.ElapsedMilliseconds;
@@ -177,12 +160,7 @@ public class GraphMemoryService : IGraphMemoryService
             _logger.LogDebug("Performing hybrid search for query: '{Query}'", query);
 
             // Perform traditional search
-            var traditionalTask = PerformTraditionalSearchAsync(
-                query,
-                sessionContext,
-                maxResults,
-                cancellationToken
-            );
+            var traditionalTask = PerformTraditionalSearchAsync(query, sessionContext, maxResults, cancellationToken);
 
             // Perform graph-based search if enabled
             Task<List<Memory>> graphTask = useGraphTraversal
@@ -204,12 +182,7 @@ public class GraphMemoryService : IGraphMemoryService
             // Extract relevant entities and relationships
             if (useGraphTraversal)
             {
-                await PopulateRelevantGraphDataAsync(
-                    query,
-                    sessionContext,
-                    results,
-                    cancellationToken
-                );
+                await PopulateRelevantGraphDataAsync(query, sessionContext, results, cancellationToken);
             }
 
             stopwatch.Stop();
@@ -284,9 +257,7 @@ public class GraphMemoryService : IGraphMemoryService
                 .Select(t => t.Relationship!)
                 .Distinct()
                 .ToList();
-            result.MaxDepthReached = traversalResults.Any()
-                ? traversalResults.Max(t => t.Depth)
-                : 0;
+            result.MaxDepthReached = traversalResults.Any() ? traversalResults.Max(t => t.Depth) : 0;
 
             stopwatch.Stop();
             result.TraversalTimeMs = stopwatch.ElapsedMilliseconds;
@@ -317,10 +288,7 @@ public class GraphMemoryService : IGraphMemoryService
         try
         {
             _logger.LogDebug("Getting graph statistics");
-            return await _graphRepository.GetGraphStatisticsAsync(
-                sessionContext,
-                cancellationToken
-            );
+            return await _graphRepository.GetGraphStatisticsAsync(sessionContext, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -357,27 +325,20 @@ public class GraphMemoryService : IGraphMemoryService
             );
             summary.MemoriesProcessed = memories.Count;
 
-            _logger.LogDebug(
-                "Processing {MemoryCount} memories for graph rebuild",
-                summary.MemoriesProcessed
-            );
+            _logger.LogDebug("Processing {MemoryCount} memories for graph rebuild", summary.MemoriesProcessed);
 
             // Process each memory
             foreach (var memory in memories)
             {
                 try
                 {
-                    var updateSummary = await ProcessMemoryAsync(
-                        memory,
-                        sessionContext,
-                        cancellationToken
-                    );
+                    var updateSummary = await ProcessMemoryAsync(memory, sessionContext, cancellationToken);
                     summary.EntitiesCreated += updateSummary.EntitiesAdded;
                     summary.RelationshipsCreated += updateSummary.RelationshipsAdded;
                     summary.EntitiesMerged += updateSummary.EntitiesUpdated;
                     summary.RelationshipsMerged += updateSummary.RelationshipsUpdated;
 
-                    if (updateSummary.Warnings.Any())
+                    if (updateSummary.Warnings.Count != 0)
                     {
                         summary.Warnings.AddRange(updateSummary.Warnings);
                     }
@@ -386,11 +347,7 @@ public class GraphMemoryService : IGraphMemoryService
                 {
                     var error = $"Failed to process memory {memory.Id}: {ex.Message}";
                     summary.Errors.Add(error);
-                    _logger.LogError(
-                        ex,
-                        "Error processing memory {MemoryId} during rebuild",
-                        memory.Id
-                    );
+                    _logger.LogError(ex, "Error processing memory {MemoryId} during rebuild", memory.Id);
                 }
             }
 
@@ -444,10 +401,7 @@ public class GraphMemoryService : IGraphMemoryService
             result.EntitiesValidated = entities.Count();
             result.RelationshipsValidated = relationships.Count();
 
-            var entityNames = new HashSet<string>(
-                entities.Select(e => e.Name),
-                StringComparer.OrdinalIgnoreCase
-            );
+            var entityNames = new HashSet<string>(entities.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
 
             // Check for broken relationships
             foreach (var relationship in relationships)
@@ -515,8 +469,7 @@ public class GraphMemoryService : IGraphMemoryService
                         new GraphValidationWarning
                         {
                             Type = GraphValidationWarningType.LowConfidence,
-                            Description =
-                                $"Entity '{entity.Name}' has low confidence score: {entity.Confidence:F2}",
+                            Description = $"Entity '{entity.Name}' has low confidence score: {entity.Confidence:F2}",
                             EntityId = entity.Id,
                         }
                     );
@@ -536,8 +489,7 @@ public class GraphMemoryService : IGraphMemoryService
                         new GraphValidationError
                         {
                             Type = GraphValidationErrorType.DuplicateEntity,
-                            Description =
-                                $"Duplicate entity found: '{entity.Name}' (ID: {entity.Id})",
+                            Description = $"Duplicate entity found: '{entity.Name}' (ID: {entity.Id})",
                             EntityId = entity.Id,
                             Severity = ValidationSeverity.Medium,
                         }
@@ -598,39 +550,27 @@ public class GraphMemoryService : IGraphMemoryService
                 case GraphDecisionOperation.ADD:
                     if (instruction.EntityData != null)
                     {
-                        _logger.LogDebug(
-                            "EXECUTING: Adding entity '{EntityName}'",
-                            instruction.EntityData.Name
-                        );
+                        _logger.LogDebug("EXECUTING: Adding entity '{EntityName}'", instruction.EntityData.Name);
                         await _graphRepository.AddEntityAsync(
                             instruction.EntityData,
                             instruction.SessionContext,
                             cancellationToken
                         );
                         summary.EntitiesAdded++;
-                        _logger.LogDebug(
-                            "EXECUTION SUCCESS: Entity '{EntityName}' added",
-                            instruction.EntityData.Name
-                        );
+                        _logger.LogDebug("EXECUTION SUCCESS: Entity '{EntityName}' added", instruction.EntityData.Name);
                     }
                     else if (instruction.RelationshipData != null)
                     {
                         var relationshipInfo =
                             $"'{instruction.RelationshipData.Source}' --[{instruction.RelationshipData.RelationshipType}]--> '{instruction.RelationshipData.Target}'";
-                        _logger.LogDebug(
-                            "EXECUTING: Adding relationship {RelationshipInfo}",
-                            relationshipInfo
-                        );
+                        _logger.LogDebug("EXECUTING: Adding relationship {RelationshipInfo}", relationshipInfo);
                         await _graphRepository.AddRelationshipAsync(
                             instruction.RelationshipData,
                             instruction.SessionContext,
                             cancellationToken
                         );
                         summary.RelationshipsAdded++;
-                        _logger.LogDebug(
-                            "EXECUTION SUCCESS: Relationship {RelationshipInfo} added",
-                            relationshipInfo
-                        );
+                        _logger.LogDebug("EXECUTION SUCCESS: Relationship {RelationshipInfo} added", relationshipInfo);
                     }
                     break;
 
@@ -691,9 +631,7 @@ public class GraphMemoryService : IGraphMemoryService
                 instruction.Reasoning,
                 ex.Message
             );
-            summary.Warnings.Add(
-                $"Failed to execute instruction: {instruction.Reasoning} - {ex.Message}"
-            );
+            summary.Warnings.Add($"Failed to execute instruction: {instruction.Reasoning} - {ex.Message}");
         }
     }
 
@@ -752,9 +690,7 @@ public class GraphMemoryService : IGraphMemoryService
                 );
 
                 // Get memories that reference these entities
-                foreach (
-                    var relatedEntity in traversalResult.AllEntities.Take(DefaultGraphSearchLimit)
-                )
+                foreach (var relatedEntity in traversalResult.AllEntities.Take(DefaultGraphSearchLimit))
                 {
                     if (relatedEntity.SourceMemoryIds != null)
                     {
@@ -835,8 +771,7 @@ public class GraphMemoryService : IGraphMemoryService
                 // Update existing result
                 existingResult.GraphScore = graphScore;
                 existingResult.CombinedScore =
-                    (existingResult.TraditionalScore * TraditionalSearchWeight)
-                    + (graphScore * GraphSearchWeight);
+                    (existingResult.TraditionalScore * TraditionalSearchWeight) + (graphScore * GraphSearchWeight);
                 existingResult.Source = SearchResultSource.Both;
             }
             else if (!processedMemoryIds.Contains(memory.Id))
@@ -884,26 +819,18 @@ public class GraphMemoryService : IGraphMemoryService
                 limit: 1000,
                 cancellationToken: cancellationToken
             );
-            var relevantEntities = entities.Where(e =>
-                e.SourceMemoryIds?.Any(id => memoryIds.Contains(id)) == true
-            );
+            var relevantEntities = entities.Where(e => e.SourceMemoryIds?.Any(id => memoryIds.Contains(id)) == true);
 
             foreach (var entity in relevantEntities)
             {
-                if (
-                    !results.RelevantEntities.Any(e =>
-                        e.Name.Equals(entity.Name, StringComparison.OrdinalIgnoreCase)
-                    )
-                )
+                if (!results.RelevantEntities.Any(e => e.Name.Equals(entity.Name, StringComparison.OrdinalIgnoreCase)))
                 {
                     results.RelevantEntities.Add(entity);
                 }
             }
 
             // Get relationships for relevant entities
-            var entityNames = results
-                .RelevantEntities.Select(e => e.Name)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var entityNames = results.RelevantEntities.Select(e => e.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var relationships = await _graphRepository.GetRelationshipsAsync(
                 sessionContext,
                 limit: 1000,
@@ -919,10 +846,7 @@ public class GraphMemoryService : IGraphMemoryService
         }
     }
 
-    private async Task ClearGraphDataAsync(
-        SessionContext sessionContext,
-        CancellationToken cancellationToken
-    )
+    private async Task ClearGraphDataAsync(SessionContext sessionContext, CancellationToken cancellationToken)
     {
         try
         {
@@ -943,21 +867,13 @@ public class GraphMemoryService : IGraphMemoryService
             // Delete all relationships first (to avoid foreign key constraints)
             foreach (var relationship in relationships)
             {
-                await _graphRepository.DeleteRelationshipAsync(
-                    relationship.Id,
-                    sessionContext,
-                    cancellationToken
-                );
+                await _graphRepository.DeleteRelationshipAsync(relationship.Id, sessionContext, cancellationToken);
             }
 
             // Delete all entities
             foreach (var entity in entities)
             {
-                await _graphRepository.DeleteEntityAsync(
-                    entity.Id,
-                    sessionContext,
-                    cancellationToken
-                );
+                await _graphRepository.DeleteEntityAsync(entity.Id, sessionContext, cancellationToken);
             }
 
             _logger.LogDebug(

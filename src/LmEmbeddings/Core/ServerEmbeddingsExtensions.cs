@@ -17,9 +17,7 @@ public static class ServerEmbeddingsExtensions
     /// <param name="texts">Texts to embed</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Structured result with embeddings, performance metrics, and error details</returns>
-    public static async Task<
-        EmbeddingServiceResult<List<List<float>>>
-    > GenerateEmbeddingsWithMetricsAsync(
+    public static async Task<EmbeddingServiceResult<List<List<float>>>> GenerateEmbeddingsWithMetricsAsync(
         this ServerEmbeddings service,
         IEnumerable<string> texts,
         CancellationToken cancellationToken = default
@@ -34,7 +32,7 @@ public static class ServerEmbeddingsExtensions
             var textList = texts.ToList();
 
             // Validate inputs
-            if (!textList.Any())
+            if (textList.Count == 0)
             {
                 return EmbeddingResults.ValidationError<List<List<float>>>(
                     "texts",
@@ -136,10 +134,7 @@ public static class ServerEmbeddingsExtensions
                 {
                     Component = "API Connectivity",
                     Status = HealthStatus.Healthy,
-                    Details = ImmutableDictionary<string, object>.Empty.Add(
-                        "embedding_size",
-                        testEmbedding.Length
-                    ),
+                    Details = ImmutableDictionary<string, object>.Empty.Add("embedding_size", testEmbedding.Length),
                 }
             );
 
@@ -150,10 +145,7 @@ public static class ServerEmbeddingsExtensions
                 {
                     Component = "Configuration",
                     Status = embeddingSize > 0 ? HealthStatus.Healthy : HealthStatus.Unhealthy,
-                    Details = ImmutableDictionary<string, object>.Empty.Add(
-                        "embedding_size",
-                        embeddingSize
-                    ),
+                    Details = ImmutableDictionary<string, object>.Empty.Add("embedding_size", embeddingSize),
                 }
             );
 
@@ -211,10 +203,7 @@ public static class ServerEmbeddingsExtensions
         }
 
         var endTime = DateTime.UtcNow;
-        var responseTimes = results
-            .Where(r => r.DurationMs.HasValue)
-            .Select(r => r.DurationMs!.Value)
-            .ToList();
+        var responseTimes = results.Where(r => r.DurationMs.HasValue).Select(r => r.DurationMs!.Value).ToList();
 
         return new PerformanceProfile
         {
@@ -223,25 +212,22 @@ public static class ServerEmbeddingsExtensions
             TimePeriod = new TimePeriod { Start = startTime, End = endTime },
             ResponseTimes = new ResponseTimeStats
             {
-                AverageMs = responseTimes.Any() ? responseTimes.Average() : 0,
-                MedianMs = responseTimes.Any()
-                    ? responseTimes.OrderBy(x => x).Skip(responseTimes.Count / 2).FirstOrDefault()
-                    : 0,
-                P95Ms = responseTimes.Any()
-                    ? responseTimes
-                        .OrderBy(x => x)
-                        .Skip((int)(responseTimes.Count * 0.95))
-                        .FirstOrDefault()
-                    : 0,
-                P99Ms = responseTimes.Any()
-                    ? responseTimes
-                        .OrderBy(x => x)
-                        .Skip((int)(responseTimes.Count * 0.99))
-                        .FirstOrDefault()
-                    : 0,
-                MinMs = responseTimes.Any() ? responseTimes.Min() : 0,
-                MaxMs = responseTimes.Any() ? responseTimes.Max() : 0,
-                StdDevMs = responseTimes.Any() ? CalculateStandardDeviation(responseTimes) : 0,
+                AverageMs = responseTimes.Count != 0 ? responseTimes.Average() : 0,
+                MedianMs =
+                    responseTimes.Count != 0
+                        ? responseTimes.OrderBy(x => x).Skip(responseTimes.Count / 2).FirstOrDefault()
+                        : 0,
+                P95Ms =
+                    responseTimes.Count != 0
+                        ? responseTimes.OrderBy(x => x).Skip((int)(responseTimes.Count * 0.95)).FirstOrDefault()
+                        : 0,
+                P99Ms =
+                    responseTimes.Count != 0
+                        ? responseTimes.OrderBy(x => x).Skip((int)(responseTimes.Count * 0.99)).FirstOrDefault()
+                        : 0,
+                MinMs = responseTimes.Count != 0 ? responseTimes.Min() : 0,
+                MaxMs = responseTimes.Count != 0 ? responseTimes.Max() : 0,
+                StdDevMs = responseTimes.Count != 0 ? CalculateStandardDeviation(responseTimes) : 0,
             },
             Throughput = new ThroughputStats
             {
@@ -251,14 +237,12 @@ public static class ServerEmbeddingsExtensions
             },
             ErrorRates = new ErrorRateStats
             {
-                ErrorRatePercent = results.Any()
-                    ? (results.Count(r => !r.Success) / (double)results.Count) * 100
-                    : 0,
+                ErrorRatePercent =
+                    results.Count != 0 ? (results.Count(r => !r.Success) / (double)results.Count) * 100 : 0,
                 TotalErrors = results.Count(r => !r.Success),
-                AverageRetries = results.Any() ? results.Average(r => r.RetryCount) : 0,
-                SuccessRateAfterRetriesPercent = results.Any()
-                    ? (results.Count(r => r.Success) / (double)results.Count) * 100
-                    : 0,
+                AverageRetries = results.Count != 0 ? results.Average(r => r.RetryCount) : 0,
+                SuccessRateAfterRetriesPercent =
+                    results.Count != 0 ? (results.Count(r => r.Success) / (double)results.Count) * 100 : 0,
             },
         };
     }
@@ -272,7 +256,7 @@ public static class ServerEmbeddingsExtensions
     private static double CalculateStandardDeviation(IEnumerable<double> values)
     {
         var valueList = values.ToList();
-        if (!valueList.Any())
+        if (valueList.Count == 0)
             return 0;
 
         var average = valueList.Average();

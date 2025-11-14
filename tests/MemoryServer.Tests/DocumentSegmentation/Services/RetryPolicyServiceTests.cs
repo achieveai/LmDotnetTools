@@ -38,10 +38,7 @@ public class RetryPolicyServiceTests
         var operationName = "successful-operation";
 
         // Act
-        var result = await _service.ExecuteAsync(
-            () => Task.FromResult(expectedResult),
-            operationName
-        );
+        var result = await _service.ExecuteAsync(() => Task.FromResult(expectedResult), operationName);
 
         // Assert
         Assert.Equal(expectedResult, result);
@@ -147,10 +144,7 @@ public class RetryPolicyServiceTests
     [InlineData(1, 100)] // First retry: base delay
     [InlineData(2, 200)] // Second retry: base * 2
     [InlineData(3, 400)] // Third retry: base * 4
-    public void CalculateDelay_WithExponentialBackoff_ShouldCalculateCorrectly(
-        int attemptNumber,
-        int expectedBaseMs
-    )
+    public void CalculateDelay_WithExponentialBackoff_ShouldCalculateCorrectly(int attemptNumber, int expectedBaseMs)
     {
         // Act
         var delay = _service.CalculateDelay(attemptNumber);
@@ -199,30 +193,15 @@ public class RetryPolicyServiceTests
                 true,
                 "Service unavailable should be retried",
             },
-            new object[]
-            {
-                new HttpRequestException("429 Too Many Requests"),
-                true,
-                "Rate limiting should be retried",
-            },
+            new object[] { new HttpRequestException("429 Too Many Requests"), true, "Rate limiting should be retried" },
             new object[]
             {
                 new HttpRequestException("401 Unauthorized"),
                 false,
                 "Authentication errors should not be retried",
             },
-            new object[]
-            {
-                new HttpRequestException("400 Bad Request"),
-                false,
-                "Bad request should not be retried",
-            },
-            new object[]
-            {
-                new TaskCanceledException("Timeout"),
-                true,
-                "Timeout should be retried",
-            },
+            new object[] { new HttpRequestException("400 Bad Request"), false, "Bad request should not be retried" },
+            new object[] { new TaskCanceledException("Timeout"), true, "Timeout should be retried" },
             new object[]
             {
                 new ArgumentException("Invalid argument"),
@@ -270,10 +249,7 @@ public class RetryPolicyServiceTests
         var operationName = "null-result-operation";
 
         // Act
-        var result = await _service.ExecuteWithNullAsync<string>(
-            () => Task.FromResult<string?>(null),
-            operationName
-        );
+        var result = await _service.ExecuteWithNullAsync<string>(() => Task.FromResult<string?>(null), operationName);
 
         // Assert
         Assert.Null(result);
@@ -287,10 +263,7 @@ public class RetryPolicyServiceTests
         var expectedResult = "valid-result";
 
         // Act
-        var result = await _service.ExecuteWithNullAsync(
-            () => Task.FromResult<string?>(expectedResult),
-            operationName
-        );
+        var result = await _service.ExecuteWithNullAsync(() => Task.FromResult<string?>(expectedResult), operationName);
 
         // Assert
         Assert.Equal(expectedResult, result);

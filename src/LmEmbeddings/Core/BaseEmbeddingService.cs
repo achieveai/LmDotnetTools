@@ -100,10 +100,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// Console.WriteLine($"Embedding size: {embedding.Length}");
     /// </code>
     /// </example>
-    public virtual async Task<float[]> GetEmbeddingAsync(
-        string sentence,
-        CancellationToken cancellationToken = default
-    )
+    public virtual async Task<float[]> GetEmbeddingAsync(string sentence, CancellationToken cancellationToken = default)
     {
         ValidationHelper.ValidateNotNullOrWhiteSpace(sentence);
         ThrowIfDisposed();
@@ -113,13 +110,13 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         if (!availableModels.Any())
             throw new InvalidOperationException("No models available for embedding generation");
 
-        var defaultModel = availableModels.First();
+        var defaultModel = availableModels[0];
         var response = await GenerateEmbeddingAsync(sentence, defaultModel, cancellationToken);
 
         if (response.Embeddings?.Any() != true)
             throw new InvalidOperationException("No embeddings returned from service");
 
-        return response.Embeddings.First().Vector;
+        return response.Embeddings[0].Vector;
     }
 
     /// <inheritdoc />
@@ -188,9 +185,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// containing that single model identifier.
     /// </para>
     /// </remarks>
-    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(
-        CancellationToken cancellationToken = default
-    );
+    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Formats the request payload based on the API type specified in the request.
@@ -231,10 +226,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         {
             EmbeddingApiType.Jina => FormatJinaRequest(request),
             EmbeddingApiType.Default => FormatOpenAIRequest(request),
-            _ => throw new ArgumentException(
-                $"Unsupported API type: {request.ApiType}",
-                nameof(request)
-            ),
+            _ => throw new ArgumentException($"Unsupported API type: {request.ApiType}", nameof(request)),
         };
     }
 

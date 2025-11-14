@@ -46,9 +46,7 @@ public static class OpenAIJsonSerializerOptionsFactory
     public static void AddOpenAIConverters(JsonSerializerOptions options)
     {
         // OpenAI-specific Union converters for content types (not in LmCore)
-        options.Converters.Add(
-            new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>()
-        );
+        options.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
         options.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());
 
         // Note: UnionJsonConverter<string, IReadOnlyList<string>> is already registered in LmCore
@@ -60,8 +58,7 @@ public static class OpenAIJsonSerializerOptionsFactory
     /// Creates JsonSerializerOptions optimized for OpenAI API production use.
     /// Uses the standard OpenAI configuration with compact formatting.
     /// </summary>
-    public static JsonSerializerOptions CreateForProduction() =>
-        CreateForOpenAI(writeIndented: false);
+    public static JsonSerializerOptions CreateForProduction() => CreateForOpenAI(writeIndented: false);
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for OpenAI testing and debugging.

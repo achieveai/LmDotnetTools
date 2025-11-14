@@ -15,9 +15,7 @@ public class JsonSerializationTests
     public void ThinkingCapability_JsonSerializationRoundTrip_Success()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            "Testing ThinkingCapability JSON serialization round-trip"
-        );
+        System.Diagnostics.Debug.WriteLine("Testing ThinkingCapability JSON serialization round-trip");
 
         var original = new ThinkingCapability
         {
@@ -52,9 +50,7 @@ public class JsonSerializationTests
     public void ModelCapabilities_CompleteJsonSerializationRoundTrip_Success()
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine(
-            "Testing complete ModelCapabilities JSON serialization round-trip"
-        );
+        System.Diagnostics.Debug.WriteLine("Testing complete ModelCapabilities JSON serialization round-trip");
 
         var original = new ModelCapabilities
         {
@@ -78,17 +74,12 @@ public class JsonSerializationTests
         );
 
         var deserialized = JsonSerializer.Deserialize<ModelCapabilities>(json, _jsonOptions);
-        System.Diagnostics.Debug.WriteLine(
-            $"Deserialized thinking type: {deserialized?.Thinking?.Type}"
-        );
+        System.Diagnostics.Debug.WriteLine($"Deserialized thinking type: {deserialized?.Thinking?.Type}");
 
         // Assert
         Assert.NotNull(deserialized);
         Assert.Equal(original.Thinking?.Type, deserialized.Thinking?.Type);
-        Assert.Equal(
-            original.TokenLimits.MaxContextTokens,
-            deserialized.TokenLimits.MaxContextTokens
-        );
+        Assert.Equal(original.TokenLimits.MaxContextTokens, deserialized.TokenLimits.MaxContextTokens);
         Assert.Equal(original.SupportsStreaming, deserialized.SupportsStreaming);
         Assert.Equal(original.Version, deserialized.Version);
         Assert.Equal(original.IsPreview, deserialized.IsPreview);

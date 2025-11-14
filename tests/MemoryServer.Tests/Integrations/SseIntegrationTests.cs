@@ -82,9 +82,7 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
         Assert.True(sseExists, $"SSE endpoint should exist. Status: {sseResponse.StatusCode}");
 
         _output.WriteLine($"✅ SSE infrastructure in place - SSE: {sseResponse.StatusCode}");
-        _output.WriteLine(
-            "📝 Note: SSE endpoints are designed for persistent connections, not simple HTTP requests"
-        );
+        _output.WriteLine("📝 Note: SSE endpoints are designed for persistent connections, not simple HTTP requests");
     }
 
     [Fact]

@@ -15,10 +15,7 @@ public interface ISqliteSession : IAsyncDisposable
     /// <param name="operation">Operation to execute with the connection</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Result of the operation</returns>
-    Task<T> ExecuteAsync<T>(
-        Func<SqliteConnection, Task<T>> operation,
-        CancellationToken cancellationToken = default
-    );
+    Task<T> ExecuteAsync<T>(Func<SqliteConnection, Task<T>> operation, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Executes an operation within a transaction.
@@ -37,10 +34,7 @@ public interface ISqliteSession : IAsyncDisposable
     /// </summary>
     /// <param name="operation">Operation to execute with the connection</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    Task ExecuteAsync(
-        Func<SqliteConnection, Task> operation,
-        CancellationToken cancellationToken = default
-    );
+    Task ExecuteAsync(Func<SqliteConnection, Task> operation, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Executes an operation within a transaction (void return).

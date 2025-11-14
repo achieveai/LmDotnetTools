@@ -62,10 +62,7 @@ public class CircuitBreakerService : ICircuitBreakerService
     private readonly ConcurrentDictionary<string, CircuitBreakerState> _circuitStates;
     private readonly ConcurrentDictionary<string, object> _locks;
 
-    public CircuitBreakerService(
-        CircuitBreakerConfiguration configuration,
-        ILogger<CircuitBreakerService> logger
-    )
+    public CircuitBreakerService(CircuitBreakerConfiguration configuration, ILogger<CircuitBreakerService> logger)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -106,10 +103,7 @@ public class CircuitBreakerService : ICircuitBreakerService
                 }
 
                 // Transition to half-open
-                _logger.LogInformation(
-                    "Circuit breaker transitioning to Half-Open for {OperationName}",
-                    operationName
-                );
+                _logger.LogInformation("Circuit breaker transitioning to Half-Open for {OperationName}", operationName);
 
                 var halfOpenState = state with { State = CircuitBreakerStateEnum.HalfOpen };
                 _circuitStates.TryUpdate(operationName, halfOpenState, state);
@@ -316,10 +310,7 @@ public class CircuitBreakerService : ICircuitBreakerService
 
             _circuitStates.TryUpdate(operationName, closedState, currentState);
 
-            _logger.LogInformation(
-                "Circuit breaker forced closed for {OperationName}",
-                operationName
-            );
+            _logger.LogInformation("Circuit breaker forced closed for {OperationName}", operationName);
         }
     }
 
@@ -341,7 +332,7 @@ public class CircuitBreakerService : ICircuitBreakerService
         );
     }
 
-    private string ClassifyError(Exception exception)
+    private static string ClassifyError(Exception exception)
     {
         return exception switch
         {
@@ -364,8 +355,7 @@ public class CircuitBreakerService : ICircuitBreakerService
     {
         // Implement exponential backoff with cap as per AC-2.3
         var baseTimeout = _configuration.TimeoutMs;
-        var exponentialTimeout =
-            baseTimeout * Math.Pow(_configuration.ExponentialFactor, openingCount);
+        var exponentialTimeout = baseTimeout * Math.Pow(_configuration.ExponentialFactor, openingCount);
         var cappedTimeout = Math.Min(exponentialTimeout, _configuration.MaxTimeoutMs);
 
         return DateTime.UtcNow.AddMilliseconds(cappedTimeout);
@@ -383,9 +373,7 @@ public class CircuitBreakerOpenException : Exception
     public DateTime? NextRetryAt { get; }
 
     public CircuitBreakerOpenException(string operationName, DateTime? nextRetryAt)
-        : base(
-            $"Circuit breaker is open for operation '{operationName}'. Next retry at: {nextRetryAt}"
-        )
+        : base($"Circuit breaker is open for operation '{operationName}'. Next retry at: {nextRetryAt}")
     {
         OperationName = operationName;
         NextRetryAt = nextRetryAt;

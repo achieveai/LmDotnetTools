@@ -145,9 +145,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// containing that single model identifier.
     /// </para>
     /// </remarks>
-    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(
-        CancellationToken cancellationToken = default
-    );
+    public abstract Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Validates a rerank request
@@ -157,11 +155,10 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     /// <exception cref="ArgumentException">Thrown when request is invalid</exception>
     protected virtual void ValidateRequest(RerankRequest request)
     {
-        if (request == null)
-            throw new ArgumentNullException(nameof(request));
+        ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.Query))
             throw new ArgumentException("Query cannot be null or empty", nameof(request));
-        if (request.Documents == null || !request.Documents.Any())
+        if (request.Documents == null || request.Documents.IsEmpty)
             throw new ArgumentException("Documents cannot be null or empty", nameof(request));
         if (string.IsNullOrWhiteSpace(request.Model))
             throw new ArgumentException("Model cannot be null or empty", nameof(request));

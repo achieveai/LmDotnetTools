@@ -89,9 +89,7 @@ public class RerankingServiceTests
         Debug.WriteLine($"Testing basic reranking: {description}");
 
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            CreateValidRerankResponse(documents.Length)
-        );
+        var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateValidRerankResponse(documents.Length));
         using var service = CreateRerankingService(fakeHandler);
 
         // Act
@@ -106,10 +104,7 @@ public class RerankingServiceTests
         // Verify ordering (highest score first)
         for (int i = 1; i < result.Count; i++)
         {
-            Assert.True(
-                result[i - 1].Score >= result[i].Score,
-                "Documents should be ordered by descending score"
-            );
+            Assert.True(result[i - 1].Score >= result[i].Score, "Documents should be ordered by descending score");
         }
 
         Debug.WriteLine($"Reranked {result.Count} documents for: {description}");
@@ -122,15 +117,12 @@ public class RerankingServiceTests
         Debug.WriteLine("Testing 500ms linear backoff retry logic");
 
         // Arrange
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            2,
-            CreateValidRerankResponse(3)
-        );
+        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(2, CreateValidRerankResponse(3));
         using var service = CreateRerankingService(fakeHandler);
 
         // Act
         var stopwatch = Stopwatch.StartNew();
-        var result = await service.RerankAsync("test query", new[] { "doc1", "doc2", "doc3" });
+        var result = await service.RerankAsync("test query", documents);
         stopwatch.Stop();
 
         // Assert
@@ -154,10 +146,7 @@ public class RerankingServiceTests
         var longDocument = new string('a', 10000); // Very long document
         var documents = new[] { "short doc", longDocument, "another short doc" };
 
-        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
-            1,
-            CreateValidRerankResponse(3)
-        );
+        var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(1, CreateValidRerankResponse(3));
         using var service = CreateRerankingService(fakeHandler);
 
         // Act
@@ -189,16 +178,14 @@ public class RerankingServiceTests
         // Act & Assert
         if (shouldSucceed)
         {
-            var result = await service.RerankAsync("test", new[] { "doc1", "doc2" });
+            var result = await service.RerankAsync("test", documentsArray);
             Assert.NotNull(result);
             Assert.Equal(2, result.Count);
             Debug.WriteLine($"Retry scenario succeeded: {description}");
         }
         else
         {
-            await Assert.ThrowsAsync<HttpRequestException>(() =>
-                service.RerankAsync("test", new[] { "doc1", "doc2" })
-            );
+            await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray));
             Debug.WriteLine($"Retry scenario failed as expected: {description}");
         }
     }
@@ -219,10 +206,7 @@ public class RerankingServiceTests
         using var service = CreateRerankingService(fakeHandler);
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync(
-            expectedExceptionType,
-            () => service.RerankAsync(query, documents)
-        );
+        var exception = await Assert.ThrowsAsync(expectedExceptionType, () => service.RerankAsync(query, documents));
 
         Assert.NotNull(exception);
         Debug.WriteLine($"Expected exception thrown: {exception.GetType().Name} - {description}");
@@ -242,9 +226,7 @@ public class RerankingServiceTests
 
         // Act & Assert
         var stopwatch = Stopwatch.StartNew();
-        await Assert.ThrowsAsync<HttpRequestException>(() =>
-            service.RerankAsync("test", new[] { "doc1" })
-        );
+        await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
         stopwatch.Stop();
 
         // Should try 3 times total (1 initial + 2 retries) with 500ms + 1000ms delays
@@ -268,9 +250,7 @@ public class RerankingServiceTests
 
         // Act & Assert
         var stopwatch = Stopwatch.StartNew();
-        await Assert.ThrowsAsync<HttpRequestException>(() =>
-            service.RerankAsync("test", new[] { "doc1" })
-        );
+        await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
         stopwatch.Stop();
 
         // Should fail immediately without retries
@@ -278,29 +258,15 @@ public class RerankingServiceTests
             stopwatch.ElapsedMilliseconds < 100,
             $"Expected immediate failure, got {stopwatch.ElapsedMilliseconds}ms"
         );
-        Debug.WriteLine(
-            $"Non-retryable error failed immediately in {stopwatch.ElapsedMilliseconds}ms"
-        );
+        Debug.WriteLine($"Non-retryable error failed immediately in {stopwatch.ElapsedMilliseconds}ms");
     }
 
     // Test Data
     public static IEnumerable<object[]> ConstructorTestCases =>
         new List<object[]>
         {
-            new object[]
-            {
-                "https://api.cohere.com",
-                "rerank-v3.5",
-                "test-key",
-                "Cohere configuration",
-            },
-            new object[]
-            {
-                "https://custom.api.com",
-                "custom-rerank-model",
-                "custom-key",
-                "Custom configuration",
-            },
+            new object[] { "https://api.cohere.com", "rerank-v3.5", "test-key", "Cohere configuration" },
+            new object[] { "https://custom.api.com", "custom-rerank-model", "custom-key", "Custom configuration" },
             new object[]
             {
                 "https://api.example.com/rerank",
@@ -314,98 +280,28 @@ public class RerankingServiceTests
         new List<object[]>
         {
             new object[] { null!, "model", "key", typeof(ArgumentNullException), "Null endpoint" },
-            new object[]
-            {
-                "https://api.test.com",
-                null!,
-                "key",
-                typeof(ArgumentNullException),
-                "Null model",
-            },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                null!,
-                typeof(ArgumentException),
-                "Null API key",
-            },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                "",
-                typeof(ArgumentException),
-                "Empty API key",
-            },
-            new object[]
-            {
-                "https://api.test.com",
-                "model",
-                "   ",
-                typeof(ArgumentException),
-                "Whitespace API key",
-            },
+            new object[] { "https://api.test.com", null!, "key", typeof(ArgumentNullException), "Null model" },
+            new object[] { "https://api.test.com", "model", null!, typeof(ArgumentException), "Null API key" },
+            new object[] { "https://api.test.com", "model", "", typeof(ArgumentException), "Empty API key" },
+            new object[] { "https://api.test.com", "model", "   ", typeof(ArgumentException), "Whitespace API key" },
         };
 
     public static IEnumerable<object[]> BasicRerankingTestCases =>
         new List<object[]>
         {
-            new object[]
-            {
-                "What is the capital?",
-                new[]
-                {
-                    "Paris is the capital of France",
-                    "London is in England",
-                    "Berlin is German",
-                },
-                "Simple query with 3 documents",
-            },
-            new object[]
-            {
-                "Machine learning",
-                new[]
-                {
-                    "AI and ML concepts",
-                    "Weather forecast",
-                    "Cooking recipes",
-                    "Deep learning basics",
-                    "Sports news",
-                },
-                "Technical query with 5 documents",
-            },
-            new object[]
-            {
-                "Best practices",
-                new[] { "Code quality guidelines", "Testing methodologies" },
-                "Professional query with 2 documents",
-            },
+            new object[] { "What is the capital?", item, "Simple query with 3 documents" },
+            new object[] { "Machine learning", itemArray, "Technical query with 5 documents" },
+            new object[] { "Best practices", itemArray0, "Professional query with 2 documents" },
         };
 
     public static IEnumerable<object[]> RetryScenarioTestCases =>
         new List<object[]>
         {
+            new object[] { new[] { HttpStatusCode.InternalServerError, HttpStatusCode.OK }, true, "500 then success" },
+            new object[] { new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.OK }, true, "429 then success" },
             new object[]
             {
-                new[] { HttpStatusCode.InternalServerError, HttpStatusCode.OK },
-                true,
-                "500 then success",
-            },
-            new object[]
-            {
-                new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.OK },
-                true,
-                "429 then success",
-            },
-            new object[]
-            {
-                new[]
-                {
-                    HttpStatusCode.InternalServerError,
-                    HttpStatusCode.BadGateway,
-                    HttpStatusCode.OK,
-                },
+                new[] { HttpStatusCode.InternalServerError, HttpStatusCode.BadGateway, HttpStatusCode.OK },
                 true,
                 "500, 502, then success",
             },
@@ -421,29 +317,39 @@ public class RerankingServiceTests
                 "All 5xx errors",
             },
             new object[] { new[] { HttpStatusCode.BadRequest }, false, "Non-retryable 400 error" },
-            new object[]
-            {
-                new[] { HttpStatusCode.Unauthorized },
-                false,
-                "Non-retryable 401 error",
-            },
+            new object[] { new[] { HttpStatusCode.Unauthorized }, false, "Non-retryable 401 error" },
         };
 
     public static IEnumerable<object[]> InvalidInputTestCases =>
         new List<object[]>
         {
-            new object[] { null!, new[] { "doc1" }, typeof(ArgumentException), "Null query" },
-            new object[] { "", new[] { "doc1" }, typeof(ArgumentException), "Empty query" },
-            new object[] { "   ", new[] { "doc1" }, typeof(ArgumentException), "Whitespace query" },
+            new object[] { null!, itemArray1, typeof(ArgumentException), "Null query" },
+            new object[] { "", itemArray1, typeof(ArgumentException), "Empty query" },
+            new object[] { "   ", itemArray2, typeof(ArgumentException), "Whitespace query" },
             new object[] { "query", null!, typeof(ArgumentNullException), "Null documents" },
-            new object[]
-            {
-                "query",
-                new string[0],
-                typeof(ArgumentException),
-                "Empty documents array",
-            },
+            new object[] { "query", Array.Empty<string>(), typeof(ArgumentException), "Empty documents array" },
         };
+
+    private static readonly string[] documents = new[] { "doc1", "doc2", "doc3" };
+    private static readonly string[] documentsArray = new[] { "doc1", "doc2" };
+    private static readonly string[] documentsArray0 = new[] { "doc1" };
+    private static readonly string[] item = new[]
+    {
+        "Paris is the capital of France",
+        "London is in England",
+        "Berlin is German",
+    };
+    private static readonly string[] itemArray = new[]
+    {
+        "AI and ML concepts",
+        "Weather forecast",
+        "Cooking recipes",
+        "Deep learning basics",
+        "Sports news",
+    };
+    private static readonly string[] itemArray0 = new[] { "Code quality guidelines", "Testing methodologies" };
+    private static readonly string[] itemArray1 = new[] { "doc1" };
+    private static readonly string[] itemArray2 = new[] { "doc1" };
 
     // Helper Methods
     private RerankingService CreateRerankingService(
@@ -487,11 +393,7 @@ public class RerankingServiceTests
         {
             id = Guid.NewGuid().ToString(),
             results = results,
-            meta = new
-            {
-                api_version = new { version = "2" },
-                billed_units = new { search_units = 1 },
-            },
+            meta = new { api_version = new { version = "2" }, billed_units = new { search_units = 1 } },
         };
 
         return JsonSerializer.Serialize(response);

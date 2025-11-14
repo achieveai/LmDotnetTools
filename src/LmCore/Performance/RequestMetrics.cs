@@ -48,8 +48,7 @@ public record RequestMetrics
     public string? ExceptionType { get; init; }
 
     /// <summary>Whether the request was successful</summary>
-    public bool IsSuccess =>
-        StatusCode >= 200 && StatusCode < 300 && string.IsNullOrEmpty(ErrorMessage);
+    public bool IsSuccess => StatusCode >= 200 && StatusCode < 300 && string.IsNullOrEmpty(ErrorMessage);
 
     /// <summary>Additional provider-specific properties</summary>
     public Dictionary<string, object> AdditionalProperties { get; init; } = [];

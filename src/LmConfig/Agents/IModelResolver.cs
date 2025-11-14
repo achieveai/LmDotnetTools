@@ -40,10 +40,7 @@ public interface IModelResolver
     /// <param name="providerName">The name of the provider to check.</param>
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>True if the provider is available and configured, false otherwise.</returns>
-    Task<bool> IsProviderAvailableAsync(
-        string providerName,
-        CancellationToken cancellationToken = default
-    );
+    Task<bool> IsProviderAvailableAsync(string providerName, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets all models that have a specific capability.
@@ -77,7 +74,5 @@ public interface IModelResolver
     /// </summary>
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>Validation result with any errors or warnings.</returns>
-    Task<ValidationResult> ValidateConfigurationAsync(
-        CancellationToken cancellationToken = default
-    );
+    Task<ValidationResult> ValidateConfigurationAsync(CancellationToken cancellationToken = default);
 }

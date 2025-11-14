@@ -7,6 +7,10 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
 {
     public class OpenRouterCompletionRequestConverterTests
     {
+        private static readonly string[] sourceArray = new[] { "trim" };
+
+        private static readonly string[] sourceArray2 = new[] { "openai/gpt-4-turbo", "anthropic/claude-3-opus" };
+
         [Fact]
         public void Create_WithOpenRouterProviders_DetectsModelCorrectly()
         {
@@ -21,7 +25,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 ModelId = "anthropic/claude-3-opus",
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["transforms"] = new[] { "trim" },
+                    ["transforms"] = sourceArray,
                 }.ToImmutableDictionary(),
             };
 
@@ -66,10 +70,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
 
             var options = new GenerateReplyOptions
             {
-                ExtraProperties = new Dictionary<string, object?>
-                {
-                    ["models"] = new[] { "openai/gpt-4-turbo", "anthropic/claude-3-opus" },
-                }.ToImmutableDictionary(),
+                ExtraProperties = new Dictionary<string, object?> { ["models"] = sourceArray2 }.ToImmutableDictionary(),
             };
 
             // Act
@@ -86,11 +87,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             // Arrange
             var messages = new List<IMessage>
             {
-                new TextMessage
-                {
-                    Role = Role.User,
-                    Text = "Return a JSON object with name and age",
-                },
+                new TextMessage { Role = Role.User, Text = "Return a JSON object with name and age" },
             };
 
             var options = new GenerateReplyOptions
@@ -98,10 +95,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 ModelId = "openai/gpt-4",
                 ExtraProperties = new Dictionary<string, object?>
                 {
-                    ["response_format"] = new Dictionary<string, object?>
-                    {
-                        ["type"] = "json_object",
-                    },
+                    ["response_format"] = new Dictionary<string, object?> { ["type"] = "json_object" },
                 }.ToImmutableDictionary(),
             };
 

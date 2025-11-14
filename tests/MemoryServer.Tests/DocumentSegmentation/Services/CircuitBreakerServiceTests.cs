@@ -37,10 +37,7 @@ public class CircuitBreakerServiceTests
         var operationName = "test-operation";
 
         // Act
-        var result = await _service.ExecuteAsync(
-            () => Task.FromResult(expectedResult),
-            operationName
-        );
+        var result = await _service.ExecuteAsync(() => Task.FromResult(expectedResult), operationName);
 
         // Assert
         Assert.Equal(expectedResult, result);
@@ -201,12 +198,7 @@ public class CircuitBreakerServiceTests
                 "503",
                 "Service unavailable should use specific threshold",
             },
-            new object[]
-            {
-                new TaskCanceledException("Timeout"),
-                "timeout",
-                "Timeout should use default threshold",
-            },
+            new object[] { new TaskCanceledException("Timeout"), "timeout", "Timeout should use default threshold" },
             new object[]
             {
                 new InvalidOperationException("Generic error"),

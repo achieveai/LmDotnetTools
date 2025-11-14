@@ -22,11 +22,7 @@ public class EmbeddingTestDataGeneratorTests
         Debug.WriteLine($"Parameters: count={embeddingCount}, size={embeddingSize}, model={model}");
 
         // Act
-        var json = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(
-            embeddingCount,
-            embeddingSize,
-            model
-        );
+        var json = EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(embeddingCount, embeddingSize, model);
 
         // Assert
         Assert.NotNull(json);
@@ -57,9 +53,7 @@ public class EmbeddingTestDataGeneratorTests
             Assert.Equal(0, indexElement.GetInt32());
         }
 
-        Debug.WriteLine(
-            $"✓ Generated valid JSON with {embeddingCount} embeddings of size {embeddingSize}"
-        );
+        Debug.WriteLine($"✓ Generated valid JSON with {embeddingCount} embeddings of size {embeddingSize}");
     }
 
     [Theory]
@@ -92,11 +86,7 @@ public class EmbeddingTestDataGeneratorTests
 
     [Theory]
     [MemberData(nameof(EmbeddingArrayTestCases))]
-    public void GenerateTestEmbeddingArray_WithParameters_ReturnsValidArray(
-        int size,
-        int seed,
-        string description
-    )
+    public void GenerateTestEmbeddingArray_WithParameters_ReturnsValidArray(int size, int seed, string description)
     {
         Debug.WriteLine($"Testing GenerateTestEmbeddingArray: {description}");
 
@@ -129,11 +119,7 @@ public class EmbeddingTestDataGeneratorTests
         Debug.WriteLine($"Testing GenerateTestEmbeddingArrays: {description}");
 
         // Act
-        var embeddings = EmbeddingTestDataGenerator.GenerateTestEmbeddingArrays(
-            count,
-            size,
-            baseSeed
-        );
+        var embeddings = EmbeddingTestDataGenerator.GenerateTestEmbeddingArrays(count, size, baseSeed);
 
         // Assert
         Assert.NotNull(embeddings);
@@ -156,11 +142,7 @@ public class EmbeddingTestDataGeneratorTests
 
     [Theory]
     [MemberData(nameof(InputTextTestCases))]
-    public void CreateTestInputTexts_WithParameters_ReturnsValidTexts(
-        int count,
-        string prefix,
-        string description
-    )
+    public void CreateTestInputTexts_WithParameters_ReturnsValidTexts(int count, string prefix, string description)
     {
         Debug.WriteLine($"Testing CreateTestInputTexts: {description}");
 
@@ -181,11 +163,7 @@ public class EmbeddingTestDataGeneratorTests
 
     [Theory]
     [MemberData(nameof(DocumentTextTestCases))]
-    public void CreateTestDocumentTexts_WithParameters_ReturnsValidTexts(
-        int count,
-        string prefix,
-        string description
-    )
+    public void CreateTestDocumentTexts_WithParameters_ReturnsValidTexts(int count, string prefix, string description)
     {
         Debug.WriteLine($"Testing CreateTestDocumentTexts: {description}");
 
@@ -217,11 +195,7 @@ public class EmbeddingTestDataGeneratorTests
         Debug.WriteLine($"Testing CreateErrorResponse: {description}");
 
         // Act
-        var json = EmbeddingTestDataGenerator.CreateErrorResponse(
-            errorCode,
-            errorMessage,
-            errorType
-        );
+        var json = EmbeddingTestDataGenerator.CreateErrorResponse(errorCode, errorMessage, errorType);
 
         // Assert
         Assert.NotNull(json);
@@ -380,34 +354,10 @@ public class EmbeddingTestDataGeneratorTests
     public static IEnumerable<object[]> ErrorResponseTestCases =>
         new List<object[]>
         {
-            new object[]
-            {
-                "invalid_request",
-                "The request is invalid",
-                "client_error",
-                "Client error response",
-            },
-            new object[]
-            {
-                "server_error",
-                "Internal server error",
-                "server_error",
-                "Server error response",
-            },
-            new object[]
-            {
-                "rate_limit",
-                "Too many requests",
-                "rate_limit_error",
-                "Rate limit error response",
-            },
-            new object[]
-            {
-                "auth_failed",
-                "Authentication failed",
-                "auth_error",
-                "Authentication error response",
-            },
+            new object[] { "invalid_request", "The request is invalid", "client_error", "Client error response" },
+            new object[] { "server_error", "Internal server error", "server_error", "Server error response" },
+            new object[] { "rate_limit", "Too many requests", "rate_limit_error", "Rate limit error response" },
+            new object[] { "auth_failed", "Authentication failed", "auth_error", "Authentication error response" },
         };
 
     #endregion

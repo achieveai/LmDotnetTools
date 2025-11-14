@@ -12,9 +12,7 @@ public interface ISessionManager
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults from environment variables</returns>
-    Task<SessionDefaults?> ProcessEnvironmentVariablesAsync(
-        CancellationToken cancellationToken = default
-    );
+    Task<SessionDefaults?> ProcessEnvironmentVariablesAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Processes URL parameters for SSE transport session context.
@@ -68,10 +66,7 @@ public interface ISessionManager
     /// <param name="connectionId">Connection identifier</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Session defaults if found</returns>
-    Task<SessionDefaults?> GetSessionDefaultsAsync(
-        string connectionId,
-        CancellationToken cancellationToken = default
-    );
+    Task<SessionDefaults?> GetSessionDefaultsAsync(string connectionId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Removes session defaults for a connection.
@@ -79,10 +74,7 @@ public interface ISessionManager
     /// <param name="connectionId">Connection identifier</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>True if removed successfully</returns>
-    Task<bool> RemoveSessionDefaultsAsync(
-        string connectionId,
-        CancellationToken cancellationToken = default
-    );
+    Task<bool> RemoveSessionDefaultsAsync(string connectionId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Cleans up expired session defaults.
@@ -90,8 +82,5 @@ public interface ISessionManager
     /// <param name="maxAge">Maximum age for session defaults</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Number of cleaned up sessions</returns>
-    Task<int> CleanupExpiredSessionsAsync(
-        TimeSpan maxAge,
-        CancellationToken cancellationToken = default
-    );
+    Task<int> CleanupExpiredSessionsAsync(TimeSpan maxAge, CancellationToken cancellationToken = default);
 }

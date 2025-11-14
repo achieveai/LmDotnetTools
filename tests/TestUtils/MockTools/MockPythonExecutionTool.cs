@@ -16,9 +16,7 @@ public static class MockPythonExecutionTool
     /// <returns>Output from executed code</returns>
     [
         McpServerTool(Name = "execute_python_in_container"),
-        Description(
-            "Execute Python code in a Docker container. The environment is limited to the container."
-        )
+        Description("Execute Python code in a Docker container. The environment is limited to the container.")
     ]
     public static string ExecutePythonInContainer(string code)
     {
@@ -32,9 +30,7 @@ public static class MockPythonExecutionTool
     /// <returns>Directory listing as a string</returns>
     [
         McpServerTool(Name = "list_directory"),
-        Description(
-            "List the contents of a directory within the code directory where python code is executed"
-        )
+        Description("List the contents of a directory within the code directory where python code is executed")
     ]
     public static string ListDirectory(string relativePath = "")
     {
@@ -91,9 +87,7 @@ public static class MockPythonExecutionTool
     /// <returns>ASCII tree representation as a string</returns>
     [
         McpServerTool(Name = "get_directory_tree"),
-        Description(
-            "Get an ASCII tree representation of a directory structure where python code is executed"
-        )
+        Description("Get an ASCII tree representation of a directory structure where python code is executed")
     ]
     public static string GetDirectoryTree(string relativePath = "")
     {

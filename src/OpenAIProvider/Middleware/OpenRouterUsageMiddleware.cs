@@ -46,18 +46,12 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     {
         if (string.IsNullOrEmpty(openRouterApiKey))
         {
-            throw new ArgumentException(
-                "OpenRouter API key cannot be null or empty",
-                nameof(openRouterApiKey)
-            );
+            throw new ArgumentException("OpenRouter API key cannot be null or empty", nameof(openRouterApiKey));
         }
 
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _httpClient = httpClient ?? new HttpClient();
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
-            "Bearer",
-            openRouterApiKey
-        );
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", openRouterApiKey);
 
         // Read cache TTL from environment variable or use parameter/default (Requirement 7.2)
         var envCacheTtl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
@@ -192,21 +186,13 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                 lastUsageMessage.Usage.CompletionTokens,
                 lastUsageMessage.Usage.TotalCost
             );
-            finalUsageMessage = await CreateUsageMessageAsync(
-                lastUsageMessage,
-                isStreaming,
-                cancellationToken
-            );
+            finalUsageMessage = await CreateUsageMessageAsync(lastUsageMessage, isStreaming, cancellationToken);
         }
         else if (nonUsageMessages.Count != 0)
         {
             // No UsageMessage in response - try to create one from the last non-usage message
             var lastMessage = nonUsageMessages.Last();
-            finalUsageMessage = await CreateUsageMessageAsync(
-                lastMessage,
-                isStreaming,
-                cancellationToken
-            );
+            finalUsageMessage = await CreateUsageMessageAsync(lastMessage, isStreaming, cancellationToken);
         }
 
         // Add the final enhanced UsageMessage
@@ -306,10 +292,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             return null;
         }
 
-        _logger.LogDebug(
-            "Processing usage for completion: CompletionId={CompletionId}",
-            completionId
-        );
+        _logger.LogDebug("Processing usage for completion: CompletionId={CompletionId}", completionId);
         // Check for inline usage data first (Requirement 2.2 & 2.3)
         var inlineUsage = GetInlineUsageFromMessage(message);
         _logger.LogDebug(
@@ -366,8 +349,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             // 1. No cost information is available (TotalCost is null or 0), OR
             // 2. This is a UsageMessage (indicating it came from upstream middleware) and we want to add OpenRouter-specific cost data
             bool shouldEnhanceWithOpenRouter =
-                (existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0)
-                || (message is UsageMessage);
+                (existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0) || (message is UsageMessage);
 
             _logger.LogDebug(
                 "Enhancement evaluation: TotalCost={TotalCost}, IsUsageMessage={IsUsageMessage}, ShouldEnhance={ShouldEnhance}",
@@ -378,17 +360,10 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
 
             if (shouldEnhanceWithOpenRouter)
             {
-                _logger.LogDebug(
-                    "Attempting OpenRouter enhancement: CompletionId={CompletionId}",
-                    completionId
-                );
+                _logger.LogDebug("Attempting OpenRouter enhancement: CompletionId={CompletionId}", completionId);
 
                 // Try to get enhanced usage from OpenRouter generation endpoint
-                var openRouterUsage = await GetCostStatsWithRetryAsync(
-                    completionId,
-                    isStreaming,
-                    cancellationToken
-                );
+                var openRouterUsage = await GetCostStatsWithRetryAsync(completionId, isStreaming, cancellationToken);
 
                 _logger.LogDebug(
                     "OpenRouter API response: Success={HasResult}, PromptTokens={PromptTokens}, TotalCost={TotalCost}",
@@ -418,14 +393,12 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                     _logger.LogInformation(
                         "Usage data enhanced with OpenRouter cost: {{completionId: {CompletionId}, model: {Model}, promptTokens: {PromptTokens}, completionTokens: {CompletionTokens}, originalCost: {OriginalCost:F6}, enhancedCost: {EnhancedCost:F6}, cached: {Cached}}}",
                         completionId,
-                        enhancedUsage.ExtraProperties?.GetValueOrDefault("model")?.ToString()
-                            ?? "unknown",
+                        enhancedUsage.ExtraProperties?.GetValueOrDefault("model")?.ToString() ?? "unknown",
                         enhancedUsage.PromptTokens,
                         enhancedUsage.CompletionTokens,
                         existingUsage.TotalCost ?? 0.0,
                         enhancedUsage.TotalCost ?? 0.0,
-                        enhancedUsage.ExtraProperties?.GetValueOrDefault("is_cached")?.ToString()
-                            ?? "false"
+                        enhancedUsage.ExtraProperties?.GetValueOrDefault("is_cached")?.ToString() ?? "false"
                     );
 
                     var enhancedResult = CreateUsageMessage(message, enhancedUsage, completionId);
@@ -465,11 +438,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         _logger.LogDebug("No existing usage found, attempting OpenRouter API fallback");
 
         // Try to get usage from OpenRouter generation endpoint as fallback
-        var fallbackUsage = await GetCostStatsWithRetryAsync(
-            completionId,
-            isStreaming,
-            cancellationToken
-        );
+        var fallbackUsage = await GetCostStatsWithRetryAsync(completionId, isStreaming, cancellationToken);
         if (fallbackUsage == null)
         {
             var fallbackElapsed = DateTimeOffset.UtcNow - startTime;
@@ -596,10 +565,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
                 CompletionTokens = completionTokens,
                 TotalTokens = totalTokens > 0 ? totalTokens : promptTokens + completionTokens,
                 TotalCost = totalCost,
-                ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(
-                    "source",
-                    "inline"
-                ),
+                ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("source", "inline"),
             };
         }
         catch
@@ -692,11 +658,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
 
             try
             {
-                var usage = await GetUsageFromGenerationEndpointAsync(
-                    completionId,
-                    isStreaming,
-                    cancellationToken
-                );
+                var usage = await GetUsageFromGenerationEndpointAsync(completionId, isStreaming, cancellationToken);
                 if (usage != null)
                 {
                     var totalElapsed = DateTimeOffset.UtcNow - totalStartTime;
@@ -867,9 +829,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             return MapStatsToUsage(statsResponse.Data);
         }
         catch (OperationCanceledException)
-            when (timeoutCts.Token.IsCancellationRequested
-                && !cancellationToken.IsCancellationRequested
-            )
+            when (timeoutCts.Token.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             // Timeout occurred
             return null;
@@ -919,11 +879,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     /// <summary>
     /// Creates a UsageMessage with usage information (Requirement 5.2).
     /// </summary>
-    private static UsageMessage CreateUsageMessage(
-        IMessage originalMessage,
-        Usage usage,
-        string completionId
-    )
+    private static UsageMessage CreateUsageMessage(IMessage originalMessage, Usage usage, string completionId)
     {
         return new UsageMessage
         {
@@ -931,10 +887,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             Role = Role.Assistant,
             FromAgent = originalMessage.FromAgent,
             GenerationId = completionId,
-            Metadata = ImmutableDictionary<string, object>.Empty.Add(
-                "source",
-                "openrouter_middleware"
-            ),
+            Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "openrouter_middleware"),
         };
     }
 
@@ -942,10 +895,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     /// Creates enriched messages with both Usage and OpenUsage information (Requirement 4.1-4.2, 5.2).
     /// Returns a collection that includes the original enriched message plus a UsageMessage.
     /// </summary>
-    private static IEnumerable<IMessage> CreateEnrichedMessages(
-        IMessage originalMessage,
-        OpenRouterStatsData stats
-    )
+    private static IEnumerable<IMessage> CreateEnrichedMessages(IMessage originalMessage, OpenRouterStatsData stats)
     {
         var usage = MapStatsToUsage(stats);
         var openUsage = MapStatsToOpenUsage(stats);
@@ -1029,14 +979,10 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         }
 
         // Determine which values to use - prioritize OpenRouter data when available and non-zero
-        var finalPromptTokens =
-            newUsage.PromptTokens > 0 ? newUsage.PromptTokens : existingUsage.PromptTokens;
+        var finalPromptTokens = newUsage.PromptTokens > 0 ? newUsage.PromptTokens : existingUsage.PromptTokens;
         var finalCompletionTokens =
-            newUsage.CompletionTokens > 0
-                ? newUsage.CompletionTokens
-                : existingUsage.CompletionTokens;
-        var finalTotalTokens =
-            newUsage.TotalTokens > 0 ? newUsage.TotalTokens : existingUsage.TotalTokens;
+            newUsage.CompletionTokens > 0 ? newUsage.CompletionTokens : existingUsage.CompletionTokens;
+        var finalTotalTokens = newUsage.TotalTokens > 0 ? newUsage.TotalTokens : existingUsage.TotalTokens;
 
         // If we used OpenRouter token counts, recalculate total tokens to ensure consistency
         if (newUsage.PromptTokens > 0 && newUsage.CompletionTokens > 0)

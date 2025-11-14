@@ -9,8 +9,4 @@ public enum ProviderType
 /// <summary>
 /// Details required to configure provider-specific authentication.
 /// </summary>
-public readonly record struct ProviderConfig(
-    string ApiKey,
-    string BaseUrl,
-    ProviderType Type = ProviderType.OpenAI
-);
+public readonly record struct ProviderConfig(string ApiKey, string BaseUrl, ProviderType Type = ProviderType.OpenAI);

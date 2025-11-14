@@ -85,10 +85,7 @@ public class GraphDecisionInstructionTests
         }
         if (string.IsNullOrWhiteSpace(reasoning))
         {
-            Assert.True(
-                string.IsNullOrWhiteSpace(instruction.Reasoning),
-                "Reasoning should be empty or whitespace"
-            );
+            Assert.True(string.IsNullOrWhiteSpace(instruction.Reasoning), "Reasoning should be empty or whitespace");
         }
 
         Debug.WriteLine($"⚠️ Invalid instruction handled: {expectedIssue}");
@@ -196,18 +193,9 @@ public class GraphDecisionInstructionTests
         Assert.Equal(originalInstruction.Reasoning, deserializedInstruction.Reasoning);
 
         // Compare session context
-        Assert.Equal(
-            originalInstruction.SessionContext.UserId,
-            deserializedInstruction.SessionContext.UserId
-        );
-        Assert.Equal(
-            originalInstruction.SessionContext.AgentId,
-            deserializedInstruction.SessionContext.AgentId
-        );
-        Assert.Equal(
-            originalInstruction.SessionContext.RunId,
-            deserializedInstruction.SessionContext.RunId
-        );
+        Assert.Equal(originalInstruction.SessionContext.UserId, deserializedInstruction.SessionContext.UserId);
+        Assert.Equal(originalInstruction.SessionContext.AgentId, deserializedInstruction.SessionContext.AgentId);
+        Assert.Equal(originalInstruction.SessionContext.RunId, deserializedInstruction.SessionContext.RunId);
 
         // Compare entity data
         if (originalInstruction.EntityData == null)
@@ -217,14 +205,8 @@ public class GraphDecisionInstructionTests
         else
         {
             Assert.NotNull(deserializedInstruction.EntityData);
-            Assert.Equal(
-                originalInstruction.EntityData.Name,
-                deserializedInstruction.EntityData.Name
-            );
-            Assert.Equal(
-                originalInstruction.EntityData.Type,
-                deserializedInstruction.EntityData.Type
-            );
+            Assert.Equal(originalInstruction.EntityData.Name, deserializedInstruction.EntityData.Name);
+            Assert.Equal(originalInstruction.EntityData.Type, deserializedInstruction.EntityData.Type);
         }
 
         // Compare relationship data
@@ -235,18 +217,12 @@ public class GraphDecisionInstructionTests
         else
         {
             Assert.NotNull(deserializedInstruction.RelationshipData);
-            Assert.Equal(
-                originalInstruction.RelationshipData.Source,
-                deserializedInstruction.RelationshipData.Source
-            );
+            Assert.Equal(originalInstruction.RelationshipData.Source, deserializedInstruction.RelationshipData.Source);
             Assert.Equal(
                 originalInstruction.RelationshipData.RelationshipType,
                 deserializedInstruction.RelationshipData.RelationshipType
             );
-            Assert.Equal(
-                originalInstruction.RelationshipData.Target,
-                deserializedInstruction.RelationshipData.Target
-            );
+            Assert.Equal(originalInstruction.RelationshipData.Target, deserializedInstruction.RelationshipData.Target);
         }
 
         Debug.WriteLine($"✅ Serialization successful - all fields preserved");
@@ -338,22 +314,8 @@ public class GraphDecisionInstructionTests
                 "Valid reasoning",
                 "Confidence above 1",
             },
-            new object[]
-            {
-                "Empty reasoning",
-                GraphDecisionOperation.DELETE,
-                0.8f,
-                "",
-                "Reasoning is empty",
-            },
-            new object[]
-            {
-                "Whitespace reasoning",
-                GraphDecisionOperation.ADD,
-                0.8f,
-                "   ",
-                "Reasoning is whitespace",
-            },
+            new object[] { "Empty reasoning", GraphDecisionOperation.DELETE, 0.8f, "", "Reasoning is empty" },
+            new object[] { "Whitespace reasoning", GraphDecisionOperation.ADD, 0.8f, "   ", "Reasoning is whitespace" },
             new object[]
             {
                 "Extreme negative confidence",
@@ -424,15 +386,7 @@ public class GraphDecisionInstructionTests
                 false,
                 "either entity or relationship",
             },
-            new object?[]
-            {
-                "Valid NONE operation",
-                GraphDecisionOperation.NONE,
-                null,
-                null,
-                true,
-                "",
-            },
+            new object?[] { "Valid NONE operation", GraphDecisionOperation.NONE, null, null, true, "" },
             new object?[]
             {
                 "Invalid NONE with data",
@@ -487,11 +441,7 @@ public class GraphDecisionInstructionTests
                     },
                     Confidence = 0.85f,
                     Reasoning = "Relationship update reasoning",
-                    SessionContext = new SessionContext
-                    {
-                        UserId = "user456",
-                        AgentId = "agent789",
-                    },
+                    SessionContext = new SessionContext { UserId = "user456", AgentId = "agent789" },
                     CreatedAt = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc),
                 },
             },

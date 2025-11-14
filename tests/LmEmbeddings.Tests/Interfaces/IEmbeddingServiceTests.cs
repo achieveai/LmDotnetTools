@@ -29,24 +29,9 @@ public class IEmbeddingServiceTests
         {
             // Format: sentence, expectedEmbeddingSize, description
             new object[] { "Hello world", 1536, "Simple two-word sentence" },
-            new object[]
-            {
-                "The quick brown fox jumps over the lazy dog.",
-                1536,
-                "Complete sentence with punctuation",
-            },
-            new object[]
-            {
-                "AI and machine learning are transforming technology.",
-                1536,
-                "Technical content",
-            },
-            new object[]
-            {
-                "🌟 Unicode and emojis work too! 🚀",
-                1536,
-                "Unicode and emoji content",
-            },
+            new object[] { "The quick brown fox jumps over the lazy dog.", 1536, "Complete sentence with punctuation" },
+            new object[] { "AI and machine learning are transforming technology.", 1536, "Technical content" },
+            new object[] { "🌟 Unicode and emojis work too! 🚀", 1536, "Unicode and emoji content" },
             new object[] { "Bonjour le monde", 1536, "French language content" },
             new object[] { "こんにちは世界", 1536, "Japanese language content" },
             new object[] { "A", 1536, "Single character" },
@@ -75,26 +60,17 @@ public class IEmbeddingServiceTests
         new List<object[]>
         {
             // Format: inputs, model, description
-            new object[] { new[] { "Hello" }, "text-embedding-3-small", "Single input" },
-            new object[]
-            {
-                new[] { "Hello", "World" },
-                "text-embedding-3-small",
-                "Multiple inputs",
-            },
-            new object[]
-            {
-                new[] { "Test", "Data", "For", "Batch" },
-                "text-embedding-3-large",
-                "Batch processing",
-            },
-            new object[]
-            {
-                new[] { "Mixed", "🌟", "Content" },
-                "text-embedding-ada-002",
-                "Mixed content types",
-            },
+            new object[] { item, "text-embedding-3-small", "Single input" },
+            new object[] { itemArray, "text-embedding-3-small", "Multiple inputs" },
+            new object[] { itemArray0, "text-embedding-3-large", "Batch processing" },
+            new object[] { itemArray1, "text-embedding-ada-002", "Mixed content types" },
         };
+
+    private static readonly string[] item = new[] { "Hello" };
+    private static readonly string[] itemArray = new[] { "Hello", "World" };
+    private static readonly string[] itemArray0 = new[] { "Test", "Data", "For", "Batch" };
+    private static readonly string[] itemArray1 = new[] { "Mixed", "🌟", "Content" };
+    private static readonly string[] value = new[] { "text-embedding-3-small", "text-embedding-3-large" };
 
     #endregion
 
@@ -129,25 +105,16 @@ public class IEmbeddingServiceTests
         // Assert
         Debug.WriteLine($"Execution time: {stopwatch.ElapsedMilliseconds}ms");
         Debug.WriteLine($"Result embedding size: {result.Length}");
-        Debug.WriteLine(
-            $"First few values: [{string.Join(", ", result.Take(5).Select(x => x.ToString("F3")))}...]"
-        );
+        Debug.WriteLine($"First few values: [{string.Join(", ", result.Take(5).Select(x => x.ToString("F3")))}...]");
 
         Assert.NotNull(result);
         Assert.Equal(expectedEmbeddingSize, result.Length);
         Assert.All(
             result,
-            value =>
-                Assert.True(
-                    value >= -1.0f && value <= 1.0f,
-                    "Embedding values should be normalized"
-                )
+            value => Assert.True(value >= -1.0f && value <= 1.0f, "Embedding values should be normalized")
         );
 
-        mockService.Verify(
-            s => s.GetEmbeddingAsync(sentence, It.IsAny<CancellationToken>()),
-            Times.Once
-        );
+        mockService.Verify(s => s.GetEmbeddingAsync(sentence, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Theory]
@@ -212,9 +179,7 @@ public class IEmbeddingServiceTests
             .ThrowsAsync(new ArgumentNullException("sentence"));
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
-            mockService.Object.GetEmbeddingAsync(null!)
-        );
+        await Assert.ThrowsAsync<ArgumentNullException>(() => mockService.Object.GetEmbeddingAsync(null!));
     }
 
     [Theory]
@@ -241,15 +206,11 @@ public class IEmbeddingServiceTests
         // Act & Assert
         if (input == null)
         {
-            await Assert.ThrowsAsync<ArgumentNullException>(() =>
-                mockService.Object.GetEmbeddingAsync(input!)
-            );
+            await Assert.ThrowsAsync<ArgumentNullException>(() => mockService.Object.GetEmbeddingAsync(input!));
         }
         else
         {
-            await Assert.ThrowsAsync<ArgumentException>(() =>
-                mockService.Object.GetEmbeddingAsync(input)
-            );
+            await Assert.ThrowsAsync<ArgumentException>(() => mockService.Object.GetEmbeddingAsync(input));
         }
     }
 
@@ -277,12 +238,7 @@ public class IEmbeddingServiceTests
 
         var expectedResponse = CreateTestEmbeddingResponse(inputs, model);
         mockService
-            .Setup(s =>
-                s.GenerateEmbeddingsAsync(
-                    It.IsAny<EmbeddingRequest>(),
-                    It.IsAny<CancellationToken>()
-                )
-            )
+            .Setup(s => s.GenerateEmbeddingsAsync(It.IsAny<EmbeddingRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedResponse);
 
         // Act
@@ -302,9 +258,7 @@ public class IEmbeddingServiceTests
         for (int i = 0; i < inputs.Length; i++)
         {
             var embedding = result.Embeddings.ElementAt(i);
-            Debug.WriteLine(
-                $"Embedding {i}: Index={embedding.Index}, VectorLength={embedding.Vector.Length}"
-            );
+            Debug.WriteLine($"Embedding {i}: Index={embedding.Index}, VectorLength={embedding.Vector.Length}");
             Assert.Equal(i, embedding.Index);
             Assert.Equal(1536, embedding.Vector.Length);
             Assert.Equal(inputs[i], embedding.Text);
@@ -408,9 +362,7 @@ public class IEmbeddingServiceTests
 
         // Act & Assert
         Debug.WriteLine("Attempting to call GetEmbeddingAsync after disposal");
-        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
-            mockService.Object.GetEmbeddingAsync("test")
-        );
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => mockService.Object.GetEmbeddingAsync("test"));
 
         Debug.WriteLine("ObjectDisposedException was properly thrown");
     }
@@ -422,13 +374,12 @@ public class IEmbeddingServiceTests
     /// <summary>
     /// Creates a mock embedding service for testing
     /// </summary>
-    private Mock<IEmbeddingService> CreateMockEmbeddingService(int embeddingSize)
+    private static Mock<IEmbeddingService> CreateMockEmbeddingService(int embeddingSize)
     {
         var mock = new Mock<IEmbeddingService>();
         mock.SetupGet(s => s.EmbeddingSize).Returns(embeddingSize);
 
-        mock.Setup(s => s.GetAvailableModelsAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new[] { "text-embedding-3-small", "text-embedding-3-large" });
+        mock.Setup(s => s.GetAvailableModelsAsync(It.IsAny<CancellationToken>())).ReturnsAsync(value);
 
         return mock;
     }

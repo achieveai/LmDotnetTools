@@ -20,6 +20,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
     private readonly HttpClient _httpClient;
     private readonly string _tempCacheDir;
     private readonly string _tempCacheFile;
+    private static readonly string[] item = new[] { "text" };
 
     public OpenRouterModelServiceComprehensiveTests()
     {
@@ -59,7 +60,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.NotNull(result);
         Assert.Single(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.Equal("anthropic/claude-3-sonnet", modelConfig.Id);
         Assert.False(modelConfig.IsReasoning);
 
@@ -73,7 +74,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
 
         // Verify provider mapping
         Assert.NotEmpty(modelConfig.Providers);
-        var provider = modelConfig.Providers.First();
+        var provider = modelConfig.Providers[0];
         Assert.Equal("Anthropic", provider.Name);
         Assert.Equal("claude-3-sonnet-20240229", provider.ModelName);
         Assert.Equal(15.0, provider.Pricing.PromptPerMillion);
@@ -105,7 +106,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.NotNull(result);
         Assert.Single(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.True(modelConfig.IsReasoning);
         Assert.NotNull(modelConfig.Capabilities?.Thinking);
         Assert.Equal(ThinkingType.OpenAI, modelConfig.Capabilities.Thinking.Type);
@@ -133,7 +134,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.NotNull(result);
         Assert.Single(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.Equal(3, modelConfig.Providers.Count);
 
         // Verify provider priorities are set correctly
@@ -167,15 +168,11 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.NotNull(result);
         Assert.Single(result);
 
-        var modelConfig = result.First();
+        var modelConfig = result[0];
         Assert.Equal(2, modelConfig.Providers.Count);
 
-        var freeProvider = modelConfig.Providers.FirstOrDefault(p =>
-            p.Tags?.Contains("free") == true
-        );
-        var paidProvider = modelConfig.Providers.FirstOrDefault(p =>
-            p.Tags?.Contains("paid") == true
-        );
+        var freeProvider = modelConfig.Providers.FirstOrDefault(p => p.Tags?.Contains("free") == true);
+        var paidProvider = modelConfig.Providers.FirstOrDefault(p => p.Tags?.Contains("paid") == true);
 
         Assert.NotNull(freeProvider);
         Assert.NotNull(paidProvider);
@@ -208,8 +205,8 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         Assert.NotNull(result);
         Assert.Single(result);
 
-        var modelConfig = result.First();
-        var provider = modelConfig.Providers.First();
+        var modelConfig = result[0];
+        var provider = modelConfig.Providers[0];
 
         Assert.Contains("quantization-int8", provider.Tags!);
         Assert.Contains("variant-extended", provider.Tags!);
@@ -399,7 +396,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         return new OpenRouterModelService(_httpClient, _mockLogger.Object, _tempCacheFile);
     }
 
-    private OpenRouterCache CreateComplexModelCache()
+    private static OpenRouterCache CreateComplexModelCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -476,7 +473,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         };
     }
 
-    private OpenRouterCache CreateReasoningModelCache()
+    private static OpenRouterCache CreateReasoningModelCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -524,7 +521,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         };
     }
 
-    private OpenRouterCache CreateMultiProviderModelCache()
+    private static OpenRouterCache CreateMultiProviderModelCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -630,7 +627,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         };
     }
 
-    private OpenRouterCache CreateFreeAndPaidProviderCache()
+    private static OpenRouterCache CreateFreeAndPaidProviderCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -707,7 +704,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         };
     }
 
-    private OpenRouterCache CreateQuantizedModelCache()
+    private static OpenRouterCache CreateQuantizedModelCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -758,7 +755,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         };
     }
 
-    private OpenRouterCache CreateValidCache()
+    private static OpenRouterCache CreateValidCache()
     {
         var modelsData = JsonNode.Parse(
             """
@@ -801,7 +798,7 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
         };
     }
 
-    private OpenRouterCache CreateLargeCacheForPerformanceTest()
+    private static OpenRouterCache CreateLargeCacheForPerformanceTest()
     {
         // Create a cache with many models to test performance
         var models = new List<object>();
@@ -813,8 +810,8 @@ public class OpenRouterModelServiceComprehensiveTests : IDisposable
                     slug = $"test-model-{i}",
                     name = $"Test Model {i}",
                     context_length = 4096,
-                    input_modalities = new[] { "text" },
-                    output_modalities = new[] { "text" },
+                    input_modalities = item,
+                    output_modalities = item,
                     has_text_output = true,
                     group = "Test",
                     author = "test",

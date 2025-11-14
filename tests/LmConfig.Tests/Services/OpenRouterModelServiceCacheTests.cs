@@ -26,10 +26,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         _httpClient = new HttpClient(_mockHttpHandler.Object);
 
         // Create temporary directory for cache testing
-        _tempCacheDir = Path.Combine(
-            Path.GetTempPath(),
-            "LmDotnetTools_Test_" + Guid.NewGuid().ToString("N")[..8]
-        );
+        _tempCacheDir = Path.Combine(Path.GetTempPath(), "LmDotnetTools_Test_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_tempCacheDir);
         _tempCacheFile = Path.Combine(_tempCacheDir, "openrouter-cache.json");
     }
@@ -80,7 +77,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
         // Assert
         Assert.NotNull(result);
         Assert.NotEmpty(result);
-        Assert.Equal("test-model", result.First().Id);
+        Assert.Equal("test-model", result[0].Id);
     }
 
     [Fact]
@@ -260,12 +257,8 @@ public class OpenRouterModelServiceCacheTests : IDisposable
             ),
             ModelDetails = new Dictionary<string, JsonNode>
             {
-                ["test-model-1"] = JsonNode.Parse(
-                    """{"data": [{"id": "endpoint1", "provider_name": "Provider1"}]}"""
-                )!,
-                ["test-model-2"] = JsonNode.Parse(
-                    """{"data": [{"id": "endpoint2", "provider_name": "Provider2"}]}"""
-                )!,
+                ["test-model-1"] = JsonNode.Parse("""{"data": [{"id": "endpoint1", "provider_name": "Provider1"}]}""")!,
+                ["test-model-2"] = JsonNode.Parse("""{"data": [{"id": "endpoint2", "provider_name": "Provider2"}]}""")!,
             },
         };
 
@@ -294,11 +287,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
     {
         var json = JsonSerializer.Serialize(
             cache,
-            new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-                WriteIndented = false,
-            }
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower, WriteIndented = false }
         );
         await File.WriteAllTextAsync(_tempCacheFile, json);
     }
@@ -334,9 +323,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/models")
-                ),
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/models")),
                 ItExpr.IsAny<CancellationToken>()
             )
             .ReturnsAsync(
@@ -351,9 +338,7 @@ public class OpenRouterModelServiceCacheTests : IDisposable
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
-                ItExpr.Is<HttpRequestMessage>(req =>
-                    req.RequestUri!.ToString().Contains("/stats/endpoint")
-                ),
+                ItExpr.Is<HttpRequestMessage>(req => req.RequestUri!.ToString().Contains("/stats/endpoint")),
                 ItExpr.IsAny<CancellationToken>()
             )
             .ReturnsAsync(

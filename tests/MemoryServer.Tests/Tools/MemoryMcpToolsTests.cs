@@ -81,11 +81,7 @@ public class MemoryMcpToolsTests
                     )
             );
 
-        _mcpTools = new MemoryMcpTools(
-            _memoryService,
-            _mockSessionResolver.Object,
-            _mockLogger.Object
-        );
+        _mcpTools = new MemoryMcpTools(_memoryService, _mockSessionResolver.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -97,10 +93,7 @@ public class MemoryMcpToolsTests
         _mockRepository.Reset();
 
         // Act
-        var result = await _mcpTools.AddMemoryAsync(
-            content: "Test memory content for MCP",
-            runId: "test_run"
-        );
+        var result = await _mcpTools.AddMemoryAsync(content: "Test memory content for MCP", runId: "test_run");
 
         Debug.WriteLine($"Result: {JsonSerializer.Serialize(result)}");
 
@@ -111,10 +104,7 @@ public class MemoryMcpToolsTests
 
         Assert.True(resultObj.GetProperty("success").GetBoolean());
         Assert.True(resultObj.GetProperty("memory").GetProperty("id").GetInt32() > 0);
-        Assert.Equal(
-            "Test memory content for MCP",
-            resultObj.GetProperty("memory").GetProperty("content").GetString()
-        );
+        Assert.Equal("Test memory content for MCP", resultObj.GetProperty("memory").GetProperty("content").GetString());
 
         // Verify the session resolver was called correctly (userId and agentId come from JWT)
         _mockSessionResolver.Verify(
@@ -171,10 +161,7 @@ public class MemoryMcpToolsTests
 
         var results = resultObj.GetProperty("results").EnumerateArray().ToList();
         Assert.NotEmpty(results);
-        Assert.Contains(
-            "Searchable test content for MCP search",
-            results.First().GetProperty("content").GetString()
-        );
+        Assert.Contains("Searchable test content for MCP search", results.First().GetProperty("content").GetString());
 
         Debug.WriteLine("✅ MCP memory_search tool test passed");
     }
@@ -299,10 +286,7 @@ public class MemoryMcpToolsTests
         var resultObj = JsonSerializer.Deserialize<JsonElement>(resultJson);
 
         Assert.True(resultObj.GetProperty("success").GetBoolean());
-        Assert.Contains(
-            "Memory 1 deleted successfully",
-            resultObj.GetProperty("message").GetString()
-        );
+        Assert.Contains("Memory 1 deleted successfully", resultObj.GetProperty("message").GetString());
 
         Debug.WriteLine("✅ MCP memory_delete tool test passed");
     }

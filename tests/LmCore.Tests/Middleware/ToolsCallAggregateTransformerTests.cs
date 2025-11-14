@@ -11,10 +11,7 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_SingleToolCall_ProducesCorrectXmlFormat()
     {
         // Arrange
-        var toolCall = new ToolCall(
-            "GetWeather",
-            "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}"
-        );
+        var toolCall = new ToolCall("GetWeather", "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}");
         var toolResult = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies");
 
         var toolCallMessage = new ToolsCallMessage
@@ -23,16 +20,9 @@ public class ToolsCallAggregateTransformerTests
             GenerationId = "test-gen-123",
         };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
 
-        var aggregateMessage = new ToolsCallAggregateMessage(
-            toolCallMessage,
-            toolResultMessage,
-            "test-agent"
-        );
+        var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "test-agent");
 
         // Act
         var result = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
@@ -67,10 +57,7 @@ public class ToolsCallAggregateTransformerTests
         var toolResult1 = new ToolCallResult(null, "Sunny, 25°C");
         var toolResult2 = new ToolCallResult(null, "3:45 PM");
 
-        var toolCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = ImmutableList.Create(toolCall1, toolCall2),
-        };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall1, toolCall2) };
 
         var toolResultMessage = new ToolsCallResultMessage
         {
@@ -102,16 +89,9 @@ public class ToolsCallAggregateTransformerTests
         var toolCall = new ToolCall("TestFunction", "{}");
         var toolResult = new ToolCallResult(null, "test result");
 
-        var toolCallMessage = new ToolsCallMessage
-        {
-            ToolCalls = ImmutableList.Create(toolCall),
-            Metadata = metadata,
-        };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall), Metadata = metadata };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
 
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
@@ -133,10 +113,7 @@ public class ToolsCallAggregateTransformerTests
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
 
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
@@ -162,10 +139,7 @@ public class ToolsCallAggregateTransformerTests
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
 
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
@@ -192,7 +166,7 @@ public class ToolsCallAggregateTransformerTests
     public void CombineMessageSequence_EmptySequence_ReturnsEmptyTextMessage()
     {
         // Arrange
-        var emptySequence = new IMessage[0];
+        var emptySequence = Array.Empty<IMessage>();
 
         // Act
         var result = ToolsCallAggregateTransformer.CombineMessageSequence(emptySequence);
@@ -247,18 +221,14 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_NullArgument_ThrowsArgumentNullException()
     {
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() =>
-            ToolsCallAggregateTransformer.TransformToNaturalFormat(null!)
-        );
+        Assert.Throws<ArgumentNullException>(() => ToolsCallAggregateTransformer.TransformToNaturalFormat(null!));
     }
 
     [Fact]
     public void CombineMessageSequence_NullArgument_ThrowsArgumentNullException()
     {
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() =>
-            ToolsCallAggregateTransformer.CombineMessageSequence(null!)
-        );
+        Assert.Throws<ArgumentNullException>(() => ToolsCallAggregateTransformer.CombineMessageSequence(null!));
     }
 
     [Fact]
@@ -270,10 +240,7 @@ public class ToolsCallAggregateTransformerTests
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
 
-        var toolResultMessage = new ToolsCallResultMessage
-        {
-            ToolCallResults = ImmutableList.Create(toolResult),
-        };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
 
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 

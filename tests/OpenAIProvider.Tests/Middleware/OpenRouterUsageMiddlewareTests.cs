@@ -63,9 +63,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
             return Task.FromResult(CreateAsyncEnumerable(_messages));
         }
 
-        private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(
-            IEnumerable<IMessage> messages
-        )
+        private static async IAsyncEnumerable<IMessage> CreateAsyncEnumerable(IEnumerable<IMessage> messages)
         {
             foreach (var message in messages)
             {
@@ -78,11 +76,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
     /// <summary>
     /// Creates test messages with various usage scenarios
     /// </summary>
-    private static IMessage[] CreateTestMessages(
-        string completionId,
-        Usage? usage = null,
-        bool hasInlineUsage = false
-    )
+    private static IMessage[] CreateTestMessages(string completionId, Usage? usage = null, bool hasInlineUsage = false)
     {
         var metadata = ImmutableDictionary<string, object>.Empty.Add("completion_id", completionId);
 
@@ -164,12 +158,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -221,12 +210,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -276,18 +260,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var fakeAgent = new FakeStreamingAgent(messages);
 
         // HTTP handler that always returns 404 (exhausting retries)
-        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            "Not found",
-            HttpStatusCode.NotFound
-        );
+        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler("Not found", HttpStatusCode.NotFound);
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -355,10 +331,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
                 Role = Role.Assistant,
                 Text = "Final message",
                 GenerationId = completionId,
-                Metadata = ImmutableDictionary<string, object>.Empty.Add(
-                    "completion_id",
-                    completionId
-                ),
+                Metadata = ImmutableDictionary<string, object>.Empty.Add("completion_id", completionId),
             },
         };
 
@@ -369,12 +342,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -430,10 +398,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
             CompletionTokens = 100,
             TotalTokens = 250,
             TotalCost = 0.012,
-            ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(
-                "model",
-                "gpt-4-cached"
-            ),
+            ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("model", "gpt-4-cached"),
         };
         _usageCache.SetUsage(completionId, cachedUsage);
 
@@ -446,12 +411,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -504,12 +464,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -576,12 +531,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         );
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -629,12 +579,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -669,17 +614,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         var fakeAgent = new FakeStreamingAgent(messages);
 
-        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            CreateOpenRouterGenerationResponse()
-        );
+        var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(CreateOpenRouterGenerationResponse());
         var httpClient = new HttpClient(httpHandler);
 
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var originalOptions = new GenerateReplyOptions { ModelId = "gpt-4", Temperature = 0.7f };
 
@@ -715,12 +653,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         const string completionId = "chatcmpl-test123";
 
         // Use the same helper method as working tests
-        var generationResponse = CreateOpenRouterGenerationResponse(
-            "openai/gpt-4",
-            25,
-            12,
-            0.001425
-        );
+        var generationResponse = CreateOpenRouterGenerationResponse("openai/gpt-4", 25, 12, 0.001425);
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
         var httpClient = new HttpClient(httpHandler);
 
@@ -747,12 +680,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         };
 
         var fakeAgent = new FakeStreamingAgent(messages);
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -784,12 +712,8 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         Console.WriteLine($"Total messages: {result.Count}");
         Console.WriteLine($"UsageMessage count: {usageMessages.Count}");
         Console.WriteLine($"Final UsageMessage TotalCost: {finalUsageMessage.Usage.TotalCost}");
-        Console.WriteLine(
-            $"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}"
-        );
-        Console.WriteLine(
-            $"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}"
-        );
+        Console.WriteLine($"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}");
+        Console.WriteLine($"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}");
 
         Assert.NotNull(finalUsageMessage.Usage.TotalCost);
         Assert.Equal(0.001425, finalUsageMessage.Usage.TotalCost);
@@ -798,10 +722,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
 
         // Verify that it was enhanced by our middleware
         Assert.True(finalUsageMessage.Usage.ExtraProperties?.ContainsKey("enhanced_by"));
-        Assert.Equal(
-            "openrouter_middleware",
-            finalUsageMessage.Usage.ExtraProperties?["enhanced_by"]
-        );
+        Assert.Equal("openrouter_middleware", finalUsageMessage.Usage.ExtraProperties?["enhanced_by"]);
     }
 
     [Fact]
@@ -811,12 +732,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         const string completionId = "chatcmpl-discrepancy-test";
 
         // Use the same helper method as working tests with different token counts
-        var generationResponse = CreateOpenRouterGenerationResponse(
-            "openai/gpt-4",
-            30,
-            15,
-            0.002000
-        );
+        var generationResponse = CreateOpenRouterGenerationResponse("openai/gpt-4", 30, 15, 0.002000);
         var httpHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(generationResponse);
         var httpClient = new HttpClient(httpHandler);
 
@@ -842,12 +758,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         };
 
         var fakeAgent = new FakeStreamingAgent(messages);
-        var middleware = new OpenRouterUsageMiddleware(
-            _testApiKey,
-            _logger,
-            httpClient,
-            _usageCache
-        );
+        var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
             new[]
@@ -875,12 +786,8 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var finalUsageMessage = usageMessages.Last();
         Assert.NotNull(finalUsageMessage);
 
-        Console.WriteLine(
-            $"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}"
-        );
-        Console.WriteLine(
-            $"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}"
-        );
+        Console.WriteLine($"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}");
+        Console.WriteLine($"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}");
         Console.WriteLine($"Final UsageMessage TotalTokens: {finalUsageMessage.Usage.TotalTokens}");
         Console.WriteLine($"Final UsageMessage TotalCost: {finalUsageMessage.Usage.TotalCost}");
         Console.WriteLine(
@@ -894,21 +801,10 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         Assert.Equal(0.002000, finalUsageMessage.Usage.TotalCost); // Set from OpenRouter
 
         // Verify discrepancy metadata flags
-        Assert.True(
-            finalUsageMessage.Usage.ExtraProperties?.ContainsKey("token_discrepancies_resolved")
-        );
-        Assert.Equal(
-            true,
-            finalUsageMessage.Usage.ExtraProperties?["token_discrepancies_resolved"]
-        );
-        Assert.Equal(
-            "used_openrouter_values",
-            finalUsageMessage.Usage.ExtraProperties?["resolution_strategy"]
-        );
-        Assert.Equal(
-            "openrouter_middleware",
-            finalUsageMessage.Usage.ExtraProperties?["enhanced_by"]
-        );
+        Assert.True(finalUsageMessage.Usage.ExtraProperties?.ContainsKey("token_discrepancies_resolved"));
+        Assert.Equal(true, finalUsageMessage.Usage.ExtraProperties?["token_discrepancies_resolved"]);
+        Assert.Equal("used_openrouter_values", finalUsageMessage.Usage.ExtraProperties?["resolution_strategy"]);
+        Assert.Equal("openrouter_middleware", finalUsageMessage.Usage.ExtraProperties?["enhanced_by"]);
     }
 
     #endregion

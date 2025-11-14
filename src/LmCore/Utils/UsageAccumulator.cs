@@ -50,9 +50,7 @@ public class UsageAccumulator
             if (metadataWithoutUsage.Count > 0)
             {
                 _extraMetadata =
-                    _extraMetadata == null
-                        ? metadataWithoutUsage
-                        : _extraMetadata.AddRange(metadataWithoutUsage);
+                    _extraMetadata == null ? metadataWithoutUsage : _extraMetadata.AddRange(metadataWithoutUsage);
             }
         }
 
@@ -76,9 +74,7 @@ public class UsageAccumulator
         if (usageMessage.Metadata != null && usageMessage.Metadata.Count > 0)
         {
             _extraMetadata =
-                _extraMetadata == null
-                    ? usageMessage.Metadata
-                    : _extraMetadata.AddRange(usageMessage.Metadata);
+                _extraMetadata == null ? usageMessage.Metadata : _extraMetadata.AddRange(usageMessage.Metadata);
         }
 
         return AddUsageData(usageMessage.Usage);
@@ -144,14 +140,10 @@ public class UsageAccumulator
                 // Use our calculated completion tokens
                 CompletionTokens = completionTokens,
                 // Recalculate total based on prompt and completion
-                TotalTokens =
-                    Math.Max(CurrentUsage.PromptTokens, coreUsage.PromptTokens)
-                    + completionTokens,
+                TotalTokens = Math.Max(CurrentUsage.PromptTokens, coreUsage.PromptTokens) + completionTokens,
                 // Keep input and output token details if available
-                InputTokenDetails =
-                    coreUsage.InputTokenDetails ?? CurrentUsage.InputTokenDetails,
-                OutputTokenDetails =
-                    coreUsage.OutputTokenDetails ?? CurrentUsage.OutputTokenDetails,
+                InputTokenDetails = coreUsage.InputTokenDetails ?? CurrentUsage.InputTokenDetails,
+                OutputTokenDetails = coreUsage.OutputTokenDetails ?? CurrentUsage.OutputTokenDetails,
                 TotalCost = coreUsage.TotalCost ?? CurrentUsage.TotalCost,
                 // Merge extra properties
                 ExtraProperties = UsageAccumulator.MergeExtraProperties(

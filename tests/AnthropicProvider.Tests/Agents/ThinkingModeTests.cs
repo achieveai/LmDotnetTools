@@ -17,9 +17,7 @@ public class ThinkingModeTests
     [Fact]
     public void AnthropicRequest_FromMessages_ShouldExtractThinkingFromOptions()
     {
-        Console.WriteLine(
-            "Starting AnthropicRequest_FromMessages_ShouldExtractThinkingFromOptions test"
-        );
+        Console.WriteLine("Starting AnthropicRequest_FromMessages_ShouldExtractThinkingFromOptions test");
         // Arrange
         var messages = new[]
         {
@@ -36,9 +34,7 @@ public class ThinkingModeTests
         {
             ModelId = "claude-3-7-sonnet-20250219",
             Temperature = 1.0f,
-            ExtraProperties = ImmutableDictionary
-                .Create<string, object?>()
-                .Add("Thinking", thinking),
+            ExtraProperties = ImmutableDictionary.Create<string, object?>().Add("Thinking", thinking),
         };
         Console.WriteLine("Created options with thinking in ExtraProperties");
 
@@ -63,12 +59,7 @@ public class ThinkingModeTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage(
-                "This is a mock response for testing.",
-                "claude-3-7-sonnet-20250219",
-                10,
-                20
-            )
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
 
@@ -121,12 +112,7 @@ public class ThinkingModeTests
         // Arrange - Using MockHttpHandlerBuilder with request capture
         var handler = MockHttpHandlerBuilder
             .Create()
-            .RespondWithAnthropicMessage(
-                "This is a mock response for testing.",
-                "claude-3-7-sonnet-20250219",
-                10,
-                20
-            )
+            .RespondWithAnthropicMessage("This is a mock response for testing.", "claude-3-7-sonnet-20250219", 10, 20)
             .CaptureRequests(out var requestCapture)
             .Build();
 
@@ -143,11 +129,7 @@ public class ThinkingModeTests
                 Text =
                     "You are a helpful assistant that can use tools to help users. When you need to execute Python code, use the execute_python_in_container tool.",
             },
-            new TextMessage
-            {
-                Role = Role.User,
-                Text = "Find the files in /code that are not present in /code_old.",
-            },
+            new TextMessage { Role = Role.User, Text = "Find the files in /code that are not present in /code_old." },
         };
         TestLogger.Log($"Created messages array with {messages.Length} messages");
 
@@ -176,9 +158,7 @@ public class ThinkingModeTests
             ModelId = "claude-3-7-sonnet-20250219",
             MaxToken = 2000,
             Functions = new[] { pythonFunction },
-            ExtraProperties = ImmutableDictionary
-                .Create<string, object?>()
-                .Add("Thinking", thinking),
+            ExtraProperties = ImmutableDictionary.Create<string, object?>().Add("Thinking", thinking),
         };
         TestLogger.Log("Created options with thinking and function tools");
 

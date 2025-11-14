@@ -28,9 +28,7 @@ public class SessionManager : ISessionManager
     /// <summary>
     /// Processes environment variables for STDIO transport session context.
     /// </summary>
-    public async Task<SessionDefaults?> ProcessEnvironmentVariablesAsync(
-        CancellationToken cancellationToken = default
-    )
+    public async Task<SessionDefaults?> ProcessEnvironmentVariablesAsync(CancellationToken cancellationToken = default)
     {
         _logger.LogDebug("Processing environment variables for STDIO transport");
 
@@ -47,10 +45,7 @@ public class SessionManager : ISessionManager
             return null;
         }
 
-        _logger.LogInformation(
-            "Found session context in environment variables: {SessionDefaults}",
-            sessionDefaults
-        );
+        _logger.LogInformation("Found session context in environment variables: {SessionDefaults}", sessionDefaults);
 
         // Store in database for persistence
         await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
@@ -90,10 +85,7 @@ public class SessionManager : ISessionManager
             return null;
         }
 
-        _logger.LogInformation(
-            "Found session context in URL parameters: {SessionDefaults}",
-            sessionDefaults
-        );
+        _logger.LogInformation("Found session context in URL parameters: {SessionDefaults}", sessionDefaults);
 
         // Store in database for persistence
         await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
@@ -117,12 +109,7 @@ public class SessionManager : ISessionManager
 
         _logger.LogDebug(
             "Processing HTTP headers for SSE transport: {Headers}",
-            string.Join(
-                ", ",
-                headers
-                    .Where(h => h.Key.StartsWith("X-Memory-"))
-                    .Select(kvp => $"{kvp.Key}={kvp.Value}")
-            )
+            string.Join(", ", headers.Where(h => h.Key.StartsWith("X-Memory-")).Select(kvp => $"{kvp.Key}={kvp.Value}"))
         );
 
         var sessionDefaults = SessionDefaults.FromHttpHeaders(headers);
@@ -138,10 +125,7 @@ public class SessionManager : ISessionManager
             return null;
         }
 
-        _logger.LogInformation(
-            "Found session context in HTTP headers: {SessionDefaults}",
-            sessionDefaults
-        );
+        _logger.LogInformation("Found session context in HTTP headers: {SessionDefaults}", sessionDefaults);
 
         // Store in database for persistence
         await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
@@ -257,27 +241,12 @@ public class SessionManager : ISessionManager
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
                     command.Parameters.AddWithValue("@connectionId", sessionDefaults.ConnectionId);
-                    command.Parameters.AddWithValue(
-                        "@userId",
-                        sessionDefaults.UserId ?? (object)DBNull.Value
-                    );
-                    command.Parameters.AddWithValue(
-                        "@agentId",
-                        sessionDefaults.AgentId ?? (object)DBNull.Value
-                    );
-                    command.Parameters.AddWithValue(
-                        "@runId",
-                        sessionDefaults.RunId ?? (object)DBNull.Value
-                    );
-                    command.Parameters.AddWithValue(
-                        "@metadata",
-                        JsonSerializer.Serialize(sessionDefaults.Metadata)
-                    );
+                    command.Parameters.AddWithValue("@userId", sessionDefaults.UserId ?? (object)DBNull.Value);
+                    command.Parameters.AddWithValue("@agentId", sessionDefaults.AgentId ?? (object)DBNull.Value);
+                    command.Parameters.AddWithValue("@runId", sessionDefaults.RunId ?? (object)DBNull.Value);
+                    command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(sessionDefaults.Metadata));
                     command.Parameters.AddWithValue("@source", (int)sessionDefaults.Source);
-                    command.Parameters.AddWithValue(
-                        "@createdAt",
-                        sessionDefaults.CreatedAt.ToString("O")
-                    );
+                    command.Parameters.AddWithValue("@createdAt", sessionDefaults.CreatedAt.ToString("O"));
 
                     return await command.ExecuteNonQueryAsync(cancellationToken);
                 },
@@ -395,15 +364,9 @@ public class SessionManager : ISessionManager
                         return new SessionDefaults
                         {
                             ConnectionId = reader.GetString(connectionIdOrdinal),
-                            UserId = reader.IsDBNull(userIdOrdinal)
-                                ? null
-                                : reader.GetString(userIdOrdinal),
-                            AgentId = reader.IsDBNull(agentIdOrdinal)
-                                ? null
-                                : reader.GetString(agentIdOrdinal),
-                            RunId = reader.IsDBNull(runIdOrdinal)
-                                ? null
-                                : reader.GetString(runIdOrdinal),
+                            UserId = reader.IsDBNull(userIdOrdinal) ? null : reader.GetString(userIdOrdinal),
+                            AgentId = reader.IsDBNull(agentIdOrdinal) ? null : reader.GetString(agentIdOrdinal),
+                            RunId = reader.IsDBNull(runIdOrdinal) ? null : reader.GetString(runIdOrdinal),
                             Metadata = metadata,
                             Source = source,
                             CreatedAt = createdAt,
@@ -425,21 +388,14 @@ public class SessionManager : ISessionManager
             }
             else
             {
-                _logger.LogDebug(
-                    "No session defaults found for connection {ConnectionId}",
-                    connectionId
-                );
+                _logger.LogDebug("No session defaults found for connection {ConnectionId}", connectionId);
             }
 
             return sessionDefaults;
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to retrieve session defaults for connection {ConnectionId}",
-                connectionId
-            );
+            _logger.LogError(ex, "Failed to retrieve session defaults for connection {ConnectionId}", connectionId);
             return null;
         }
     }
@@ -486,11 +442,7 @@ public class SessionManager : ISessionManager
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to remove session defaults for connection {ConnectionId}",
-                connectionId
-            );
+            _logger.LogError(ex, "Failed to remove session defaults for connection {ConnectionId}", connectionId);
             return false;
         }
     }
@@ -498,10 +450,7 @@ public class SessionManager : ISessionManager
     /// <summary>
     /// Cleans up expired session defaults.
     /// </summary>
-    public async Task<int> CleanupExpiredSessionsAsync(
-        TimeSpan maxAge,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<int> CleanupExpiredSessionsAsync(TimeSpan maxAge, CancellationToken cancellationToken = default)
     {
         try
         {

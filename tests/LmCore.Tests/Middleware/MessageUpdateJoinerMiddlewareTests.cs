@@ -79,11 +79,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
-        var resultStream = await middleware.InvokeStreamingAsync(
-            context,
-            mockStreamingAgent.Object,
-            cancellationToken
-        );
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
 
         // Manually collect all messages from the stream
         var results = new List<IMessage>();
@@ -157,11 +153,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
-        var resultStream = await middleware.InvokeStreamingAsync(
-            context,
-            mockStreamingAgent.Object,
-            cancellationToken
-        );
+        var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
 
         // Manually collect all messages from the stream
         var results = new List<IMessage>();
@@ -208,7 +200,7 @@ public class MessageUpdateJoinerMiddlewareTests
     #region Helper Methods
 
     // Helper method to split string on spaces while including spaces in the parts
-    private List<string> SplitStringPreservingSpaces(string input)
+    private static List<string> SplitStringPreservingSpaces(string input)
     {
         var result = new List<string>();
         var words = input.Split(' ');

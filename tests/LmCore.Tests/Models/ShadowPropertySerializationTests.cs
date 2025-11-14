@@ -37,9 +37,7 @@ public class ShadowPropertySerializationTests
         };
 
         // Add extra properties
-        var withExtras = usage
-            .SetExtraProperty("estimated_cost", 0.05)
-            .SetExtraProperty("cached", true);
+        var withExtras = usage.SetExtraProperty("estimated_cost", 0.05).SetExtraProperty("cached", true);
 
         // Act
         var json = JsonSerializer.Serialize(withExtras, options);
@@ -111,9 +109,7 @@ public class ShadowPropertySerializationTests
             ModelId = "gpt-4",
             Temperature = 0.7f,
             MaxToken = 1000,
-            ExtraProperties = ImmutableDictionary<string, object?>
-                .Empty.Add("function_call", "auto")
-                .Add("top_k", 50),
+            ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add("function_call", "auto").Add("top_k", 50),
         };
 
         // Act
@@ -232,9 +228,7 @@ public class ShadowPropertySerializationTests
     public void JsonSchemaObject_CanBeDeserialized_FromDotNetJsonSchema_NestedType()
     {
         // Generate schema using .NET 9 API
-        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(
-            typeof(UserAccount)
-        );
+        JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(UserAccount));
         string schemaJson = dotnetSchema.ToJsonString();
         var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());

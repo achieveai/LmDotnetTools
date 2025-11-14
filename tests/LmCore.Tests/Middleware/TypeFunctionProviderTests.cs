@@ -13,48 +13,45 @@ public class TypeFunctionProviderTests
     public class TestHandlerWithFunctionAttribute
     {
         [Function("add", "Adds two numbers")]
-        public int Add(int a, int b) => a + b;
+        public static int Add(int a, int b) => a + b;
 
         [Function("multiply")]
         [Description("Multiplies two numbers")]
-        public static int Multiply(
-            [Description("First number")] int x,
-            [Description("Second number")] int y
-        ) => x * y;
+        public static int Multiply([Description("First number")] int x, [Description("Second number")] int y) => x * y;
 
         [Function]
-        public async Task<string> AsyncMethod(string input)
+        public static async Task<string> AsyncMethod(string input)
         {
             await Task.Delay(1);
             return $"Processed: {input}";
         }
 
         // Should not be included (no attribute)
-        public int Subtract(int a, int b) => a - b;
+        public static int Subtract(int a, int b) => a - b;
     }
 
     public class TestHandlerWithDescriptionAttribute
     {
         [Description("Concatenates two strings")]
-        public string Concat(string a, string b) => a + b;
+        public static string Concat(string a, string b) => a + b;
 
         [Description("Gets the length of a string")]
         public static int GetLength(string text) => text?.Length ?? 0;
 
         // Should not be included
-        public string NoAttribute(string input) => input;
+        public static string NoAttribute(string input) => input;
     }
 
     public class TestHandlerMixed
     {
         [Function("calculate", "Performs calculation")]
-        public double Calculate(double value, double factor = 2.0)
+        public static double Calculate(double value, double factor = 2.0)
         {
             return value * factor;
         }
 
         [Description("Converts to uppercase")]
-        public string ToUpper(string? text)
+        public static string ToUpper(string? text)
         {
             return text?.ToUpper() ?? string.Empty;
         }
@@ -71,7 +68,7 @@ public class TypeFunctionProviderTests
     public class TestHandlerWithExceptions
     {
         [Function("divide", "Divides two numbers")]
-        public double Divide(double a, double b)
+        public static double Divide(double a, double b)
         {
             if (b == 0)
                 throw new ArgumentException("Cannot divide by zero");
@@ -79,7 +76,7 @@ public class TypeFunctionProviderTests
         }
 
         [Function("asyncError")]
-        public async Task<string> AsyncError()
+        public static async Task<string> AsyncError()
         {
             await Task.Delay(1);
             throw new InvalidOperationException("Async error occurred");
@@ -283,9 +280,7 @@ public class TypeFunctionProviderTests
         // Arrange
         var instance = new TestHandlerWithExceptions();
         var provider = new TypeFunctionProvider(instance);
-        var asyncErrorFunction = provider
-            .GetFunctions()
-            .First(f => f.Contract.Name == "asyncError");
+        var asyncErrorFunction = provider.GetFunctions().First(f => f.Contract.Name == "asyncError");
 
         // Act
         var result = await asyncErrorFunction.Handler("{}");
@@ -337,11 +332,7 @@ public class TypeFunctionProviderTests
     {
         // Arrange
         var registry = new FunctionRegistry();
-        var types = new[]
-        {
-            typeof(TestHandlerWithFunctionAttribute),
-            typeof(TestHandlerWithDescriptionAttribute),
-        };
+        var types = new[] { typeof(TestHandlerWithFunctionAttribute), typeof(TestHandlerWithDescriptionAttribute) };
 
         // Act
         registry.AddFunctionsFromTypes(types);
@@ -371,9 +362,7 @@ public class TypeFunctionProviderTests
 
         // Test execution through handler
         var calculateHandler = handlers["calculate"];
-        var result = await calculateHandler(
-            JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 })
-        );
+        var result = await calculateHandler(JsonSerializer.Serialize(new { value = 5.0, factor = 3.0 }));
         Assert.Equal(15.0, JsonSerializer.Deserialize<double>(result));
     }
 

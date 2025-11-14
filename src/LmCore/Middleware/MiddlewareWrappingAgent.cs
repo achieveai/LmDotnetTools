@@ -6,12 +6,7 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 public class MiddlewareWrappingAgent : IAgent
 {
     private readonly IAgent _agent;
-    private readonly Func<
-        MiddlewareContext,
-        IAgent,
-        CancellationToken,
-        Task<IEnumerable<IMessage>>
-    > _middleware;
+    private readonly Func<MiddlewareContext, IAgent, CancellationToken, Task<IEnumerable<IMessage>>> _middleware;
 
     public MiddlewareWrappingAgent(IAgent agent, IMiddleware middleware)
     {

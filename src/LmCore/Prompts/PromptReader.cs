@@ -42,7 +42,9 @@ public class PromptReader : IPromptReader
     /// <param name="resourceName">The name of the embedded resource.</param>
     public PromptReader(Assembly assembly, string resourceName)
     {
-        using var stream = assembly.GetManifestResourceStream(resourceName) ?? throw new FileNotFoundException(
+        using var stream =
+            assembly.GetManifestResourceStream(resourceName)
+            ?? throw new FileNotFoundException(
                 $"Resource '{resourceName}' not found in assembly '{assembly.FullName}'."
             );
         using var reader = new StreamReader(stream);
@@ -56,13 +58,9 @@ public class PromptReader : IPromptReader
     /// <returns>A dictionary of prompts with their versions.</returns>
     private static Dictionary<string, Dictionary<string, object>> ParseYamlFile(string yamlContent)
     {
-        var deserializer = new DeserializerBuilder()
-            .WithNamingConvention(CamelCaseNamingConvention.Instance)
-            .Build();
+        var deserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
 
-        var result = deserializer.Deserialize<Dictionary<string, Dictionary<string, object>>>(
-            yamlContent
-        );
+        var result = deserializer.Deserialize<Dictionary<string, Dictionary<string, object>>>(yamlContent);
 
         foreach (var promptName in result.Keys)
         {
@@ -148,9 +146,7 @@ public class PromptReader : IPromptReader
 
         if (!promptVersions.TryGetValue(version, out object? promptContent))
         {
-            throw new KeyNotFoundException(
-                $"Version '{version}' not found for prompt '{promptName}'."
-            );
+            throw new KeyNotFoundException($"Version '{version}' not found for prompt '{promptName}'.");
         }
 
         if (promptContent is string)
@@ -182,9 +178,7 @@ public class PromptReader : IPromptReader
         }
         else
         {
-            throw new InvalidOperationException(
-                $"Invalid prompt content for '{promptName}' version '{version}'."
-            );
+            throw new InvalidOperationException($"Invalid prompt content for '{promptName}' version '{version}'.");
         }
     }
 
@@ -199,9 +193,7 @@ public class PromptReader : IPromptReader
         var prompt = GetPrompt(promptName, version);
         return prompt is PromptChain promptChain
             ? promptChain
-            : throw new InvalidOperationException(
-            $"Prompt '{promptName}' version '{version}' is not a PromptChain."
-        );
+            : throw new InvalidOperationException($"Prompt '{promptName}' version '{version}' is not a PromptChain.");
     }
 }
 
@@ -230,8 +222,7 @@ public record Prompt(string Name, string Version, string Value)
 /// <summary>
 /// Represents a chain of prompts with a name, version, and a list of messages.
 /// </summary>
-public record PromptChain(string Name, string Version, List<IMessage> Messages)
-    : Prompt(Name, Version, string.Empty)
+public record PromptChain(string Name, string Version, List<IMessage> Messages) : Prompt(Name, Version, string.Empty)
 {
     /// <summary>
     /// Overrides the PromptText method to throw an exception, as it's not applicable for PromptChain.
@@ -253,12 +244,12 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages)
         return variables == null
             ? Messages
             : Messages
-            .Select<IMessage, IMessage>(m => new TextMessage
-            {
-                Role = m.Role,
-                Text = PromptChain.ApplyVariables(((ICanGetText)m).GetText()!, variables),
-            })
-            .ToList();
+                .Select<IMessage, IMessage>(m => new TextMessage
+                {
+                    Role = m.Role,
+                    Text = PromptChain.ApplyVariables(((ICanGetText)m).GetText()!, variables),
+                })
+                .ToList();
     }
 
     /// <summary>

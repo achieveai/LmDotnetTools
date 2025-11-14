@@ -9,8 +9,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Utils;
 /// </summary>
 /// <typeparam name="TKey">The type of keys in the dictionary.</typeparam>
 /// <typeparam name="TValue">The type of values in the dictionary.</typeparam>
-public class ImmutableDictionaryJsonConverter<TKey, TValue>
-    : JsonConverter<ImmutableDictionary<TKey, TValue>>
+public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<ImmutableDictionary<TKey, TValue>>
     where TKey : notnull
 {
     private readonly Type _keyType;
@@ -34,9 +33,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue>
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
-            throw new JsonException(
-                $"Expected {JsonTokenType.StartObject} but got {reader.TokenType}"
-            );
+            throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
         }
 
         var builder = ImmutableDictionary.CreateBuilder<TKey, TValue>();
@@ -50,9 +47,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue>
 
             if (reader.TokenType != JsonTokenType.PropertyName)
             {
-                throw new JsonException(
-                    $"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}"
-                );
+                throw new JsonException($"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}");
             }
 
             // Read the key
@@ -155,11 +150,7 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue>
         writer.WriteEndObject();
     }
 
-    private static void WriteObjectValue(
-        Utf8JsonWriter writer,
-        object value,
-        JsonSerializerOptions options
-    )
+    private static void WriteObjectValue(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
     {
         if (value == null)
         {

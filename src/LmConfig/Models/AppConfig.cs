@@ -26,9 +26,7 @@ public record AppConfig
     /// <returns>The model configuration if found, null otherwise.</returns>
     public ModelConfig? GetModel(string modelId)
     {
-        System.Diagnostics.Debug.WriteLine(
-            $"DEBUG: AppConfig.GetModel called with modelId: {modelId ?? "NULL"}"
-        );
+        System.Diagnostics.Debug.WriteLine($"DEBUG: AppConfig.GetModel called with modelId: {modelId ?? "NULL"}");
         System.Diagnostics.Debug.WriteLine($"DEBUG: Models collection is null: {Models == null}");
         if (Models != null && !string.IsNullOrEmpty(modelId))
         {
@@ -38,9 +36,7 @@ public record AppConfig
             {
                 modelId = modelId.Substring(0, bracketIndex);
             }
-            return Models.FirstOrDefault(m =>
-                m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase)
-            );
+            return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
         }
 
         return null;
@@ -67,9 +63,7 @@ public record AppConfig
             );
             foreach (var model in matchingModels)
             {
-                System.Diagnostics.Debug.WriteLine(
-                    $"DEBUG: Model {model.Id} has capability {capability}"
-                );
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Model {model.Id} has capability {capability}");
             }
             return matchingModels;
         }
@@ -84,9 +78,7 @@ public record AppConfig
     /// <returns>The provider connection info if found, null otherwise.</returns>
     public ProviderConnectionInfo? GetProviderConnection(string providerName)
     {
-        return ProviderRegistry?.TryGetValue(providerName, out var provider) == true
-            ? provider
-            : null;
+        return ProviderRegistry?.TryGetValue(providerName, out var provider) == true ? provider : null;
     }
 
     /// <summary>

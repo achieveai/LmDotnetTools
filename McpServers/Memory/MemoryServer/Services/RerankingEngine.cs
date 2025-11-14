@@ -26,27 +26,20 @@ public class RerankingEngine : IRerankingEngine
         {
             try
             {
-                var serviceOptions =
-                    new AchieveAi.LmDotnetTools.LmEmbeddings.Models.RerankingOptions
-                    {
-                        ApiKey = _options.ApiKey,
-                        BaseUrl = _options.RerankingEndpoint,
-                        DefaultModel = _options.RerankingModel,
-                    };
+                var serviceOptions = new AchieveAi.LmDotnetTools.LmEmbeddings.Models.RerankingOptions
+                {
+                    ApiKey = _options.ApiKey,
+                    BaseUrl = _options.RerankingEndpoint,
+                    DefaultModel = _options.RerankingModel,
+                };
 
                 _rerankingService = new RerankingService(serviceOptions);
 
-                _logger.LogInformation(
-                    "RerankingEngine initialized with {Model} model",
-                    _options.RerankingModel
-                );
+                _logger.LogInformation("RerankingEngine initialized with {Model} model", _options.RerankingModel);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(
-                    ex,
-                    "Failed to initialize reranking service. Falling back to local scoring."
-                );
+                _logger.LogWarning(ex, "Failed to initialize reranking service. Falling back to local scoring.");
                 _rerankingService = null;
             }
         }
@@ -75,18 +68,13 @@ public class RerankingEngine : IRerankingEngine
         if (string.IsNullOrWhiteSpace(query))
             throw new ArgumentException("Query cannot be empty", nameof(query));
 
-        if (results == null)
-            throw new ArgumentNullException(nameof(results));
+        ArgumentNullException.ThrowIfNull(results);
 
         options ??= _options;
         var totalStopwatch = Stopwatch.StartNew();
         var metrics = new RerankingMetrics();
 
-        _logger.LogDebug(
-            "Starting reranking for {ResultCount} results with query '{Query}'",
-            results.Count,
-            query
-        );
+        _logger.LogDebug("Starting reranking for {ResultCount} results with query '{Query}'", results.Count, query);
 
         try
         {
@@ -130,33 +118,20 @@ public class RerankingEngine : IRerankingEngine
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(
-                        ex,
-                        "Semantic reranking failed, falling back to local scoring"
-                    );
+                    _logger.LogWarning(ex, "Semantic reranking failed, falling back to local scoring");
                     metrics.HasFailures = true;
                     metrics.Errors.Add($"Semantic reranking failed: {ex.Message}");
 
                     if (!options.EnableGracefulFallback)
                         throw;
 
-                    rerankedResults = await PerformLocalScoringAsync(
-                        query,
-                        candidates,
-                        metrics,
-                        cancellationToken
-                    );
+                    rerankedResults = await PerformLocalScoringAsync(query, candidates, metrics, cancellationToken);
                     fallbackReason = "Semantic reranking failed";
                 }
             }
             else
             {
-                rerankedResults = await PerformLocalScoringAsync(
-                    query,
-                    candidates,
-                    metrics,
-                    cancellationToken
-                );
+                rerankedResults = await PerformLocalScoringAsync(query, candidates, metrics, cancellationToken);
                 fallbackReason = "Semantic reranking service not available";
             }
 
@@ -197,12 +172,7 @@ public class RerankingEngine : IRerankingEngine
             if (!options.EnableGracefulFallback)
                 throw;
 
-            return CreateFallbackResults(
-                results,
-                metrics,
-                totalStopwatch.Elapsed,
-                $"Reranking failed: {ex.Message}"
-            );
+            return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, $"Reranking failed: {ex.Message}");
         }
     }
 
@@ -224,16 +194,10 @@ public class RerankingEngine : IRerankingEngine
             var documents = candidates.Select(r => r.Content).ToList();
 
             // Call semantic reranking service
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken
-            );
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(_options.RerankingTimeout);
 
-            var rankedDocuments = await _rerankingService.RerankAsync(
-                query,
-                documents,
-                timeoutCts.Token
-            );
+            var rankedDocuments = await _rerankingService.RerankAsync(query, documents, timeoutCts.Token);
 
             stopwatch.Stop();
             metrics.SemanticRerankingDuration = stopwatch.Elapsed;
@@ -276,9 +240,7 @@ public class RerankingEngine : IRerankingEngine
         }
         catch (OperationCanceledException)
         {
-            throw new TimeoutException(
-                $"Semantic reranking timed out after {_options.RerankingTimeout}"
-            );
+            throw new TimeoutException($"Semantic reranking timed out after {_options.RerankingTimeout}");
         }
     }
 
@@ -308,7 +270,7 @@ public class RerankingEngine : IRerankingEngine
         return sortedResults;
     }
 
-    private void ApplyMultiDimensionalScoring(
+    private static void ApplyMultiDimensionalScoring(
         UnifiedSearchResult result,
         MemoryServer.Models.RerankingOptions options
     )
@@ -329,8 +291,7 @@ public class RerankingEngine : IRerankingEngine
             if (daysSinceCreation <= options.RecencyBoostDays)
             {
                 var recencyBoost =
-                    (1.0f - (float)(daysSinceCreation / options.RecencyBoostDays))
-                    * options.RecencyWeight;
+                    (1.0f - (float)(daysSinceCreation / options.RecencyBoostDays)) * options.RecencyWeight;
                 newScore += recencyBoost;
             }
         }
@@ -353,7 +314,7 @@ public class RerankingEngine : IRerankingEngine
         result.Score = Math.Max(0, newScore); // Ensure score doesn't go negative
     }
 
-    private float CalculateContentQuality(string content)
+    private static float CalculateContentQuality(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
             return 0.0f;
@@ -385,7 +346,7 @@ public class RerankingEngine : IRerankingEngine
         return (lengthScore + wordDensityScore) / 2.0f;
     }
 
-    private int CalculatePositionChanges(
+    private static int CalculatePositionChanges(
         List<UnifiedSearchResult> rerankedResults,
         Dictionary<int, int> originalPositions
     )
@@ -393,10 +354,7 @@ public class RerankingEngine : IRerankingEngine
         var changes = 0;
         for (int i = 0; i < rerankedResults.Count; i++)
         {
-            if (
-                originalPositions.TryGetValue(rerankedResults[i].Id, out var originalPosition)
-                && originalPosition != i
-            )
+            if (originalPositions.TryGetValue(rerankedResults[i].Id, out var originalPosition) && originalPosition != i)
             {
                 changes++;
             }
@@ -404,7 +362,7 @@ public class RerankingEngine : IRerankingEngine
         return changes;
     }
 
-    private float CalculateAverageScoreChange(
+    private static float CalculateAverageScoreChange(
         List<UnifiedSearchResult> originalResults,
         List<UnifiedSearchResult> rerankedResults
     )
@@ -426,7 +384,7 @@ public class RerankingEngine : IRerankingEngine
         return scoreChanges.Count > 0 ? scoreChanges.Average() : 0.0f;
     }
 
-    private RerankingResults CreateFallbackResults(
+    private static RerankingResults CreateFallbackResults(
         List<UnifiedSearchResult> results,
         RerankingMetrics metrics,
         TimeSpan duration,

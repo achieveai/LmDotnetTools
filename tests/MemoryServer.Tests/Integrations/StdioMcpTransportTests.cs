@@ -16,9 +16,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
         : base(output)
     {
         // Path to the Memory MCP Server executable
-        var assemblyLocation = Path.GetDirectoryName(
-            typeof(StdioMcpTransportTests).Assembly.Location
-        )!;
+        var assemblyLocation = Path.GetDirectoryName(typeof(StdioMcpTransportTests).Assembly.Location)!;
         _serverExecutablePath = Path.Combine(assemblyLocation, "MemoryServer.exe");
 
         // If not found in test output, try the actual build location
@@ -48,9 +46,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
 
         if (!File.Exists(_serverExecutablePath))
         {
-            throw new FileNotFoundException(
-                $"Server executable not found at: {_serverExecutablePath}"
-            );
+            throw new FileNotFoundException($"Server executable not found at: {_serverExecutablePath}");
         }
 
         var transport = new StdioClientTransport(

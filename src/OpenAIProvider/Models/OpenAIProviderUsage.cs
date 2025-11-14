@@ -45,8 +45,7 @@ public record OpenAIProviderUsage
     public int CachedTokens { get; init; }
 
     [JsonExtensionData]
-    public IDictionary<string, object> ExtraProperties { get; init; } =
-        new Dictionary<string, object>();
+    public IDictionary<string, object> ExtraProperties { get; init; } = new Dictionary<string, object>();
 
     // Unified access properties with precedence logic
     [JsonIgnore]
@@ -78,10 +77,7 @@ public record OpenAIProviderUsage
             CompletionTokens = CompletionTokens,
             TotalTokens = TotalTokens,
             TotalCost = TotalCost,
-            ExtraProperties = ExtraProperties.ToImmutableDictionary(
-                kvp => kvp.Key,
-                kvp => (object?)kvp.Value
-            ),
+            ExtraProperties = ExtraProperties.ToImmutableDictionary(kvp => kvp.Key, kvp => (object?)kvp.Value),
         };
 
         // Convert nested token details if present
@@ -89,10 +85,7 @@ public record OpenAIProviderUsage
         {
             usage = usage with
             {
-                InputTokenDetails = new InputTokenDetails
-                {
-                    CachedTokens = InputTokenDetails.CachedTokens,
-                },
+                InputTokenDetails = new InputTokenDetails { CachedTokens = InputTokenDetails.CachedTokens },
             };
         }
 
@@ -100,10 +93,7 @@ public record OpenAIProviderUsage
         {
             usage = usage with
             {
-                OutputTokenDetails = new OutputTokenDetails
-                {
-                    ReasoningTokens = OutputTokenDetails.ReasoningTokens,
-                },
+                OutputTokenDetails = new OutputTokenDetails { ReasoningTokens = OutputTokenDetails.ReasoningTokens },
             };
         }
 
@@ -123,17 +113,11 @@ public record OpenAIProviderUsage
             TotalCost = coreUsage.TotalCost,
             InputTokenDetails =
                 coreUsage.InputTokenDetails != null
-                    ? new OpenAIInputTokenDetails
-                    {
-                        CachedTokens = coreUsage.InputTokenDetails.CachedTokens,
-                    }
+                    ? new OpenAIInputTokenDetails { CachedTokens = coreUsage.InputTokenDetails.CachedTokens }
                     : null,
             OutputTokenDetails =
                 coreUsage.OutputTokenDetails != null
-                    ? new OpenAIOutputTokenDetails
-                    {
-                        ReasoningTokens = coreUsage.OutputTokenDetails.ReasoningTokens,
-                    }
+                    ? new OpenAIOutputTokenDetails { ReasoningTokens = coreUsage.OutputTokenDetails.ReasoningTokens }
                     : null,
         };
     }

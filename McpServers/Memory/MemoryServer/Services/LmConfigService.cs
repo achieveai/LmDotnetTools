@@ -24,10 +24,7 @@ namespace MemoryServer.Services;
 /// </summary>
 public class LmConfigService : ILmConfigService
 {
-    private static readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-    };
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly AppConfig _appConfig;
     private readonly MemoryServerOptions _memoryOptions;
     private readonly IServiceProvider _serviceProvider;
@@ -57,15 +54,9 @@ public class LmConfigService : ILmConfigService
     /// <summary>
     /// Gets the optimal model configuration for a specific capability.
     /// </summary>
-    public Task<ModelConfig?> GetOptimalModelAsync(
-        string capability,
-        CancellationToken cancellationToken = default
-    )
+    public Task<ModelConfig?> GetOptimalModelAsync(string capability, CancellationToken cancellationToken = default)
     {
-        _logger.LogError(
-            "DEBUG: GetOptimalModelAsync called with capability: {Capability}",
-            capability
-        );
+        _logger.LogError("DEBUG: GetOptimalModelAsync called with capability: {Capability}", capability);
 
         var modelsWithCapability = GetModelsWithCapability(capability);
         _logger.LogError(
@@ -85,9 +76,7 @@ public class LmConfigService : ILmConfigService
         {
             var maxCost = _memoryOptions.LmConfig.CostOptimization.MaxCostPerRequest;
             modelsWithCapability = modelsWithCapability
-                .Where(m =>
-                    (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000
-                )
+                .Where(m => (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000)
                 .ToList();
         }
 
@@ -121,24 +110,15 @@ public class LmConfigService : ILmConfigService
     /// <summary>
     /// Creates an agent for a specific capability using the optimal model.
     /// </summary>
-    public async Task<IAgent> CreateAgentAsync(
-        string capability,
-        CancellationToken cancellationToken = default
-    )
+    public async Task<IAgent> CreateAgentAsync(string capability, CancellationToken cancellationToken = default)
     {
         try
         {
-            _logger.LogInformation(
-                "CreateAgentAsync called with capability: {Capability}",
-                capability
-            );
+            _logger.LogInformation("CreateAgentAsync called with capability: {Capability}", capability);
 
             // First get the optimal model for this capability
             var optimalModel = await GetOptimalModelAsync(capability, cancellationToken);
-            _logger.LogInformation(
-                "GetOptimalModelAsync returned: {ModelId}",
-                optimalModel?.Id ?? "null"
-            );
+            _logger.LogInformation("GetOptimalModelAsync returned: {ModelId}", optimalModel?.Id ?? "null");
 
             if (optimalModel == null)
             {
@@ -148,10 +128,7 @@ public class LmConfigService : ILmConfigService
 
             // Return UnifiedAgent directly - it will handle model resolution, provider dispatching,
             // and model name translation when GenerateReplyAsync is called
-            _logger.LogInformation(
-                "Successfully created UnifiedAgent for model: {ModelId}",
-                optimalModel.Id
-            );
+            _logger.LogInformation("Successfully created UnifiedAgent for model: {ModelId}", optimalModel.Id);
 
             return _unifiedAgent;
         }
@@ -202,10 +179,7 @@ public class LmConfigService : ILmConfigService
 
             // Return UnifiedAgent directly - it will handle model resolution, provider dispatching,
             // and model name translation when GenerateReplyAsync is called with the specific modelId
-            _logger.LogInformation(
-                "Successfully created UnifiedAgent for specific model: {ModelId}",
-                modelId
-            );
+            _logger.LogInformation("Successfully created UnifiedAgent for specific model: {ModelId}", modelId);
 
             return Task.FromResult<IAgent>(_unifiedAgent);
         }
@@ -224,13 +198,9 @@ public class LmConfigService : ILmConfigService
     /// <summary>
     /// Creates an embedding service using environment variables.
     /// </summary>
-    public Task<IEmbeddingService> CreateEmbeddingServiceAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<IEmbeddingService> CreateEmbeddingServiceAsync(CancellationToken cancellationToken = default)
     {
-        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            "EMBEDDING_API_KEY"
-        );
+        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_API_KEY");
         var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
             "EMBEDDING_BASE_URL",
             null,
@@ -264,11 +234,7 @@ public class LmConfigService : ILmConfigService
             }
         );
 
-        _logger.LogInformation(
-            "Created embedding service using model {Model} at {BaseUrl}",
-            model,
-            baseUrl
-        );
+        _logger.LogInformation("Created embedding service using model {Model} at {BaseUrl}", model, baseUrl);
 
         return Task.FromResult(embeddingService as IEmbeddingService);
     }
@@ -276,13 +242,9 @@ public class LmConfigService : ILmConfigService
     /// <summary>
     /// Creates a reranking service using environment variables.
     /// </summary>
-    public Task<IRerankService> CreateRerankServiceAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<IRerankService> CreateRerankServiceAsync(CancellationToken cancellationToken = default)
     {
-        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            "RERANKING_API_KEY"
-        );
+        var apiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_API_KEY");
         var baseUrl = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
             "RERANKING_BASE_URL",
             null,
@@ -336,39 +298,28 @@ public class LmConfigService : ILmConfigService
             var models = GetModelsWithCapability(capability);
             if (!models.Any())
             {
-                _logger.LogError(
-                    "No models configured for required capability: {Capability}",
-                    capability
-                );
+                _logger.LogError("No models configured for required capability: {Capability}", capability);
                 return false;
             }
         }
 
         // Validate embedding service configuration
-        var embeddingApiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            "EMBEDDING_API_KEY"
-        );
+        var embeddingApiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("EMBEDDING_API_KEY");
         if (string.IsNullOrEmpty(embeddingApiKey) || embeddingApiKey.StartsWith("${"))
         {
-            _logger.LogError(
-                "Embedding API key not configured. Set EMBEDDING_API_KEY environment variable."
-            );
+            _logger.LogError("Embedding API key not configured. Set EMBEDDING_API_KEY environment variable.");
             return false;
         }
 
         // Validate reranking service configuration (optional)
-        var rerankingApiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-            "RERANKING_API_KEY"
-        );
+        var rerankingApiKey = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("RERANKING_API_KEY");
         if (!string.IsNullOrEmpty(rerankingApiKey) && !rerankingApiKey.StartsWith("${"))
         {
             _logger.LogInformation("Reranking service configured");
         }
         else
         {
-            _logger.LogWarning(
-                "Reranking API key not configured. Reranking functionality will not be available."
-            );
+            _logger.LogWarning("Reranking API key not configured. Reranking functionality will not be available.");
         }
 
         _logger.LogInformation("All required models and services validated successfully");
@@ -389,10 +340,7 @@ public class LmConfigService : ILmConfigService
             var optimalModel = await GetOptimalModelAsync(capability, cancellationToken);
             if (optimalModel == null)
             {
-                _logger.LogWarning(
-                    "No optimal model found for capability: {Capability}",
-                    capability
-                );
+                _logger.LogWarning("No optimal model found for capability: {Capability}", capability);
                 return null;
             }
 
@@ -403,10 +351,7 @@ public class LmConfigService : ILmConfigService
             );
             if (providerResolution == null)
             {
-                _logger.LogWarning(
-                    "No provider resolution found for model: {ModelId}",
-                    optimalModel.Id
-                );
+                _logger.LogWarning("No provider resolution found for model: {ModelId}", optimalModel.Id);
                 return null;
             }
 
@@ -415,11 +360,7 @@ public class LmConfigService : ILmConfigService
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Failed to get effective model name for capability: {Capability}",
-                capability
-            );
+            _logger.LogError(ex, "Failed to get effective model name for capability: {Capability}", capability);
             return null;
         }
     }
@@ -453,10 +394,7 @@ public class LmConfigService : ILmConfigService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(
-                ex,
-                "Failed to load from embedded resource, falling back to file system"
-            );
+            _logger.LogWarning(ex, "Failed to load from embedded resource, falling back to file system");
         }
 
         // Fallback to file system if embedded resource fails
@@ -497,17 +435,11 @@ public class LmConfigService : ILmConfigService
         }
         catch (JsonException ex)
         {
-            throw new InvalidOperationException(
-                $"Failed to parse LmConfig file at {configPath}: {ex.Message}",
-                ex
-            );
+            throw new InvalidOperationException($"Failed to parse LmConfig file at {configPath}: {ex.Message}", ex);
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException(
-                $"Failed to load LmConfig from {configPath}: {ex.Message}",
-                ex
-            );
+            throw new InvalidOperationException($"Failed to load LmConfig from {configPath}: {ex.Message}", ex);
         }
     }
 

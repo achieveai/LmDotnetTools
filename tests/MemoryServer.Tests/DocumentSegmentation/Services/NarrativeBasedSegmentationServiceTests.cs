@@ -25,11 +25,7 @@ public class NarrativeBasedSegmentationServiceTests
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
         _logger = new LoggerFactory().CreateLogger<NarrativeBasedSegmentationService>();
 
-        _service = new NarrativeBasedSegmentationService(
-            _mockLlmService.Object,
-            _mockPromptManager.Object,
-            _logger
-        );
+        _service = new NarrativeBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
 
         SetupDefaultMocks();
     }
@@ -39,18 +35,13 @@ public class NarrativeBasedSegmentationServiceTests
         // Setup default prompt manager response
         _mockPromptManager
             .Setup(x =>
-                x.GetPromptAsync(
-                    It.IsAny<SegmentationStrategy>(),
-                    It.IsAny<string>(),
-                    It.IsAny<CancellationToken>()
-                )
+                x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
             .ReturnsAsync(
                 new PromptTemplate
                 {
                     SystemPrompt = "You are a narrative analysis expert.",
-                    UserPrompt =
-                        "Analyze the following content for narrative flow: {DocumentContent}",
+                    UserPrompt = "Analyze the following content for narrative flow: {DocumentContent}",
                     ExpectedFormat = "json",
                     Metadata = new Dictionary<string, object>
                     {
@@ -61,9 +52,7 @@ public class NarrativeBasedSegmentationServiceTests
             );
 
         // Setup default LLM service responses
-        _mockLlmService
-            .Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
+        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
     #region SegmentByNarrativeAsync Tests
@@ -90,10 +79,7 @@ public class NarrativeBasedSegmentationServiceTests
         {
             segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
             segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment
-                .Metadata["segmentation_strategy"]
-                .Should()
-                .Be(SegmentationStrategy.NarrativeBased.ToString());
+            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.NarrativeBased.ToString());
         }
     }
 
@@ -110,18 +96,10 @@ Then, we investigated the root cause. After careful analysis, we discovered the 
 Finally, we implemented a solution. The fix involved updating the connection string and restarting the service.
 ";
 
-        var options = new NarrativeSegmentationOptions
-        {
-            MinSegmentSize = 20,
-            DetectTemporalSequences = true,
-        };
+        var options = new NarrativeSegmentationOptions { MinSegmentSize = 20, DetectTemporalSequences = true };
 
         // Act
-        var result = await _service.SegmentByNarrativeAsync(
-            content,
-            DocumentType.Documentation,
-            options
-        );
+        var result = await _service.SegmentByNarrativeAsync(content, DocumentType.Documentation, options);
 
         // Assert
         result.Should().NotBeEmpty();
@@ -150,26 +128,17 @@ Therefore, we decided to optimize the database indexes.
 Consequently, the performance improved significantly after the changes.
 ";
 
-        var options = new NarrativeSegmentationOptions
-        {
-            MinSegmentSize = 20,
-            AnalyzeCausalRelationships = true,
-        };
+        var options = new NarrativeSegmentationOptions { MinSegmentSize = 20, AnalyzeCausalRelationships = true };
 
         // Act
-        var result = await _service.SegmentByNarrativeAsync(
-            content,
-            DocumentType.Documentation,
-            options
-        );
+        var result = await _service.SegmentByNarrativeAsync(content, DocumentType.Documentation, options);
 
         // Assert
         result.Should().NotBeEmpty();
 
         // Check for causal relationship metadata
         var segmentWithCausal = result.FirstOrDefault(s =>
-            s.Metadata.ContainsKey("transition_type")
-            && s.Metadata["transition_type"].ToString() == "Causal"
+            s.Metadata.ContainsKey("transition_type") && s.Metadata["transition_type"].ToString() == "Causal"
         );
 
         segmentWithCausal.Should().NotBeNull();
@@ -197,19 +166,11 @@ Next, we began coding the solution. Finally, we tested and deployed the applicat
         result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Temporal);
         result
             .Should()
-            .Contain(b =>
-                b.TriggerPhrases.Any(p => p.Equals("initially", StringComparison.OrdinalIgnoreCase))
-            );
+            .Contain(b => b.TriggerPhrases.Any(p => p.Equals("initially", StringComparison.OrdinalIgnoreCase)));
+        result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("then", StringComparison.OrdinalIgnoreCase)));
         result
             .Should()
-            .Contain(b =>
-                b.TriggerPhrases.Any(p => p.Equals("then", StringComparison.OrdinalIgnoreCase))
-            );
-        result
-            .Should()
-            .Contain(b =>
-                b.TriggerPhrases.Any(p => p.Equals("finally", StringComparison.OrdinalIgnoreCase))
-            );
+            .Contain(b => b.TriggerPhrases.Any(p => p.Equals("finally", StringComparison.OrdinalIgnoreCase)));
     }
 
     [Fact]
@@ -224,24 +185,17 @@ As a result, all user sessions were lost.
 ";
 
         // Act
-        var result = await _service.DetectNarrativeTransitionsAsync(
-            content,
-            DocumentType.Documentation
-        );
+        var result = await _service.DetectNarrativeTransitionsAsync(content, DocumentType.Documentation);
 
         // Assert
         result.Should().NotBeEmpty();
         result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Causal);
         result
             .Should()
-            .Contain(b =>
-                b.TriggerPhrases.Any(p => p.Equals("because", StringComparison.OrdinalIgnoreCase))
-            );
+            .Contain(b => b.TriggerPhrases.Any(p => p.Equals("because", StringComparison.OrdinalIgnoreCase)));
         result
             .Should()
-            .Contain(b =>
-                b.TriggerPhrases.Any(p => p.Equals("therefore", StringComparison.OrdinalIgnoreCase))
-            );
+            .Contain(b => b.TriggerPhrases.Any(p => p.Equals("therefore", StringComparison.OrdinalIgnoreCase)));
     }
 
     #endregion
@@ -340,19 +294,9 @@ As a result, users experienced timeouts.
 
         // Assert
         result.Should().NotBeEmpty();
-        result
-            .Should()
-            .Contain(r => r.CausalIndicator.Equals("because", StringComparison.OrdinalIgnoreCase));
-        result
-            .Should()
-            .Contain(r =>
-                r.CausalIndicator.Equals("therefore", StringComparison.OrdinalIgnoreCase)
-            );
-        result
-            .Should()
-            .Contain(r =>
-                r.CausalIndicator.Equals("as a result", StringComparison.OrdinalIgnoreCase)
-            );
+        result.Should().Contain(r => r.CausalIndicator.Equals("because", StringComparison.OrdinalIgnoreCase));
+        result.Should().Contain(r => r.CausalIndicator.Equals("therefore", StringComparison.OrdinalIgnoreCase));
+        result.Should().Contain(r => r.CausalIndicator.Equals("as a result", StringComparison.OrdinalIgnoreCase));
 
         foreach (var relation in result)
         {
@@ -378,10 +322,7 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
 ";
 
         // Act
-        var result = await _service.IdentifyNarrativeArcElementsAsync(
-            content,
-            DocumentType.Documentation
-        );
+        var result = await _service.IdentifyNarrativeArcElementsAsync(content, DocumentType.Documentation);
 
         // Assert
         result.Should().NotBeEmpty();

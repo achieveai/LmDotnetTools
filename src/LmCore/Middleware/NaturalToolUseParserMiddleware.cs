@@ -124,7 +124,10 @@ public partial class ToolCallTextParser
         return chunks;
     }
 
-    [GeneratedRegex(@"<tool_call\s+name\s*=\s*[""']([^""']+)[""']\s*>(.*?)</tool_call>", RegexOptions.Compiled | RegexOptions.Singleline)]
+    [GeneratedRegex(
+        @"<tool_call\s+name\s*=\s*[""']([^""']+)[""']\s*>(.*?)</tool_call>",
+        RegexOptions.Compiled | RegexOptions.Singleline
+    )]
     private static partial Regex MyRegex();
 }
 
@@ -176,10 +179,7 @@ public partial class PartialToolCallDetector
                 Match? correspondingOpen = null;
                 foreach (Match openMatch in openMatches)
                 {
-                    if (
-                        openMatch.Index < closeMatch.Index
-                        && !matchedCloses.Contains(openMatch.Index)
-                    )
+                    if (openMatch.Index < closeMatch.Index && !matchedCloses.Contains(openMatch.Index))
                     {
                         correspondingOpen = openMatch;
                     }
@@ -195,10 +195,7 @@ public partial class PartialToolCallDetector
             {
                 if (!matchedCloses.Contains(openMatch.Index))
                 {
-                    return new PartialToolCallMatch(
-                        openMatch.Index,
-                        text.Substring(openMatch.Index)
-                    );
+                    return new PartialToolCallMatch(openMatch.Index, text.Substring(openMatch.Index));
                 }
             }
         }
@@ -220,28 +217,40 @@ public partial class PartialToolCallDetector
 
     [GeneratedRegex(@"<tool_call\s+[^>]*>", RegexOptions.Compiled)]
     private static partial Regex MyRegex();
+
     [GeneratedRegex(@"</tool_call>", RegexOptions.Compiled)]
     private static partial Regex MyRegex1();
+
     [GeneratedRegex(@"<(?:t(?:o(?:o(?:l(?:_(?:c(?:a(?:l(?:l(?:\s+[^>]*)?)?)?)?)?)?)?)?)?)?$", RegexOptions.Compiled)]
     private static partial Regex MyRegex2();
+
     [GeneratedRegex(@"</tool_call$", RegexOptions.Compiled)]
     private static partial Regex MyRegex3();
+
     [GeneratedRegex(@"</tool_cal$", RegexOptions.Compiled)]
     private static partial Regex MyRegex4();
+
     [GeneratedRegex(@"</tool_ca$", RegexOptions.Compiled)]
     private static partial Regex MyRegex5();
+
     [GeneratedRegex(@"</tool_c$", RegexOptions.Compiled)]
     private static partial Regex MyRegex6();
+
     [GeneratedRegex(@"</tool_$", RegexOptions.Compiled)]
     private static partial Regex MyRegex7();
+
     [GeneratedRegex(@"</tool$", RegexOptions.Compiled)]
     private static partial Regex MyRegex8();
+
     [GeneratedRegex(@"</too$", RegexOptions.Compiled)]
     private static partial Regex MyRegex9();
+
     [GeneratedRegex(@"</to$", RegexOptions.Compiled)]
     private static partial Regex MyRegex10();
+
     [GeneratedRegex(@"</t$", RegexOptions.Compiled)]
     private static partial Regex MyRegex11();
+
     [GeneratedRegex(@"</$", RegexOptions.Compiled)]
     private static partial Regex MyRegex12();
 }
@@ -386,10 +395,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                     var jsonSchema = contract.GetJsonSchema();
                     string schemaString =
                         jsonSchema != null
-                            ? JsonSerializer.Serialize(
-                                jsonSchema,
-                                JsonSchemaValidator.SchemaSerializationOptions
-                            )
+                            ? JsonSerializer.Serialize(jsonSchema, JsonSchemaValidator.SchemaSerializationOptions)
                             : string.Empty;
 
                     var isValid = _schemaValidator.Validate(jsonText, schemaString);
@@ -416,9 +422,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                     // Requirement 2.5 & 3.1: When no fallback agent is provided AND validation fails, throw exception immediately
                     if (_fallbackParser == null)
                     {
-                        throw new ToolUseParsingException(
-                            $"Invalid schema for tool call {toolName}"
-                        );
+                        throw new ToolUseParsingException($"Invalid schema for tool call {toolName}");
                     }
 
                     // Requirement 3.2: When fallback agent is provided, use structured output fallback for validation failures
@@ -438,9 +442,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             {
                 // Requirement 3.1: Maintain existing error handling behavior when no fallback agent
                 return _fallbackParser == null
-                    ? throw new ToolUseParsingException(
-                        $"No JSON content found for tool call {toolName}"
-                    )
+                    ? throw new ToolUseParsingException($"No JSON content found for tool call {toolName}")
                     : await UseFallbackParserAsync(content, toolName, cancellationToken);
             }
         }
@@ -454,10 +456,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             // Requirement 3.1: When no fallback agent, throw ToolUseParsingException immediately
             if (_fallbackParser == null)
             {
-                throw new ToolUseParsingException(
-                    $"Failed to parse tool call {toolName}: {ex.Message}",
-                    ex
-                );
+                throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
             }
 
             // Requirement 3.2: When fallback agent is available, try fallback for any other exceptions
@@ -503,20 +502,14 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         {
             _isFirstInvocation = false;
             var markdown = NaturalToolUseParserMiddleware.RenderContractsToMarkdown(_functions);
-            var systemMessage = (
-                context.Messages.FirstOrDefault(m => m.Role == Role.System)?.ToString() ?? ""
-            );
+            var systemMessage = (context.Messages.FirstOrDefault(m => m.Role == Role.System)?.ToString() ?? "");
             systemMessage = systemMessage + "\n\n---\n\n# Tool Calls\n\n" + markdown;
             var newMessages = context.Messages.ToList();
             var systemMsgIndex = newMessages.FindIndex(m => m.Role == Role.System);
 
             if (systemMsgIndex >= 0)
             {
-                newMessages[systemMsgIndex] = new TextMessage
-                {
-                    Text = systemMessage,
-                    Role = Role.System,
-                };
+                newMessages[systemMsgIndex] = new TextMessage { Text = systemMessage, Role = Role.System };
             }
             else
             {
@@ -554,10 +547,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         {
             if (reply is TextMessage textMessage)
             {
-                var processedMessages = await ProcessTextMessageAsync(
-                    textMessage,
-                    cancellationToken
-                );
+                var processedMessages = await ProcessTextMessageAsync(textMessage, cancellationToken);
                 processedReplies.AddRange(processedMessages);
             }
             else
@@ -609,11 +599,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                     {
                         // Process complete tool calls and emit results
                         await foreach (
-                            var message in ProcessParsedChunksAsync(
-                                parsedChunks,
-                                templateUpdate,
-                                cancellationToken
-                            )
+                            var message in ProcessParsedChunksAsync(parsedChunks, templateUpdate, cancellationToken)
                         )
                         {
                             yield return message;
@@ -715,8 +701,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
             if (startIndex > currentPosition)
             {
-                var prefixText = text.Substring(currentPosition, startIndex - currentPosition)
-                    .Trim();
+                var prefixText = text.Substring(currentPosition, startIndex - currentPosition).Trim();
                 if (!string.IsNullOrEmpty(prefixText))
                 {
                     messages.Add(new TextMessage { Text = prefixText, Role = textMessage.Role });
@@ -725,11 +710,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
             try
             {
-                var toolCallMessages = await ProcessToolCallAsync(
-                    toolName,
-                    content,
-                    cancellationToken
-                );
+                var toolCallMessages = await ProcessToolCallAsync(toolName, content, cancellationToken);
                 messages.AddRange(toolCallMessages);
             }
             catch (ToolUseParsingException)
@@ -742,10 +723,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             {
                 // This should not happen as ProcessToolCallAsync handles all exceptions internally
                 // But maintain backward compatibility by wrapping in ToolUseParsingException
-                throw new ToolUseParsingException(
-                    $"Failed to parse tool call {toolName}: {ex.Message}",
-                    ex
-                );
+                throw new ToolUseParsingException($"Failed to parse tool call {toolName}: {ex.Message}", ex);
             }
 
             currentPosition = endIndex;
@@ -796,12 +774,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
         return jsonSchema == null
             ? await UseLegacyFallbackAsync(rawText, toolName, cancellationToken)
-            : await UseStructuredOutputFallbackAsync(
-            rawText,
-            toolName,
-            jsonSchema,
-            cancellationToken
-        );
+            : await UseStructuredOutputFallbackAsync(rawText, toolName, jsonSchema, cancellationToken);
     }
 
     private void ValidateFallbackParserConfiguration()
@@ -814,10 +787,10 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     private FunctionContract? GetFunctionContract(string toolName)
     {
-        var contract = _functions.FirstOrDefault(f =>
-            f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase)
-        );
-        return contract == null ? throw new ToolUseParsingException($"Tool {toolName} not found in function contracts") : contract;
+        var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+        return contract == null
+            ? throw new ToolUseParsingException($"Tool {toolName} not found in function contracts")
+            : contract;
     }
 
     private async Task<IEnumerable<IMessage>> UseLegacyFallbackAsync(
@@ -831,11 +804,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
         try
         {
-            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(
-                messages,
-                null,
-                cancellationToken
-            );
+            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, null, cancellationToken);
             var fallbackReply = NaturalToolUseParserMiddleware.ExtractTextMessageFromReplies(fallbackReplies);
 
             if (fallbackReply != null)
@@ -845,15 +814,10 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         }
         catch (Exception ex) when (!(ex is ToolUseParsingException))
         {
-            throw new ToolUseParsingException(
-                $"Fallback parser failed for {toolName}: {ex.Message}",
-                ex
-            );
+            throw new ToolUseParsingException($"Fallback parser failed for {toolName}: {ex.Message}", ex);
         }
 
-        throw new ToolUseParsingException(
-            $"Fallback parser failed to generate valid JSON for {toolName}"
-        );
+        throw new ToolUseParsingException($"Fallback parser failed to generate valid JSON for {toolName}");
     }
 
     private async Task<IEnumerable<IMessage>> UseStructuredOutputFallbackAsync(
@@ -871,11 +835,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
         try
         {
-            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(
-                messages,
-                options,
-                cancellationToken
-            );
+            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, options, cancellationToken);
             var fallbackReply = NaturalToolUseParserMiddleware.ExtractTextMessageFromReplies(fallbackReplies);
 
             if (fallbackReply != null)
@@ -895,13 +855,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         catch (Exception ex)
         {
             Console.WriteLine($"[DEBUG] Structured output failed for {toolName}: {ex.Message}");
-            return await FallbackToUnstructuredOutput(
-                rawText,
-                toolName,
-                jsonSchema,
-                messages,
-                cancellationToken
-            );
+            return await FallbackToUnstructuredOutput(rawText, toolName, jsonSchema, messages, cancellationToken);
         }
     }
 
@@ -915,23 +869,16 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
     {
         try
         {
-            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(
-                messages,
-                null,
-                cancellationToken
-            );
+            var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, null, cancellationToken);
             var fallbackReply = NaturalToolUseParserMiddleware.ExtractTextMessageFromReplies(fallbackReplies);
 
             if (fallbackReply != null)
             {
-                var jsonText =
-                    TryExtractJsonFromContent(fallbackReply.Text) ?? fallbackReply.Text.Trim();
+                var jsonText = TryExtractJsonFromContent(fallbackReply.Text) ?? fallbackReply.Text.Trim();
                 return ValidateAndReturnJsonResponse(jsonText, jsonSchema, toolName);
             }
 
-            throw new ToolUseParsingException(
-                $"Fallback parser failed to generate response for {toolName}"
-            );
+            throw new ToolUseParsingException($"Fallback parser failed to generate response for {toolName}");
         }
         catch (ToolUseParsingException)
         {
@@ -946,42 +893,35 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         }
     }
 
-    private IEnumerable<IMessage> ValidateAndReturnJsonResponse(
-        string jsonText,
-        object jsonSchema,
-        string toolName
-    )
+    private IEnumerable<IMessage> ValidateAndReturnJsonResponse(string jsonText, object jsonSchema, string toolName)
     {
         if (_schemaValidator != null)
         {
-            var schemaString = JsonSerializer.Serialize(
-                jsonSchema,
-                JsonSchemaValidator.SchemaSerializationOptions
-            );
+            var schemaString = JsonSerializer.Serialize(jsonSchema, JsonSchemaValidator.SchemaSerializationOptions);
             var isValid = _schemaValidator.Validate(jsonText, schemaString);
 
             return isValid
                 ? (IEnumerable<IMessage>)(
-                [
-                    new ToolsCallMessage
-                    {
-                        GenerationId = Guid.NewGuid().ToString(),
-                        Role = Role.Tool,
-                        ToolCalls =
-                        [
-                            new ToolCall
-                            {
-                                FunctionArgs = jsonText,
-                                FunctionName = toolName,
-                                Index = 0,
-                                ToolCallId = Guid.NewGuid().ToString(),
-                            },
-                        ],
-                    },
-                ])
-                : throw new ToolUseParsingException(
-                $"Fallback parser returned invalid JSON for {toolName}"
-            );
+
+                    [
+                        new ToolsCallMessage
+                        {
+                            GenerationId = Guid.NewGuid().ToString(),
+                            Role = Role.Tool,
+                            ToolCalls =
+                            [
+                                new ToolCall
+                                {
+                                    FunctionArgs = jsonText,
+                                    FunctionName = toolName,
+                                    Index = 0,
+                                    ToolCallId = Guid.NewGuid().ToString(),
+                                },
+                            ],
+                        },
+                    ]
+                )
+                : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 
         return NaturalToolUseParserMiddleware.ValidateJsonSyntaxAndReturn(jsonText, toolName);
@@ -992,16 +932,11 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         try
         {
             JsonDocument.Parse(jsonText);
-            return
-            [
-                new TextMessage { Text = jsonText, Role = Role.Assistant },
-            ];
+            return [new TextMessage { Text = jsonText, Role = Role.Assistant }];
         }
         catch (JsonException)
         {
-            throw new ToolUseParsingException(
-                $"Fallback parser returned invalid JSON for {toolName}"
-            );
+            throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
     }
 
@@ -1017,10 +952,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
     private static List<IMessage> CreatePromptMessages(string prompt)
     {
-        return
-        [
-            new TextMessage { Text = prompt, Role = Role.User },
-        ];
+        return [new TextMessage { Text = prompt, Role = Role.User }];
     }
 
     private static ResponseFormat CreateResponseFormat(string toolName, JsonSchemaObject jsonSchema)
@@ -1037,10 +969,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         return replies.FirstOrDefault(r => r is TextMessage) as TextMessage;
     }
 
-    private static TextUpdateMessage CreateTextUpdateMessage(
-        string text,
-        TextUpdateMessage template
-    )
+    private static TextUpdateMessage CreateTextUpdateMessage(string text, TextUpdateMessage template)
     {
         return new TextUpdateMessage
         {
@@ -1071,11 +1000,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             else if (chunk is ToolCallChunk toolCallChunk)
             {
                 // Process the tool call and create ToolsCallMessage
-                var toolCallMessages = await ProcessToolCallChunkAsync(
-                    toolCallChunk,
-                    template,
-                    cancellationToken
-                );
+                var toolCallMessages = await ProcessToolCallChunkAsync(toolCallChunk, template, cancellationToken);
                 foreach (var message in toolCallMessages)
                 {
                     yield return message;
@@ -1090,16 +1015,16 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken
     )
     {
-        return await ProcessToolCallAsync(
-            toolCallChunk.ToolName,
-            toolCallChunk.Content,
-            cancellationToken
-        );
+        return await ProcessToolCallAsync(toolCallChunk.ToolName, toolCallChunk.Content, cancellationToken);
     }
 
     [GeneratedRegex(@"```(?:json)?\s*([\s\S]*?)\s*```", RegexOptions.Compiled | RegexOptions.Singleline)]
     private static partial Regex MyRegex();
-    [GeneratedRegex(@"<tool_call\s+name\s*=\s*[""']([^""']+)[""']\s*>(.*?)</tool_call>", RegexOptions.Compiled | RegexOptions.Singleline)]
+
+    [GeneratedRegex(
+        @"<tool_call\s+name\s*=\s*[""']([^""']+)[""']\s*>(.*?)</tool_call>",
+        RegexOptions.Compiled | RegexOptions.Singleline
+    )]
     private static partial Regex MyRegex1();
 }
 

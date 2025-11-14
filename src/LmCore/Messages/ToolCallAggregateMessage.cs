@@ -114,8 +114,7 @@ public record ToolsCallAggregateMessage : IMessage
     }
 }
 
-public class ToolsCallAggregateMessageJsonConverter
-    : ShadowPropertiesJsonConverter<ToolsCallAggregateMessage>
+public class ToolsCallAggregateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallAggregateMessage>
 {
     protected override ToolsCallAggregateMessage CreateInstance()
     {

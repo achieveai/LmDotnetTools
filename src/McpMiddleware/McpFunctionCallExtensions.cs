@@ -54,12 +54,7 @@ public static class McpFunctionCallExtensions
         {
             // Find all methods with McpServerToolAttribute
             var toolMethods = toolType
-                .GetMethods(
-                    BindingFlags.Public
-                        | BindingFlags.NonPublic
-                        | BindingFlags.Static
-                        | BindingFlags.Instance
-                )
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)
                 .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() != null)
                 .ToList();
 
@@ -94,25 +89,17 @@ public static class McpFunctionCallExtensions
                         // If we have arguments to parse
                         if (!string.IsNullOrEmpty(argsJson) && parameters.Length > 0)
                         {
-                            var argsDict = JsonSerializer.Deserialize<
-                                Dictionary<string, JsonElement>
-                            >(argsJson);
+                            var argsDict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
 
                             for (int i = 0; i < parameters.Length; i++)
                             {
                                 var param = parameters[i];
-                                if (
-                                    argsDict != null
-                                    && argsDict.TryGetValue(param.Name!, out var argValue)
-                                )
+                                if (argsDict != null && argsDict.TryGetValue(param.Name!, out var argValue))
                                 {
                                     paramValues[i] = JsonSerializer.Deserialize(
                                         argValue.GetRawText(),
                                         param.ParameterType,
-                                        new JsonSerializerOptions
-                                        {
-                                            PropertyNameCaseInsensitive = true,
-                                        }
+                                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
                                     )!;
                                 }
                                 else if (param.HasDefaultValue)
@@ -152,7 +139,9 @@ public static class McpFunctionCallExtensions
                         {
                             // Handle synchronous methods
                             result = toolMethod.Invoke(instance, paramValues);
-                            return result != null && toolMethod.ReturnType != typeof(void) ? JsonSerializer.Serialize(result) : "{}";
+                            return result != null && toolMethod.ReturnType != typeof(void)
+                                ? JsonSerializer.Serialize(result)
+                                : "{}";
                         }
                     }
                     catch (Exception ex)
@@ -196,10 +185,8 @@ public static class McpFunctionCallExtensions
         }
 
         // Get description from System.ComponentModel.Description attribute or use default
-        var descriptionAttr =
-            toolMethod.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>();
-        string description =
-            descriptionAttr?.Description ?? $"Tool method {toolMethod.Name} from {toolType.Name}";
+        var descriptionAttr = toolMethod.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>();
+        string description = descriptionAttr?.Description ?? $"Tool method {toolMethod.Name} from {toolType.Name}";
 
         // Get parameters
         var parameters = toolMethod

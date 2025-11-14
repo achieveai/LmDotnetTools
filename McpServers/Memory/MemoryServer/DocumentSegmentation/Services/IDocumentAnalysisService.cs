@@ -15,10 +15,7 @@ public interface IDocumentAnalysisService
     /// <param name="content">Document content to analyze</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Detected document type with confidence</returns>
-    Task<DocumentTypeDetection> DetectDocumentTypeAsync(
-        string content,
-        CancellationToken cancellationToken = default
-    );
+    Task<DocumentTypeDetection> DetectDocumentTypeAsync(string content, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Analyzes document structure and content to recommend optimal segmentation strategy.

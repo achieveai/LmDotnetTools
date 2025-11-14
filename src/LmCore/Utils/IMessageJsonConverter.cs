@@ -58,17 +58,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         return typeof(IMessage).IsAssignableFrom(typeToConvert);
     }
 
-    public override IMessage? Read(
-        ref Utf8JsonReader reader,
-        Type typeToConvert,
-        JsonSerializerOptions options
-    )
+    public override IMessage? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
-            throw new JsonException(
-                $"Expected {JsonTokenType.StartObject} but got {reader.TokenType}"
-            );
+            throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
         }
 
         using (var jsonDocument = JsonDocument.ParseValue(ref reader))
@@ -98,9 +92,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             var innerOptions = new JsonSerializerOptions(options);
 
             // Remove this converter to avoid infinite recursion
-            var convertersToKeep = innerOptions
-                .Converters.Where(c => !(c is IMessageJsonConverter))
-                .ToList();
+            var convertersToKeep = innerOptions.Converters.Where(c => !(c is IMessageJsonConverter)).ToList();
 
             innerOptions.Converters.Clear();
             foreach (var conv in convertersToKeep)
@@ -116,10 +108,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             }
             catch (Exception ex)
             {
-                throw new JsonException(
-                    $"Failed to deserialize message of type {targetType.Name}: {ex.Message}",
-                    ex
-                );
+                throw new JsonException($"Failed to deserialize message of type {targetType.Name}: {ex.Message}", ex);
             }
         }
     }
@@ -138,9 +127,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         var innerOptions = new JsonSerializerOptions(options);
 
         // Remove this converter to avoid infinite recursion
-        var convertersToKeep = innerOptions
-            .Converters.Where(c => !(c is IMessageJsonConverter))
-            .ToList();
+        var convertersToKeep = innerOptions.Converters.Where(c => !(c is IMessageJsonConverter)).ToList();
 
         innerOptions.Converters.Clear();
         foreach (var conv in convertersToKeep)
@@ -249,10 +236,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
 
         // Convert to snake_case
         string snakeCase = string.Concat(
-            typeName.Select(
-                (x, i) =>
-                    i > 0 && char.IsUpper(x) ? "_" + char.ToLower(x) : char.ToLower(x).ToString()
-            )
+            typeName.Select((x, i) => i > 0 && char.IsUpper(x) ? "_" + char.ToLower(x) : char.ToLower(x).ToString())
         );
 
         return snakeCase;
@@ -272,8 +256,8 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         else if (element.TryGetProperty("text", out _))
         {
             // Check if this is a TextUpdateMessage or a regular TextMessage
-            return element.TryGetProperty("isUpdate", out var isUpdateProp)
-                && isUpdateProp.ValueKind == JsonValueKind.True
+            return
+                element.TryGetProperty("isUpdate", out var isUpdateProp) && isUpdateProp.ValueKind == JsonValueKind.True
                 ? typeof(TextUpdateMessage)
                 : typeof(TextMessage);
         }
@@ -294,8 +278,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return typeof(ToolsCallResultMessage);
         }
         else if (
-            element.TryGetProperty("tool_call_message", out _)
-            && element.TryGetProperty("tool_call_result", out _)
+            element.TryGetProperty("tool_call_message", out _) && element.TryGetProperty("tool_call_result", out _)
         )
         {
             return typeof(ToolsCallAggregateMessage);
@@ -321,10 +304,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         string normalizedDiscriminator = typeDiscriminator;
         if (normalizedDiscriminator.EndsWith("_message", StringComparison.OrdinalIgnoreCase))
         {
-            normalizedDiscriminator = normalizedDiscriminator.Substring(
-                0,
-                normalizedDiscriminator.Length - 8
-            );
+            normalizedDiscriminator = normalizedDiscriminator.Substring(0, normalizedDiscriminator.Length - 8);
         }
 
         // Check if we have this type in our discriminator map

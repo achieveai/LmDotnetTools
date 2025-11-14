@@ -12,12 +12,12 @@ public class SimpleTestAgent : IAgent
     private IMessage? _injectedMessage = null;
     private List<IMessage> _receivedMessages = new();
 
-    public string Id => "test-agent";
-    public string? Name => "Test Agent";
-    public string? Description => "A test agent for MCP middleware";
-    public string? ModelId => "test-model";
-    public Dictionary<string, object>? ModelParameters => null;
-    public IList<IMessage> History => new List<IMessage>();
+    public static string Id => "test-agent";
+    public static string? Name => "Test Agent";
+    public static string? Description => "A test agent for MCP middleware";
+    public static string? ModelId => "test-model";
+    public static Dictionary<string, object>? ModelParameters => null;
+    public static IList<IMessage> History => new List<IMessage>();
 
     /// <summary>
     /// Gets the messages that were received by this agent

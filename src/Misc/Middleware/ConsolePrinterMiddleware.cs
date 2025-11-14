@@ -59,7 +59,8 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     )
     {
         _colors = colors;
-        _toolFormatterFactory = toolFormatterFactory ?? ConsolePrinterHelperMiddleware.CreateDefaultToolFormatterFactory();
+        _toolFormatterFactory =
+            toolFormatterFactory ?? ConsolePrinterHelperMiddleware.CreateDefaultToolFormatterFactory();
         Name = name ?? nameof(ConsolePrinterHelperMiddleware);
     }
 
@@ -73,11 +74,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     )
     {
         // Call the agent to get responses
-        var responses = await agent.GenerateReplyAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken
-        );
+        var responses = await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
 
         // Print each response
         foreach (var response in responses)
@@ -101,11 +98,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     )
     {
         // Call the agent to get streaming responses
-        var responses = await agent.GenerateReplyStreamingAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken
-        );
+        var responses = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
 
         // Reset state for a new streaming session
         _isFirstMessage = true;
@@ -140,17 +133,27 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
                 break;
 
             case TextUpdateMessage textUpdateMessage:
-                ConsolePrinterHelperMiddleware.WriteColoredText(textUpdateMessage.Text, _colors.TextMessageColor, isLine: false);
+                ConsolePrinterHelperMiddleware.WriteColoredText(
+                    textUpdateMessage.Text,
+                    _colors.TextMessageColor,
+                    isLine: false
+                );
                 break;
 
             case ReasoningMessage reasoningMessage:
                 if (reasoningMessage.Visibility == ReasoningVisibility.Encrypted)
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText("Reasoning is encrypted", _colors.ReasoningMessageColor);
+                    ConsolePrinterHelperMiddleware.WriteColoredText(
+                        "Reasoning is encrypted",
+                        _colors.ReasoningMessageColor
+                    );
                 }
                 else
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText(reasoningMessage.Reasoning, _colors.ReasoningMessageColor);
+                    ConsolePrinterHelperMiddleware.WriteColoredText(
+                        reasoningMessage.Reasoning,
+                        _colors.ReasoningMessageColor
+                    );
                 }
                 break;
 
@@ -306,17 +309,16 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         // Write the tool call header
         var idDisplay = toolCall.ToolCallId != null ? $" (ID: {toolCall.ToolCallId})" : "";
         var indexDisplay = toolCall.Index.HasValue ? $" [#{toolCall.Index.Value}]" : "";
-        ConsolePrinterHelperMiddleware.WriteColoredText($"Tool call{indexDisplay}{idDisplay}:", _colors.ToolUseMessageColor);
+        ConsolePrinterHelperMiddleware.WriteColoredText(
+            $"Tool call{indexDisplay}{idDisplay}:",
+            _colors.ToolUseMessageColor
+        );
 
         // Get a formatter for this tool call and use it to format the parameters
-        _formatter =
-            _formatter ?? _toolFormatterFactory.GetFormatter(toolCall.FunctionName ?? "unknown");
+        _formatter = _formatter ?? _toolFormatterFactory.GetFormatter(toolCall.FunctionName ?? "unknown");
 
         // First call with empty updates just to print the function name
-        var headerParts = _formatter(
-            toolCall.FunctionName ?? "unknown",
-            []
-        );
+        var headerParts = _formatter(toolCall.FunctionName ?? "unknown", []);
         foreach (var (color, text) in headerParts)
         {
             ConsolePrinterHelperMiddleware.WriteColoredText(text, color, isLine: false);
@@ -413,9 +415,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     /// </summary>
     private static IToolFormatterFactory CreateDefaultToolFormatterFactory()
     {
-        return new DefaultToolFormatterFactory(
-            new ConsoleColorPair { Foreground = ConsoleColor.Blue }
-        );
+        return new DefaultToolFormatterFactory(new ConsoleColorPair { Foreground = ConsoleColor.Blue });
     }
 
     /// <summary>
@@ -426,18 +426,13 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         private readonly IAsyncEnumerable<IMessage> _sourceStream;
         private readonly ConsolePrinterHelperMiddleware _printer;
 
-        public PrintingAsyncEnumerable(
-            IAsyncEnumerable<IMessage> sourceStream,
-            ConsolePrinterHelperMiddleware printer
-        )
+        public PrintingAsyncEnumerable(IAsyncEnumerable<IMessage> sourceStream, ConsolePrinterHelperMiddleware printer)
         {
             _sourceStream = sourceStream;
             _printer = printer;
         }
 
-        public async IAsyncEnumerator<IMessage> GetAsyncEnumerator(
-            CancellationToken cancellationToken = default
-        )
+        public async IAsyncEnumerator<IMessage> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
             await using var enumerator = _sourceStream.GetAsyncEnumerator(cancellationToken);
 
@@ -478,10 +473,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         if (_isNewMessage)
         {
             // Create a new tool call object
-            var newToolCall = new ToolCall(
-                update.FunctionName ?? "unknown",
-                update.FunctionArgs ?? "{}"
-            )
+            var newToolCall = new ToolCall(update.FunctionName ?? "unknown", update.FunctionArgs ?? "{}")
             {
                 ToolCallId = update.ToolCallId,
                 Index = update.Index ?? indexKey,
@@ -504,17 +496,13 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         else
         {
             // Get formatter for this tool call
-            _formatter =
-                _formatter ?? _toolFormatterFactory.GetFormatter(update.FunctionName ?? "unknown");
+            _formatter = _formatter ?? _toolFormatterFactory.GetFormatter(update.FunctionName ?? "unknown");
 
             // Check if JsonFragmentUpdates is available (populated by JsonFragmentUpdateMiddleware)
             if (update.JsonFragmentUpdates != null && update.JsonFragmentUpdates.Any())
             {
                 // Use the structured fragment updates directly
-                var formattedParts = _formatter(
-                    update.FunctionName ?? "unknown",
-                    update.JsonFragmentUpdates
-                );
+                var formattedParts = _formatter(update.FunctionName ?? "unknown", update.JsonFragmentUpdates);
 
                 foreach (var (color, text) in formattedParts)
                 {
@@ -547,10 +535,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     /// <param name="toolName">Name of the tool</param>
     /// <param name="jsonString">Raw JSON string</param>
     /// <returns>JsonFragmentUpdates generated from the JSON</returns>
-    private static IEnumerable<JsonFragmentUpdate> CreateFragmentUpdatesFromRawJson(
-        string toolName,
-        string jsonString
-    )
+    private static IEnumerable<JsonFragmentUpdate> CreateFragmentUpdatesFromRawJson(string toolName, string jsonString)
     {
         if (string.IsNullOrEmpty(jsonString))
         {

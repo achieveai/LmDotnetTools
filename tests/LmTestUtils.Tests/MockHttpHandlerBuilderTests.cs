@@ -36,10 +36,7 @@ namespace LmTestUtils.Tests
 
             try
             {
-                var handler = MockHttpHandlerBuilder
-                    .Create()
-                    .RespondWithStreamingFile(tempFile)
-                    .Build();
+                var handler = MockHttpHandlerBuilder.Create().RespondWithStreamingFile(tempFile).Build();
 
                 var httpClient = new HttpClient(handler);
 
@@ -207,24 +204,16 @@ namespace LmTestUtils.Tests
 
             // Act & Assert
             // Same content should match exactly
-            Assert.True(
-                RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: true)
-            );
+            Assert.True(RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: true));
 
             // Same content should match flexibly
-            Assert.True(
-                RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: false)
-            );
+            Assert.True(RequestMatcher.MatchesRecordedRequest(element1, element2, exactMatch: false));
 
             // Different content should not match exactly
-            Assert.False(
-                RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: true)
-            );
+            Assert.False(RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: true));
 
             // Different content should not match flexibly (different message content)
-            Assert.False(
-                RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: false)
-            );
+            Assert.False(RequestMatcher.MatchesRecordedRequest(element1, element3, exactMatch: false));
         }
 
         [Fact]
@@ -365,11 +354,7 @@ namespace LmTestUtils.Tests
                 .Build();
 
             var httpClient = new HttpClient(handler);
-            var content = new StringContent(
-                """{"test": "request"}""",
-                System.Text.Encoding.UTF8,
-                "application/json"
-            );
+            var content = new StringContent("""{"test": "request"}""", System.Text.Encoding.UTF8, "application/json");
 
             // Act
             var response = await httpClient.PostAsync("https://api.test.com/test", content);
@@ -447,10 +432,7 @@ namespace LmTestUtils.Tests
             // Arrange - This is the correct way to get individual SSE events
             var items = new[] { new { id = 1, name = "test1" }, new { id = 2, name = "test2" } };
 
-            var handler = MockHttpHandlerBuilder
-                .Create()
-                .RespondWithSSEArray<object>(items)
-                .Build();
+            var handler = MockHttpHandlerBuilder.Create().RespondWithSSEArray<object>(items).Build();
 
             var httpClient = new HttpClient(handler);
 

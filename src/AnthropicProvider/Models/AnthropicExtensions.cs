@@ -62,50 +62,47 @@ public static class AnthropicExtensions
         {
             // Handle message delta event with usage information
             AnthropicMessageDeltaEvent messageDeltaEvent
-                when messageDeltaEvent.Delta?.StopReason != null
-                    && messageDeltaEvent.Usage != null => new TextUpdateMessage
-                    {
-                        Text = string.Empty,
-                        Role = Role.Assistant,
-                        Metadata = ImmutableDictionary<string, object>.Empty.Add(
-                    "usage",
-                    new
-                    {
-                        InputTokens = messageDeltaEvent.Usage.InputTokens,
-                        OutputTokens = messageDeltaEvent.Usage.OutputTokens,
-                        TotalTokens = messageDeltaEvent.Usage.InputTokens
-                            + messageDeltaEvent.Usage.OutputTokens,
-                    }
-                ),
-                    },
+                when messageDeltaEvent.Delta?.StopReason != null && messageDeltaEvent.Usage != null =>
+                new TextUpdateMessage
+                {
+                    Text = string.Empty,
+                    Role = Role.Assistant,
+                    Metadata = ImmutableDictionary<string, object>.Empty.Add(
+                        "usage",
+                        new
+                        {
+                            InputTokens = messageDeltaEvent.Usage.InputTokens,
+                            OutputTokens = messageDeltaEvent.Usage.OutputTokens,
+                            TotalTokens = messageDeltaEvent.Usage.InputTokens + messageDeltaEvent.Usage.OutputTokens,
+                        }
+                    ),
+                },
 
             // Handle content block delta event for text content
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
-                when contentBlockDeltaEvent.Delta is AnthropicTextDelta textDelta =>
-                new TextUpdateMessage
-                {
-                    Text = textDelta.Text,
-                    Role = Role.Assistant,
-                    IsThinking = false,
-                },
+                when contentBlockDeltaEvent.Delta is AnthropicTextDelta textDelta => new TextUpdateMessage
+            {
+                Text = textDelta.Text,
+                Role = Role.Assistant,
+                IsThinking = false,
+            },
 
             // Handle content block delta event for thinking content
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
-                when contentBlockDeltaEvent.Delta is AnthropicThinkingDelta thinkingDelta =>
-                new TextUpdateMessage
-                {
-                    Text = thinkingDelta.Thinking,
-                    Role = Role.Assistant,
-                    IsThinking = true,
-                },
+                when contentBlockDeltaEvent.Delta is AnthropicThinkingDelta thinkingDelta => new TextUpdateMessage
+            {
+                Text = thinkingDelta.Thinking,
+                Role = Role.Assistant,
+                IsThinking = true,
+            },
 
             // Handle content block delta event for tool calls
             AnthropicContentBlockDeltaEvent contentBlockDeltaEvent
                 when contentBlockDeltaEvent.Delta is AnthropicToolCallsDelta toolCallsDelta
                     && toolCallsDelta.ToolCalls.Count > 0 => new ToolsCallUpdateMessage
-                    {
-                        Role = Role.Assistant,
-                        ToolCallUpdates = ImmutableList.Create(
+            {
+                Role = Role.Assistant,
+                ToolCallUpdates = ImmutableList.Create(
                     new ToolCallUpdate
                     {
                         ToolCallId = toolCallsDelta.ToolCalls[0].Id,
@@ -114,7 +111,7 @@ public static class AnthropicExtensions
                         Index = toolCallsDelta.ToolCalls[0].Index,
                     }
                 ),
-                    },
+            },
 
             // Default empty update message for unhandled event types
             _ => new TextUpdateMessage { Text = string.Empty, Role = Role.Assistant },
@@ -145,11 +142,7 @@ public static class AnthropicExtensions
     /// <param name="messageId">The message ID.</param>
     /// <param name="agentName">The agent name.</param>
     /// <returns>The converted message, or null if the content couldn't be converted.</returns>
-    private static IMessage? ContentToMessage(
-        AnthropicResponseContent content,
-        string messageId,
-        string agentName
-    )
+    private static IMessage? ContentToMessage(AnthropicResponseContent content, string messageId, string agentName)
     {
         return content switch
         {
@@ -167,10 +160,7 @@ public static class AnthropicExtensions
                 FromAgent = agentName,
                 GenerationId = messageId,
                 ToolCalls = ImmutableList.Create(
-                    new ToolCall(toolContent.Name, toolContent.Input.ToString())
-                    {
-                        ToolCallId = toolContent.Id,
-                    }
+                    new ToolCall(toolContent.Name, toolContent.Input.ToString()) { ToolCallId = toolContent.Id }
                 ),
             },
 

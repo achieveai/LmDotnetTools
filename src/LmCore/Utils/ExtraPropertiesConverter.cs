@@ -18,9 +18,7 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
     {
         if (reader.TokenType != JsonTokenType.StartObject)
         {
-            throw new JsonException(
-                $"Expected {JsonTokenType.StartObject} but got {reader.TokenType}"
-            );
+            throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
         }
 
         var builder = ImmutableDictionary.CreateBuilder<string, object?>();
@@ -34,9 +32,7 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
 
             if (reader.TokenType != JsonTokenType.PropertyName)
             {
-                throw new JsonException(
-                    $"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}"
-                );
+                throw new JsonException($"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}");
             }
 
             // Read property name
@@ -117,11 +113,7 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
         writer.WriteEndObject();
     }
 
-    private static void WriteValue(
-        Utf8JsonWriter writer,
-        object? value,
-        JsonSerializerOptions options
-    )
+    private static void WriteValue(Utf8JsonWriter writer, object? value, JsonSerializerOptions options)
     {
         if (value == null)
         {

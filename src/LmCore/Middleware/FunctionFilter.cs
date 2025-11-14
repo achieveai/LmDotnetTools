@@ -46,10 +46,7 @@ public class FunctionFilter
     /// <param name="descriptor">The function descriptor to evaluate</param>
     /// <param name="registeredName">The registered name (possibly with prefix)</param>
     /// <returns>A FilterResult containing the filtering decision and reasoning</returns>
-    public FilterResult ShouldFilterFunctionWithReason(
-        FunctionDescriptor descriptor,
-        string registeredName
-    )
+    public FilterResult ShouldFilterFunctionWithReason(FunctionDescriptor descriptor, string registeredName)
     {
         // If filtering is not enabled, include all functions
         if (_globalConfig == null || !_globalConfig.EnableFiltering)
@@ -82,10 +79,7 @@ public class FunctionFilter
             }
 
             // Priority 1: Check provider-specific blocked list
-            if (
-                providerConfig.BlockedFunctions != null
-                && providerConfig.BlockedFunctions.Count > 0
-            )
+            if (providerConfig.BlockedFunctions != null && providerConfig.BlockedFunctions.Count > 0)
             {
                 var blockedPattern = providerConfig.BlockedFunctions.FirstOrDefault(pattern =>
                     MatchesPattern(originalName, pattern)
@@ -103,14 +97,9 @@ public class FunctionFilter
             }
 
             // Priority 2: Check provider-specific allowed list
-            if (
-                providerConfig.AllowedFunctions != null
-                && providerConfig.AllowedFunctions.Count > 0
-            )
+            if (providerConfig.AllowedFunctions != null && providerConfig.AllowedFunctions.Count > 0)
             {
-                bool isAllowed = providerConfig.AllowedFunctions.Any(pattern =>
-                    MatchesPattern(originalName, pattern)
-                );
+                bool isAllowed = providerConfig.AllowedFunctions.Any(pattern => MatchesPattern(originalName, pattern));
 
                 if (!isAllowed)
                 {
@@ -125,10 +114,7 @@ public class FunctionFilter
         }
 
         // Priority 3: Check global blocked list
-        if (
-            _globalConfig.GlobalBlockedFunctions != null
-            && _globalConfig.GlobalBlockedFunctions.Count > 0
-        )
+        if (_globalConfig.GlobalBlockedFunctions != null && _globalConfig.GlobalBlockedFunctions.Count > 0)
         {
             // Check against both registered name and provider-prefixed pattern
             var providerPrefixedPattern = $"{providerName}__{originalName}";
@@ -152,10 +138,7 @@ public class FunctionFilter
         }
 
         // Priority 4: Check global allowed list (if specified, only these are allowed)
-        if (
-            _globalConfig.GlobalAllowedFunctions != null
-            && _globalConfig.GlobalAllowedFunctions.Count > 0
-        )
+        if (_globalConfig.GlobalAllowedFunctions != null && _globalConfig.GlobalAllowedFunctions.Count > 0)
         {
             // Check against both registered name and provider-prefixed pattern
             var providerPrefixedPattern = $"{providerName}__{originalName}";
@@ -183,9 +166,7 @@ public class FunctionFilter
             registeredName,
             providerName
         );
-        return FilterResult.Include(
-            $"Function '{originalName}' from provider '{providerName}' passed all filters"
-        );
+        return FilterResult.Include($"Function '{originalName}' from provider '{providerName}' passed all filters");
     }
 
     /// <summary>
@@ -215,9 +196,7 @@ public class FunctionFilter
 
             // Get the registered name from naming map if available
             var registeredName =
-                namingMap?.TryGetValue(descriptor.Key, out var name) == true
-                    ? name
-                    : descriptor.Contract.Name;
+                namingMap?.TryGetValue(descriptor.Key, out var name) == true ? name : descriptor.Contract.Name;
 
             if (!ShouldFilterFunctionWithReason(descriptor, registeredName).IsFiltered)
             {
@@ -266,11 +245,7 @@ public class FunctionFilter
 
             if (matches)
             {
-                _logger.LogDebug(
-                    "Pattern match (prefix): Text={Text}, Pattern={Pattern}",
-                    text,
-                    pattern
-                );
+                _logger.LogDebug("Pattern match (prefix): Text={Text}, Pattern={Pattern}", text, pattern);
             }
 
             return matches;
@@ -284,11 +259,7 @@ public class FunctionFilter
 
             if (matches)
             {
-                _logger.LogDebug(
-                    "Pattern match (suffix): Text={Text}, Pattern={Pattern}",
-                    text,
-                    pattern
-                );
+                _logger.LogDebug("Pattern match (suffix): Text={Text}, Pattern={Pattern}", text, pattern);
             }
 
             return matches;
@@ -302,11 +273,7 @@ public class FunctionFilter
 
             if (matches)
             {
-                _logger.LogDebug(
-                    "Pattern match (contains): Text={Text}, Pattern={Pattern}",
-                    text,
-                    pattern
-                );
+                _logger.LogDebug("Pattern match (contains): Text={Text}, Pattern={Pattern}", text, pattern);
             }
 
             return matches;
@@ -317,11 +284,7 @@ public class FunctionFilter
 
         if (exactMatch)
         {
-            _logger.LogDebug(
-                "Pattern match (exact): Text={Text}, Pattern={Pattern}",
-                text,
-                pattern
-            );
+            _logger.LogDebug("Pattern match (exact): Text={Text}, Pattern={Pattern}", text, pattern);
         }
 
         return exactMatch;

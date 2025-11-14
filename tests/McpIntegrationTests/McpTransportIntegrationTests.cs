@@ -17,12 +17,12 @@ public class McpTransportIntegrationTests
     /// </summary>
     private class SimpleTestAgent : IAgent
     {
-        public string Id => "test-agent";
-        public string? Name => "Test Agent";
-        public string? Description => "A test agent for MCP middleware";
-        public string? ModelId => "test-model";
-        public Dictionary<string, object>? ModelParameters => null;
-        public IList<IMessage> History => new List<IMessage>();
+        public static string Id => "test-agent";
+        public static string? Name => "Test Agent";
+        public static string? Description => "A test agent for MCP middleware";
+        public static string? ModelId => "test-model";
+        public static Dictionary<string, object>? ModelParameters => null;
+        public static IList<IMessage> History => new List<IMessage>();
 
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,
@@ -56,11 +56,7 @@ public class McpTransportIntegrationTests
         try
         {
             // Create middleware with the transport client
-            var clients = new Dictionary<string, IMcpClient>
-            {
-                ["test-client"] = client,
-                ["GreetingTool"] = client,
-            };
+            var clients = new Dictionary<string, IMcpClient> { ["test-client"] = client, ["GreetingTool"] = client };
 
             var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
 
@@ -112,11 +108,7 @@ public class McpTransportIntegrationTests
         try
         {
             // Create middleware with the transport client
-            var clients = new Dictionary<string, IMcpClient>
-            {
-                ["test-client"] = client,
-                ["CalculatorTool"] = client,
-            };
+            var clients = new Dictionary<string, IMcpClient> { ["test-client"] = client, ["CalculatorTool"] = client };
 
             var middleware = await McpMiddleware.McpMiddleware.CreateAsync(clients);
 

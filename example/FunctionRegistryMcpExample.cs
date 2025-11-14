@@ -22,11 +22,7 @@ public class FunctionRegistryMcpExample
         var registry = new FunctionRegistry();
 
         // Add MCP clients using the new extension method
-        await registry.AddMcpClientsAsync(
-            mcpClients,
-            "MyMcpProvider",
-            logger as ILogger<McpClientFunctionProvider>
-        );
+        await registry.AddMcpClientsAsync(mcpClients, "MyMcpProvider", logger as ILogger<McpClientFunctionProvider>);
 
         // You can also add individual clients
         // await registry.AddMcpClientAsync(someClient, "client1", "Provider1", logger);
@@ -49,11 +45,7 @@ public class FunctionRegistryMcpExample
         var registry = new FunctionRegistry();
 
         // Add MCP clients
-        await registry.AddMcpClientsAsync(
-            mcpClients,
-            "McpProvider",
-            logger as ILogger<McpClientFunctionProvider>
-        );
+        await registry.AddMcpClientsAsync(mcpClients, "McpProvider", logger as ILogger<McpClientFunctionProvider>);
 
         // Add other function providers
         registry.AddProvider(otherProvider);
@@ -65,8 +57,7 @@ public class FunctionRegistryMcpExample
                 {
                     // Custom logic to resolve conflicts
                     // For example, prefer MCP functions over others
-                    return candidates.FirstOrDefault(c => c.ProviderName.StartsWith("Mcp"))
-                        ?? candidates.First();
+                    return candidates.FirstOrDefault(c => c.ProviderName.StartsWith("Mcp")) ?? candidates.First();
                 }
             )
             .BuildMiddleware("MixedMiddleware", logger as ILogger<FunctionCallMiddleware>);

@@ -295,10 +295,7 @@ public interface IGraphRepository
     /// <param name="entityId">The ID of the entity.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The embedding vector or null if not found.</returns>
-    Task<float[]?> GetEntityEmbeddingAsync(
-        int entityId,
-        CancellationToken cancellationToken = default
-    );
+    Task<float[]?> GetEntityEmbeddingAsync(int entityId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets the embedding for a specific relationship.
@@ -306,10 +303,7 @@ public interface IGraphRepository
     /// <param name="relationshipId">The ID of the relationship.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The embedding vector or null if not found.</returns>
-    Task<float[]?> GetRelationshipEmbeddingAsync(
-        int relationshipId,
-        CancellationToken cancellationToken = default
-    );
+    Task<float[]?> GetRelationshipEmbeddingAsync(int relationshipId, CancellationToken cancellationToken = default);
 
     // Utility Operations
 

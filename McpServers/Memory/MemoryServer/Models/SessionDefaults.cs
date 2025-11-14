@@ -51,15 +51,9 @@ public class SessionDefaults
         return new SessionDefaults
         {
             ConnectionId = "stdio-env",
-            UserId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-                "MCP_MEMORY_USER_ID"
-            ),
-            AgentId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-                "MCP_MEMORY_AGENT_ID"
-            ),
-            RunId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(
-                "MCP_MEMORY_RUN_ID"
-            ),
+            UserId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_USER_ID"),
+            AgentId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_AGENT_ID"),
+            RunId = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback("MCP_MEMORY_RUN_ID"),
             Source = SessionDefaultsSource.EnvironmentVariables,
             CreatedAt = DateTime.UtcNow,
         };

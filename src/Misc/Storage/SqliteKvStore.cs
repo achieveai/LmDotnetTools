@@ -94,11 +94,7 @@ public class SqliteKvStore : IKvStore
     }
 
     /// <inheritdoc/>
-    public async Task SetAsync<T>(
-        string key,
-        T value,
-        CancellationToken cancellationToken = default
-    )
+    public async Task SetAsync<T>(string key, T value, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(key))
         {
@@ -127,9 +123,7 @@ public class SqliteKvStore : IKvStore
     }
 
     /// <inheritdoc/>
-    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(
-        CancellationToken cancellationToken = default
-    )
+    public Task<IAsyncEnumerable<string>> EnumerateKeysAsync(CancellationToken cancellationToken = default)
     {
         InitializeDatabase();
         return Task.FromResult(GetKeysEnumerable(cancellationToken));

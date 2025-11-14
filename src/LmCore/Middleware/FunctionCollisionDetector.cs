@@ -125,10 +125,7 @@ public partial class FunctionCollisionDetector
 
         // Check for custom prefix in provider config
         string? customPrefix = null;
-        if (
-            config?.ProviderConfigs != null
-            && config.ProviderConfigs.TryGetValue(providerName, out var providerConfig)
-        )
+        if (config?.ProviderConfigs != null && config.ProviderConfigs.TryGetValue(providerName, out var providerConfig))
         {
             customPrefix = providerConfig.CustomPrefix;
         }
@@ -233,6 +230,7 @@ public partial class FunctionCollisionDetector
 
     [GeneratedRegex(@"[^a-zA-Z0-9_-]", RegexOptions.Compiled)]
     private static partial Regex MyRegex();
+
     [GeneratedRegex(@"_{2,}", RegexOptions.Compiled)]
     private static partial Regex MyRegex1();
 }

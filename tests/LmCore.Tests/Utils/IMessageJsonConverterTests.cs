@@ -5,7 +5,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Utils;
 
 public class IMessageJsonConverterTests
 {
-    private JsonSerializerOptions GetOptionsWithConverter()
+    private static JsonSerializerOptions GetOptionsWithConverter()
     {
         var options = new JsonSerializerOptions { WriteIndented = true };
 
@@ -109,10 +109,7 @@ public class IMessageJsonConverterTests
     public void RoundTrip_ToolsCallAggregateMessage_PreservesAllData()
     {
         // Arrange
-        var toolCall = new ToolCall(
-            FunctionName: "test_function",
-            FunctionArgs: """{"arg1": "value1"}"""
-        )
+        var toolCall = new ToolCall(FunctionName: "test_function", FunctionArgs: """{"arg1": "value1"}""")
         {
             ToolCallId = "tool-1",
         };
@@ -134,11 +131,7 @@ public class IMessageJsonConverterTests
             Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-result"),
         };
 
-        IMessage originalMessage = new ToolsCallAggregateMessage(
-            toolCallMessage,
-            toolCallResult,
-            "combined-agent"
-        );
+        IMessage originalMessage = new ToolsCallAggregateMessage(toolCallMessage, toolCallResult, "combined-agent");
 
         var options = GetOptionsWithConverter();
 
@@ -159,9 +152,7 @@ public class IMessageJsonConverterTests
 
         // Verify tool call message
         Assert.NotNull(aggregateMessage.ToolsCallMessage);
-        var resultingToolCalls = (
-            (ICanGetToolCalls)aggregateMessage.ToolsCallMessage
-        ).GetToolCalls();
+        var resultingToolCalls = ((ICanGetToolCalls)aggregateMessage.ToolsCallMessage).GetToolCalls();
         Assert.NotNull(resultingToolCalls);
 
         // Verify tool call result
@@ -176,10 +167,7 @@ public class IMessageJsonConverterTests
     [InlineData("image", typeof(ImageMessage))]
     [InlineData("tools_call", typeof(ToolsCallMessage))]
     [InlineData("tools_call_result", typeof(ToolsCallResultMessage))]
-    public void Deserialize_WithTypeDiscriminator_ReturnsCorrectType(
-        string typeDiscriminator,
-        Type expectedType
-    )
+    public void Deserialize_WithTypeDiscriminator_ReturnsCorrectType(string typeDiscriminator, Type expectedType)
     {
         // Arrange
         string json =
@@ -223,16 +211,10 @@ public class IMessageJsonConverterTests
         var messages = new IMessage[]
         {
             new TextMessage { Text = "Hello", Role = Role.User },
-            new ImageMessage
-            {
-                ImageData = BinaryData.FromString("fake-image-data"),
-                Role = Role.Assistant,
-            },
+            new ImageMessage { ImageData = BinaryData.FromString("fake-image-data"), Role = Role.Assistant },
             new ToolsCallMessage
             {
-                ToolCalls = ImmutableList.Create(
-                    new ToolCall("test_function", "{}") { ToolCallId = "id1" }
-                ),
+                ToolCalls = ImmutableList.Create(new ToolCall("test_function", "{}") { ToolCallId = "id1" }),
                 Role = Role.Assistant,
             },
         };

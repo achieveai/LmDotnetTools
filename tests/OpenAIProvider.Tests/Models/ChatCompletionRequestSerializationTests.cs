@@ -31,9 +31,7 @@ public class ChatCompletionRequestSerializationTests
             new ChatMessage
             {
                 Role = RoleEnum.System,
-                Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                    "You are a helpful assistant."
-                ),
+                Content = new Union<string, Union<TextContent, ImageContent>[]>("You are a helpful assistant."),
             },
             new ChatMessage
             {
@@ -75,9 +73,7 @@ public class ChatCompletionRequestSerializationTests
         Assert.Equal(1000, maxTokensElement.GetInt32());
 
         // Verify the frequency_penalty property is serialized correctly
-        Assert.True(
-            doc.RootElement.TryGetProperty("frequency_penalty", out var frequencyPenaltyElement)
-        );
+        Assert.True(doc.RootElement.TryGetProperty("frequency_penalty", out var frequencyPenaltyElement));
         Assert.Equal(0.5, frequencyPenaltyElement.GetDouble());
 
         // Verify that the messages property contains the expected messages
@@ -86,10 +82,7 @@ public class ChatCompletionRequestSerializationTests
 
         var systemMessage = messagesElement[0];
         Assert.Equal("system", systemMessage.GetProperty("role").GetString());
-        Assert.Equal(
-            "You are a helpful assistant.",
-            systemMessage.GetProperty("content").GetString()
-        );
+        Assert.Equal("You are a helpful assistant.", systemMessage.GetProperty("content").GetString());
 
         var userMessage = messagesElement[1];
         Assert.Equal("user", userMessage.GetProperty("role").GetString());

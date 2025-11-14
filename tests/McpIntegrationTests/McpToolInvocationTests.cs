@@ -37,8 +37,7 @@ public class McpToolInvocationTests
         Assert.Contains("John", regularTrimmedResult);
 
         // Test with special characters
-        var specialCharsResult = await functionMap["GreetingTool-SayHello"]
-            ("{\"name\":\"Maria O'Connor-Smith\"}");
+        var specialCharsResult = await functionMap["GreetingTool-SayHello"]("{\"name\":\"Maria O'Connor-Smith\"}");
         var trimmedResult = specialCharsResult.Trim('\"');
         // Output the actual result for debugging
         Console.WriteLine($"Special chars test - Actual result: {trimmedResult}");
@@ -56,8 +55,7 @@ public class McpToolInvocationTests
 
         // Test with a long name
         var longName = "Very" + new string('y', 50) + " Long Name";
-        var longNameResult = await functionMap["GreetingTool-SayHello"]
-            ($"{{\"name\":\"{longName}\"}}");
+        var longNameResult = await functionMap["GreetingTool-SayHello"]($"{{\"name\":\"{longName}\"}}");
         Assert.Contains($"Hello, {longName}", longNameResult.Trim('\"'));
     }
 

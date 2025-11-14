@@ -114,14 +114,7 @@ public static class HttpClientFactory
     {
         configuration.Validate();
 
-        return CreateWithApiKey(
-            apiKey,
-            baseUrl,
-            configuration.Timeout,
-            headers,
-            apiKeyHeaderName,
-            apiKeyPrefix
-        );
+        return CreateWithApiKey(apiKey, baseUrl, configuration.Timeout, headers, apiKeyHeaderName, apiKeyPrefix);
     }
 
     /// <summary>
