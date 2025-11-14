@@ -523,24 +523,24 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         try
         {
             // Generate recommendations based on quality issues
-            if (assessment.QualityIssues.IssuesBySeverity.TryGetValue(QualityIssueSeverity.Critical, out var value))
+            if (assessment.QualityIssues.IssuesBySeverity.TryGetValue(QualityIssueSeverity.Critical, out var criticalIssues))
             {
                 recommendations.HighPriorityRecommendations.AddRange(
-                    GenerateRecommendationsForIssues(value, RecommendationPriority.Critical)
+                    GenerateRecommendationsForIssues(criticalIssues, RecommendationPriority.Critical)
                 );
             }
 
-            if (assessment.QualityIssues.IssuesBySeverity.TryGetValue(QualityIssueSeverity.High, out var value))
+            if (assessment.QualityIssues.IssuesBySeverity.TryGetValue(QualityIssueSeverity.High, out var highIssues))
             {
                 recommendations.HighPriorityRecommendations.AddRange(
-                    GenerateRecommendationsForIssues(value, RecommendationPriority.High)
+                    GenerateRecommendationsForIssues(highIssues, RecommendationPriority.High)
                 );
             }
 
-            if (assessment.QualityIssues.IssuesBySeverity.TryGetValue(QualityIssueSeverity.Medium, out var value))
+            if (assessment.QualityIssues.IssuesBySeverity.TryGetValue(QualityIssueSeverity.Medium, out var mediumIssues))
             {
                 recommendations.MediumPriorityRecommendations.AddRange(
-                    GenerateRecommendationsForIssues(value, RecommendationPriority.Medium)
+                    GenerateRecommendationsForIssues(mediumIssues, RecommendationPriority.Medium)
                 );
             }
 

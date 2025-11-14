@@ -110,12 +110,12 @@ public class BaseEmbeddingServiceTests
     {
         Debug.WriteLine($"Testing request validation: {description}");
         Debug.WriteLine(
-            $"Request: Model='{request?.Model}', Inputs={request?.Inputs?.Inputs.Count ?? 0}, Expected to succeed: {shouldSucceed}"
+            $"Request: Model='{request?.Model}', Inputs={request?.Inputs?.Count ?? 0}, Expected to succeed: {shouldSucceed}"
         );
 
         // Arrange
         var fakeHandler = FakeHttpMessageHandler.CreateSimpleJsonHandler(
-            EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request?.Inputs?.Inputs.Count ?? 1)
+            EmbeddingTestDataGenerator.CreateValidEmbeddingResponse(request?.Inputs?.Count ?? 1)
         );
         var httpClient = new HttpClient(fakeHandler) { BaseAddress = new Uri("https://api.test.com") };
         var service = new TestEmbeddingService(_logger, httpClient);

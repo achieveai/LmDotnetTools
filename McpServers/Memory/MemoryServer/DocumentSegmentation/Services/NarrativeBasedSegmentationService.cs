@@ -793,8 +793,8 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
 
         foreach (var segment in segments)
         {
-            var confidence = segment.Metadata.TryGetValue("boundary_confidence", out var value)
-                ? Convert.ToDouble(value)
+            var confidence = segment.Metadata.TryGetValue("boundary_confidence", out var confidenceValue)
+                ? Convert.ToDouble(confidenceValue)
                 : 1.0;
 
             if (confidence < options.MinNarrativeConfidence && currentSegment != null)
@@ -802,7 +802,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
                 // Merge with current segment
                 currentSegment.Content += " " + segment.Content;
                 currentSegment.Metadata["merged_segments"] =
-                    (currentSegment.Metadata.TryGetValue("merged_segments", out var value) ? (int)value : 1) + 1;
+                    (currentSegment.Metadata.TryGetValue("merged_segments", out var mergedCount) ? (int)mergedCount : 1) + 1;
             }
             else
             {
