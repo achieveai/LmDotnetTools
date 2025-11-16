@@ -1,0 +1,6 @@
+@AchieveAi.LmDotnetTools.AgUi.Sample_HostAddress = http://localhost:5264
+
+GET {{AchieveAi.LmDotnetTools.AgUi.Sample_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

@@ -1,0 +1,320 @@
+using System.Runtime.CompilerServices;
+using AchieveAi.LmDotnetTools.AgUi.DataObjects;
+using AchieveAi.LmDotnetTools.AgUi.DataObjects.Enums;
+using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
+using AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
+using AchieveAi.LmDotnetTools.AgUi.Protocol.Extensions;
+using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
+using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Middleware;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace AchieveAi.LmDotnetTools.AgUi.Protocol.Middleware;
+
+/// <summary>
+/// AG-UI streaming middleware that intercepts messages and publishes AG-UI events.
+/// Implements IToolResultCallback to capture tool execution results from FunctionCallMiddleware.
+/// </summary>
+/// <remarks>
+/// This middleware follows the interceptor pattern - it processes messages flowing through
+/// the pipeline without creating its own stream. Session and run IDs are managed through
+/// the MiddlewareContext to ensure they persist across multiple invocations.
+/// </remarks>
+public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
+{
+    private readonly IEventPublisher _eventPublisher;
+    private readonly IMessageConverter _converter;
+    private readonly ILogger<AgUiStreamingMiddleware> _logger;
+    private readonly AgUiMiddlewareOptions _options;
+    private MiddlewareContext? _currentContext;
+
+    public AgUiStreamingMiddleware(
+        IEventPublisher eventPublisher,
+        IMessageConverter converter,
+        ILogger<AgUiStreamingMiddleware>? logger = null,
+        IOptions<AgUiMiddlewareOptions>? options = null)
+    {
+        _eventPublisher = eventPublisher;
+        _converter = converter;
+        _logger = logger ?? NullLogger<AgUiStreamingMiddleware>.Instance;
+        _options = options?.Value ?? new AgUiMiddlewareOptions();
+    }
+
+    public string? Name => "AgUiStreamingMiddleware";
+
+    /// <summary>
+    /// Invokes the middleware for synchronous scenarios
+    /// </summary>
+    public async Task<IEnumerable<IMessage>> InvokeAsync(
+        MiddlewareContext context,
+        IAgent agent,
+        CancellationToken cancellationToken = default)
+    {
+        // For non-streaming responses, just pass through
+        return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
+    }
+
+    /// <summary>
+    /// Invokes the middleware for streaming scenarios.
+    /// Follows the interceptor pattern: gets the stream from the next middleware,
+    /// then processes and yields messages through without modification.
+    /// </summary>
+    public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+        MiddlewareContext context,
+        IStreamingAgent agent,
+        CancellationToken cancellationToken = default)
+    {
+        // Get stream from next middleware in the chain
+        var stream = await agent.GenerateReplyStreamingAsync(
+            context.Messages,
+            context.Options,
+            cancellationToken);
+
+        // Process stream and yield messages (interceptor pattern)
+        return ProcessStreamWithEvents(stream, context, cancellationToken);
+    }
+
+    /// <summary>
+    /// Processes the message stream, converting LmCore messages to AG-UI events.
+    /// This method implements the interceptor pattern: it receives messages from upstream,
+    /// publishes AG-UI events as side effects, and yields all messages through unchanged.
+    /// </summary>
+    /// <remarks>
+    /// CRITICAL: This method follows these principles:
+    /// 1. Never creates its own stream - receives it as a parameter
+    /// 2. Always yields messages through, even if event publishing fails
+    /// 3. Publishes AG-UI events as side effects (not the main flow)
+    /// 4. Never breaks the stream with exceptions
+    /// </remarks>
+    private async IAsyncEnumerable<IMessage> ProcessStreamWithEvents(
+        IAsyncEnumerable<IMessage> messages,
+        MiddlewareContext context,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        // Get or create session and run IDs
+        // For now, we generate a unique session ID per invocation
+        // TODO: Use conversation ID when available for true session persistence
+        var sessionId = context.GetOrCreateSessionId();
+        var runId = context.GetOrCreateRunId();
+
+        // Store context for tool callbacks
+        _currentContext = context;
+
+        // Publish run-started event as side effect
+        await PublishEventSafely(new RunStartedEvent
+        {
+            SessionId = sessionId,
+            RunId = runId
+        }, ct);
+
+        // Process all messages, yielding them through
+        await foreach (var message in messages.WithCancellation(ct).ConfigureAwait(false))
+        {
+            // Convert and publish AG-UI events as side effect
+            // Errors in publishing don't break the stream
+            await ProcessMessageAsync(message, sessionId, ct);
+
+            // ALWAYS yield message through, even if event publishing failed
+            yield return message;
+        }
+
+        // Publish run-finished event as side effect
+        // We always report success here - errors in event publishing are logged
+        // but don't affect the overall run status
+        await PublishEventSafely(new RunFinishedEvent
+        {
+            SessionId = sessionId,
+            RunId = runId,
+            Status = RunStatus.Success
+        }, ct);
+    }
+
+    /// <summary>
+    /// Processes a single message by converting it to AG-UI events and publishing them.
+    /// Errors in conversion or publishing are logged but don't break the stream.
+    /// </summary>
+    private async Task ProcessMessageAsync(IMessage message, string sessionId, CancellationToken ct)
+    {
+        await PublishMessageEventsSafely(message, sessionId, ct);
+    }
+
+    /// <summary>
+    /// Safely publishes AG-UI events for a message without breaking the stream.
+    /// This wrapper ensures that errors in conversion or publishing don't propagate.
+    /// </summary>
+    private async Task PublishMessageEventsSafely(IMessage message, string sessionId, CancellationToken ct)
+    {
+        try
+        {
+            var events = _converter.ConvertToAgUiEvents(message, sessionId);
+
+            foreach (var evt in events)
+            {
+                await PublishEventSafely(evt, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Re-throw cancellation - this is expected behavior
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Error converting/publishing message events for session {SessionId}. " +
+                "Message type: {MessageType}. Stream will continue.",
+                sessionId,
+                message.GetType().Name);
+            // DON'T throw - continue processing
+        }
+    }
+
+    /// <summary>
+    /// Safely publishes a single AG-UI event without breaking the stream.
+    /// Only OperationCanceledException is re-thrown; all other exceptions are logged and swallowed.
+    /// </summary>
+    private async Task PublishEventSafely(AgUiEventBase evt, CancellationToken ct)
+    {
+        try
+        {
+            await _eventPublisher.PublishAsync(evt, ct);
+
+            if (_options.EnableDebugLogging)
+            {
+                _logger.LogDebug("Published event {EventType} for session {SessionId}",
+                    evt.Type, evt.SessionId);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Re-throw cancellation - this is expected and should stop processing
+            _logger.LogDebug("Event publishing cancelled for {EventType}", evt.Type);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to publish event {EventType} for session {SessionId}. " +
+                "Event will be skipped but stream will continue.",
+                evt.Type,
+                evt.SessionId);
+            // DON'T throw - continue processing
+            // This ensures the message stream continues even if event publishing fails
+        }
+    }
+
+    #region IToolResultCallback Implementation
+
+    /// <summary>
+    /// Called when a tool call starts execution
+    /// </summary>
+    public async Task OnToolCallStartedAsync(
+        string toolCallId,
+        string functionName,
+        string functionArgs,
+        CancellationToken cancellationToken = default)
+    {
+        // Get session ID from stored context
+        if (_currentContext == null)
+        {
+            _logger.LogWarning("Tool call started but no context available");
+            return;
+        }
+
+        var sessionId = _currentContext.Value.GetOrCreateSessionId();
+
+        // Publish tool-call-start event
+        var toolCallStartEvent = new ToolCallStartEvent
+        {
+            SessionId = sessionId,
+            ToolCallId = toolCallId,
+            ToolName = functionName
+        };
+
+        await PublishEventSafely(toolCallStartEvent, cancellationToken);
+
+        // Publish tool-call-arguments event with complete args
+        var toolCallArgsEvent = new ToolCallArgumentsEvent
+        {
+            SessionId = sessionId,
+            ToolCallId = toolCallId,
+            Delta = functionArgs
+        };
+
+        await PublishEventSafely(toolCallArgsEvent, cancellationToken);
+    }
+
+    /// <summary>
+    /// Called when a tool call result becomes available
+    /// </summary>
+    public async Task OnToolResultAvailableAsync(
+        string toolCallId,
+        ToolCallResult result,
+        CancellationToken cancellationToken = default)
+    {
+        // Get session ID from stored context
+        if (_currentContext == null)
+        {
+            _logger.LogWarning("Tool result available but no context available");
+            return;
+        }
+
+        var sessionId = _currentContext.Value.GetOrCreateSessionId();
+
+        // Tool results are no longer separate events in the protocol
+        // They should be embedded in messages. For now, just emit tool-call-end event
+        var toolCallEndEvent = new ToolCallEndEvent
+        {
+            SessionId = sessionId,
+            ToolCallId = toolCallId,
+            Duration = TimeSpan.Zero // We don't track duration here
+        };
+
+        await PublishEventSafely(toolCallEndEvent, cancellationToken);
+    }
+
+    /// <summary>
+    /// Called when a tool call encounters an error
+    /// </summary>
+    public async Task OnToolCallErrorAsync(
+        string toolCallId,
+        string functionName,
+        string error,
+        CancellationToken cancellationToken = default)
+    {
+        // Get session ID from stored context
+        if (_currentContext == null)
+        {
+            _logger.LogWarning("Tool call error but no context available");
+            return;
+        }
+
+        var sessionId = _currentContext.Value.GetOrCreateSessionId();
+
+        // Tool call errors should be reported as RUN_ERROR events
+        var errorEvent = new ErrorEvent
+        {
+            SessionId = sessionId,
+            ErrorCode = "TOOL_CALL_ERROR",
+            Message = $"Tool call {functionName} failed: {error}",
+            Recoverable = true
+        };
+
+        await PublishEventSafely(errorEvent, cancellationToken);
+
+        // Also publish tool-call-end event
+        var toolCallEndEvent = new ToolCallEndEvent
+        {
+            SessionId = sessionId,
+            ToolCallId = toolCallId,
+            Duration = TimeSpan.Zero
+        };
+
+        await PublishEventSafely(toolCallEndEvent, cancellationToken);
+    }
+
+    #endregion
+}
