@@ -8,7 +8,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
 public sealed record TextMessageContentEvent : AgUiEventBase
 {
     /// <inheritdoc/>
-    [JsonPropertyName("type")]
+    [JsonIgnore]
     public override string Type => "TEXT_MESSAGE_CONTENT";
 
     /// <summary>
@@ -28,4 +28,10 @@ public sealed record TextMessageContentEvent : AgUiEventBase
     /// </summary>
     [JsonPropertyName("chunkIndex")]
     public int ChunkIndex { get; init; }
+
+    /// <summary>
+    /// Indicates whether this content is thinking/reasoning (vs final response)
+    /// </summary>
+    [JsonPropertyName("isThinking")]
+    public bool IsThinking { get; init; }
 }

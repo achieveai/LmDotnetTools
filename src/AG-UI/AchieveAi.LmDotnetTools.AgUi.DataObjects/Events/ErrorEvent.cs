@@ -9,7 +9,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
 public sealed record ErrorEvent : AgUiEventBase
 {
     /// <inheritdoc/>
-    [JsonPropertyName("type")]
+    [JsonIgnore]
     public override string Type => "RUN_ERROR";
 
     /// <summary>

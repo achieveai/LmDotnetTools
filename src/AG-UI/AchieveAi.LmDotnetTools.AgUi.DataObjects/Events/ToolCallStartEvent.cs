@@ -9,7 +9,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
 public sealed record ToolCallStartEvent : AgUiEventBase
 {
     /// <inheritdoc/>
-    [JsonPropertyName("type")]
+    [JsonIgnore]
     public override string Type => "TOOL_CALL_START";
 
     /// <summary>

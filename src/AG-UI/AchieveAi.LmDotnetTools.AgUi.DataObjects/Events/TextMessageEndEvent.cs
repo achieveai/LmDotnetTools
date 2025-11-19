@@ -8,7 +8,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
 public sealed record TextMessageEndEvent : AgUiEventBase
 {
     /// <inheritdoc/>
-    [JsonPropertyName("type")]
+    [JsonIgnore]
     public override string Type => "TEXT_MESSAGE_END";
 
     /// <summary>

@@ -4,9 +4,9 @@
 
 This document breaks down the AG-UI Protocol Integration feature into specific, actionable tasks with clear acceptance criteria. Each task includes detailed requirements, testing criteria, and deliverables that developers can implement incrementally.
 
-## Progress Summary (Updated: 2025-11-14)
+## Progress Summary (Updated: 2025-11-16)
 
-**Overall Progress**: 20 of 47 tasks complete (43%) | 63 of 186 story points (34%)
+**Overall Progress**: 25 of 47 tasks complete (53%) | 83 of 186 story points (45%)
 
 ### Completed Phases
 - ✅ **Phase 1: Foundation** - All 8 tasks complete (24 points)
@@ -25,15 +25,17 @@ This document breaks down the AG-UI Protocol Integration feature into specific, 
   - Tool callback wiring implemented
   - Error handling improved
 
+- ✅ **Phase 4: ASP.NET Core Integration** - All 5 tasks complete (20 points)
+  - WebSocket handler, middleware, service registration, configuration, CORS
+
 ### In Progress
-- **Phase 4: ASP.NET Core Integration** - 0 of 5 tasks (0%)
 - **Phase 5: SQLite Persistence** - 0 of 8 tasks (0%)
 - **Phase 6: Sample Application** - 0 of 6 tasks (0%)
 - **Phase 7: Testing** - 0 of 5 tasks (0%)
 - **Phase 8: Documentation** - 0 of 3 tasks (0%)
 
 ### Next Steps
-The foundation and protocol layers are complete and refactored. Next phase is ASP.NET Core integration (AGUI-020 through AGUI-024).
+The foundation, protocol, and ASP.NET Core layers are complete. Next phase is SQLite Persistence (AGUI-025 through AGUI-032).
 
 ## REMINDER
 
@@ -1150,12 +1152,13 @@ This refactoring was critical to ensure the AG-UI integration follows correct ar
 
 ## Phase 4: ASP.NET Core Integration (Sprint 4)
 
-### AGUI-020: Implement WebSocket Handler
+### AGUI-020: Implement WebSocket Handler ✅ COMPLETE
 
 **Priority**: Critical
 **Estimated Effort**: 6 story points
 **Dependencies**: AGUI-018
-**Status**: ⏳ Pending
+**Status**: ✅ COMPLETE
+**Completed**: 2025-11-16
 
 #### Description
 Create the WebSocket handler that manages WebSocket connections and routes messages to the protocol handler.
@@ -1209,12 +1212,13 @@ public async Task WebSocketHandler_ClientConnects_EmitsSessionStarted()
 
 ---
 
-### AGUI-021: Implement AG-UI Middleware for ASP.NET Core
+### AGUI-021: Implement AG-UI Middleware for ASP.NET Core ✅ COMPLETE
 
 **Priority**: Critical
 **Estimated Effort**: 4 story points
 **Dependencies**: AGUI-020
-**Status**: ⏳ Pending
+**Status**: ✅ COMPLETE
+**Completed**: 2025-11-16
 
 #### Description
 Create ASP.NET Core middleware that intercepts requests to AG-UI endpoints and handles WebSocket upgrades.
@@ -1250,12 +1254,13 @@ Create ASP.NET Core middleware that intercepts requests to AG-UI endpoints and h
 
 ---
 
-### AGUI-022: Implement Service Registration Extensions
+### AGUI-022: Implement Service Registration Extensions ✅ COMPLETE
 
 **Priority**: Critical
 **Estimated Effort**: 4 story points
 **Dependencies**: AGUI-019, AGUI-021
-**Status**: ⏳ Pending
+**Status**: ✅ COMPLETE
+**Completed**: 2025-11-16
 
 #### Description
 Create extension methods for registering AG-UI services in the ASP.NET Core DI container.
@@ -1305,12 +1310,13 @@ public void AddAgUi_RegistersAllServices()
 
 ---
 
-### AGUI-023: Implement Application Builder Extensions
+### AGUI-023: Implement Application Builder Extensions ✅ COMPLETE
 
 **Priority**: Critical
 **Estimated Effort**: 3 story points
 **Dependencies**: AGUI-022
-**Status**: ⏳ Pending
+**Status**: ✅ COMPLETE
+**Completed**: 2025-11-16
 
 #### Description
 Create extension methods for configuring the AG-UI middleware pipeline and mapping endpoints.
@@ -1346,12 +1352,13 @@ Create extension methods for configuring the AG-UI middleware pipeline and mappi
 
 ---
 
-### AGUI-024: Implement Configuration Options
+### AGUI-024: Implement Configuration Options ✅ COMPLETE
 
 **Priority**: High
 **Estimated Effort**: 3 story points
 **Dependencies**: None
-**Status**: ⏳ Pending
+**Status**: ✅ COMPLETE
+**Completed**: 2025-11-16
 
 #### Description
 Create configuration classes for AG-UI options including endpoint paths, timeouts, authentication, CORS, and rate limiting.

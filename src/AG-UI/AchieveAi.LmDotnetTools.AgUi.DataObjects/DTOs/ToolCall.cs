@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.DTOs;
@@ -41,5 +42,5 @@ public sealed record FunctionCall
     /// JSON-encoded arguments for the function
     /// </summary>
     [JsonPropertyName("arguments")]
-    public required string Arguments { get; init; }
+    public required JsonElement Arguments { get; init; }
 }

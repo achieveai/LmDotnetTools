@@ -22,8 +22,7 @@ public static class AgUiJsonOptions
         // Convert enums to strings
         Converters =
         {
-            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase),
-            new AgUiEventConverter()
+            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)
         },
 
         // Don't indent for compactness

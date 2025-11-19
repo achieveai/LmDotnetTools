@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AchieveAi.LmDotnetTools.AgUi.AspNetCore\AchieveAi.LmDotnetTools.AgUi.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+    <ProjectReference Include="..\..\LmTestUtils\LmTestUtils.csproj" />
   </ItemGroup>
 
 </Project>

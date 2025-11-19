@@ -34,6 +34,8 @@ public class MessageToAgUiConverter : IMessageConverter
         {
             TextUpdateMessage textUpdate => ConvertTextUpdate(textUpdate, sessionId),
             ToolsCallUpdateMessage toolUpdate => ConvertToolCallUpdate(toolUpdate, sessionId),
+            TextMessage textMessage => ConvertTextMessage(textMessage, sessionId),
+            ToolsCallMessage toolsCallMessage => ConvertToolsCallMessage(toolsCallMessage, sessionId),
             _ => Enumerable.Empty<AgUiEventBase>()
         };
     }
@@ -64,7 +66,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 SessionId = sessionId,
                 MessageId = messageId,
                 Content = update.Text,
-                ChunkIndex = chunkIndex
+                ChunkIndex = chunkIndex,
+                IsThinking = update.IsThinking
             };
 
             state.TotalLength += update.Text.Length;
@@ -134,6 +137,79 @@ public class MessageToAgUiConverter : IMessageConverter
                     };
                 }
             }
+        }
+    }
+
+    private IEnumerable<AgUiEventBase> ConvertTextMessage(TextMessage textMessage, string sessionId)
+    {
+        var messageId = GetOrCreateMessageId(textMessage.GenerationId);
+
+        // Emit start event
+        yield return new TextMessageStartEvent
+        {
+            SessionId = sessionId,
+            MessageId = messageId,
+            Role = ConvertRole(textMessage.Role)
+        };
+
+        // Emit content event with the full text
+        if (!string.IsNullOrEmpty(textMessage.Text))
+        {
+            yield return new TextMessageContentEvent
+            {
+                SessionId = sessionId,
+                MessageId = messageId,
+                Content = textMessage.Text,
+                ChunkIndex = 0
+            };
+        }
+
+        // Emit end event
+        yield return new TextMessageEndEvent
+        {
+            SessionId = sessionId,
+            MessageId = messageId,
+            TotalChunks = string.IsNullOrEmpty(textMessage.Text) ? 0 : 1,
+            TotalLength = textMessage.Text?.Length ?? 0
+        };
+    }
+
+    private IEnumerable<AgUiEventBase> ConvertToolsCallMessage(ToolsCallMessage toolsCallMessage, string sessionId)
+    {
+        foreach (var toolCall in toolsCallMessage.ToolCalls)
+        {
+            var toolCallId = _toolCallTracker.GetOrCreateToolCallId(toolCall.ToolCallId);
+
+            // Start the tool call
+            _toolCallTracker.StartToolCall(toolCallId, toolCall.FunctionName);
+
+            yield return new ToolCallStartEvent
+            {
+                SessionId = sessionId,
+                ToolCallId = toolCallId,
+                ToolName = toolCall.FunctionName
+            };
+
+            // Emit arguments event with the full arguments
+            if (!string.IsNullOrEmpty(toolCall.FunctionArgs))
+            {
+                yield return new ToolCallArgumentsEvent
+                {
+                    SessionId = sessionId,
+                    ToolCallId = toolCallId,
+                    Delta = toolCall.FunctionArgs,
+                    JsonFragmentUpdates = null
+                };
+            }
+
+            // End the tool call
+            var duration = _toolCallTracker.EndToolCall(toolCallId);
+            yield return new ToolCallEndEvent
+            {
+                SessionId = sessionId,
+                ToolCallId = toolCallId,
+                Duration = duration
+            };
         }
     }
 

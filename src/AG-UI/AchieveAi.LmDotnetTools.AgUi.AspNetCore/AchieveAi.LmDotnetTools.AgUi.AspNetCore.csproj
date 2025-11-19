@@ -7,11 +7,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.WebSockets" Version="2.3.0" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Collections.Immutable" Version="9.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AchieveAi.LmDotnetTools.AgUi.Protocol\AchieveAi.LmDotnetTools.AgUi.Protocol.csproj" />
+    <ProjectReference Include="..\AchieveAi.LmDotnetTools.AgUi.Persistence\AchieveAi.LmDotnetTools.AgUi.Persistence.csproj" />
   </ItemGroup>
 
 </Project>

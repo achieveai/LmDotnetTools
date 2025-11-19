@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AchieveAi.LmDotnetTools.AgUi.DataObjects\AchieveAi.LmDotnetTools.AgUi.DataObjects.csproj" />
+    <ProjectReference Include="..\AchieveAi.LmDotnetTools.AgUi.Persistence\AchieveAi.LmDotnetTools.AgUi.Persistence.csproj" />
     <ProjectReference Include="..\..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
   </ItemGroup>
 

@@ -10,6 +10,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects;
 /// All events inherit from this class and must specify their event type.
 /// </summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(SessionStartedEvent), AgUiEventTypes.SESSION_STARTED)]
 [JsonDerivedType(typeof(RunStartedEvent), AgUiEventTypes.RUN_STARTED)]
 [JsonDerivedType(typeof(RunFinishedEvent), AgUiEventTypes.RUN_FINISHED)]
 [JsonDerivedType(typeof(ErrorEvent), AgUiEventTypes.RUN_ERROR)]
@@ -26,8 +27,9 @@ public abstract record AgUiEventBase
     /// <summary>
     /// The type of the event (e.g., "RUN_STARTED", "TEXT_MESSAGE_CONTENT", etc.)
     /// Uses SCREAMING_SNAKE_CASE per AG-UI protocol specification.
+    /// This property is ignored during serialization - the JsonPolymorphic attribute handles the "type" discriminator.
     /// </summary>
-    [JsonPropertyName("type")]
+    [JsonIgnore]
     public abstract string Type { get; }
 
     /// <summary>

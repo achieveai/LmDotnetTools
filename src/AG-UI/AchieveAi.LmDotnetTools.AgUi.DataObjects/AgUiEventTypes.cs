@@ -7,6 +7,11 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects;
 public static class AgUiEventTypes
 {
     /// <summary>
+    /// Signals the start of a new WebSocket session
+    /// </summary>
+    public const string SESSION_STARTED = "SESSION_STARTED";
+
+    /// <summary>
     /// Signals the beginning of agent processing
     /// </summary>
     public const string RUN_STARTED = "RUN_STARTED";

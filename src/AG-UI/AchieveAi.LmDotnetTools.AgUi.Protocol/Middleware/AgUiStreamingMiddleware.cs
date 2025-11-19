@@ -1,7 +1,10 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Enums;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
+using AchieveAi.LmDotnetTools.AgUi.Persistence.Models;
+using AchieveAi.LmDotnetTools.AgUi.Persistence.Repositories;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Extensions;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
@@ -22,6 +25,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.Protocol.Middleware;
 /// This middleware follows the interceptor pattern - it processes messages flowing through
 /// the pipeline without creating its own stream. Session and run IDs are managed through
 /// the MiddlewareContext to ensure they persist across multiple invocations.
+/// Optionally persists sessions and messages to SQLite when persistence is enabled.
 /// </remarks>
 public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
 {
@@ -29,18 +33,37 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     private readonly IMessageConverter _converter;
     private readonly ILogger<AgUiStreamingMiddleware> _logger;
     private readonly AgUiMiddlewareOptions _options;
+    private readonly ISessionRepository? _sessionRepository;
+    private readonly IMessageRepository? _messageRepository;
+    private readonly IEventRepository? _eventRepository;
     private MiddlewareContext? _currentContext;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AgUiStreamingMiddleware"/> class.
+    /// </summary>
+    /// <param name="eventPublisher">The event publisher for AG-UI events.</param>
+    /// <param name="converter">The message converter for LmCore to AG-UI conversion.</param>
+    /// <param name="logger">Optional logger for diagnostics.</param>
+    /// <param name="options">Optional middleware configuration options.</param>
+    /// <param name="sessionRepository">Optional session repository for persistence.</param>
+    /// <param name="messageRepository">Optional message repository for persistence.</param>
+    /// <param name="eventRepository">Optional event repository for persistence.</param>
     public AgUiStreamingMiddleware(
         IEventPublisher eventPublisher,
         IMessageConverter converter,
         ILogger<AgUiStreamingMiddleware>? logger = null,
-        IOptions<AgUiMiddlewareOptions>? options = null)
+        IOptions<AgUiMiddlewareOptions>? options = null,
+        ISessionRepository? sessionRepository = null,
+        IMessageRepository? messageRepository = null,
+        IEventRepository? eventRepository = null)
     {
         _eventPublisher = eventPublisher;
         _converter = converter;
         _logger = logger ?? NullLogger<AgUiStreamingMiddleware>.Instance;
         _options = options?.Value ?? new AgUiMiddlewareOptions();
+        _sessionRepository = sessionRepository;
+        _messageRepository = messageRepository;
+        _eventRepository = eventRepository;
     }
 
     public string? Name => "AgUiStreamingMiddleware";
@@ -103,6 +126,9 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         // Store context for tool callbacks
         _currentContext = context;
 
+        // Persist session start (fire-and-forget, non-blocking)
+        _ = PersistSessionStartAsync(sessionId, context, ct);
+
         // Publish run-started event as side effect
         await PublishEventSafely(new RunStartedEvent
         {
@@ -113,6 +139,9 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         // Process all messages, yielding them through
         await foreach (var message in messages.WithCancellation(ct).ConfigureAwait(false))
         {
+            // Persist message (fire-and-forget, non-blocking)
+            _ = PersistMessageAsync(message, sessionId, ct);
+
             // Convert and publish AG-UI events as side effect
             // Errors in publishing don't break the stream
             await ProcessMessageAsync(message, sessionId, ct);
@@ -130,6 +159,9 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             RunId = runId,
             Status = RunStatus.Success
         }, ct);
+
+        // Persist session end (fire-and-forget, non-blocking)
+        _ = PersistSessionEndAsync(sessionId, RunStatus.Success, ct);
     }
 
     /// <summary>
@@ -314,6 +346,152 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         };
 
         await PublishEventSafely(toolCallEndEvent, cancellationToken);
+    }
+
+    #endregion
+
+    #region Persistence Methods
+
+    /// <summary>
+    /// Persists session start information to the database (fire-and-forget pattern).
+    /// </summary>
+    /// <remarks>
+    /// This method runs asynchronously without blocking the message stream.
+    /// Errors are logged but do not affect stream processing.
+    /// </remarks>
+    private async Task PersistSessionStartAsync(
+        string sessionId,
+        MiddlewareContext context,
+        CancellationToken ct)
+    {
+        if (_sessionRepository == null)
+        {
+            return; // Persistence not enabled
+        }
+
+        try
+        {
+            var session = new SessionEntity
+            {
+                Id = sessionId,
+                ConversationId = null, // TODO: Extract from context metadata when available
+                StartTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Status = "Started",
+                MetadataJson = null // TODO: Add metadata if needed
+            };
+
+            await _sessionRepository.CreateAsync(session, ct);
+            _logger.LogDebug("Persisted session start for {SessionId}", sessionId);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is expected, don't log as error
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to persist session start for {SessionId}", sessionId);
+            // DON'T throw - persistence failures shouldn't break the stream
+        }
+    }
+
+    /// <summary>
+    /// Persists a message to the database (fire-and-forget pattern).
+    /// </summary>
+    /// <remarks>
+    /// This method runs asynchronously without blocking the message stream.
+    /// Errors are logged but do not affect stream processing.
+    /// </remarks>
+    private async Task PersistMessageAsync(
+        IMessage message,
+        string sessionId,
+        CancellationToken ct)
+    {
+        if (_messageRepository == null)
+        {
+            return; // Persistence not enabled
+        }
+
+        try
+        {
+            // Generate message ID (IMessage doesn't have an Id property)
+            var messageId = message.GenerationId ?? Guid.NewGuid().ToString();
+
+            var messageEntity = new MessageEntity
+            {
+                Id = messageId,
+                SessionId = sessionId,
+                MessageJson = JsonSerializer.Serialize(message, new JsonSerializerOptions
+                {
+                    WriteIndented = false,
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+                }),
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                MessageType = message.GetType().Name
+            };
+
+            await _messageRepository.CreateAsync(messageEntity, ct);
+            _logger.LogTrace("Persisted message {MessageId} for session {SessionId}", messageEntity.Id, sessionId);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is expected, don't log as error
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to persist message for session {SessionId}", sessionId);
+            // DON'T throw - persistence failures shouldn't break the stream
+        }
+    }
+
+    /// <summary>
+    /// Persists session end information to the database (fire-and-forget pattern).
+    /// </summary>
+    /// <remarks>
+    /// This method runs asynchronously without blocking the message stream.
+    /// Errors are logged but do not affect stream processing.
+    /// </remarks>
+    private async Task PersistSessionEndAsync(
+        string sessionId,
+        RunStatus status,
+        CancellationToken ct)
+    {
+        if (_sessionRepository == null)
+        {
+            return; // Persistence not enabled
+        }
+
+        try
+        {
+            // Get existing session to update it
+            var session = await _sessionRepository.GetByIdAsync(sessionId, ct);
+            if (session == null)
+            {
+                _logger.LogWarning("Session {SessionId} not found for end persistence", sessionId);
+                return;
+            }
+
+            // Update session with end information
+            var updatedSession = session with
+            {
+                EndTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Status = status == RunStatus.Success ? "Completed" : "Failed"
+            };
+
+            await _sessionRepository.UpdateAsync(updatedSession, ct);
+            _logger.LogDebug("Persisted session end for {SessionId} with status {Status}", sessionId, updatedSession.Status);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is expected, don't log as error
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to persist session end for {SessionId}", sessionId);
+            // DON'T throw - persistence failures shouldn't break the stream
+        }
     }
 
     #endregion
