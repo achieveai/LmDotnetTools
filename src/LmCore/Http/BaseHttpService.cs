@@ -67,9 +67,8 @@ public abstract class BaseHttpService : IDisposable
     protected async Task<T> ExecuteHttpWithRetryAsync<T>(
         Func<Task<HttpResponseMessage>> httpOperation,
         Func<HttpResponseMessage, Task<T>> responseProcessor,
-        int maxRetries = 3,
-        CancellationToken cancellationToken = default
-    )
+        int maxRetries = 5,
+        CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
 
