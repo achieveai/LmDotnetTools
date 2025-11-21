@@ -100,7 +100,7 @@ public class EventSerializationTests
         var textEvent = new TextMessageContentEvent
         {
             SessionId = "session-abc",
-            Content = "Hello, World!"
+            Delta = "Hello, World!"
         };
 
         // Act
@@ -113,6 +113,6 @@ public class EventSerializationTests
 
         var textEventDeserialized = (TextMessageContentEvent)deserialized;
         Assert.Equal("TEXT_MESSAGE_CONTENT", textEventDeserialized.Type);
-        Assert.Equal(textEvent.Content, textEventDeserialized.Content);
+        Assert.Equal(textEvent.Delta, textEventDeserialized.Delta);
     }
 }

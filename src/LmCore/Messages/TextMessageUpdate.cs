@@ -74,6 +74,13 @@ public record TextUpdateMessage : IMessage, ICanGetText
     public string? RunId { get; init; }
 
     /// <summary>
+    /// Parent Run identifier for branching/time travel (creates git-like lineage).
+    /// </summary>
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
+
+    /// <summary>
     /// Not supported for text updates.
     /// </summary>
     public static BinaryData? GetBinary() => null;
@@ -104,6 +111,7 @@ public record TextUpdateMessage : IMessage, ICanGetText
             IsThinking = IsThinking,
             ThreadId = ThreadId,
             RunId = RunId,
+            ParentRunId = ParentRunId,
         };
     }
 }

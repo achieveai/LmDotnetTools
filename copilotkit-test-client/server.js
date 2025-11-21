@@ -88,7 +88,7 @@ app.post('/copilotkit', async (req, res) => {
     const agUiMessages = transformMessages(copilotKitMessages);
     const threadId = requestData.threadId || null;
     const runId = requestData.runId || null;
-    const agentName = 'ToolCallingAgent';
+    const agentName = 'InstructionChainAgent';
 
     logger.info('Processing messages', {
       messageCount: agUiMessages.length,
@@ -301,6 +301,45 @@ app.post('/copilotkit', async (req, res) => {
           }));
           break;
 
+        case 'REASONING_START':
+          logger.info('Reasoning started', {
+            sessionId: event.sessionId,
+            hasEncryptedReasoning: !!event.encryptedReasoning
+          });
+          // For now, we don't expose reasoning to CopilotKit frontend
+          // Could be extended to show reasoning in a special UI component
+          break;
+
+        case 'REASONING_MESSAGE_START':
+          logger.info('Reasoning message started', {
+            messageId: event.messageId,
+            visibility: event.visibility
+          });
+          break;
+
+        case 'REASONING_MESSAGE_CONTENT':
+          // Stream reasoning content (could be displayed separately from main response)
+          logger.debug('Reasoning content chunk', {
+            messageId: event.messageId,
+            chunkIndex: event.chunkIndex,
+            contentLength: event.content?.length
+          });
+          break;
+
+        case 'REASONING_MESSAGE_END':
+          logger.info('Reasoning message completed', {
+            messageId: event.messageId,
+            totalChunks: event.totalChunks,
+            totalLength: event.totalLength
+          });
+          break;
+
+        case 'REASONING_END':
+          logger.info('Reasoning phase completed', {
+            hasSummary: !!event.summary
+          });
+          break;
+
         case 'RUN_FINISHED':
           logger.info('Run finished', {
             finalContentLength: messageContent.length
@@ -377,18 +416,18 @@ app.post('/copilotkit', async (req, res) => {
       }
     });
 
-    // Timeout after 60 seconds
+    // Timeout after 5 minutes
     setTimeout(() => {
       if (ws.readyState === WebSocket.OPEN) {
         logger.warn('Request timeout', {
-          timeoutMs: 60000,
+          timeoutMs: 300000,
           threadId,
           runId
         });
         ws.close();
         res.end();
       }
-    }, 60000);
+    }, 300000);
 
   } catch (error) {
     logger.error('Request processing error', {

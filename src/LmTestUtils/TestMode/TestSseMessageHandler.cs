@@ -124,6 +124,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                 Content = new StringContent($"Invalid JSON: {ex.Message}"),
             };
         }
+
         using (doc)
         {
             var root = doc.RootElement;
@@ -131,6 +132,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             var stream =
                 root.TryGetProperty("stream", out var streamProp)
                 && streamProp.ValueKind == JsonValueKind.True;
+
             if (!stream)
             {
                 return new HttpResponseMessage(HttpStatusCode.NotFound);

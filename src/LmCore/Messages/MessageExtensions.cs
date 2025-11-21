@@ -1,3 +1,4 @@
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 
@@ -202,5 +203,77 @@ public static class MessageExtensions
     public static bool IsTransformableToolCall(this IMessage message)
     {
         return message is ToolsCallAggregateMessage;
+    }
+
+    /// <summary>
+    /// Updates the message with run, parent run, and thread IDs from the options.
+    /// </summary>
+    public static IMessage WithIds(this IMessage message, GenerateReplyOptions? options)
+    {
+        if (options == null) return message;
+        return message.WithIds(options.RunId, options.ParentRunId, options.ThreadId);
+    }
+
+    /// <summary>
+    /// Updates the message with run, parent run, and thread IDs.
+    /// </summary>
+    public static IMessage WithIds(this IMessage message, string? runId, string? parentRunId, string? threadId)
+    {
+        if (message is TextMessage textMessage)
+        {
+            return textMessage with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId
+            };
+        }
+        else if (message is ToolsCallMessage toolsCallMessage)
+        {
+            return toolsCallMessage with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId
+            };
+        }
+        else if (message is ReasoningMessage reasoningMessage)
+        {
+            return reasoningMessage with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId
+            };
+        }
+        else if (message is TextUpdateMessage textUpdateMessage)
+        {
+            return textUpdateMessage with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId
+            };
+        }
+        else if (message is ToolsCallUpdateMessage toolsCallUpdateMessage)
+        {
+            return toolsCallUpdateMessage with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId
+            };
+        }
+        else if (message is ReasoningUpdateMessage reasoningUpdateMessage)
+        {
+            return reasoningUpdateMessage with
+            {
+                RunId = runId,
+                ParentRunId = parentRunId,
+                ThreadId = threadId
+            };
+        }
+
+        return message;
     }
 }

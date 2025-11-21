@@ -30,11 +30,11 @@ public static class ServiceCollectionExtensions
 
         // Register core services
         services.AddSingleton<IEventPublisher, ChannelEventPublisher>();
-        services.AddSingleton<IMessageConverter, MessageToAgUiConverter>();
+        services.AddScoped<IMessageConverter, MessageToAgUiConverter>();  // Scoped for instance state
         services.AddSingleton<IToolCallTracker, ToolCallTracker>();
 
-        // Register the middleware
-        services.AddSingleton<AgUiStreamingMiddleware>();
+        // Register the middleware as Scoped since it depends on scoped IMessageConverter
+        services.AddScoped<AgUiStreamingMiddleware>();
 
         return services;
     }

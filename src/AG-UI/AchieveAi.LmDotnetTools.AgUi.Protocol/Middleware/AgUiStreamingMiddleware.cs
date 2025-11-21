@@ -119,9 +119,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     {
         // Get session ID from GenerateReplyOptions first, fall back to generating new one
         // This ensures sessionId is consistent with the controller's sessionId
-        var sessionId = context.Options?.SessionId
-            ?? context.Options?.ConversationId
-            ?? context.GetOrCreateSessionId();
+        var sessionId = context.GetOrCreateSessionId(context.Options?.ThreadId);
 
         var runId = context.Options?.RunId
             ?? context.GetOrCreateRunId();
@@ -151,6 +149,11 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
 
             // ALWAYS yield message through, even if event publishing failed
             yield return message;
+        }
+
+        foreach (var evt in _converter.Flush(sessionId))
+        {
+            await PublishEventSafely(evt, ct);
         }
 
         // Publish run-finished event as side effect
@@ -259,9 +262,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             return;
         }
 
-        var sessionId = _currentContext.Value.Options?.SessionId
-            ?? _currentContext.Value.Options?.ConversationId
-            ?? _currentContext.Value.GetOrCreateSessionId();
+        var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
 
         // Publish tool-call-start event
         var toolCallStartEvent = new ToolCallStartEvent
@@ -299,9 +300,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             return;
         }
 
-        var sessionId = _currentContext.Value.Options?.SessionId
-            ?? _currentContext.Value.Options?.ConversationId
-            ?? _currentContext.Value.GetOrCreateSessionId();
+        var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
 
         // Tool results are no longer separate events in the protocol
         // They should be embedded in messages. For now, just emit tool-call-end event
@@ -331,9 +330,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             return;
         }
 
-        var sessionId = _currentContext.Value.Options?.SessionId
-            ?? _currentContext.Value.Options?.ConversationId
-            ?? _currentContext.Value.GetOrCreateSessionId();
+        var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
 
         // Tool call errors should be reported as RUN_ERROR events
         var errorEvent = new ErrorEvent

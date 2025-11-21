@@ -3,22 +3,22 @@ using System.Text.Json.Serialization;
 namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
 
 /// <summary>
-/// Streams chunks of text content as they become available
+/// Streams reasoning content chunks as they become available
 /// </summary>
-public sealed record TextMessageContentEvent : AgUiEventBase
+public sealed record ReasoningMessageContentEvent : AgUiEventBase
 {
     /// <inheritdoc/>
     [JsonIgnore]
-    public override string Type => "TEXT_MESSAGE_CONTENT";
+    public override string Type => "REASONING_MESSAGE_CONTENT";
 
     /// <summary>
-    /// Identifier for the message this content belongs to (matches TextMessageStartEvent.MessageId)
+    /// Identifier for the reasoning message this content belongs to
     /// </summary>
     [JsonPropertyName("messageId")]
     public string MessageId { get; init; } = string.Empty;
 
     /// <summary>
-    /// The text content chunk
+    /// The reasoning content chunk
     /// </summary>
     [JsonPropertyName("content")]
     public string Delta { get; init; } = string.Empty;

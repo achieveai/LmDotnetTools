@@ -152,7 +152,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 tokensPerSecond
             );
 
-            var resultMessages = openMessage.ToMessages();
+            var resultMessages = openMessage.ToMessages().Select(m => m.WithIds(options)).ToList();
 
             _logger.LogDebug(
                 "Message conversion details: CompletionId={CompletionId}, ConvertedMessageCount={MessageCount}, HasToolCalls={HasToolCalls}",
@@ -180,7 +180,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 ChatMessage = response.Choices!.First().Message!,
             };
 
-            var resultMessages = openMessage.ToMessages();
+            var resultMessages = openMessage.ToMessages().Select(m => m.WithIds(options)).ToList();
             _logger.LogDebug(
                 "Message conversion details (no usage): CompletionId={CompletionId}, ConvertedMessageCount={MessageCount}, HasToolCalls={HasToolCalls}",
                 openMessage.CompletionId,
@@ -218,11 +218,12 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         );
 
         // Return the streaming response as an IAsyncEnumerable
-        return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
+        return await Task.FromResult(GenerateStreamingMessages(request, options, cancellationToken));
     }
 
     private async IAsyncEnumerable<IMessage> GenerateStreamingMessages(
         ChatCompletionRequest request,
+        GenerateReplyOptions? options,
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
@@ -306,7 +307,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
             foreach (var message in streamingMessages)
             {
-                yield return message;
+                yield return message.WithIds(options);
             }
         }
 

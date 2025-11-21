@@ -33,3 +33,5 @@ kv_store
 .fake
 LLM_CACHE/
 *.log
+
+.playwright-mcp/

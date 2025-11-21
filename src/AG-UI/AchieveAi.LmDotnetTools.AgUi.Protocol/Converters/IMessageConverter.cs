@@ -15,4 +15,6 @@ public interface IMessageConverter
     /// <param name="sessionId">Session ID to associate with the events</param>
     /// <returns>Enumerable of AG-UI events</returns>
     IEnumerable<AgUiEventBase> ConvertToAgUiEvents(IMessage message, string sessionId);
+
+    IEnumerable<AgUiEventBase> Flush(string sessionId);
 }

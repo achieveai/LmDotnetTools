@@ -48,7 +48,7 @@ public static class MiddlewareContextExtensions
             return Guid.NewGuid().ToString();
         }
 
-        return _sessionIds.GetOrAdd(conversationId, _ => Guid.NewGuid().ToString());
+        return _sessionIds.GetOrAdd(conversationId, conversationId);
     }
 
     /// <summary>

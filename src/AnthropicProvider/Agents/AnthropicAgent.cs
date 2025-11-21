@@ -85,7 +85,9 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             );
 
             // Convert to messages using the Models namespace extension
-            var resultMessages = Models.AnthropicExtensions.ToMessages(response, Name);
+            var resultMessages = Models.AnthropicExtensions.ToMessages(response, Name)
+                .Select(m => m.WithIds(options))
+                .ToList();
 
             _logger.LogDebug(
                 LogEventIds.MessageTransformation,
@@ -145,7 +147,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             );
 
             // Return the streaming response as an IAsyncEnumerable
-            return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
+            return await Task.FromResult(GenerateStreamingMessages(request, options, cancellationToken));
         }
         catch (Exception ex)
         {
@@ -164,6 +166,7 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
 
     private async IAsyncEnumerable<IMessage> GenerateStreamingMessages(
         AnthropicRequest request,
+        GenerateReplyOptions? options,
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
@@ -239,22 +242,22 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
                 }
                 else if (message is TextUpdateMessage textUpdateMessage)
                 {
-                    yield return textUpdateMessage with
+                    yield return (textUpdateMessage with
                     {
                         FromAgent = Name,
-                    };
+                    }).WithIds(options);
                 }
                 else if (message is ToolsCallUpdateMessage toolsCallMessage)
                 {
-                    yield return toolsCallMessage with
+                    yield return (toolsCallMessage with
                     {
                         FromAgent = Name,
-                    };
+                    }).WithIds(options);
                 }
                 else if (message is ToolsCallMessage) { }
                 else
                 {
-                    yield return message;
+                    yield return message.WithIds(options);
                 }
             }
         }

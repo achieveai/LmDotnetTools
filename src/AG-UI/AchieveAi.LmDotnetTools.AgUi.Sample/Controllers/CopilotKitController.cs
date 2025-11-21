@@ -78,7 +78,7 @@ public class CopilotKitController : ControllerBase
                 sessionId, threadInfo?.ThreadId, threadInfo?.RunId);
 
             // 2. Get the appropriate agent
-            var agentName = request.AgentName ?? "ToolCallingAgent"; // Default agent
+            var agentName = request.AgentName ?? "InstructionChainAgent"; // Default agent
             var agent = GetAgent(agentName);
             if (agent == null)
             {
@@ -100,18 +100,20 @@ public class CopilotKitController : ControllerBase
             // SESSION_STARTED, RUN_STARTED, TEXT_MESSAGE_*, TOOL_CALL_*, RUN_FINISHED, and errors
             _logger.LogInformation("Starting agent execution in background for session {SessionId}", sessionId);
 
-            _ = Task.Run(async () =>
-            {
-                try
+            _ = Task.Run(
+                async () =>
                 {
-                    await ExecuteAgentAsync(agent, messages, sessionId, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Background agent execution failed for session {SessionId}", sessionId);
-                    // AgUiStreamingMiddleware handles error event publishing
-                }
-            }, cancellationToken);
+                    try
+                    {
+                        await ExecuteAgentAsync(agent, messages, sessionId, default);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Background agent execution failed for session {SessionId}", sessionId);
+                        // AgUiStreamingMiddleware handles error event publishing
+                    }
+                },
+                default);
 
             // 6. Build WebSocket URL
             var wsScheme = Request.IsHttps ? "wss" : "ws";
@@ -162,12 +164,15 @@ public class CopilotKitController : ControllerBase
         });
     }
 
-    private IStreamingAgent? GetAgent(string agentName) => agentName switch
+    private IStreamingAgent? GetAgent(string agentName)
     {
-        "ToolCallingAgent" => _toolCallingAgent,
-        "InstructionChainAgent" => _instructionChainAgent,
-        _ => null
-    };
+        return agentName switch
+        {
+            "ToolCallingAgent" => _toolCallingAgent,
+            "InstructionChainAgent" => _instructionChainAgent,
+            _ => null
+        };
+    }
 
     private List<IMessage> ConvertMessages(List<CopilotKitMessage>? messages)
     {
@@ -204,9 +209,8 @@ public class CopilotKitController : ControllerBase
         {
             MaxToken = 4096,
             Temperature = 0.7f,
-            SessionId = sessionId,
-            ConversationId = sessionId,
-            RunId = Guid.NewGuid().ToString()
+            RunId = Guid.NewGuid().ToString(),
+            ThreadId = sessionId
         };
 
         try
@@ -226,7 +230,8 @@ public class CopilotKitController : ControllerBase
             // 2. FunctionCallMiddleware executes tools and triggers callbacks
             var wrappedAgent = agent
                 .WithMiddleware(agUiMiddleware)
-                .WithMiddleware(functionCallMiddleware);
+                .WithMiddleware(functionCallMiddleware)
+                .WithMiddleware(new MessageUpdateJoinerMiddleware("messageUpdateJoiner"));
 
             _logger.LogInformation("Agent wrapped with AgUiStreamingMiddleware and FunctionCallMiddleware");
 

@@ -25,6 +25,11 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects;
 [JsonDerivedType(typeof(StepFinishedEvent), AgUiEventTypes.STEP_FINISHED)]
 [JsonDerivedType(typeof(StateSnapshotEvent), AgUiEventTypes.STATE_SNAPSHOT)]
 [JsonDerivedType(typeof(StateDeltaEvent), AgUiEventTypes.STATE_DELTA)]
+[JsonDerivedType(typeof(ReasoningStartEvent), AgUiEventTypes.REASONING_START)]
+[JsonDerivedType(typeof(ReasoningMessageStartEvent), AgUiEventTypes.REASONING_MESSAGE_START)]
+[JsonDerivedType(typeof(ReasoningMessageContentEvent), AgUiEventTypes.REASONING_MESSAGE_CONTENT)]
+[JsonDerivedType(typeof(ReasoningMessageEndEvent), AgUiEventTypes.REASONING_MESSAGE_END)]
+[JsonDerivedType(typeof(ReasoningEndEvent), AgUiEventTypes.REASONING_END)]
 public abstract record AgUiEventBase
 {
     /// <summary>

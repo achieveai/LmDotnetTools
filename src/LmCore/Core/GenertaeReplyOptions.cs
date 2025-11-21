@@ -46,25 +46,24 @@ public record GenerateReplyOptions
     public ResponseFormat? ResponseFormat { get; init; }
 
     /// <summary>
-    /// Session ID for AG-UI event publishing and WebSocket routing.
-    /// This identifies the unique session for event streaming.
-    /// </summary>
-    [JsonIgnore]
-    public string? SessionId { get; init; }
-
-    /// <summary>
-    /// Conversation ID for tracking multi-turn conversations.
-    /// Maps to the AG-UI conversationId concept.
-    /// </summary>
-    [JsonIgnore]
-    public string? ConversationId { get; init; }
-
-    /// <summary>
     /// Run ID for tracking individual agent execution runs within a conversation.
     /// Maps to the AG-UI runId concept.
     /// </summary>
     [JsonIgnore]
     public string? RunId { get; init; }
+
+    /// <summary>
+    /// Parent Run ID for branching/time travel (creates git-like lineage).
+    /// </summary>
+    [JsonIgnore]
+    public string? ParentRunId { get; init; }
+
+    /// <summary>
+    /// Thread ID for conversation continuity.
+    /// Maps to the AG-UI threadId concept.
+    /// </summary>
+    [JsonIgnore]
+    public string? ThreadId { get; init; }
 
     [JsonIgnore]
     public ImmutableDictionary<string, object?> ExtraProperties { get; init; } =

@@ -24,22 +24,19 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
         ArgumentNullException.ThrowIfNull(message);
 
         // Validate GenerationId
-        if (string.IsNullOrWhiteSpace(message.GenerationId))
-        {
-            throw new InvalidOperationException(
+        return string.IsNullOrWhiteSpace(message.GenerationId)
+            ? throw new InvalidOperationException(
                 "Cannot convert LmCore message to AG-UI format: GenerationId is required but was null or empty. " +
-                "Ensure all messages have a valid GenerationId before conversion.");
-        }
-
-        return message switch
-        {
-            TextMessage textMessage => [ConvertTextMessage(textMessage)],
-            ToolsCallMessage toolsCallMessage => [ConvertToolsCallMessage(toolsCallMessage)],
-            ToolsCallResultMessage toolsCallResultMessage => ConvertToolsCallResultMessage(toolsCallResultMessage),
-            CompositeMessage compositeMessage => ConvertCompositeMessage(compositeMessage),
-            ToolsCallAggregateMessage aggregateMessage => ConvertToolsCallAggregateMessage(aggregateMessage),
-            _ => []  // Unsupported message types return empty list
-        };
+                "Ensure all messages have a valid GenerationId before conversion.")
+            : message switch
+            {
+                TextMessage textMessage => [ConvertTextMessage(textMessage)],
+                ToolsCallMessage toolsCallMessage => [ConvertToolsCallMessage(toolsCallMessage)],
+                ToolsCallResultMessage toolsCallResultMessage => ConvertToolsCallResultMessage(toolsCallResultMessage),
+                CompositeMessage compositeMessage => ConvertCompositeMessage(compositeMessage),
+                ToolsCallAggregateMessage aggregateMessage => ConvertToolsCallAggregateMessage(aggregateMessage),
+                _ => []  // Unsupported message types return empty list
+            };
     }
 
     /// <inheritdoc/>
@@ -133,7 +130,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
         // One AG-UI Message per result (per user decision)
         var results = new List<DataObjects.DTOs.Message>();
 
-        for (int i = 0; i < resultMessage.ToolCallResults.Count; i++)
+        for (var i = 0; i < resultMessage.ToolCallResults.Count; i++)
         {
             var result = resultMessage.ToolCallResults[i];
 
@@ -147,7 +144,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
             });
         }
 
-        return results.ToImmutableList();
+        return [.. results];
     }
 
     private ImmutableList<DataObjects.DTOs.Message> ConvertCompositeMessage(CompositeMessage compositeMessage)
@@ -155,7 +152,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
         // Flatten: each nested message becomes separate AG-UI Message
         var results = new List<DataObjects.DTOs.Message>();
 
-        for (int i = 0; i < compositeMessage.Messages.Count; i++)
+        for (var i = 0; i < compositeMessage.Messages.Count; i++)
         {
             var nestedMessage = compositeMessage.Messages[i];
 
@@ -171,7 +168,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
             }
         }
 
-        return results.ToImmutableList();
+        return [.. results];
     }
 
     private ImmutableList<DataObjects.DTOs.Message> ConvertMessageWithIdSuffix(IMessage message, string newGenerationId)
@@ -218,7 +215,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
     {
         var results = new List<DataObjects.DTOs.Message>();
 
-        for (int i = 0; i < resultMessage.ToolCallResults.Count; i++)
+        for (var i = 0; i < resultMessage.ToolCallResults.Count; i++)
         {
             var result = resultMessage.ToolCallResults[i];
 
@@ -232,14 +229,14 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
             });
         }
 
-        return results.ToImmutableList();
+        return [.. results];
     }
 
     private ImmutableList<DataObjects.DTOs.Message> ConvertCompositeMessageWithId(CompositeMessage compositeMessage, string baseId)
     {
         var results = new List<DataObjects.DTOs.Message>();
 
-        for (int i = 0; i < compositeMessage.Messages.Count; i++)
+        for (var i = 0; i < compositeMessage.Messages.Count; i++)
         {
             var nestedMessage = compositeMessage.Messages[i];
 
@@ -254,7 +251,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
             }
         }
 
-        return results.ToImmutableList();
+        return [.. results];
     }
 
     private ImmutableList<DataObjects.DTOs.Message> ConvertToolsCallAggregateMessageWithId(ToolsCallAggregateMessage aggregateMessage, string baseId)
@@ -269,7 +266,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
         var toolResults = ConvertToolsCallResultMessageWithId(aggregateMessage.ToolsCallResult, baseId);
         results.AddRange(toolResults);
 
-        return results.ToImmutableList();
+        return [.. results];
     }
 
     private ImmutableList<DataObjects.DTOs.Message> ConvertToolsCallAggregateMessage(ToolsCallAggregateMessage aggregateMessage)
@@ -284,7 +281,7 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
         var toolResults = ConvertToolsCallResultMessage(aggregateMessage.ToolsCallResult);
         results.AddRange(toolResults);
 
-        return results.ToImmutableList();
+        return [.. results];
     }
 
     private static string ConvertRole(Role role)
