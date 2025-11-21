@@ -20,6 +20,9 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects;
 [JsonDerivedType(typeof(ToolCallStartEvent), AgUiEventTypes.TOOL_CALL_START)]
 [JsonDerivedType(typeof(ToolCallArgumentsEvent), AgUiEventTypes.TOOL_CALL_ARGS)]
 [JsonDerivedType(typeof(ToolCallEndEvent), AgUiEventTypes.TOOL_CALL_END)]
+[JsonDerivedType(typeof(ToolCallResultEvent), AgUiEventTypes.TOOL_CALL_RESULT)]
+[JsonDerivedType(typeof(StepStartedEvent), AgUiEventTypes.STEP_STARTED)]
+[JsonDerivedType(typeof(StepFinishedEvent), AgUiEventTypes.STEP_FINISHED)]
 [JsonDerivedType(typeof(StateSnapshotEvent), AgUiEventTypes.STATE_SNAPSHOT)]
 [JsonDerivedType(typeof(StateDeltaEvent), AgUiEventTypes.STATE_DELTA)]
 public abstract record AgUiEventBase
@@ -65,4 +68,20 @@ public abstract record AgUiEventBase
     [JsonPropertyName("correlationId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CorrelationId { get; init; }
+
+    /// <summary>
+    /// Thread identifier for conversation continuity (CopilotKit protocol field)
+    /// Maps to a persistent conversation thread across multiple runs
+    /// </summary>
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    /// <summary>
+    /// Run identifier for this specific agent execution (CopilotKit protocol field)
+    /// Tracks individual runs within a conversation thread
+    /// </summary>
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 }

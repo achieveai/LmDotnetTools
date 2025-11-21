@@ -16,6 +16,14 @@ public class CompositeMessage : IMessage
     public ImmutableDictionary<string, object>? Metadata { get; init; }
 
     public ImmutableList<IMessage> Messages { get; init; } = [];
+
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 }
 
 public class CompositeMessageJsonConverter : ShadowPropertiesJsonConverter<CompositeMessage>

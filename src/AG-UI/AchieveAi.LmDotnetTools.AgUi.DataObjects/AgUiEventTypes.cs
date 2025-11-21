@@ -65,4 +65,19 @@ public static class AgUiEventTypes
     /// Provides incremental state updates (only changed values)
     /// </summary>
     public const string STATE_DELTA = "STATE_DELTA";
+
+    /// <summary>
+    /// Delivers the result of a tool/function call execution
+    /// </summary>
+    public const string TOOL_CALL_RESULT = "TOOL_CALL_RESULT";
+
+    /// <summary>
+    /// Signals the start of a sub-agent step or task
+    /// </summary>
+    public const string STEP_STARTED = "STEP_STARTED";
+
+    /// <summary>
+    /// Signals the completion of a sub-agent step or task
+    /// </summary>
+    public const string STEP_FINISHED = "STEP_FINISHED";
 }

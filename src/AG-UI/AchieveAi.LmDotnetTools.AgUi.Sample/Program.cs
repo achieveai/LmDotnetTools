@@ -1,34 +1,73 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Configuration;
+using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Services;
 using AchieveAi.LmDotnetTools.AgUi.Persistence.Database;
+using AchieveAi.LmDotnetTools.AgUi.Protocol.Middleware;
 using AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 using AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
+using AchieveAi.LmDotnetTools.LmCore.Extensions;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Options;
+using Serilog;
+using Serilog.Formatting.Compact;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ===== LOGGING CONFIGURATION =====
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
-builder.Logging.AddDebug();
-
-// Set minimum log level from configuration
-var logLevel = builder.Configuration.GetValue<string>("Logging:LogLevel:Default") ?? "Information";
-builder.Logging.SetMinimumLevel(Enum.Parse<LogLevel>(logLevel));
-
-// Create early logger for startup logging
-using var loggerFactory = LoggerFactory.Create(config =>
+// ===== SERILOG CONFIGURATION =====
+// Configure Serilog for structured logging with Seq support
+var projectRoot = Directory.GetParent(Directory.GetCurrentDirectory())?.FullName ?? Directory.GetCurrentDirectory();
+var logFileName = builder.Environment.EnvironmentName switch
 {
-    config.AddConsole();
-    config.SetMinimumLevel(LogLevel.Debug);
-});
-var startupLogger = loggerFactory.CreateLogger<Program>();
+    "Development" => Path.Combine(projectRoot, "logs", "ag-ui-sample", "app-dev.jsonl"),
+    "Test" => Path.Combine(projectRoot, "logs", "ag-ui-sample", "app-test.jsonl"),
+    _ => Path.Combine(projectRoot, "logs", "ag-ui-sample", "app.jsonl"),
+};
 
-startupLogger.LogInformation("=== AG-UI Sample Application Starting ===");
-startupLogger.LogInformation("Environment: {Environment}", builder.Environment.EnvironmentName);
-startupLogger.LogInformation("Content root: {ContentRoot}", builder.Environment.ContentRootPath);
+// Ensure log directory exists
+Directory.CreateDirectory(Path.GetDirectoryName(logFileName)!);
+
+var logConfig = new LoggerConfiguration()
+    .MinimumLevel.Debug()
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Application", "AG-UI-Sample")
+    .Enrich.WithProperty("Environment", builder.Environment.EnvironmentName)
+    .WriteTo.Console();
+
+// Add file logging with compact JSON format
+logConfig.WriteTo.File(
+    new CompactJsonFormatter(),
+    logFileName,
+    shared: true,
+    buffered: false,
+    restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug
+);
+
+// Add Seq logging if configured
+var seqUrl = builder.Configuration["Seq:ServerUrl"];
+if (!string.IsNullOrWhiteSpace(seqUrl))
+{
+    var seqApiKey = builder.Configuration["Seq:ApiKey"];
+    logConfig.WriteTo.Seq(
+        serverUrl: seqUrl,
+        apiKey: seqApiKey,
+        restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug
+    );
+}
+
+Log.Logger = logConfig.CreateLogger();
+
+builder.Host.UseSerilog();
+
+var startupLogger = Log.ForContext<Program>();
+
+startupLogger.Information("=== AG-UI Sample Application Starting ===");
+startupLogger.Information("Environment: {Environment}", builder.Environment.EnvironmentName);
+startupLogger.Information("Content root: {ContentRoot}", builder.Environment.ContentRootPath);
+if (!string.IsNullOrWhiteSpace(seqUrl))
+{
+    startupLogger.Information("Seq logging enabled: {SeqUrl}", seqUrl);
+}
 
 // ===== SERVICE CONFIGURATION =====
 
@@ -45,7 +84,7 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-startupLogger.LogInformation("Configuring AG-UI services...");
+startupLogger.Information("Configuring AG-UI services...");
 
 // Configure AG-UI with persistence
 builder.Services.AddAgUi(options =>
@@ -61,28 +100,43 @@ builder.Services.AddAgUi(options =>
     options.MaxMessageSize = 1024 * 1024; // 1MB
     options.EventBufferSize = 1000;
 
-    startupLogger.LogInformation("AG-UI Configuration:");
-    startupLogger.LogInformation("  WebSocket Path: {Path}", options.WebSocketPath);
-    startupLogger.LogInformation("  Persistence Enabled: {Enabled}", options.EnablePersistence);
-    startupLogger.LogInformation("  Database Path: {DbPath}", options.DatabasePath);
-    startupLogger.LogInformation("  Max Session Age: {Hours} hours", options.MaxSessionAgeHours);
-    startupLogger.LogInformation("  Debug Logging: {Enabled}", options.EnableDebugLogging);
+    startupLogger.Information("AG-UI Configuration:");
+    startupLogger.Information("  WebSocket Path: {Path}", options.WebSocketPath);
+    startupLogger.Information("  Persistence Enabled: {Enabled}", options.EnablePersistence);
+    startupLogger.Information("  Database Path: {DbPath}", options.DatabasePath);
+    startupLogger.Information("  Max Session Age: {Hours} hours", options.MaxSessionAgeHours);
+    startupLogger.Information("  Debug Logging: {Enabled}", options.EnableDebugLogging);
 });
 
-// Register sample agents
-startupLogger.LogInformation("Registering sample agents...");
-builder.Services.AddSingleton<ToolCallingAgent>();
-builder.Services.AddSingleton<InstructionChainAgent>();
-startupLogger.LogInformation("  Registered: ToolCallingAgent, InstructionChainAgent");
+// Register function call services (registry + middleware factory)
+startupLogger.Information("Registering FunctionCallMiddleware services...");
+builder.Services.AddFunctionCallServices();
+startupLogger.Information("  Registered: FunctionProviderRegistry, FunctionCallMiddlewareFactory");
+
+// Register AG-UI streaming middleware
+startupLogger.Information("Registering AgUiStreamingMiddleware...");
+builder.Services.AddSingleton<AgUiStreamingMiddleware>();
+startupLogger.Information("  Registered: AgUiStreamingMiddleware");
 
 // Register sample tools as IFunctionProvider
-startupLogger.LogInformation("Registering sample tools...");
+startupLogger.Information("Registering sample tools...");
 builder.Services.AddSingleton<IFunctionProvider, GetWeatherTool>();
 builder.Services.AddSingleton<IFunctionProvider, CalculatorTool>();
 builder.Services.AddSingleton<IFunctionProvider, SearchTool>();
 builder.Services.AddSingleton<IFunctionProvider, TimeTool>();
 builder.Services.AddSingleton<IFunctionProvider, CounterTool>();
-startupLogger.LogInformation("  Registered: GetWeatherTool, CalculatorTool, SearchTool, TimeTool, CounterTool");
+startupLogger.Information("  Registered: GetWeatherTool, CalculatorTool, SearchTool, TimeTool, CounterTool");
+
+// Register sample agents
+startupLogger.Information("Registering sample agents...");
+builder.Services.AddSingleton<ToolCallingAgent>();
+builder.Services.AddSingleton<InstructionChainAgent>();
+startupLogger.Information("  Registered: ToolCallingAgent, InstructionChainAgent");
+
+// Register CopilotKit session mapper
+startupLogger.Information("Registering CopilotKit services...");
+builder.Services.AddSingleton<ICopilotKitSessionMapper, CopilotKitSessionMapper>();
+startupLogger.Information("  Registered: CopilotKitSessionMapper");
 
 // Add CORS for development
 builder.Services.AddCors(options =>

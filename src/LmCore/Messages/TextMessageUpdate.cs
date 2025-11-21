@@ -60,6 +60,20 @@ public record TextUpdateMessage : IMessage, ICanGetText
     public bool IsThinking { get; init; }
 
     /// <summary>
+    /// Thread identifier for conversation continuity (used with AG-UI protocol).
+    /// </summary>
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    /// <summary>
+    /// Run identifier for this specific execution (used with AG-UI protocol).
+    /// </summary>
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
+    /// <summary>
     /// Not supported for text updates.
     /// </summary>
     public static BinaryData? GetBinary() => null;
@@ -88,6 +102,8 @@ public record TextUpdateMessage : IMessage, ICanGetText
             Metadata = Metadata,
             GenerationId = GenerationId,
             IsThinking = IsThinking,
+            ThreadId = ThreadId,
+            RunId = RunId,
         };
     }
 }

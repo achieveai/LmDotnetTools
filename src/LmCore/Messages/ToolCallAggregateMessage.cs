@@ -48,6 +48,20 @@ public record ToolsCallAggregateMessage : IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? GenerationId => ToolsCallMessage.GenerationId;
 
+    /// <summary>
+    /// Thread identifier from the original tool call
+    /// </summary>
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId => ToolsCallMessage.ThreadId;
+
+    /// <summary>
+    /// Run identifier from the original tool call
+    /// </summary>
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId => ToolsCallMessage.RunId;
+
     public ToolsCallAggregateMessage(
         ToolsCallMessage toolCallMessage,
         ToolsCallResultMessage toolCallResult,

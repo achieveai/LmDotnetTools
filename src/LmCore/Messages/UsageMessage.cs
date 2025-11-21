@@ -48,6 +48,20 @@ public record UsageMessage : IMessage, ICanGetUsage
     /// </summary>
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
+
+    /// <summary>
+    /// Thread identifier for conversation continuity (used with AG-UI protocol).
+    /// </summary>
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    /// <summary>
+    /// Run identifier for this specific execution (used with AG-UI protocol).
+    /// </summary>
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 }
 
 /// <summary>

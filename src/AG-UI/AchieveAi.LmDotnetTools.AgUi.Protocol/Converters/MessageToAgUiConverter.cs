@@ -35,6 +35,7 @@ public class MessageToAgUiConverter : IMessageConverter
             TextUpdateMessage textUpdate => ConvertTextUpdate(textUpdate, sessionId),
             ToolsCallUpdateMessage toolUpdate => ConvertToolCallUpdate(toolUpdate, sessionId),
             TextMessage textMessage => ConvertTextMessage(textMessage, sessionId),
+            ToolsCallAggregateMessage aggregate => ConvertToolsCallAggregateMessage(aggregate, sessionId),
             ToolsCallMessage toolsCallMessage => ConvertToolsCallMessage(toolsCallMessage, sessionId),
             _ => Enumerable.Empty<AgUiEventBase>()
         };
@@ -210,6 +211,31 @@ public class MessageToAgUiConverter : IMessageConverter
                 ToolCallId = toolCallId,
                 Duration = duration
             };
+        }
+    }
+
+    private IEnumerable<AgUiEventBase> ConvertToolsCallAggregateMessage(ToolsCallAggregateMessage aggregate, string sessionId)
+    {
+        // First, emit events for the tool call request
+        foreach (var evt in ConvertToolsCallMessage(aggregate.ToolsCallMessage, sessionId))
+        {
+            yield return evt;
+        }
+
+        // Then, emit events for the tool call result
+        if (aggregate.ToolsCallResult != null)
+        {
+            foreach (var result in aggregate.ToolsCallResult.ToolCallResults)
+            {
+                var toolCallId = _toolCallTracker.GetOrCreateToolCallId(result.ToolCallId);
+
+                yield return new ToolCallResultEvent
+                {
+                    SessionId = sessionId,
+                    ToolCallId = toolCallId,
+                    Content = result.Result
+                };
+            }
         }
     }
 

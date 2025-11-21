@@ -24,6 +24,14 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     [JsonPropertyName("tool_calls")]
     public ImmutableList<ToolCall> ToolCalls { get; init; } = [];
 
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
     public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
 
     public static string? GetText() => null;
@@ -60,6 +68,14 @@ public record ToolsCallUpdateMessage : IMessage
 
     [JsonPropertyName("tool_call_updates")]
     public ImmutableList<ToolCallUpdate> ToolCallUpdates { get; init; } = [];
+
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 }
 
 public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>
@@ -96,6 +112,10 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     public int? CurrentIndex { get; private set; } = null;
 
     public ImmutableList<ToolCall> CompletedToolCalls { get; private set; } = [];
+
+    public string? ThreadId { get; set; }
+
+    public string? RunId { get; set; }
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
@@ -210,6 +230,8 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             Metadata = Metadata,
             GenerationId = GenerationId,
             ToolCalls = toolCalls,
+            ThreadId = ThreadId,
+            RunId = RunId,
         };
     }
 }

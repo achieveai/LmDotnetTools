@@ -17,7 +17,7 @@ public sealed record RunStartedEvent : AgUiEventBase
     /// Unique identifier for this run
     /// </summary>
     [JsonPropertyName("runId")]
-    public string RunId { get; init; } = Guid.NewGuid().ToString();
+    public new string RunId { get; init; } = Guid.NewGuid().ToString();
 
     /// <summary>
     /// Timestamp when the run started (UTC)

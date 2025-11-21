@@ -25,6 +25,14 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
     [JsonPropertyName("image_data")]
     public required BinaryData ImageData { get; init; }
 
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; set; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; set; }
+
     public string? GetText() => ImageData.ToDataUrl();
 
     public BinaryData? GetBinary() => ImageData;
@@ -53,6 +61,10 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
     public string? GenerationId { get; init; }
 
     public List<BinaryData> ImageData { get; init; } = [];
+
+    public string? ThreadId { get; init; }
+
+    public string? RunId { get; init; }
 
     IMessage IMessageBuilder.Build()
     {
@@ -100,6 +112,8 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
             Metadata = Metadata,
             GenerationId = GenerationId,
             ImageData = BinaryData.FromBytes(combinedBytes, mimeType),
+            ThreadId = ThreadId,
+            RunId = RunId,
         };
     }
 }

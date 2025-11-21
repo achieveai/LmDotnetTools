@@ -16,5 +16,11 @@
     "deny": [],
     "ask": [],
     "defaultMode": "acceptEdits"
-  }
+  },
+  "enabledMcpjsonServers": [
+    "sequential-thinking-tools",
+    "clarify-doubt",
+		"playwright",
+    "seq"
+  ]
 }

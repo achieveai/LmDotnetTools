@@ -28,6 +28,14 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("isThinking")]
     public bool IsThinking { get; init; }
 
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
     public static BinaryData? GetBinary() => null;
 
     public static ToolCall? GetToolCalls() => null;
@@ -56,6 +64,10 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
     public string? GenerationId { get; set; }
 
     public bool IsThinking { get; set; }
+
+    public string? ThreadId { get; set; }
+
+    public string? RunId { get; set; }
 
     IMessage IMessageBuilder.Build()
     {
@@ -97,6 +109,8 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
             Metadata = Metadata,
             GenerationId = GenerationId,
             IsThinking = IsThinking,
+            ThreadId = ThreadId,
+            RunId = RunId,
         };
     }
 }

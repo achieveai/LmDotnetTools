@@ -40,6 +40,14 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonPropertyName("generationId")]
     public string? GenerationId { get; init; }
 
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
     public static BinaryData? GetBinary() => null;
 
     public static ToolCall? GetToolCalls() => null;
@@ -75,6 +83,14 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
 
     [JsonPropertyName("visibility")]
     public ReasoningVisibility? Visibility { get; init; }
+
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
 
     public static BinaryData? GetBinary() => null;
 
@@ -123,6 +139,8 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
     public Role Role { get; set; } = Role.Assistant;
     public string? GenerationId { get; set; }
     public ReasoningVisibility Visibility { get; set; } = ReasoningVisibility.Plain;
+    public string? ThreadId { get; set; }
+    public string? RunId { get; set; }
 
     public void Add(ReasoningUpdateMessage streamingMessageUpdate)
     {
@@ -140,6 +158,8 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
             Role = Role,
             GenerationId = GenerationId,
             Visibility = Visibility,
+            ThreadId = ThreadId,
+            RunId = RunId,
         };
     }
 }

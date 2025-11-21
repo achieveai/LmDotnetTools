@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 /// <summary>
@@ -48,6 +50,13 @@ public class FunctionProviderRegistry : IFunctionProviderRegistry
             {
                 allProviders.Add(provider);
             }
+        }
+
+        // Auto-discover all IFunctionProvider instances from DI
+        var discoveredProviders = _serviceProvider.GetService<IEnumerable<IFunctionProvider>>();
+        if (discoveredProviders != null)
+        {
+            allProviders.AddRange(discoveredProviders);
         }
 
         // Sort by priority

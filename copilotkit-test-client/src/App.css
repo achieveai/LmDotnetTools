@@ -1,0 +1,282 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+}
+
+.App {
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+header {
+  background: white;
+  border-radius: 12px;
+  padding: 30px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+header h1 {
+  color: #333;
+  margin-bottom: 10px;
+}
+
+header p {
+  color: #666;
+  margin-bottom: 20px;
+  font-size: 16px;
+}
+
+.info-banner {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 15px;
+}
+
+.info-banner p {
+  background: #f0f4ff;
+  padding: 8px 16px;
+  border-radius: 6px;
+  color: #4c51bf;
+  font-size: 14px;
+  margin: 0;
+}
+
+main {
+  min-height: calc(100vh - 200px);
+}
+
+.content {
+  background: white;
+  border-radius: 12px;
+  padding: 40px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.welcome-card h2 {
+  color: #333;
+  margin-bottom: 30px;
+  font-size: 28px;
+}
+
+.section {
+  margin-bottom: 40px;
+}
+
+.section h3 {
+  color: #555;
+  margin-bottom: 15px;
+  font-size: 20px;
+}
+
+.section p {
+  color: #666;
+  line-height: 1.6;
+  margin-bottom: 15px;
+}
+
+.section ul {
+  list-style: none;
+  padding: 0;
+}
+
+.section ul li {
+  padding: 8px 0;
+  color: #555;
+  line-height: 1.5;
+}
+
+.section ul li strong {
+  color: #667eea;
+}
+
+.prompts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.prompt-card {
+  background: #f8f9fa;
+  border: 2px solid #e9ecef;
+  border-radius: 8px;
+  padding: 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.prompt-card:hover {
+  border-color: #667eea;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(102, 126, 234, 0.2);
+}
+
+.prompt-icon {
+  font-size: 32px;
+  margin-bottom: 10px;
+}
+
+.prompt-card p {
+  color: #555;
+  font-size: 14px;
+  margin: 0;
+}
+
+.architecture {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.arch-step {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  background: #f8f9fa;
+  padding: 20px;
+  border-radius: 8px;
+  min-width: 200px;
+}
+
+.arch-number {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  font-size: 18px;
+}
+
+.arch-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.arch-content strong {
+  color: #333;
+  font-size: 16px;
+}
+
+.arch-content small {
+  color: #999;
+  font-size: 13px;
+}
+
+.arch-arrow {
+  font-size: 24px;
+  color: #667eea;
+  font-weight: bold;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.feature {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+}
+
+.feature-icon {
+  font-size: 18px;
+}
+
+.feature span:last-child {
+  color: #555;
+  font-size: 14px;
+}
+
+.tech-stack {
+  padding-top: 20px;
+  border-top: 2px solid #f0f4ff;
+}
+
+.stack-tags {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 15px;
+}
+
+.tag {
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* CopilotKit customization */
+:root {
+  --copilot-kit-primary-color: #667eea;
+  --copilot-kit-secondary-color: #764ba2;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .App {
+    padding: 10px;
+  }
+
+  header {
+    padding: 20px;
+  }
+
+  .info-banner {
+    flex-direction: column;
+  }
+
+  .content {
+    padding: 20px;
+  }
+
+  .prompts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .architecture {
+    flex-direction: column;
+  }
+
+  .arch-arrow {
+    transform: rotate(90deg);
+  }
+
+  .features-grid {
+    grid-template-columns: 1fr;
+  }
+}

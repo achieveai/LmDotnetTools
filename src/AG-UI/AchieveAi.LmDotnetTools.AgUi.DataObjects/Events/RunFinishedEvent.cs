@@ -17,7 +17,7 @@ public sealed record RunFinishedEvent : AgUiEventBase
     /// Unique identifier for this run (should match RunStartedEvent.RunId)
     /// </summary>
     [JsonPropertyName("runId")]
-    public string RunId { get; init; } = string.Empty;
+    public new string RunId { get; init; } = string.Empty;
 
     /// <summary>
     /// Timestamp when the run finished (UTC)

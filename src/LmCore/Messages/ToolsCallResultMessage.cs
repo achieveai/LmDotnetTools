@@ -24,6 +24,14 @@ public record ToolsCallResultMessage : IMessage
     [JsonPropertyName("tool_call_results")]
     public ImmutableList<ToolCallResult> ToolCallResults { get; init; } = [];
 
+    [JsonPropertyName("threadId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId { get; init; }
+
+    [JsonPropertyName("runId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RunId { get; init; }
+
     public static string? GetText() => null;
 
     public static BinaryData? GetBinary() => null;

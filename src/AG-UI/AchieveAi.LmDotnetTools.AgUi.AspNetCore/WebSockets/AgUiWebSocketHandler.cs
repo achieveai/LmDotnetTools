@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Services;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.DTOs;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
@@ -19,16 +20,19 @@ public sealed class AgUiWebSocketHandler
 {
     private readonly IWebSocketConnectionManager _connectionManager;
     private readonly IEventPublisher _eventPublisher;
+    private readonly ICopilotKitSessionMapper? _sessionMapper;
     private readonly ILogger<AgUiWebSocketHandler> _logger;
     private readonly SemaphoreSlim _sendSemaphore = new(1, 1);
 
     public AgUiWebSocketHandler(
         IWebSocketConnectionManager connectionManager,
         IEventPublisher eventPublisher,
-        ILogger<AgUiWebSocketHandler> logger)
+        ILogger<AgUiWebSocketHandler> logger,
+        ICopilotKitSessionMapper? sessionMapper = null)
     {
         _connectionManager = connectionManager;
         _eventPublisher = eventPublisher;
+        _sessionMapper = sessionMapper;
         _logger = logger;
     }
 
@@ -255,6 +259,32 @@ public sealed class AgUiWebSocketHandler
     }
 
     /// <summary>
+    /// Enriches an event with threadId and runId if available from the session mapper
+    /// </summary>
+    private AgUiEventBase EnrichEventWithThreadInfo(AgUiEventBase evt)
+    {
+        // If no session mapper or event already has threadId/runId, return as-is
+        if (_sessionMapper == null || evt.SessionId == null)
+        {
+            return evt;
+        }
+
+        // Try to get thread info from the session mapper
+        var threadInfo = _sessionMapper.GetThreadInfo(evt.SessionId);
+        if (threadInfo == null)
+        {
+            return evt;
+        }
+
+        // Enrich the event with threadId and runId using the 'with' expression
+        return evt with
+        {
+            ThreadId = threadInfo.Value.ThreadId,
+            RunId = threadInfo.Value.RunId
+        };
+    }
+
+    /// <summary>
     /// Sends an AG-UI event to the WebSocket client
     /// </summary>
     private async Task SendEventAsync(WebSocket webSocket, AgUiEventBase evt, CancellationToken cancellationToken)
@@ -268,7 +298,10 @@ public sealed class AgUiWebSocketHandler
                 return;
             }
 
-            var json = JsonSerializer.Serialize(evt, AgUiJsonOptions.Default);
+            // Enrich the event with threadId and runId before sending
+            var enrichedEvent = EnrichEventWithThreadInfo(evt);
+
+            var json = JsonSerializer.Serialize(enrichedEvent, AgUiJsonOptions.Default);
             var bytes = Encoding.UTF8.GetBytes(json);
 
             await webSocket.SendAsync(
@@ -277,7 +310,8 @@ public sealed class AgUiWebSocketHandler
                 endOfMessage: true,
                 cancellationToken);
 
-            _logger.LogDebug("Sent event {EventType} for session {SessionId}", evt.Type, evt.SessionId);
+            _logger.LogDebug("Sent event {EventType} for session {SessionId} (ThreadId: {ThreadId}, RunId: {RunId})",
+                enrichedEvent.Type, enrichedEvent.SessionId, enrichedEvent.ThreadId, enrichedEvent.RunId);
         }
         finally
         {
