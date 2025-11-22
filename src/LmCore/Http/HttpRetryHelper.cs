@@ -132,7 +132,7 @@ public static class HttpRetryHelper
                 catch (Exception ex) when (!(ex is HttpRequestException))
                 {
                     // If reading response body fails, fall back to standard behavior
-                    response.EnsureSuccessStatusCode();
+                    _ = response.EnsureSuccessStatusCode();
                 }
 
                 return default(T)!; // This line should never be reached

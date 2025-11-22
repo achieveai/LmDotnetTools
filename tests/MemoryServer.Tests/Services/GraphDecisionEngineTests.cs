@@ -57,7 +57,7 @@ public class GraphDecisionEngineTests
         // Assert
         Assert.Equal(expectedInstructionCount, instructions.Count);
 
-        for (int i = 0; i < expectedOperations.Count && i < instructions.Count; i++)
+        for (var i = 0; i < expectedOperations.Count && i < instructions.Count; i++)
         {
             Assert.Equal(expectedOperations[i], instructions[i].Operation);
         }
@@ -190,13 +190,13 @@ public class GraphDecisionEngineTests
         // Setup entity lookups
         foreach (var entity in existingEntities)
         {
-            _mockRepository
+            _ = _mockRepository
                 .Setup(r => r.GetEntityByNameAsync(entity.Name, sessionContext, It.IsAny<CancellationToken>()))
                 .ReturnsAsync(entity);
         }
 
         // Setup relationship lookups
-        _mockRepository
+        _ = _mockRepository
             .Setup(r =>
                 r.GetRelationshipsAsync(sessionContext, It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>())
             )
@@ -204,7 +204,7 @@ public class GraphDecisionEngineTests
 
         // Setup for entities not found
         var existingEntityNames = existingEntities.Select(e => e.Name).ToHashSet();
-        _mockRepository
+        _ = _mockRepository
             .Setup(r =>
                 r.GetEntityByNameAsync(
                     It.Is<string>(name => !existingEntityNames.Contains(name)),

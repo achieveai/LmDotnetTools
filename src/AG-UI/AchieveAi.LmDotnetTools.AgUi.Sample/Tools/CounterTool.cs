@@ -2,7 +2,6 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
@@ -13,7 +12,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 public class CounterTool : IFunctionProvider
 {
     private readonly ILogger<CounterTool> _logger;
-    private readonly Dictionary<string, int> _counters = new();
+    private readonly Dictionary<string, int> _counters = [];
     private readonly object _lock = new();
 
     public CounterTool(ILogger<CounterTool> logger)
@@ -25,47 +24,45 @@ public class CounterTool : IFunctionProvider
     public string ProviderName => "CounterProvider";
     public int Priority => 100;
 
+    private static readonly string[] sourceArray = ["increment", "decrement", "get", "reset"];
+
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
         var contract = new FunctionContract
         {
             Name = "counter",
             Description = "Manage named counters - increment, decrement, get value, or reset",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "operation",
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = new[] { "increment", "decrement", "get", "reset" }
-                    },
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = sourceArray },
                     Description = "The counter operation to perform",
-                    IsRequired = true
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "name",
                     ParameterType = new JsonSchemaObject { Type = "string" },
                     Description = "The name of the counter (default: 'default')",
-                    IsRequired = false
+                    IsRequired = false,
                 },
                 new FunctionParameterContract
                 {
                     Name = "amount",
                     ParameterType = new JsonSchemaObject { Type = "integer" },
                     Description = "Amount to increment/decrement by (default: 1)",
-                    IsRequired = false
-                }
-            }.ToList()
+                    IsRequired = false,
+                },
+            ],
         };
 
         yield return new FunctionDescriptor
         {
             Contract = contract,
             Handler = ExecuteAsync,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 
@@ -88,8 +85,12 @@ public class CounterTool : IFunctionProvider
             var name = args.Name ?? "default";
             var amount = args.Amount ?? 1;
 
-            _logger.LogDebug("Counter operation: {Operation} on counter '{Name}' with amount {Amount}",
-                args.Operation, name, amount);
+            _logger.LogDebug(
+                "Counter operation: {Operation} on counter '{Name}' with amount {Amount}",
+                args.Operation,
+                name,
+                amount
+            );
 
             // Simulate minimal delay
             await Task.Delay(10);
@@ -109,7 +110,7 @@ public class CounterTool : IFunctionProvider
                     "decrement" => _counters[name] -= amount,
                     "get" => _counters[name],
                     "reset" => _counters[name] = 0,
-                    _ => throw new ArgumentException($"Unknown operation: {args.Operation}")
+                    _ => throw new ArgumentException($"Unknown operation: {args.Operation}"),
                 };
 
                 _counters[name] = newValue;
@@ -121,7 +122,7 @@ public class CounterTool : IFunctionProvider
                 name = name,
                 value = newValue,
                 allCounters = new Dictionary<string, int>(_counters),
-                timestamp = DateTime.UtcNow.ToString("o")
+                timestamp = DateTime.UtcNow.ToString("o"),
             };
 
             var json = JsonSerializer.Serialize(result);

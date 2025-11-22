@@ -1,5 +1,4 @@
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -188,24 +187,24 @@ public class HybridSegmentationValidation
     /// <summary>
     /// Individual validation results for each contributing strategy.
     /// </summary>
-    public Dictionary<SegmentationStrategy, double> StrategyValidationScores { get; set; } = new();
+    public Dictionary<SegmentationStrategy, double> StrategyValidationScores { get; set; } = [];
 
     /// <summary>
     /// Issues identified during hybrid segmentation validation.
     /// </summary>
-    public List<ValidationIssue> Issues { get; set; } = new();
+    public List<ValidationIssue> Issues { get; set; } = [];
 
     /// <summary>
     /// Recommendations for improving hybrid segmentation quality.
     /// </summary>
-    public List<string> Recommendations { get; set; } = new();
+    public List<string> Recommendations { get; set; } = [];
 
     /// <summary>
     /// Whether the hybrid segmentation meets quality standards.
     /// </summary>
     public bool MeetsQualityStandards =>
         OverallQuality >= 0.7
-        && !Issues.Any(i => i.Severity == MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Error);
+        && !Issues.Any(i => i.Severity == ValidationSeverity.Error);
 }
 
 /// <summary>
@@ -236,12 +235,12 @@ public class AdaptiveStrategyConfig
     /// <summary>
     /// Reasons for the adaptive strategy changes.
     /// </summary>
-    public List<string> AdaptationReasons { get; set; } = new();
+    public List<string> AdaptationReasons { get; set; } = [];
 
     /// <summary>
     /// Performance metrics that influenced the adaptation.
     /// </summary>
-    public Dictionary<string, double> PerformanceMetrics { get; set; } = new();
+    public Dictionary<string, double> PerformanceMetrics { get; set; } = [];
 
     /// <summary>
     /// Whether this configuration should be applied.
@@ -277,7 +276,7 @@ public class BoundaryConsensus
     /// <summary>
     /// Strategies that agree on this boundary.
     /// </summary>
-    public List<SegmentationStrategy> AgreingStrategies { get; set; } = new();
+    public List<SegmentationStrategy> AgreingStrategies { get; set; } = [];
 
     /// <summary>
     /// Average confidence of agreeing strategies.
@@ -298,12 +297,12 @@ public class SegmentMergeOperation
     /// <summary>
     /// Source segments to be merged.
     /// </summary>
-    public List<DocumentSegment> SourceSegments { get; set; } = new();
+    public List<DocumentSegment> SourceSegments { get; set; } = [];
 
     /// <summary>
     /// Strategy that produced each source segment.
     /// </summary>
-    public Dictionary<string, SegmentationStrategy> SegmentSources { get; set; } = new();
+    public Dictionary<string, SegmentationStrategy> SegmentSources { get; set; } = [];
 
     /// <summary>
     /// Merge strategy to use for combining segments.

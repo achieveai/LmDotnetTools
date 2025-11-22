@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Net;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -76,7 +75,7 @@ public class BaseHttpServiceTests
         service.Dispose();
 
         // Assert
-        Assert.Throws<ObjectDisposedException>(() => service.TestThrowIfDisposed());
+        _ = Assert.Throws<ObjectDisposedException>(() => service.TestThrowIfDisposed());
         Debug.WriteLine("✓ Service correctly disposed and throws ObjectDisposedException");
     }
 
@@ -108,7 +107,7 @@ public class BaseHttpServiceTests
         service.Dispose();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
             service.TestExecuteWithRetryAsync(() => Task.FromResult("test"))
         );
 
@@ -126,7 +125,7 @@ public class BaseHttpServiceTests
         service.Dispose();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+        _ = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
             service.TestExecuteHttpWithRetryAsync(
                 () => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)),
                 _ => Task.FromResult("test")
@@ -175,7 +174,10 @@ public class BaseHttpServiceTests
         {
             attempts++;
             if (attempts < 3)
+            {
                 throw new HttpRequestException("Temporary network timeout");
+            }
+
             return Task.FromResult("success");
         });
         stopwatch.Stop();
@@ -238,7 +240,10 @@ public class BaseHttpServiceTests
             {
                 attempts++;
                 if (attempts < 3)
+                {
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+                }
+
                 return Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("success") }
                 );
@@ -246,7 +251,10 @@ public class BaseHttpServiceTests
             async response =>
             {
                 if (response.StatusCode == HttpStatusCode.InternalServerError)
+                {
                     throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
+                }
+
                 return await response.Content.ReadAsStringAsync();
             }
         );
@@ -367,7 +375,10 @@ public class BaseHttpServiceTests
         public ILogger PublicLogger => Logger;
         public HttpClient PublicHttpClient => HttpClient;
 
-        public void TestThrowIfDisposed() => ThrowIfDisposed();
+        public void TestThrowIfDisposed()
+        {
+            ThrowIfDisposed();
+        }
 
         public async Task<T> TestExecuteWithRetryAsync<T>(
             Func<Task<T>> operation,

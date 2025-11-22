@@ -2,10 +2,8 @@ using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -33,7 +31,7 @@ public class StructureBasedSegmentationServiceTests
     private void SetupDefaultMocks()
     {
         // Setup default prompt manager response
-        _mockPromptManager
+        _ = _mockPromptManager
             .Setup(x =>
                 x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
@@ -52,10 +50,10 @@ public class StructureBasedSegmentationServiceTests
             );
 
         // Setup default LLM service responses
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _ = _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
         // Setup strategy analysis mock
-        _mockLlmService
+        _ = _mockLlmService
             .Setup(x =>
                 x.AnalyzeOptimalStrategyAsync(
                     It.IsAny<string>(),
@@ -91,14 +89,14 @@ public class StructureBasedSegmentationServiceTests
         var result = await _service.SegmentByStructureAsync(content, DocumentType.Generic, options);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.Should().NotBeEmpty();
 
         foreach (var segment in result)
         {
-            segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
-            segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.StructureBased.ToString());
+            _ = segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
+            _ = segment.Metadata.Should().ContainKey("segmentation_strategy");
+            _ = segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.StructureBased.ToString());
         }
     }
 
@@ -136,14 +134,14 @@ This is the conclusion section.
         var result = await _service.SegmentByStructureAsync(content, DocumentType.ResearchPaper, options);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().HaveCountGreaterOrEqualTo(3); // Should detect major structural sections
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().HaveCountGreaterOrEqualTo(3); // Should detect major structural sections
 
         // Check that segments have appropriate structural metadata
         foreach (var segment in result)
         {
-            segment.Metadata.Should().ContainKey("structure_based");
-            segment.Metadata["structure_based"].Should().Be(true);
+            _ = segment.Metadata.Should().ContainKey("structure_based");
+            _ = segment.Metadata["structure_based"].Should().Be(true);
         }
     }
 
@@ -177,12 +175,12 @@ This is a longer section with substantial content that should remain as its own 
         var result = await _service.SegmentByStructureAsync(content, DocumentType.Generic, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Check that small sections were merged or filtered out
         foreach (var segment in result)
         {
-            segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
+            _ = segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
         }
     }
 
@@ -210,11 +208,11 @@ Even more content.
         var result = await _service.DetectStructuralBoundariesAsync(content, DocumentType.Generic);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().Contain(b => b.ElementType == StructuralElementType.Heading);
-        result.Should().Contain(b => b.HeadingLevel == 1);
-        result.Should().Contain(b => b.HeadingLevel == 2);
-        result.Should().Contain(b => b.HeadingLevel == 3);
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().Contain(b => b.ElementType == StructuralElementType.Heading);
+        _ = result.Should().Contain(b => b.HeadingLevel == 1);
+        _ = result.Should().Contain(b => b.HeadingLevel == 2);
+        _ = result.Should().Contain(b => b.HeadingLevel == 3);
     }
 
     [Fact]
@@ -238,8 +236,8 @@ Third section content here.
         var result = await _service.DetectStructuralBoundariesAsync(content, DocumentType.Generic);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().Contain(b => b.ElementType == StructuralElementType.SectionBreak);
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().Contain(b => b.ElementType == StructuralElementType.SectionBreak);
     }
 
     #endregion
@@ -278,12 +276,12 @@ Final thoughts.
         var result = await _service.AnalyzeHierarchicalStructureAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result.MaxHeadingDepth.Should().Be(3);
-        result.TotalHeadings.Should().BeGreaterThan(5);
-        result.HasClearHierarchy.Should().BeTrue();
-        result.DocumentOutline.Should().NotBeEmpty();
-        result.StructuralPatterns.Should().Contain("markdown_headings");
+        _ = result.Should().NotBeNull();
+        _ = result.MaxHeadingDepth.Should().Be(3);
+        _ = result.TotalHeadings.Should().BeGreaterThan(5);
+        _ = result.HasClearHierarchy.Should().BeTrue();
+        _ = result.DocumentOutline.Should().NotBeEmpty();
+        _ = result.StructuralPatterns.Should().Contain("markdown_headings");
     }
 
     #endregion
@@ -326,17 +324,17 @@ Final thoughts.
         var result = await _service.ValidateStructureSegmentsAsync(segments, "Original content");
 
         // Assert
-        result.Should().NotBeNull();
-        result.OverallQuality.Should().BeGreaterThan(0.5);
-        result.StructuralClarity.Should().BeGreaterThan(0.5);
-        result.SegmentResults.Should().HaveCount(2);
+        _ = result.Should().NotBeNull();
+        _ = result.OverallQuality.Should().BeGreaterThan(0.5);
+        _ = result.StructuralClarity.Should().BeGreaterThan(0.5);
+        _ = result.SegmentResults.Should().HaveCount(2);
     }
 
     #endregion
 
     #region Helper Methods
 
-    private string CreateStructuredDocument()
+    private static string CreateStructuredDocument()
     {
         return @"
 # Document Title

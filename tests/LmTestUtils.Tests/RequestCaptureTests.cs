@@ -77,7 +77,7 @@ public class RequestCaptureTests
 
         // Test tools deserialization
         Assert.NotNull(chatRequest.Tools);
-        Assert.Single(chatRequest.Tools);
+        _ = Assert.Single(chatRequest.Tools);
         Assert.Equal("get_weather", chatRequest.Tools[0].Function.Name);
     }
 
@@ -211,7 +211,7 @@ public class RequestCaptureTests
 
         // ✅ GOOD: Structured assertions (precise, robust)
         var tools = anthropicRequest.Tools.ToList();
-        Assert.Single(tools);
+        _ = Assert.Single(tools);
 
         var calcTool = tools[0];
         Assert.Equal("calculator_add", calcTool.Name); // Exact name match

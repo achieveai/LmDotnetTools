@@ -1,12 +1,10 @@
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Integration;
 
@@ -195,7 +193,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         CancellationToken cancellationToken
     )
     {
-        for (int attempt = 0; attempt < _configuration.MaxRetries; attempt++)
+        for (var attempt = 0; attempt < _configuration.MaxRetries; attempt++)
         {
             try
             {
@@ -355,7 +353,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
             },
             Confidence = 0.6,
             Reasoning = $"Default strategy for {documentType} documents",
-            Alternatives = new List<SegmentationStrategy> { SegmentationStrategy.Hybrid },
+            Alternatives = [SegmentationStrategy.Hybrid],
         };
     }
 

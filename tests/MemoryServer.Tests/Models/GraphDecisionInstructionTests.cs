@@ -121,8 +121,8 @@ public class GraphDecisionInstructionTests
         };
 
         // Act & Assert
-        bool isValid = true;
-        string actualIssue = "";
+        var isValid = true;
+        var actualIssue = "";
 
         // Validate based on operation type
         switch (operation)
@@ -149,6 +149,8 @@ public class GraphDecisionInstructionTests
                     isValid = false;
                     actualIssue = "NONE operation should not have data";
                 }
+                break;
+            default:
                 break;
         }
 

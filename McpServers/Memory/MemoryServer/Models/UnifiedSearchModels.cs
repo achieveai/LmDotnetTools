@@ -1,5 +1,3 @@
-using MemoryServer.Services;
-
 namespace MemoryServer.Models;
 
 /// <summary>
@@ -86,7 +84,7 @@ public class UnifiedSearchResults
     /// <summary>
     /// The search results.
     /// </summary>
-    public List<UnifiedSearchResult> Results { get; set; } = new();
+    public List<UnifiedSearchResult> Results { get; set; } = [];
 
     /// <summary>
     /// Total number of results found across all sources.
@@ -192,7 +190,7 @@ public class UnifiedSearchMetrics
     /// <summary>
     /// List of any errors that occurred during search.
     /// </summary>
-    public List<string> Errors { get; set; } = new();
+    public List<string> Errors { get; set; } = [];
 
     /// <summary>
     /// Time taken for reranking operation.
@@ -367,7 +365,7 @@ public class RerankingResults
     /// <summary>
     /// The reranked results with updated scores.
     /// </summary>
-    public List<UnifiedSearchResult> Results { get; set; } = new();
+    public List<UnifiedSearchResult> Results { get; set; } = [];
 
     /// <summary>
     /// Performance metrics for the reranking operation.
@@ -423,7 +421,7 @@ public class RerankingMetrics
     /// <summary>
     /// List of any errors that occurred during reranking.
     /// </summary>
-    public List<string> Errors { get; set; } = new();
+    public List<string> Errors { get; set; } = [];
 
     /// <summary>
     /// Average score change after reranking.
@@ -444,7 +442,7 @@ public class DeduplicationResults
     /// <summary>
     /// The deduplicated results with duplicates removed.
     /// </summary>
-    public List<UnifiedSearchResult> Results { get; set; } = new();
+    public List<UnifiedSearchResult> Results { get; set; } = [];
 
     /// <summary>
     /// Performance metrics for the deduplication operation.
@@ -505,7 +503,7 @@ public class DeduplicationMetrics
     /// <summary>
     /// List of any errors that occurred during deduplication.
     /// </summary>
-    public List<string> Errors { get; set; } = new();
+    public List<string> Errors { get; set; } = [];
 }
 
 /// <summary>
@@ -516,7 +514,7 @@ public class EnrichmentResults
     /// <summary>
     /// The enriched results with additional context.
     /// </summary>
-    public List<EnrichedSearchResult> Results { get; set; } = new();
+    public List<EnrichedSearchResult> Results { get; set; } = [];
 
     /// <summary>
     /// Performance metrics for the enrichment operation.
@@ -572,7 +570,7 @@ public class EnrichmentMetrics
     /// <summary>
     /// List of any errors that occurred during enrichment.
     /// </summary>
-    public List<string> Errors { get; set; } = new();
+    public List<string> Errors { get; set; } = [];
 }
 
 /// <summary>
@@ -583,12 +581,12 @@ public class EnrichedSearchResult : UnifiedSearchResult
     /// <summary>
     /// Related entities for this result (max 2 per minimal enrichment principle).
     /// </summary>
-    public List<RelatedItem> RelatedEntities { get; set; } = new();
+    public List<RelatedItem> RelatedEntities { get; set; } = [];
 
     /// <summary>
     /// Related relationships for this result (max 2 per minimal enrichment principle).
     /// </summary>
-    public List<RelatedItem> RelatedRelationships { get; set; } = new();
+    public List<RelatedItem> RelatedRelationships { get; set; } = [];
 
     /// <summary>
     /// Relevance explanation for why this result matches the query.
@@ -598,7 +596,7 @@ public class EnrichedSearchResult : UnifiedSearchResult
     /// <summary>
     /// Connection paths showing how this result relates to the query terms.
     /// </summary>
-    public List<string> ConnectionPaths { get; set; } = new();
+    public List<string> ConnectionPaths { get; set; } = [];
 }
 
 /// <summary>

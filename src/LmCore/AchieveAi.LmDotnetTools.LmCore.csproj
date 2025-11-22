@@ -8,6 +8,7 @@
     <Description>Core functionality and base classes for the LmDotnetTools library, providing fundamental language model operations and utilities.</Description>
     <PackageTags>$(PackageTags);core;base;utilities</PackageTags>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.5" />
@@ -15,11 +16,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
     <PackageReference Include="Scriban" Version="6.2.1" />
     <PackageReference Include="System.Memory.Data" Version="9.0.5" />
-    <PackageReference
-      Include="Microsoft.AspNetCore.WebUtilities"
-      Version="9.0.5"
-      Condition=" '$(TargetFramework)' == 'net9.0' "
-    />
+    <PackageReference Include="Microsoft.AspNetCore.WebUtilities" Version="9.0.5" Condition=" '$(TargetFramework)' == 'net9.0' " />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
     <PackageReference Include="JsonSchema.Net" Version="7.3.4" />
   </ItemGroup>

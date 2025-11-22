@@ -2,13 +2,10 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading;
 using MemoryServer.DocumentSegmentation.Exceptions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
 using MemoryServer.Services;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -36,7 +33,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     private static readonly TimeSpan BaseRetryDelay = TimeSpan.FromSeconds(1);
 
     // Performance optimization settings
-    private readonly Dictionary<string, CachedAnalysis> _analysisCache = new();
+    private readonly Dictionary<string, CachedAnalysis> _analysisCache = [];
     private static readonly TimeSpan CacheTimeout = TimeSpan.FromMinutes(30);
 
     // Topic transition indicators
@@ -86,19 +83,19 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         StringComparer.OrdinalIgnoreCase
     );
     private static int _corpusDocumentCount;
-    private static readonly char[] separator = new[] { ' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':' };
-    private static readonly string[] separatorArray = new[] { "\r\n\r\n", "\n\n", "\r\n", "\n" };
-    private static readonly string[] collection = new[] { @"^WHEREAS", @"^NOW, THEREFORE", @"^SECTION", @"^ARTICLE" };
-    private static readonly string[] collection0 = new[]
-    {
+    private static readonly char[] separator = [' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':'];
+    private static readonly string[] separatorArray = ["\r\n\r\n", "\n\n", "\r\n", "\n"];
+    private static readonly string[] collection = [@"^WHEREAS", @"^NOW, THEREFORE", @"^SECTION", @"^ARTICLE"];
+    private static readonly string[] collection0 =
+    [
         @"Endpoint",
         @"Code Example",
         @"Error Handling",
         @"Rate Limiting",
         @"Parameters",
-    };
-    private static readonly string[] collection1 = new[]
-    {
+    ];
+    private static readonly string[] collection1 =
+    [
         @"^Abstract",
         @"^Introduction",
         @"^Methodology",
@@ -107,11 +104,11 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         @"^Discussion",
         @"^Conclusion",
         @"^References",
-    };
-    private static readonly char[] separatorArray0 = new[] { ' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':' };
-    private static readonly string[] separatorArray1 = new[] { "\n\n", "\r\n\r\n" };
-    private static readonly char[] separatorArray2 = new char[]
-    {
+    ];
+    private static readonly char[] separatorArray0 = [' ', '\t', '\n', '\r', '.', ',', '!', '?', ';', ':'];
+    private static readonly string[] separatorArray1 = ["\n\n", "\r\n\r\n"];
+    private static readonly char[] separatorArray2 =
+    [
         ' ',
         '\t',
         '\n',
@@ -130,9 +127,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         ']',
         '{',
         '}',
-    };
-    private static readonly string[] value = new[]
-    {
+    ];
+    private static readonly string[] value =
+    [
         "technology",
         "algorithms",
         "machine",
@@ -149,9 +146,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         "processing",
         "ai",
         "ml",
-    };
-    private static readonly string[] valueArray = new[]
-    {
+    ];
+    private static readonly string[] valueArray =
+    [
         "education",
         "learning",
         "teaching",
@@ -166,9 +163,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         "knowledge",
         "curriculum",
         "instructional",
-    };
-    private static readonly string[] valueArray0 = new[]
-    {
+    ];
+    private static readonly string[] valueArray0 =
+    [
         "health",
         "healthcare",
         "medical",
@@ -183,9 +180,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         "care",
         "healing",
         "diagnosis",
-    };
-    private static readonly string[] valueArray1 = new[]
-    {
+    ];
+    private static readonly string[] valueArray1 =
+    [
         "business",
         "management",
         "company",
@@ -200,9 +197,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         "economic",
         "industry",
         "commercial",
-    };
-    private static readonly string[] valueArray2 = new[]
-    {
+    ];
+    private static readonly string[] valueArray2 =
+    [
         "communication",
         "messaging",
         "email",
@@ -215,7 +212,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         "network",
         "connection",
         "contact",
-    };
+    ];
 
     public TopicBasedSegmentationService(
         ILlmProviderIntegrationService llmService,
@@ -245,7 +242,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         if (string.IsNullOrWhiteSpace(content))
         {
             _logger.LogWarning("Empty or null content provided for topic segmentation");
-            return new List<DocumentSegment>();
+            return [];
         }
 
         _logger.LogDebug(
@@ -386,7 +383,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             // Step 3: Merge and validate boundaries
             _logger.LogDebug("=== STEP 3: Merge and validate boundaries ===");
             _logger.LogDebug("Boundaries before merge: {Count}", boundaries.Count);
-            for (int i = 0; i < boundaries.Count; i++)
+            for (var i = 0; i < boundaries.Count; i++)
             {
                 _logger.LogDebug(
                     "Boundary {Index}: Position={Position}, Confidence={Confidence}, Keywords=[{Keywords}]",
@@ -400,7 +397,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             boundaries = MergeAndValidateBoundaries(boundaries, content);
             _logger.LogDebug("Final boundary count after merge: {Count}", boundaries.Count);
 
-            for (int i = 0; i < boundaries.Count; i++)
+            for (var i = 0; i < boundaries.Count; i++)
             {
                 _logger.LogDebug(
                     "Final boundary {Index}: Position={Position}, Confidence={Confidence}, Keywords=[{Keywords}]",
@@ -848,7 +845,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             var keywords2 = GetSegmentKeywords(segment2);
 
             if (keywords1.Count == 0 || keywords2.Count == 0)
+            {
                 return 0.0;
+            }
 
             var intersection = keywords1.Intersect(keywords2, StringComparer.OrdinalIgnoreCase).Count();
             var union = keywords1.Union(keywords2, StringComparer.OrdinalIgnoreCase).Count();
@@ -877,11 +876,11 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             }
 
             // Fallback to extracting from content
-            return ExtractSignificantWords(segment.Content).Take(5).ToList();
+            return [.. ExtractSignificantWords(segment.Content).Take(5)];
         }
         catch
         {
-            return new List<string>();
+            return [];
         }
     }
 
@@ -897,7 +896,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             var keywords2 = ExtractKeywords(content2);
 
             if (keywords1.Count == 0 || keywords2.Count == 0)
+            {
                 return 0.0;
+            }
 
             // Calculate Jaccard similarity (intersection over union)
             var intersection = keywords1.Intersect(keywords2, StringComparer.OrdinalIgnoreCase).Count();
@@ -909,7 +910,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             var analysis2 = AnalyzeTopicCoherence(content2, keywords2);
 
             // If both contents are from the same primary topic, boost similarity
-            double topicBonus = 0.0;
+            var topicBonus = 0.0;
             if (analysis1.PrimaryTopic == analysis2.PrimaryTopic && analysis1.PrimaryTopic != "General")
             {
                 topicBonus = 0.3; // Significant boost for same topic
@@ -958,13 +959,15 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     private static bool IsRelatedTopic(string topic1, string topic2)
     {
         if (topic1 == topic2)
+        {
             return true;
+        }
 
         var relatedPairs = new[]
         {
             new[] { "Technology", "Science" },
-            new[] { "Business", "Technology" },
-            new[] { "Education", "Science" },
+            ["Business", "Technology"],
+            ["Education", "Science"],
         };
 
         return relatedPairs.Any(pair => (pair.Contains(topic1) && pair.Contains(topic2)));
@@ -998,10 +1001,15 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             void EmitBuffer()
             {
                 if (buffer.Length == 0)
+                {
                     return;
+                }
+
                 var contentPart = buffer.ToString().Trim();
                 if (contentPart.Length < preferredSegmentSize)
+                {
                     return;
+                }
 
                 var segment = new DocumentSegment
                 {
@@ -1024,15 +1032,18 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                 };
                 segments.Add(segment);
                 position += contentPart.Length + 2;
-                buffer.Clear();
+                _ = buffer.Clear();
                 segmentIndex++;
             }
 
             foreach (var paragraph in paragraphs)
             {
                 if (paragraph.Trim().Length == 0)
+                {
                     continue;
-                buffer.AppendLine(paragraph.Trim());
+                }
+
+                _ = buffer.AppendLine(paragraph.Trim());
 
                 if (buffer.Length >= preferredSegmentSize)
                 {
@@ -1050,8 +1061,8 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             _logger.LogError(ex, "Even fallback segmentation failed");
 
             // Ultra-simple fallback: single segment
-            return new List<DocumentSegment>
-            {
+            return
+            [
                 new DocumentSegment
                 {
                     Id = Guid.NewGuid().ToString(),
@@ -1069,7 +1080,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                         ["document_type"] = DocumentType.Generic.ToString(),
                     },
                 },
-            };
+            ];
         }
     }
 
@@ -1126,7 +1137,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
                 foreach (var key in expiredKeys)
                 {
-                    _analysisCache.Remove(key);
+                    _ = _analysisCache.Remove(key);
                 }
             }
 
@@ -1241,7 +1252,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             {
                 var independenceScores = new List<double>();
 
-                for (int i = 0; i < segments.Count - 1; i++)
+                for (var i = 0; i < segments.Count - 1; i++)
                 {
                     var similarity = await CalculateSemanticSimilarityAsync(
                         segments[i].Content,
@@ -1394,7 +1405,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             var words2 = ExtractSignificantWords(content2);
 
             if (words1.Count == 0 || words2.Count == 0)
+            {
                 return 0.0;
+            }
 
             // Enhanced similarity calculation
             var intersection = words1.Intersect(words2, StringComparer.OrdinalIgnoreCase).Count();
@@ -1459,7 +1472,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             var words2 = ExtractSignificantWords(content2);
 
             if (words1.Count == 0 || words2.Count == 0)
+            {
                 return 0.0;
+            }
 
             // Define semantic relationships
             var semanticGroups = new Dictionary<string, HashSet<string>>
@@ -1513,8 +1528,8 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                 },
             };
 
-            double totalOverlap = 0.0;
-            int groupsWithOverlap = 0;
+            var totalOverlap = 0.0;
+            var groupsWithOverlap = 0;
 
             foreach (var group in semanticGroups)
             {
@@ -1587,7 +1602,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     )
     {
         if (string.IsNullOrWhiteSpace(content))
-            return new Dictionary<string, double>();
+        {
+            return [];
+        }
 
         // Tokenise
         var words = content
@@ -1597,7 +1614,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             .ToList();
 
         if (words.Count == 0)
-            return new Dictionary<string, double>();
+        {
+            return [];
+        }
 
         // Term frequency (TF)
         var tf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -1607,10 +1626,10 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         }
 
         // Update corpus DF stats (thread-safe)
-        Interlocked.Increment(ref _corpusDocumentCount);
+        _ = Interlocked.Increment(ref _corpusDocumentCount);
         foreach (var term in tf.Keys)
         {
-            _corpusDocumentFrequency.AddOrUpdate(term, 1, (_, v) => v + 1);
+            _ = _corpusDocumentFrequency.AddOrUpdate(term, 1, (_, v) => v + 1);
         }
 
         // Calculate TF-IDF
@@ -1782,7 +1801,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             .ToList();
 
         _logger.LogDebug("Found {ParagraphCount} paragraphs for boundary detection", paragraphs.Count);
-        for (int i = 0; i < paragraphs.Count; i++)
+        for (var i = 0; i < paragraphs.Count; i++)
         {
             _logger.LogDebug("Paragraph {Index}: '{Content}'", i, paragraphs[i]);
         }
@@ -1790,9 +1809,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         // If we have multiple paragraphs, add boundaries between them
         if (paragraphs.Count > 1)
         {
-            int currentPosition = 0;
+            var currentPosition = 0;
 
-            for (int i = 0; i < paragraphs.Count - 1; i++)
+            for (var i = 0; i < paragraphs.Count - 1; i++)
             {
                 // Find the end of current paragraph
                 var currentParagraph = paragraphs[i];
@@ -1857,6 +1876,22 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             case DocumentType.ResearchPaper:
                 headingPatterns.AddRange(collection1);
                 break;
+            case DocumentType.Generic:
+                break;
+            case DocumentType.Article:
+                break;
+            case DocumentType.Transcript:
+                break;
+            case DocumentType.Report:
+                break;
+            case DocumentType.Documentation:
+                break;
+            case DocumentType.Email:
+                break;
+            case DocumentType.Chat:
+                break;
+            default:
+                break;
         }
 
         var headingRegexes = headingPatterns
@@ -1869,7 +1904,10 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             {
                 var pos = match.Index;
                 if (pos == 0)
+                {
                     continue; // don't add boundary at start
+                }
+
                 if (!boundaries.Any(b => Math.Abs(b.Position - pos) < 20))
                 {
                     boundaries.Add(
@@ -1878,7 +1916,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                             Position = pos,
                             Confidence = 0.85,
                             TransitionType = TopicTransitionType.Sharp,
-                            TransitionKeywords = new List<string> { match.Value.Trim() },
+                            TransitionKeywords = [match.Value.Trim()],
                         }
                     );
                 }
@@ -1898,7 +1936,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         // Quickly exit if LLM unavailable
         if (!IsLlmServiceAvailable())
         {
-            return new List<TopicBoundary>();
+            return [];
         }
 
         try
@@ -1913,7 +1951,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             if (string.IsNullOrWhiteSpace(json))
             {
                 _logger.LogDebug("LLM segmentation JSON empty – skipping");
-                return new List<TopicBoundary>();
+                return [];
             }
 
             var result = new List<TopicBoundary>();
@@ -1926,7 +1964,10 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                 foreach (var seg in segmentsEl.EnumerateArray())
                 {
                     if (!seg.TryGetProperty("start_position", out var startProp))
+                    {
                         continue;
+                    }
+
                     var position = startProp.GetInt32();
                     var confidence =
                         seg.TryGetProperty("confidence", out var confProp) && confProp.ValueKind == JsonValueKind.Number
@@ -1935,10 +1976,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                     var keywords = new List<string>();
                     if (seg.TryGetProperty("topic_keywords", out var kwEl) && kwEl.ValueKind == JsonValueKind.Array)
                     {
-                        keywords = kwEl.EnumerateArray()
+                        keywords = [.. kwEl.EnumerateArray()
                             .Select(e => e.GetString() ?? string.Empty)
-                            .Where(w => !string.IsNullOrWhiteSpace(w))
-                            .ToList();
+                            .Where(w => !string.IsNullOrWhiteSpace(w))];
                     }
 
                     result.Add(
@@ -1959,7 +1999,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to parse LLM boundaries – falling back");
-            return new List<TopicBoundary>();
+            return [];
         }
     }
 
@@ -2053,7 +2093,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             PrimaryTopic = llmAnalysis.PrimaryTopic,
             SemanticUnity = (ruleBasedAnalysis.SemanticUnity + llmAnalysis.SemanticUnity) / 2,
             TopicConsistency = (ruleBasedAnalysis.TopicConsistency + llmAnalysis.TopicConsistency) / 2,
-            TopicKeywords = ruleBasedAnalysis.TopicKeywords ?? new List<string>(), // Preserve rule-based keywords
+            TopicKeywords = ruleBasedAnalysis.TopicKeywords ?? [], // Preserve rule-based keywords
         };
     }
 
@@ -2121,7 +2161,10 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                 for (var j = 0; j < embeddings.Length; j++)
                 {
                     if (i == j)
+                    {
                         continue;
+                    }
+
                     sum += CosineSimilarity(embeddings[i], embeddings[j]);
                 }
                 avgSimilarities[keywords[i]] = sum / Math.Max(1, embeddings.Length - 1);
@@ -2161,18 +2204,24 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         static double CosineSimilarity(float[] v1, float[] v2)
         {
             if (v1.Length != v2.Length)
+            {
                 return 0.0;
+            }
+
             double dot = 0,
                 norm1 = 0,
                 norm2 = 0;
-            for (int i = 0; i < v1.Length; i++)
+            for (var i = 0; i < v1.Length; i++)
             {
                 dot += v1[i] * v2[i];
                 norm1 += v1[i] * v1[i];
                 norm2 += v2[i] * v2[i];
             }
             if (norm1 == 0 || norm2 == 0)
+            {
                 return 0.0;
+            }
+
             return dot / (Math.Sqrt(norm1) * Math.Sqrt(norm2));
         }
     }
@@ -2219,7 +2268,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                         .Select(e => e.GetString() ?? string.Empty)
                         .Where(s => !string.IsNullOrWhiteSpace(s))
                         .ToList()
-                    : new List<string>();
+                    : [];
 
             var coherence =
                 doc.RootElement.TryGetProperty("analysis", out var analysisEl)
@@ -2284,7 +2333,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
     private static List<string> ExtractTransitionalElements(string content)
     {
-        return TopicTransitionWords.Where(word => content.Contains(word, StringComparison.OrdinalIgnoreCase)).ToList();
+        return [.. TopicTransitionWords.Where(word => content.Contains(word, StringComparison.OrdinalIgnoreCase))];
     }
 
     private static async Task<double> CalculateLlmSemanticSimilarityAsync(
@@ -2304,7 +2353,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     )
     {
         await Task.Delay(1, cancellationToken);
-        return new Dictionary<string, double>();
+        return [];
     }
 
     private static Dictionary<string, double> CalculateTermFrequency(string content)
@@ -2321,7 +2370,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
         var totalWords = termCounts.Values.Sum();
         if (totalWords == 0)
-            return new Dictionary<string, double>();
+        {
+            return [];
+        }
 
         return termCounts.ToDictionary(kv => kv.Key, kv => (double)kv.Value / totalWords);
     }
@@ -2348,7 +2399,10 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         return stopWords.Contains(word);
     }
 
-    private static double CalculateTerminologyConsistency(string content, string primaryTopic) => 0.7;
+    private static double CalculateTerminologyConsistency(string content, string primaryTopic)
+    {
+        return 0.7;
+    }
 
     private static async Task<double> CalculateSemanticCoherenceAsync(
         string content,
@@ -2360,15 +2414,23 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         // Simple heuristic: proportion of sentences containing primary topic keyword
         var sentences = MyRegex().Split(content);
         if (sentences.Length == 0)
+        {
             return 0.0;
+        }
+
         var matchCount = sentences.Count(s => s.Contains(primaryTopic, StringComparison.OrdinalIgnoreCase));
         return Math.Clamp((double)matchCount / sentences.Length, 0.0, 1.0);
     }
 
-    private double CalculateThematicFocus(string content, string primaryTopic) => CalculateRuleBasedCoherence(content);
+    private double CalculateThematicFocus(string content, string primaryTopic)
+    {
+        return CalculateRuleBasedCoherence(content);
+    }
 
-    private double CalculateConceptualUnity(string content, string primaryTopic) =>
-        CalculateRuleBasedCoherence(content);
+    private double CalculateConceptualUnity(string content, string primaryTopic)
+    {
+        return CalculateRuleBasedCoherence(content);
+    }
 
     private static List<TopicCoherenceIssue> IdentifyCoherenceIssues(
         string content,
@@ -2383,7 +2445,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                 new TopicCoherenceIssue
                 {
                     Type = TopicCoherenceIssueType.WeakThematicConnection,
-                    Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                    Severity = ValidationSeverity.Warning,
                     Description = "Low coherence score detected",
                     Impact = 0.3,
                 }
@@ -2404,23 +2466,24 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
     private static List<string> ExtractSignificantWords(string content)
     {
-        return content
+        return [.. content
             .Split(separatorArray0, StringSplitOptions.RemoveEmptyEntries)
             .Where(word => word.Length > 3 && !IsStopWord(word))
             .Select(word => word.ToLowerInvariant())
-            .Distinct()
-            .ToList();
+            .Distinct()];
     }
 
     private static List<string> ExtractConcepts(string content)
     {
-        return ExtractSignificantWords(content).Take(10).ToList();
+        return [.. ExtractSignificantWords(content).Take(10)];
     }
 
     private double CalculateRuleBasedCoherence(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
+        {
             return 0.0;
+        }
 
         // ----------------------------
         // 1. Repetition ratio heuristic
@@ -2435,7 +2498,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         // ----------------------------
         var keywords = ExtractKeywords(content);
         var sentences = MyRegex().Split(content);
-        int keywordSentenceMatches = sentences.Count(s =>
+        var keywordSentenceMatches = sentences.Count(s =>
             keywords.Any(k => s.Contains(k, StringComparison.OrdinalIgnoreCase))
         );
         var sentenceCoverage = sentences.Length == 0 ? 0.0 : (double)keywordSentenceMatches / sentences.Length;
@@ -2443,13 +2506,19 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         // ----------------------------
         // 3. Domain-specific bonus cues
         // ----------------------------
-        double domainBonus = 0.0;
+        var domainBonus = 0.0;
         if (MyRegex1().IsMatch(content))
+        {
             domainBonus = 0.15; // legal drafting language
+        }
         else if (MyRegex2().IsMatch(content))
+        {
             domainBonus = 0.15; // academic sections
+        }
         else if (MyRegex3().IsMatch(content))
+        {
             domainBonus = 0.15; // code example blocks
+        }
 
         // ----------------------------
         // Combine heuristics
@@ -2464,7 +2533,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                     ? 0.81 // academic sections – ensure strictly > 0.8
                     : 0.71; // code/legal blocks – ensure strictly > 0.7
             if (score < minThreshold)
+            {
                 score = minThreshold;
+            }
         }
 
         // Clamp 0..1 and ensure baseline 0.15
@@ -2473,11 +2544,10 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
     private static List<string> SplitIntoParagraphs(string content)
     {
-        return content
+        return [.. content
             .Split(separatorArray1, StringSplitOptions.RemoveEmptyEntries)
             .Select(p => p.Trim())
-            .Where(p => !string.IsNullOrWhiteSpace(p))
-            .ToList();
+            .Where(p => !string.IsNullOrWhiteSpace(p))];
     }
 
     private double CalculateTransitionScore(string previous, string current)
@@ -2493,7 +2563,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         var currentWords = current.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
         if (previousWords.Length == 0 || currentWords.Length == 0)
+        {
             return 0.5;
+        }
 
         var overlap = previousWords.Intersect(currentWords, StringComparer.OrdinalIgnoreCase).Count();
         var totalWords = Math.Max(previousWords.Length, currentWords.Length);
@@ -2506,8 +2578,8 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     private static int GetParagraphPosition(string content, int paragraphIndex)
     {
         var paragraphs = SplitIntoParagraphs(content);
-        int position = 0;
-        for (int i = 0; i < paragraphIndex && i < paragraphs.Count; i++)
+        var position = 0;
+        for (var i = 0; i < paragraphIndex && i < paragraphs.Count; i++)
         {
             position += paragraphs[i].Length + 2;
         }
@@ -2580,12 +2652,12 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             .ToList();
         sortedPositions.Add(content.Length); // sentinel for final slice
 
-        int segmentStart = 0;
-        int segmentIndex = 0;
+        var segmentStart = 0;
+        var segmentIndex = 0;
 
         foreach (var pos in sortedPositions)
         {
-            int sliceLen = pos - segmentStart;
+            var sliceLen = pos - segmentStart;
 
             // If slice is still below preferred size, continue to accumulate with next boundary
             if (sliceLen < preferredSegmentSize && pos != content.Length)
@@ -2594,10 +2666,10 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             }
 
             // Slice could be very large; split internally on paragraph boundaries to respect max size
-            int localStart = segmentStart;
+            var localStart = segmentStart;
             while (localStart < pos)
             {
-                int localLen = Math.Min(pos - localStart, options.MaxSegmentSize);
+                var localLen = Math.Min(pos - localStart, options.MaxSegmentSize);
                 if (localLen <= 0)
                 {
                     // Ensure forward progress
@@ -2667,10 +2739,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         TopicSegmentationOptions options
     )
     {
-        return segments
+        return [.. segments
             .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
-            .Take(options.MaxSegments)
-            .ToList();
+            .Take(options.MaxSegments)];
     }
 
     #region Content Analysis Helpers
@@ -2683,7 +2754,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         _logger.LogDebug("ExtractKeywords called with content length: {Length}", content?.Length ?? 0);
 
         if (string.IsNullOrWhiteSpace(content))
-            return new List<string>();
+        {
+            return [];
+        }
 
         _logger.LogDebug(
             "Content preview: {Preview}",
@@ -3168,20 +3241,20 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         var mixedUnrelatedTopics = new[]
         {
             new[] { "Technology", "Cooking" },
-            new[] { "Technology", "Automotive" },
-            new[] { "Technology", "Weather" },
-            new[] { "Technology", "Economy" },
-            new[] { "Cooking", "Automotive" },
-            new[] { "Cooking", "Weather" },
-            new[] { "Cooking", "Economy" },
-            new[] { "Weather", "Automotive" },
-            new[] { "Weather", "Economy" },
-            new[] { "Economy", "Automotive" },
-            new[] { "Business", "Cooking" },
-            new[] { "Business", "Weather" },
+            ["Technology", "Automotive"],
+            ["Technology", "Weather"],
+            ["Technology", "Economy"],
+            ["Cooking", "Automotive"],
+            ["Cooking", "Weather"],
+            ["Cooking", "Economy"],
+            ["Weather", "Automotive"],
+            ["Weather", "Economy"],
+            ["Economy", "Automotive"],
+            ["Business", "Cooking"],
+            ["Business", "Weather"],
         };
 
-        bool hasMultipleDistinctTopics = false;
+        var hasMultipleDistinctTopics = false;
         foreach (var pair in mixedUnrelatedTopics)
         {
             if (topicScores[pair[0]] > 0.05 && topicScores[pair[1]] > 0.05)
@@ -3261,11 +3334,15 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     private static double CalculateTopicEntropy(List<double> distribution)
     {
         if (distribution.Count == 0)
+        {
             return 0;
+        }
 
         var sum = distribution.Sum();
         if (sum == 0)
+        {
             return 0;
+        }
 
         var normalizedDist = distribution.Select(d => d / sum);
         return -normalizedDist.Where(p => p > 0).Sum(p => p * Math.Log2(p)) / Math.Log2(distribution.Count);
@@ -3306,9 +3383,14 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                 var topics = IdentifyTopicsFromWords(words);
 
                 foreach (var word in words)
-                    segmentWords.Add(word);
+                {
+                    _ = segmentWords.Add(word);
+                }
+
                 foreach (var topic in topics)
-                    segmentTopics.Add(topic);
+                {
+                    _ = segmentTopics.Add(topic);
+                }
             }
 
             _logger.LogDebug(
@@ -3328,7 +3410,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                         new ValidationIssue
                         {
                             Type = ValidationIssueType.MissingContext,
-                            Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                            Severity = ValidationSeverity.Warning,
                             Description = $"Topic '{missingTopic}' from original content is not covered in any segment",
                         }
                     );
@@ -3345,7 +3427,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                     new ValidationIssue
                     {
                         Type = ValidationIssueType.MissingContext,
-                        Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                        Severity = ValidationSeverity.Warning,
                         Description =
                             $"Segments only cover {coverageRatio:P0} of the original content's significant words",
                     }
@@ -3421,7 +3503,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                         new ValidationIssue
                         {
                             Type = ValidationIssueType.PoorCoherence,
-                            Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Error,
+                            Severity = ValidationSeverity.Error,
                             Description =
                                 $"Very low average topic coherence detected: {averageCoherence:F2}. Content appears to mix unrelated topics or contains nonsensical information.",
                         }
@@ -3434,7 +3516,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                         new ValidationIssue
                         {
                             Type = ValidationIssueType.PoorCoherence,
-                            Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                            Severity = ValidationSeverity.Warning,
                             Description =
                                 $"Poor average topic coherence detected: {averageCoherence:F2}. Consider reviewing content for topic consistency and structure.",
                         }
@@ -3454,7 +3536,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                         new ValidationIssue
                         {
                             Type = ValidationIssueType.TopicMixing,
-                            Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                            Severity = ValidationSeverity.Warning,
                             Description =
                                 $"Single segment with mixed topics detected. Coherence score: {singleSegmentAnalysis.CoherenceScore:F2}. Content may benefit from topic-based segmentation.",
                         }
@@ -3474,7 +3556,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                         new ValidationIssue
                         {
                             Type = ValidationIssueType.PoorCoherence,
-                            Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                            Severity = ValidationSeverity.Warning,
                             Description =
                                 $"Segment {segment.Id} has very low coherence ({analysis.CoherenceScore:F2}): content may mix unrelated topics.",
                         }
@@ -3526,7 +3608,9 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     private static double CalculateBoundaryAccuracy(List<DocumentSegment> segments, string originalContent)
     {
         if (segments.Count <= 1)
+        {
             return 0.3;
+        }
         // Accuracy heuristic: more segments up to 10 improves score
         return Math.Min(1.0, segments.Count / 10.0 + 0.5);
     }
@@ -3535,29 +3619,46 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
     {
         var coveredLength = segments.Sum(s => s.Content.Length);
         if (string.IsNullOrEmpty(originalContent))
+        {
             return 0.0;
+        }
+
         return Math.Clamp((double)coveredLength / originalContent.Length, 0.0, 1.0);
     }
 
-    private static double CalculateOverallQuality(TopicSegmentationValidation validation) =>
-        (
+    private static double CalculateOverallQuality(TopicSegmentationValidation validation)
+    {
+        return (
             validation.AverageTopicCoherence
             + validation.BoundaryAccuracy
             + validation.SegmentIndependence
             + validation.TopicCoverage
         ) / 4.0;
+    }
 
     private static List<string> GenerateRecommendations(TopicSegmentationValidation validation)
     {
         var recs = new List<string>();
         if (validation.AverageTopicCoherence < 0.6)
+        {
             recs.Add("Improve topic coherence within individual segments by focusing on a single theme.");
+        }
+
         if (validation.SegmentIndependence < 0.6)
+        {
             recs.Add("Increase independence between adjacent segments to avoid redundancy.");
+        }
+
         if (validation.BoundaryAccuracy < 0.6)
+        {
             recs.Add("Re-evaluate boundary placement to better reflect topic changes.");
+        }
+
         if (recs.Count == 0)
+        {
             recs.Add("Segmentation looks good. Minor refinements only.");
+        }
+
         return recs;
     }
 

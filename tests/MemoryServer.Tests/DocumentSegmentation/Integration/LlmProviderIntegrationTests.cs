@@ -9,7 +9,6 @@ using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Integration;
 
@@ -31,7 +30,7 @@ public class LlmProviderIntegrationTests : IDisposable
     {
         // Set up service collection for DI
         var services = new ServiceCollection();
-        services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
 
         // Create mocks
         _mockAgentFactory = new Mock<IProviderAgentFactory>();
@@ -41,10 +40,10 @@ public class LlmProviderIntegrationTests : IDisposable
         _mockAgent = new Mock<IAgent>();
 
         // Register mocked services
-        services.AddSingleton(_mockAgentFactory.Object);
-        services.AddSingleton(_mockModelResolver.Object);
-        services.AddSingleton(_mockPromptManager.Object);
-        services.AddSingleton(_mockAnalysisService.Object);
+        _ = services.AddSingleton(_mockAgentFactory.Object);
+        _ = services.AddSingleton(_mockModelResolver.Object);
+        _ = services.AddSingleton(_mockPromptManager.Object);
+        _ = services.AddSingleton(_mockAnalysisService.Object);
 
         // Build service provider
         _serviceProvider = services.BuildServiceProvider();
@@ -79,7 +78,7 @@ public class LlmProviderIntegrationTests : IDisposable
             },
         };
 
-        _mockModelResolver
+        _ = _mockModelResolver
             .Setup(x =>
                 x.ResolveProviderAsync(
                     It.IsAny<string>(),
@@ -89,12 +88,12 @@ public class LlmProviderIntegrationTests : IDisposable
             )
             .ReturnsAsync(providerResolution);
 
-        _mockAgentFactory.Setup(x => x.CreateAgent(It.IsAny<ProviderResolution>())).Returns(_mockAgent.Object);
+        _ = _mockAgentFactory.Setup(x => x.CreateAgent(It.IsAny<ProviderResolution>())).Returns(_mockAgent.Object);
 
         // Mock successful LLM response
         var testResponse = new TextMessage { Text = "{\"test\": \"response\"}", Role = Role.Assistant };
 
-        _mockAgent
+        _ = _mockAgent
             .Setup(x =>
                 x.GenerateReplyAsync(
                     It.IsAny<IReadOnlyList<IMessage>>(),
@@ -114,7 +113,7 @@ public class LlmProviderIntegrationTests : IDisposable
             Temperature = 0.1,
         };
 
-        _mockPromptManager
+        _ = _mockPromptManager
             .Setup(x =>
                 x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
@@ -126,10 +125,10 @@ public class LlmProviderIntegrationTests : IDisposable
             Strategy = SegmentationStrategy.TopicBased,
             Confidence = 0.8,
             Reasoning = "Test reasoning",
-            Alternatives = new List<SegmentationStrategy> { SegmentationStrategy.Hybrid },
+            Alternatives = [SegmentationStrategy.Hybrid],
         };
 
-        _mockAnalysisService
+        _ = _mockAnalysisService
             .Setup(x =>
                 x.AnalyzeOptimalStrategyAsync(
                     It.IsAny<string>(),
@@ -166,7 +165,7 @@ public class LlmProviderIntegrationTests : IDisposable
         );
 
         // Assert
-        service.Should().NotBeNull();
+        _ = service.Should().NotBeNull();
     }
 
     [Fact]
@@ -193,7 +192,7 @@ public class LlmProviderIntegrationTests : IDisposable
         var result = await service.TestConnectivityAsync();
 
         // Assert
-        result.Should().BeTrue();
+        _ = result.Should().BeTrue();
 
         // Verify that the model resolver was called
         _mockModelResolver.Verify(
@@ -228,7 +227,7 @@ public class LlmProviderIntegrationTests : IDisposable
         };
 
         // Mock null resolution (provider not found)
-        _mockModelResolver
+        _ = _mockModelResolver
             .Setup(x =>
                 x.ResolveProviderAsync(
                     "invalid-model",
@@ -251,7 +250,7 @@ public class LlmProviderIntegrationTests : IDisposable
         var result = await service.TestConnectivityAsync();
 
         // Assert
-        result.Should().BeFalse();
+        _ = result.Should().BeFalse();
 
         // Verify that agent factory was not called
         _mockAgentFactory.Verify(x => x.CreateAgent(It.IsAny<ProviderResolution>()), Times.Never);
@@ -269,7 +268,7 @@ public class LlmProviderIntegrationTests : IDisposable
         };
 
         // Mock agent throwing exception
-        _mockAgent
+        _ = _mockAgent
             .Setup(x =>
                 x.GenerateReplyAsync(
                     It.IsAny<IReadOnlyList<IMessage>>(),
@@ -292,7 +291,7 @@ public class LlmProviderIntegrationTests : IDisposable
         var result = await service.TestConnectivityAsync();
 
         // Assert
-        result.Should().BeFalse();
+        _ = result.Should().BeFalse();
     }
 
     [Fact]
@@ -311,10 +310,10 @@ public class LlmProviderIntegrationTests : IDisposable
             Strategy = SegmentationStrategy.StructureBased,
             Confidence = 0.9, // High confidence, should not trigger LLM enhancement
             Reasoning = "Document has clear structural elements",
-            Alternatives = new List<SegmentationStrategy> { SegmentationStrategy.Hybrid },
+            Alternatives = [SegmentationStrategy.Hybrid],
         };
 
-        _mockAnalysisService
+        _ = _mockAnalysisService
             .Setup(x =>
                 x.AnalyzeOptimalStrategyAsync(
                     It.IsAny<string>(),
@@ -337,10 +336,10 @@ public class LlmProviderIntegrationTests : IDisposable
         var result = await service.AnalyzeOptimalStrategyAsync("Test document content", DocumentType.ResearchPaper);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Strategy.Should().Be(SegmentationStrategy.StructureBased);
-        result.Confidence.Should().Be(0.9);
-        result.Reasoning.Should().Be("Document has clear structural elements");
+        _ = result.Should().NotBeNull();
+        _ = result.Strategy.Should().Be(SegmentationStrategy.StructureBased);
+        _ = result.Confidence.Should().Be(0.9);
+        _ = result.Reasoning.Should().Be("Document has clear structural elements");
 
         // Verify that LLM was not called (high confidence analysis)
         _mockAgent.Verify(
@@ -370,10 +369,10 @@ public class LlmProviderIntegrationTests : IDisposable
             Strategy = SegmentationStrategy.TopicBased,
             Confidence = 0.5, // Low confidence, should trigger LLM enhancement
             Reasoning = "Uncertain about optimal strategy",
-            Alternatives = new List<SegmentationStrategy> { SegmentationStrategy.Hybrid },
+            Alternatives = [SegmentationStrategy.Hybrid],
         };
 
-        _mockAnalysisService
+        _ = _mockAnalysisService
             .Setup(x =>
                 x.AnalyzeOptimalStrategyAsync(
                     It.IsAny<string>(),
@@ -395,7 +394,7 @@ public class LlmProviderIntegrationTests : IDisposable
             Role = Role.Assistant,
         };
 
-        _mockAgent
+        _ = _mockAgent
             .Setup(x =>
                 x.GenerateReplyAsync(
                     It.IsAny<IReadOnlyList<IMessage>>(),
@@ -418,10 +417,10 @@ public class LlmProviderIntegrationTests : IDisposable
         var result = await service.AnalyzeOptimalStrategyAsync("Test document content", DocumentType.Technical);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Strategy.Should().Be(SegmentationStrategy.TopicBased);
-        result.Confidence.Should().Be(0.8); // Should match the LLM response
-        result.Reasoning.Should().Contain("Enhanced with LLM analysis");
+        _ = result.Should().NotBeNull();
+        _ = result.Strategy.Should().Be(SegmentationStrategy.TopicBased);
+        _ = result.Confidence.Should().Be(0.8); // Should match the LLM response
+        _ = result.Reasoning.Should().Contain("Enhanced with LLM analysis");
 
         // Verify that LLM was called for enhancement
         _mockAgent.Verify(
@@ -457,7 +456,7 @@ public class LlmProviderIntegrationTests : IDisposable
             TimeoutSeconds = 30,
         };
 
-        _mockAnalysisService
+        _ = _mockAnalysisService
             .Setup(x =>
                 x.AnalyzeOptimalStrategyAsync(
                     It.IsAny<string>(),
@@ -480,10 +479,10 @@ public class LlmProviderIntegrationTests : IDisposable
         var result = await service.AnalyzeOptimalStrategyAsync("Test document content", DocumentType.Email);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Strategy.Should().Be(SegmentationStrategy.TopicBased); // Default for Email
-        result.Confidence.Should().Be(0.6);
-        result.Reasoning.Should().Be("Default strategy for Email documents");
+        _ = result.Should().NotBeNull();
+        _ = result.Strategy.Should().Be(SegmentationStrategy.TopicBased); // Default for Email
+        _ = result.Confidence.Should().Be(0.6);
+        _ = result.Reasoning.Should().Be("Default strategy for Email documents");
     }
 
     [Theory]
@@ -507,7 +506,7 @@ public class LlmProviderIntegrationTests : IDisposable
         };
 
         // Mock analysis service failure to force default strategy
-        _mockAnalysisService
+        _ = _mockAnalysisService
             .Setup(x =>
                 x.AnalyzeOptimalStrategyAsync(
                     It.IsAny<string>(),
@@ -530,10 +529,10 @@ public class LlmProviderIntegrationTests : IDisposable
         var result = await service.AnalyzeOptimalStrategyAsync("Test document content", documentType);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Strategy.Should().Be(expectedStrategy);
-        result.Confidence.Should().Be(0.6);
-        result.Reasoning.Should().Be($"Default strategy for {documentType} documents");
+        _ = result.Should().NotBeNull();
+        _ = result.Strategy.Should().Be(expectedStrategy);
+        _ = result.Confidence.Should().Be(0.6);
+        _ = result.Reasoning.Should().Be($"Default strategy for {documentType} documents");
     }
 
     [Fact]
@@ -562,7 +561,7 @@ public class LlmProviderIntegrationTests : IDisposable
         var results = await Task.WhenAll(tasks);
 
         // Assert
-        results.Should().AllSatisfy(x => x.Should().BeTrue());
+        _ = results.Should().AllSatisfy(x => x.Should().BeTrue());
 
         // Verify that the model resolver was called multiple times
         _mockModelResolver.Verify(
@@ -590,7 +589,7 @@ public class LlmProviderIntegrationTests : IDisposable
                 null!
             );
 
-        act.Should().Throw<ArgumentNullException>();
+        _ = act.Should().Throw<ArgumentNullException>();
     }
 
     [Fact]
@@ -650,11 +649,11 @@ public class LlmProviderIntegrationTests : IDisposable
             );
 
         // Assert
-        act1.Should().Throw<ArgumentNullException>();
-        act2.Should().Throw<ArgumentNullException>();
-        act3.Should().Throw<ArgumentNullException>();
-        act4.Should().Throw<ArgumentNullException>();
-        act5.Should().Throw<ArgumentNullException>();
+        _ = act1.Should().Throw<ArgumentNullException>();
+        _ = act2.Should().Throw<ArgumentNullException>();
+        _ = act3.Should().Throw<ArgumentNullException>();
+        _ = act4.Should().Throw<ArgumentNullException>();
+        _ = act5.Should().Throw<ArgumentNullException>();
     }
 
     public void Dispose()

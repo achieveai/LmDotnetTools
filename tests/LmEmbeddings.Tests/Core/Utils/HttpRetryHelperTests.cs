@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Net;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Http;
-using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -115,7 +113,7 @@ public class HttpRetryHelperTests
         }
         else
         {
-            await Assert.ThrowsAsync<HttpRequestException>(() =>
+            _ = await Assert.ThrowsAsync<HttpRequestException>(() =>
                 HttpRetryHelper.ExecuteHttpWithRetryAsync(httpOperation, responseProcessor, _logger, maxRetries: 3)
             );
             Debug.WriteLine($"✓ HTTP operation failed as expected after {attemptCount} attempts");
@@ -225,7 +223,7 @@ public class HttpRetryHelperTests
         });
 
         // Act & Assert
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() =>
             HttpRetryHelper.ExecuteWithRetryAsync(operation, _logger, cancellationToken: cts.Token)
         );
 
@@ -402,9 +400,15 @@ public class HttpRetryHelperTests
     private class TestLogger<T> : ILogger<T>
     {
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
+            where TState : notnull
+        {
+            return null;
+        }
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
 
         public void Log<TState>(
             LogLevel logLevel,

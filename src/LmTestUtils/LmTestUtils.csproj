@@ -6,6 +6,7 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>false</IsTestProject>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="dotenv.net" Version="3.2.1" />

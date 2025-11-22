@@ -125,7 +125,7 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
         var request = new RerankRequest
         {
             Query = query,
-            Documents = documents.ToImmutableList(),
+            Documents = [.. documents],
             Model = model,
             TopN = topK,
         };
@@ -157,15 +157,29 @@ public abstract class BaseRerankService : BaseHttpService, IRerankService
     {
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.Query))
+        {
             throw new ArgumentException("Query cannot be null or empty", nameof(request));
+        }
+
         if (request.Documents == null || request.Documents.IsEmpty)
+        {
             throw new ArgumentException("Documents cannot be null or empty", nameof(request));
+        }
+
         if (string.IsNullOrWhiteSpace(request.Model))
+        {
             throw new ArgumentException("Model cannot be null or empty", nameof(request));
+        }
+
         if (request.Documents.Any(string.IsNullOrWhiteSpace))
+        {
             throw new ArgumentException("All documents must be non-empty", nameof(request));
+        }
+
         if (request.TopN.HasValue && request.TopN.Value <= 0)
+        {
             throw new ArgumentException("TopN must be positive", nameof(request));
+        }
 
         ThrowIfDisposed();
     }

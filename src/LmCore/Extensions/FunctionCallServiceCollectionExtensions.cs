@@ -13,8 +13,8 @@ public static class FunctionCallServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddFunctionCallServices(this IServiceCollection services)
     {
-        services.AddSingleton<IFunctionProviderRegistry, FunctionProviderRegistry>();
-        services.AddSingleton<IFunctionCallMiddlewareFactory, FunctionCallMiddlewareFactory>();
+        _ = services.AddSingleton<IFunctionProviderRegistry, FunctionProviderRegistry>();
+        _ = services.AddSingleton<IFunctionCallMiddlewareFactory, FunctionCallMiddlewareFactory>();
         return services;
     }
 
@@ -24,8 +24,8 @@ public static class FunctionCallServiceCollectionExtensions
     public static IServiceCollection AddFunctionProvider<TProvider>(this IServiceCollection services)
         where TProvider : class, IFunctionProvider
     {
-        services.AddSingleton<TProvider>();
-        services.AddSingleton<IFunctionProvider, TProvider>(sp => sp.GetRequiredService<TProvider>());
+        _ = services.AddSingleton<TProvider>();
+        _ = services.AddSingleton<IFunctionProvider, TProvider>(sp => sp.GetRequiredService<TProvider>());
         return services;
     }
 
@@ -37,7 +37,7 @@ public static class FunctionCallServiceCollectionExtensions
         Func<IServiceProvider, IFunctionProvider> factory
     )
     {
-        services.AddSingleton<IFunctionProvider>(factory);
+        _ = services.AddSingleton<IFunctionProvider>(factory);
         return services;
     }
 
@@ -49,7 +49,7 @@ public static class FunctionCallServiceCollectionExtensions
         Action<IFunctionProviderRegistry, IServiceProvider> configure
     )
     {
-        services.AddSingleton<Action<IFunctionProviderRegistry, IServiceProvider>>(configure);
+        _ = services.AddSingleton<Action<IFunctionProviderRegistry, IServiceProvider>>(configure);
         return services;
     }
 }

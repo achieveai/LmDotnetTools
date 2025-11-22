@@ -1,11 +1,6 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 // Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -66,17 +61,17 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             var request = new AnthropicRequest
             {
                 Model = "claude-3-sonnet-20240229",
-                Messages = new List<AnthropicMessage>
-                {
+                Messages =
+                [
                     new AnthropicMessage
                     {
                         Role = "user",
-                        Content = new List<AnthropicContent>
-                        {
+                        Content =
+                        [
                             new AnthropicContent { Type = "text", Text = "Hello, world!" },
-                        },
+                        ],
                     },
-                },
+                ],
             };
 
             // Act
@@ -87,7 +82,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             Assert.StartsWith("msg_test", response.Id); // MockHttpHandlerBuilder generates msg_test prefix
             Assert.Equal("message", response.Type);
             Assert.Equal("assistant", response.Role);
-            Assert.Single(response.Content);
+            _ = Assert.Single(response.Content);
             Assert.Equal("text", response.Content[0].Type);
 
             var typedContent = Assert.IsType<AnthropicResponseTextContent>(response.Content[0]);
@@ -135,21 +130,21 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
             var request = new AnthropicRequest
             {
                 Model = "claude-3-sonnet-20240229",
-                Messages = new List<AnthropicMessage>
-                {
+                Messages =
+                [
                     new AnthropicMessage
                     {
                         Role = "user",
-                        Content = new List<AnthropicContent>
-                        {
+                        Content =
+                        [
                             new AnthropicContent
                             {
                                 Type = "text",
                                 Text = "Write a Python function to calculate Fibonacci sequence for n=10",
                             },
-                        },
+                        ],
                     },
-                },
+                ],
                 Stream = true,
             };
 

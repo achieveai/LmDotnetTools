@@ -36,11 +36,11 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
             }
 
             // Read property name
-            string propertyName = reader.GetString()!;
+            var propertyName = reader.GetString()!;
 
             // Read property value
-            reader.Read();
-            object? value = ReadValue(ref reader, options);
+            _ = reader.Read();
+            var value = ReadValue(ref reader, options);
 
             builder.Add(propertyName, value);
         }
@@ -65,15 +65,15 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
                 return reader.GetString();
 
             case JsonTokenType.Number:
-                if (reader.TryGetInt32(out int intValue))
+                if (reader.TryGetInt32(out var intValue))
                 {
                     return intValue;
                 }
-                if (reader.TryGetInt64(out long longValue))
+                if (reader.TryGetInt64(out var longValue))
                 {
                     return longValue;
                 }
-                if (reader.TryGetDouble(out double doubleValue))
+                if (reader.TryGetDouble(out var doubleValue))
                 {
                     return doubleValue;
                 }
@@ -93,6 +93,11 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
                     return document.RootElement.Clone();
                 }
 
+            case JsonTokenType.None:
+            case JsonTokenType.EndObject:
+            case JsonTokenType.EndArray:
+            case JsonTokenType.PropertyName:
+            case JsonTokenType.Comment:
             default:
                 throw new JsonException($"Unexpected token type: {reader.TokenType}");
         }

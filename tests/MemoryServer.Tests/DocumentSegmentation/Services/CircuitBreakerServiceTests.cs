@@ -2,7 +2,6 @@ using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
@@ -55,9 +54,9 @@ public class CircuitBreakerServiceTests
         var exception = new InvalidOperationException("Test failure");
 
         // Act & Assert - Record failures up to threshold
-        for (int i = 1; i < _configuration.FailureThreshold; i++)
+        for (var i = 1; i < _configuration.FailureThreshold; i++)
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            _ = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
                 await _service.ExecuteAsync<string>(() => throw exception, operationName)
             );
 
@@ -67,14 +66,14 @@ public class CircuitBreakerServiceTests
         }
 
         // Final failure should open the circuit
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await _service.ExecuteAsync<string>(() => throw exception, operationName)
         );
 
         var finalState = _service.GetState(operationName);
         Assert.Equal(CircuitBreakerStateEnum.Open, finalState.State);
         Assert.Equal(_configuration.FailureThreshold, finalState.FailureCount);
-        Assert.NotNull(finalState.NextRetryAt);
+        _ = Assert.NotNull(finalState.NextRetryAt);
         Assert.True(finalState.NextRetryAt > DateTime.UtcNow);
     }
 
@@ -91,7 +90,7 @@ public class CircuitBreakerServiceTests
         );
 
         Assert.Equal(operationName, exception.OperationName);
-        Assert.NotNull(exception.NextRetryAt);
+        _ = Assert.NotNull(exception.NextRetryAt);
     }
 
     [Fact]
@@ -156,8 +155,8 @@ public class CircuitBreakerServiceTests
         // Assert
         var state = _service.GetState(operationName);
         Assert.Equal(CircuitBreakerStateEnum.Open, state.State);
-        Assert.NotNull(state.LastOpenedAt);
-        Assert.NotNull(state.NextRetryAt);
+        _ = Assert.NotNull(state.LastOpenedAt);
+        _ = Assert.NotNull(state.NextRetryAt);
         Assert.Equal("Forced open for testing", state.LastError);
     }
 
@@ -240,7 +239,7 @@ public class CircuitBreakerServiceTests
         cts.Cancel();
 
         // Act & Assert
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
             await _service.ExecuteAsync(
                 async () =>
                 {

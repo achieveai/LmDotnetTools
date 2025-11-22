@@ -78,7 +78,7 @@ public class UsageCache : IDisposable
             ),
         };
 
-        _cache.Set(
+        _ = _cache.Set(
             completionId,
             storedUsage,
             new MemoryCacheEntryOptions

@@ -1,12 +1,6 @@
-using System.Collections.Immutable;
 using System.Reflection;
-using System.Text.Json;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Middleware;
 
@@ -106,7 +100,7 @@ public class MessageUpdateJoinerMiddlewareTests
         var actualMessagesWithoutUsage = actualMessages.Where(m => !(m is UsageMessage)).ToList();
 
         // Verify the content of the messages
-        for (int i = 0; i < expectedMessages.Count; i++)
+        for (var i = 0; i < expectedMessages.Count; i++)
         {
             var expected = expectedMessages[i];
             var actual = actualMessagesWithoutUsage[i];
@@ -198,7 +192,7 @@ public class MessageUpdateJoinerMiddlewareTests
                         Role = role,
                         FromAgent = fromAgent,
                         GenerationId = generationId,
-                        ToolCalls = toolCalls.ToImmutableList(),
+                        ToolCalls = [.. toolCalls],
                     }
                 );
             }

@@ -7,6 +7,7 @@
     <AssemblyName>AchieveAi.LmDotnetTools.ModelUsageExamples</AssemblyName>
     <RootNamespace>AchieveAi.LmDotnetTools.Example.ModelUsageExamples</RootNamespace>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\LmEmbeddings\AchieveAi.LmDotnetTools.LmEmbeddings.csproj" />

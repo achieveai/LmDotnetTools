@@ -26,7 +26,10 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public ReasoningVisibility Visibility { get; init; } = ReasoningVisibility.Plain;
 
-    public string? GetText() => Visibility == ReasoningVisibility.Encrypted ? null : Reasoning;
+    public string? GetText()
+    {
+        return Visibility == ReasoningVisibility.Encrypted ? null : Reasoning;
+    }
 
     [JsonPropertyName("fromAgent")]
     public string? FromAgent { get; init; }
@@ -48,11 +51,24 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
 
-    public static BinaryData? GetBinary() => null;
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
 
-    public static ToolCall? GetToolCalls() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
 
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 /// <summary>
@@ -64,7 +80,10 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonPropertyName("reasoning")]
     public required string Reasoning { get; init; }
 
-    public string? GetText() => Reasoning;
+    public string? GetText()
+    {
+        return Reasoning;
+    }
 
     [JsonPropertyName("role")]
     public Role Role { get; init; } = Role.Assistant;
@@ -92,11 +111,24 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
 
-    public static BinaryData? GetBinary() => null;
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
 
-    public static ToolCall? GetToolCalls() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
 
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 /// <summary>
@@ -141,13 +173,17 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
     public ReasoningVisibility Visibility { get; set; } = ReasoningVisibility.Plain;
     public string? ThreadId { get; set; }
     public string? RunId { get; set; }
+    public string? ParentRunId { get; set; }
 
     public void Add(ReasoningUpdateMessage streamingMessageUpdate)
     {
-        _builder.Append(streamingMessageUpdate.Reasoning);
+        _ = _builder.Append(streamingMessageUpdate.Reasoning);
     }
 
-    IMessage IMessageBuilder.Build() => this.Build();
+    IMessage IMessageBuilder.Build()
+    {
+        return this.Build();
+    }
 
     public ReasoningMessage Build()
     {
@@ -160,6 +196,7 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
             Visibility = Visibility,
             ThreadId = ThreadId,
             RunId = RunId,
+            ParentRunId = ParentRunId,
         };
     }
 }

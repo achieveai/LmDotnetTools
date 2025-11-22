@@ -166,31 +166,42 @@ public sealed record JsonSchemaObject
     /// <summary>
     /// Creates a builder for constructing a JSON Schema object more fluently
     /// </summary>
-    public static JsonSchemaObjectBuilder Create(string type = "object") => new JsonSchemaObjectBuilder(type);
+    public static JsonSchemaObjectBuilder Create(string type = "object")
+    {
+        return new JsonSchemaObjectBuilder(type);
+    }
 
     /// <summary>
     /// Creates a new string schema with the given description
     /// </summary>
-    public static JsonSchemaObject String(string? description = null) =>
-        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string"), Description = description };
+    public static JsonSchemaObject String(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string"), Description = description };
+    }
 
     /// <summary>
     /// Creates a new number schema with the given description
     /// </summary>
-    public static JsonSchemaObject Number(string? description = null) =>
-        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number"), Description = description };
+    public static JsonSchemaObject Number(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number"), Description = description };
+    }
 
     /// <summary>
     /// Creates a new integer schema with the given description
     /// </summary>
-    public static JsonSchemaObject Integer(string? description = null) =>
-        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("integer"), Description = description };
+    public static JsonSchemaObject Integer(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("integer"), Description = description };
+    }
 
     /// <summary>
     /// Creates a new boolean schema with the given description
     /// </summary>
-    public static JsonSchemaObject Boolean(string? description = null) =>
-        new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("boolean"), Description = description };
+    public static JsonSchemaObject Boolean(string? description = null)
+    {
+        return new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("boolean"), Description = description };
+    }
 
     /// <summary>
     /// Creates a JSON Schema object for an array type

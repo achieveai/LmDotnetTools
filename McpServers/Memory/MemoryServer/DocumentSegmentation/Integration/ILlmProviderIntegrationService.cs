@@ -1,6 +1,5 @@
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 
 namespace MemoryServer.DocumentSegmentation.Integration;
 
@@ -44,5 +43,8 @@ public interface ILlmProviderIntegrationService
         DocumentType documentType,
         int? maxSegments = null,
         CancellationToken cancellationToken = default
-    ) => Task.FromResult(string.Empty);
+    )
+    {
+        return Task.FromResult(string.Empty);
+    }
 }

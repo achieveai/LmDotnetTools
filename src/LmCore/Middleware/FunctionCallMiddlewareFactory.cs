@@ -36,7 +36,7 @@ public class FunctionCallMiddlewareFactory : IFunctionCallMiddlewareFactory
         // Add all registered providers
         foreach (var provider in _registry.GetProviders())
         {
-            registry.AddProvider(provider);
+            _ = registry.AddProvider(provider);
         }
 
         return registry;

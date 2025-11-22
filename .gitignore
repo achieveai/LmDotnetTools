@@ -33,3 +33,8 @@ kv_store
 .fake
 LLM_CACHE/
 *.log
+
+nul
+.playwright-mcp/
+.next/
+node_modules/

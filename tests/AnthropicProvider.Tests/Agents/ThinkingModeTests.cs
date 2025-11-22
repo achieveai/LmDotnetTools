@@ -73,22 +73,22 @@ public class ThinkingModeTests
         {
             Model = "claude-3-7-sonnet-20250219",
             Thinking = thinking,
-            Messages = new List<AnthropicMessage>()
-            {
+            Messages =
+            [
                 new AnthropicMessage
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>()
-                    {
+                    Content =
+                    [
                         new AnthropicContent { Type = "text", Text = "Hello" },
-                    },
+                    ],
                 },
-            },
+            ],
         };
         Console.WriteLine($"Created request with thinking: {request.Thinking?.BudgetTokens}");
 
         // Act - async call with proper await
-        await anthropicClient.CreateChatCompletionsAsync(request);
+        _ = await anthropicClient.CreateChatCompletionsAsync(request);
         Console.WriteLine($"After API call - Captured thinking from request");
 
         // Assert using the RequestCapture API
@@ -157,7 +157,7 @@ public class ThinkingModeTests
         {
             ModelId = "claude-3-7-sonnet-20250219",
             MaxToken = 2000,
-            Functions = new[] { pythonFunction },
+            Functions = [pythonFunction],
             ExtraProperties = ImmutableDictionary.Create<string, object?>().Add("Thinking", thinking),
         };
         TestLogger.Log("Created options with thinking and function tools");
@@ -184,7 +184,7 @@ public class ThinkingModeTests
 
         // Check tool configuration using structured data
         var tools = capturedRequest.Tools.ToList();
-        Assert.Single(tools);
+        _ = Assert.Single(tools);
         Assert.Equal("python_mcp-execute_python_in_container", tools[0].Name);
         Assert.NotNull(tools[0].Description);
         Assert.NotNull(tools[0].InputSchema);

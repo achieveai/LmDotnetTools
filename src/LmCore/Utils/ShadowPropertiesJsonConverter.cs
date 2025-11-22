@@ -19,9 +19,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     {
         var type = typeof(T);
         // Get all properties with JsonPropertyName attribute
-        _jsonProperties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null)
-            .ToArray();
+        _jsonProperties = [.. type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null)];
 
         // Find ImmutableDictionary property marked as extra properties storage
         _extraPropertiesProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -55,8 +53,8 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
                 throw new JsonException($"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}");
             }
 
-            string propertyName = reader.GetString()!;
-            reader.Read();
+            var propertyName = reader.GetString()!;
+            _ = reader.Read();
 
             // Try to handle via the virtual method first
             var (customHandled, customInstance) = ReadProperty(ref reader, instance, propertyName, options);
@@ -199,15 +197,15 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
             case JsonTokenType.String:
                 return reader.GetString();
             case JsonTokenType.Number:
-                if (reader.TryGetInt32(out int intValue))
+                if (reader.TryGetInt32(out var intValue))
                 {
                     return intValue;
                 }
-                if (reader.TryGetInt64(out long longValue))
+                if (reader.TryGetInt64(out var longValue))
                 {
                     return longValue;
                 }
-                if (reader.TryGetDouble(out double doubleValue))
+                if (reader.TryGetDouble(out var doubleValue))
                 {
                     return doubleValue;
                 }
@@ -222,6 +220,12 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
                 {
                     return document.RootElement.Clone();
                 }
+
+            case JsonTokenType.None:
+            case JsonTokenType.EndObject:
+            case JsonTokenType.EndArray:
+            case JsonTokenType.PropertyName:
+            case JsonTokenType.Comment:
             default:
                 throw new JsonException($"Unexpected token type: {reader.TokenType}");
         }

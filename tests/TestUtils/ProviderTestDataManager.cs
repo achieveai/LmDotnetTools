@@ -2,9 +2,7 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
-using FinishReasonEnum = AchieveAi.LmDotnetTools.OpenAIProvider.Models.Choice.FinishReasonEnum;
 
 namespace AchieveAi.LmDotnetTools.TestUtils;
 
@@ -41,7 +39,7 @@ public class ProviderTestDataManager
 
     public ProviderTestDataManager()
     {
-        string workspaceRoot = TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+        var workspaceRoot = TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
         _dataDirectory = Path.Combine(workspaceRoot, "tests", "TestData");
     }
 
@@ -54,7 +52,7 @@ public class ProviderTestDataManager
     /// <returns>A path to the test data file</returns>
     public string GetTestDataPath(string testName, ProviderType providerType, DataType dataType)
     {
-        string providerDir = providerType switch
+        var providerDir = providerType switch
         {
             ProviderType.OpenAI => OpenAIDirectory,
             ProviderType.Anthropic => AnthropicDirectory,
@@ -62,7 +60,7 @@ public class ProviderTestDataManager
             _ => throw new ArgumentOutOfRangeException(nameof(providerType)),
         };
 
-        string dataTypeStr = dataType switch
+        var dataTypeStr = dataType switch
         {
             DataType.LmCoreRequest => "LmCoreRequest",
             DataType.FinalResponse => "FinalResponse",
@@ -84,7 +82,7 @@ public class ProviderTestDataManager
     {
         var data = new { Messages = messages, Options = options };
 
-        string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
+        var filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         EnsureDirectoryExists(filePath);
         File.WriteAllText(filePath, JsonSerializer.Serialize(data, JsonOptions));
     }
@@ -97,7 +95,7 @@ public class ProviderTestDataManager
         ProviderType providerType
     )
     {
-        string filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
+        var filePath = GetTestDataPath(testName, providerType, DataType.LmCoreRequest);
         if (!File.Exists(filePath))
         {
             throw new FileNotFoundException($"Test data file not found: {filePath}");
@@ -114,7 +112,7 @@ public class ProviderTestDataManager
     /// </summary>
     public void SaveFinalResponse(string testName, ProviderType providerType, IEnumerable<IMessage> response)
     {
-        string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
+        var filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         EnsureDirectoryExists(filePath);
         File.WriteAllText(filePath, JsonSerializer.Serialize(response, JsonOptions));
     }
@@ -124,7 +122,7 @@ public class ProviderTestDataManager
     /// </summary>
     public List<IMessage>? LoadFinalResponse(string testName, ProviderType providerType)
     {
-        string filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
+        var filePath = GetTestDataPath(testName, providerType, DataType.FinalResponse);
         if (!File.Exists(filePath))
         {
             return null;
@@ -140,10 +138,10 @@ public class ProviderTestDataManager
     /// </summary>
     private static void EnsureDirectoryExists(string filePath)
     {
-        string? directory = Path.GetDirectoryName(filePath);
+        var directory = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
         {
-            Directory.CreateDirectory(directory);
+            _ = Directory.CreateDirectory(directory);
         }
     }
 
@@ -152,7 +150,7 @@ public class ProviderTestDataManager
     /// </summary>
     public IEnumerable<string> GetTestCaseNames(ProviderType providerType)
     {
-        string providerDir = providerType switch
+        var providerDir = providerType switch
         {
             ProviderType.OpenAI => OpenAIDirectory,
             ProviderType.Anthropic => AnthropicDirectory,
@@ -160,7 +158,7 @@ public class ProviderTestDataManager
             _ => throw new ArgumentOutOfRangeException(nameof(providerType)),
         };
 
-        string directoryPath = Path.Combine(_dataDirectory, providerDir);
+        var directoryPath = Path.Combine(_dataDirectory, providerDir);
         if (!Directory.Exists(directoryPath))
         {
             return Enumerable.Empty<string>();

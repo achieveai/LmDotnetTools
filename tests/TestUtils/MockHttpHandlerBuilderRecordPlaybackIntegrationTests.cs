@@ -1,15 +1,8 @@
-using System.Net;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using dotenv.net;
-using Microsoft.VisualStudio.TestPlatform.CoreUtilities.Helpers;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.TestUtils.Tests;
 
@@ -19,15 +12,15 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
     public async Task MockHttpHandlerBuilder_RecordPlayback_ShouldHandleNewTestData()
     {
         // Arrange
-        string testDataPath = Path.Combine(Path.GetTempPath(), $"test_data_{Guid.NewGuid()}.json");
+        var testDataPath = Path.Combine(Path.GetTempPath(), $"test_data_{Guid.NewGuid()}.json");
 
         // Create MockHttpHandlerBuilder with record/playback and OpenAI response
         var handler = MockHttpHandlerBuilder
             .Create()
             .WithRecordPlayback(testDataPath, allowAdditional: true)
             .ForwardToApi(
-                LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL"),
-                LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY")
+                EnvironmentHelper.GetApiBaseUrlFromEnv("LLM_API_BASE_URL"),
+                EnvironmentHelper.GetApiKeyFromEnv("LLM_API_KEY")
             )
             .Build();
 
@@ -75,28 +68,28 @@ public class MockHttpHandlerBuilderRecordPlaybackIntegrationTests
         }
     }
 
-    private static readonly string[] fallbackApiKeys = new[] { "LLM_API_KEY" };
+    private static readonly string[] fallbackApiKeys = ["LLM_API_KEY"];
 
     /// <summary>
     /// Helper method to get API key from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiKeyFromEnv(
+        return EnvironmentHelper.GetApiKeyFromEnv(
             "OPENAI_API_KEY",
             fallbackApiKeys,
             "test-api-key"
         );
     }
 
-    private static readonly string[] fallbackBaseUrls = new[] { "LLM_API_BASE_URL" };
+    private static readonly string[] fallbackBaseUrls = ["LLM_API_BASE_URL"];
 
     /// <summary>
     /// Helper method to get API base URL from environment (using shared EnvironmentHelper)
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        return AchieveAi.LmDotnetTools.LmTestUtils.EnvironmentHelper.GetApiBaseUrlFromEnv(
+        return EnvironmentHelper.GetApiBaseUrlFromEnv(
             "OPENAI_API_URL",
             fallbackBaseUrls,
             "https://api.openai.com/v1"

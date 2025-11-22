@@ -44,7 +44,9 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
     )
     {
         if (string.IsNullOrWhiteSpace(query))
+        {
             throw new ArgumentException("Query cannot be empty", nameof(query));
+        }
 
         options ??= new UnifiedSearchOptions();
         var totalStopwatch = Stopwatch.StartNew();
@@ -76,7 +78,9 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                     );
                     metrics.Errors.Add($"Embedding generation failed: {ex.Message}");
                     if (!options.EnableGracefulFallback)
+                    {
                         throw;
+                    }
                 }
             }
 
@@ -90,7 +94,9 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!options.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return new UnifiedSearchResults { Metrics = metrics };
         }
@@ -105,7 +111,9 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
     )
     {
         if (string.IsNullOrWhiteSpace(query))
+        {
             throw new ArgumentException("Query cannot be empty", nameof(query));
+        }
 
         options ??= new UnifiedSearchOptions();
         var totalStopwatch = Stopwatch.StartNew();
@@ -309,7 +317,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             }
 
             // Apply enrichment as final step in search pipeline (Phase 8)
-            List<EnrichedSearchResult> enrichedResults = new();
+            List<EnrichedSearchResult> enrichedResults = [];
             if (finalResults.Count > 0)
             {
                 _logger.LogTrace("Starting enrichment with {ResultCount} results", finalResults.Count);
@@ -344,7 +352,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                     _logger.LogWarning(ex, "Enrichment failed, using original results");
                     metrics.Errors.Add($"Enrichment failed: {ex.Message}");
                     // Convert to enriched results without enrichment
-                    enrichedResults = finalResults
+                    enrichedResults = [.. finalResults
                         .Select(r => new EnrichedSearchResult
                         {
                             Type = r.Type,
@@ -359,8 +367,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
                             OriginalMemory = r.OriginalMemory,
                             OriginalEntity = r.OriginalEntity,
                             OriginalRelationship = r.OriginalRelationship,
-                        })
-                        .ToList();
+                        })];
                 }
             }
 
@@ -381,7 +388,7 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
 
             return new UnifiedSearchResults
             {
-                Results = sortedResults.Cast<UnifiedSearchResult>().ToList(),
+                Results = [.. sortedResults.Cast<UnifiedSearchResult>()],
                 Metrics = metrics,
             };
         }
@@ -394,7 +401,9 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!options.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return new UnifiedSearchResults { Metrics = metrics };
         }
@@ -785,9 +794,15 @@ public class UnifiedSearchEngine : IUnifiedSearchEngine
     {
         var count = 0;
         if (options.EnableFtsSearch)
+        {
             count += 3; // Memory, Entity, Relationship FTS5
+        }
+
         if (options.EnableVectorSearch && hasEmbedding)
+        {
             count += 3; // Memory, Entity, Relationship Vector
+        }
+
         return count;
     }
 }

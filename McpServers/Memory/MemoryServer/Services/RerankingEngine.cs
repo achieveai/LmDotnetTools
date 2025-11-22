@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using MemoryServer.Models;
 using Microsoft.Extensions.Options;
 
@@ -66,7 +65,9 @@ public class RerankingEngine : IRerankingEngine
     )
     {
         if (string.IsNullOrWhiteSpace(query))
+        {
             throw new ArgumentException("Query cannot be empty", nameof(query));
+        }
 
         ArgumentNullException.ThrowIfNull(results);
 
@@ -100,7 +101,7 @@ public class RerankingEngine : IRerankingEngine
 
             // Attempt semantic reranking if service is available
             List<UnifiedSearchResult> rerankedResults;
-            bool wasReranked = false;
+            var wasReranked = false;
             string? fallbackReason = null;
 
             if (IsRerankingAvailable())
@@ -123,7 +124,9 @@ public class RerankingEngine : IRerankingEngine
                     metrics.Errors.Add($"Semantic reranking failed: {ex.Message}");
 
                     if (!options.EnableGracefulFallback)
+                    {
                         throw;
+                    }
 
                     rerankedResults = await PerformLocalScoringAsync(query, candidates, metrics, cancellationToken);
                     fallbackReason = "Semantic reranking failed";
@@ -170,7 +173,9 @@ public class RerankingEngine : IRerankingEngine
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!options.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, $"Reranking failed: {ex.Message}");
         }
@@ -184,7 +189,9 @@ public class RerankingEngine : IRerankingEngine
     )
     {
         if (_rerankingService == null)
+        {
             throw new InvalidOperationException("Reranking service not available");
+        }
 
         var stopwatch = Stopwatch.StartNew();
 
@@ -317,7 +324,9 @@ public class RerankingEngine : IRerankingEngine
     private static float CalculateContentQuality(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
+        {
             return 0.0f;
+        }
 
         // Simple content quality heuristics
         var length = content.Length;
@@ -352,7 +361,7 @@ public class RerankingEngine : IRerankingEngine
     )
     {
         var changes = 0;
-        for (int i = 0; i < rerankedResults.Count; i++)
+        for (var i = 0; i < rerankedResults.Count; i++)
         {
             if (originalPositions.TryGetValue(rerankedResults[i].Id, out var originalPosition) && originalPosition != i)
             {
@@ -368,7 +377,9 @@ public class RerankingEngine : IRerankingEngine
     )
     {
         if (originalResults.Count == 0 || rerankedResults.Count == 0)
+        {
             return 0.0f;
+        }
 
         var originalScoreMap = originalResults.ToDictionary(r => r.Id, r => r.Score);
         var scoreChanges = new List<float>();

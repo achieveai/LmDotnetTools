@@ -102,7 +102,7 @@ public class RerankingServiceTests
         Assert.All(result, doc => Assert.True(doc.Index >= 0 && doc.Index < documents.Length));
 
         // Verify ordering (highest score first)
-        for (int i = 1; i < result.Count; i++)
+        for (var i = 1; i < result.Count; i++)
         {
             Assert.True(result[i - 1].Score >= result[i].Score, "Documents should be ordered by descending score");
         }
@@ -185,7 +185,7 @@ public class RerankingServiceTests
         }
         else
         {
-            await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray));
+            _ = await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray));
             Debug.WriteLine($"Retry scenario failed as expected: {description}");
         }
     }
@@ -226,7 +226,7 @@ public class RerankingServiceTests
 
         // Act & Assert
         var stopwatch = Stopwatch.StartNew();
-        await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
+        _ = await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
         stopwatch.Stop();
 
         // Should try 3 times total (1 initial + 2 retries) with 500ms + 1000ms delays
@@ -250,7 +250,7 @@ public class RerankingServiceTests
 
         // Act & Assert
         var stopwatch = Stopwatch.StartNew();
-        await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
+        _ = await Assert.ThrowsAsync<HttpRequestException>(() => service.RerankAsync("test", documentsArray0));
         stopwatch.Stop();
 
         // Should fail immediately without retries
@@ -330,26 +330,26 @@ public class RerankingServiceTests
             new object[] { "query", Array.Empty<string>(), typeof(ArgumentException), "Empty documents array" },
         };
 
-    private static readonly string[] documents = new[] { "doc1", "doc2", "doc3" };
-    private static readonly string[] documentsArray = new[] { "doc1", "doc2" };
-    private static readonly string[] documentsArray0 = new[] { "doc1" };
-    private static readonly string[] item = new[]
-    {
+    private static readonly string[] documents = ["doc1", "doc2", "doc3"];
+    private static readonly string[] documentsArray = ["doc1", "doc2"];
+    private static readonly string[] documentsArray0 = ["doc1"];
+    private static readonly string[] item =
+    [
         "Paris is the capital of France",
         "London is in England",
         "Berlin is German",
-    };
-    private static readonly string[] itemArray = new[]
-    {
+    ];
+    private static readonly string[] itemArray =
+    [
         "AI and ML concepts",
         "Weather forecast",
         "Cooking recipes",
         "Deep learning basics",
         "Sports news",
-    };
-    private static readonly string[] itemArray0 = new[] { "Code quality guidelines", "Testing methodologies" };
-    private static readonly string[] itemArray1 = new[] { "doc1" };
-    private static readonly string[] itemArray2 = new[] { "doc1" };
+    ];
+    private static readonly string[] itemArray0 = ["Code quality guidelines", "Testing methodologies"];
+    private static readonly string[] itemArray1 = ["doc1"];
+    private static readonly string[] itemArray2 = ["doc1"];
 
     // Helper Methods
     private RerankingService CreateRerankingService(
@@ -376,7 +376,7 @@ public class RerankingServiceTests
     private static string CreateValidRerankResponse(int documentCount)
     {
         var results = new List<object>();
-        for (int i = 0; i < documentCount; i++)
+        for (var i = 0; i < documentCount; i++)
         {
             // Create realistic relevance scores that decrease
             var score = 0.9 - (i * 0.2); // Scores: 0.9, 0.7, 0.5, 0.3, 0.1
@@ -405,9 +405,15 @@ public class RerankingServiceTests
     private class TestLogger<T> : ILogger<T>
     {
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
+            where TState : notnull
+        {
+            return null;
+        }
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
 
         public void Log<TState>(
             LogLevel logLevel,

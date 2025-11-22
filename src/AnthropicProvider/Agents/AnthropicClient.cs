@@ -95,7 +95,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                 },
                 async (httpResponse) =>
                 {
-                    httpResponse.EnsureSuccessStatusCode();
+                    _ = httpResponse.EnsureSuccessStatusCode();
                     var responseContent = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
                     var anthropicResponse =
                         JsonSerializer.Deserialize<AnthropicResponse>(responseContent, _jsonOptions)
@@ -183,10 +183,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
                         cancellationToken
                     );
                 },
-                (httpResponse) =>
-                {
-                    return Task.FromResult(httpResponse.Content);
-                },
+                (httpResponse) => Task.FromResult(httpResponse.Content),
                 cancellationToken: cancellationToken
             );
 

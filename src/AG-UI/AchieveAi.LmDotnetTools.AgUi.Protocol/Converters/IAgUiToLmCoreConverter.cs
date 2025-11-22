@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
 
@@ -49,5 +48,6 @@ public interface IAgUiToLmCoreConverter
     /// <exception cref="ArgumentNullException">When input is null</exception>
     (IEnumerable<IMessage> messages, GenerateReplyOptions options) ConvertRunAgentInput(
         DataObjects.DTOs.RunAgentInput input,
-        IEnumerable<FunctionContract>? availableFunctions = null);
+        IEnumerable<FunctionContract>? availableFunctions = null
+    );
 }

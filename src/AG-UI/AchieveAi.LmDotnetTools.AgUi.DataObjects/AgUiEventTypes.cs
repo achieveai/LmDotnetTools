@@ -80,4 +80,34 @@ public static class AgUiEventTypes
     /// Signals the completion of a sub-agent step or task
     /// </summary>
     public const string STEP_FINISHED = "STEP_FINISHED";
+
+    /// <summary>
+    /// Signals the start of reasoning (chain-of-thought) with optional encrypted content
+    /// </summary>
+    public const string REASONING_START = "REASONING_START";
+
+    /// <summary>
+    /// Signals the beginning of a streaming reasoning message
+    /// </summary>
+    public const string REASONING_MESSAGE_START = "REASONING_MESSAGE_START";
+
+    /// <summary>
+    /// Streams reasoning content chunks
+    /// </summary>
+    public const string REASONING_MESSAGE_CONTENT = "REASONING_MESSAGE_CONTENT";
+
+    /// <summary>
+    /// Signals completion of a reasoning message
+    /// </summary>
+    public const string REASONING_MESSAGE_END = "REASONING_MESSAGE_END";
+
+    /// <summary>
+    /// Convenience event combining start/end logic for reasoning chunks
+    /// </summary>
+    public const string REASONING_MESSAGE_CHUNK = "REASONING_MESSAGE_CHUNK";
+
+    /// <summary>
+    /// Signals the end of the reasoning phase
+    /// </summary>
+    public const string REASONING_END = "REASONING_END";
 }

@@ -202,7 +202,7 @@ public partial class McpMiddleware : IStreamingMiddleware
                             );
 
                             // Extract and format text response
-                            string result = string.Join(
+                            var result = string.Join(
                                 Environment.NewLine,
                                 response.Content != null
                                     ? response

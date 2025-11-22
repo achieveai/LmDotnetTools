@@ -118,6 +118,8 @@ public static class MemoryTestDataFactory
         yield return new object[] { "test", 100, 0.1f, "High limit, low threshold" };
     }
 
+    private static readonly string[] value = ["important", "user-generated"];
+
     /// <summary>
     /// Generates test data for memory metadata scenarios.
     /// </summary>
@@ -150,7 +152,7 @@ public static class MemoryTestDataFactory
             {
                 { "source", "api" },
                 { "priority", 5 },
-                { "tags", new[] { "important", "user-generated" } },
+                { "tags", value },
             },
             "Complex metadata with arrays",
         };
@@ -188,7 +190,7 @@ public static class MemoryTestDataFactory
     public static List<Memory> CreateTestMemories(int count, SessionContext sessionContext)
     {
         var memories = new List<Memory>();
-        for (int i = 1; i <= count; i++)
+        for (var i = 1; i <= count; i++)
         {
             memories.Add(
                 CreateTestMemory(

@@ -32,7 +32,8 @@ public interface IMessageRepository
         string sessionId,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Retrieves all messages for all sessions in a conversation with optional pagination.
@@ -47,7 +48,8 @@ public interface IMessageRepository
         string conversationId,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Creates a new message in the database.

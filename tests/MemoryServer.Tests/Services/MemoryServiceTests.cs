@@ -19,6 +19,7 @@ public class MemoryServiceTests
     private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
     private readonly MemoryService _memoryService;
     private readonly MemoryServerOptions _options;
+    private static readonly float[] value = [0.1f, 0.2f, 0.3f];
 
     public MemoryServiceTests()
     {
@@ -37,15 +38,15 @@ public class MemoryServiceTests
         };
 
         var optionsMock = new Mock<IOptions<MemoryServerOptions>>();
-        optionsMock.Setup(x => x.Value).Returns(_options);
+        _ = optionsMock.Setup(x => x.Value).Returns(_options);
 
         var mockGraphMemoryService = new Mock<IGraphMemoryService>();
 
         // Setup mock embedding manager
-        _mockEmbeddingManager
+        _ = _mockEmbeddingManager
             .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
-        _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
+            .ReturnsAsync(value); // Mock embedding
+        _ = _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
 
         _memoryService = new MemoryService(
             _mockRepository,
@@ -284,7 +285,7 @@ public class MemoryServiceTests
         _mockRepository.Reset();
 
         // Add multiple test memories
-        for (int i = 1; i <= 3; i++)
+        for (var i = 1; i <= 3; i++)
         {
             var memory = MemoryTestDataFactory.CreateTestMemory(i, $"Test content {i}", "test-user");
             _mockRepository.AddTestMemory(memory);

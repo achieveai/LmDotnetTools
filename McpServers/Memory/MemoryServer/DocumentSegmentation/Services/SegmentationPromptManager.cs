@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -330,7 +329,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
             {
                 var prompt = ParsePromptTemplate(strategyDict);
                 var key = $"{strategy}_{_options.Prompts.DefaultLanguage}";
-                _promptCache.TryAdd(key, prompt);
+                _ = _promptCache.TryAdd(key, prompt);
 
                 _logger.LogDebug("Loaded prompt template for strategy: {Strategy}", strategy);
             }
@@ -347,7 +346,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
                 {
                     var prompt = ParsePromptTemplate(additionalDict);
                     var key = $"{strategyName}_{_options.Prompts.DefaultLanguage}";
-                    _promptCache.TryAdd(key, prompt);
+                    _ = _promptCache.TryAdd(key, prompt);
 
                     _logger.LogDebug("Loaded additional prompt template for: {Strategy}", strategyName);
                 }
@@ -367,7 +366,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
                 if (kvp.Key?.ToString() is string documentType && kvp.Value?.ToString() is string instructions)
                 {
                     var key = $"{documentType}_{_options.Prompts.DefaultLanguage}";
-                    _domainInstructionsCache.TryAdd(key, instructions.Trim());
+                    _ = _domainInstructionsCache.TryAdd(key, instructions.Trim());
                 }
             }
         }
@@ -420,11 +419,11 @@ public class SegmentationPromptManager : ISegmentationPromptManager
         foreach (var strategy in strategies)
         {
             var key = $"{strategy.ToString().ToLowerInvariant()}_en";
-            _promptCache.TryAdd(key, CreateFallbackPrompt(strategy));
+            _ = _promptCache.TryAdd(key, CreateFallbackPrompt(strategy));
         }
 
         // Add quality validation fallback
-        _promptCache.TryAdd("quality_validation_en", CreateFallbackQualityPrompt());
+        _ = _promptCache.TryAdd("quality_validation_en", CreateFallbackQualityPrompt());
     }
 
     private static PromptTemplate CreateFallbackPrompt(SegmentationStrategy strategy)

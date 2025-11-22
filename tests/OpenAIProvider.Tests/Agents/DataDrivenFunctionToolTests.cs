@@ -1,14 +1,10 @@
 using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
-using dotenv.net;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -17,12 +13,12 @@ public class DataDrivenFunctionToolTests
     private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
 
-    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
-    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
+    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
+    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
 
     [Theory]
     [MemberData(nameof(GetFunctionToolTestCases))]
@@ -38,7 +34,7 @@ public class DataDrivenFunctionToolTests
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -89,13 +85,13 @@ public class DataDrivenFunctionToolTests
         {
             if (expectedResponse is TextMessage expectedTextResponse)
             {
-                Assert.IsType<TextMessage>(responseItem);
+                _ = Assert.IsType<TextMessage>(responseItem);
                 Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
                 Assert.Equal(expectedTextResponse.Role, responseItem.Role);
             }
             else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
             {
-                Assert.IsType<ToolsCallAggregateMessage>(responseItem);
+                _ = Assert.IsType<ToolsCallAggregateMessage>(responseItem);
                 var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
                 Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
                 Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
@@ -117,7 +113,7 @@ public class DataDrivenFunctionToolTests
 
         // Verify that the last message is a UsageMessage
         var lastMessage = response.Last();
-        Assert.IsType<UsageMessage>(lastMessage);
+        _ = Assert.IsType<UsageMessage>(lastMessage);
 
         Debug.WriteLine($"Test {testName} completed successfully");
     }
@@ -141,8 +137,8 @@ public class DataDrivenFunctionToolTests
     public async Task CreateWeatherFunctionToolTestData()
     {
         // Skip if the test data already exists
-        string testName = "WeatherFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
+        var testName = "WeatherFunctionTool";
+        var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
 
         if (File.Exists(testDataPath))
         {
@@ -172,14 +168,14 @@ public class DataDrivenFunctionToolTests
             },
         };
 
-        var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = new[] { weatherFunction } };
+        var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = [weatherFunction] };
 
         // Save LmCore request
         _testDataManager.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages, options);
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -210,8 +206,8 @@ public class DataDrivenFunctionToolTests
     public async Task CreateMultiFunctionToolTestData()
     {
         // Skip if the test data already exists
-        string testName = "MultiFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
+        var testName = "MultiFunctionTool";
+        var testDataPath = _testDataManager.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
 
         if (File.Exists(testDataPath))
         {
@@ -268,7 +264,7 @@ public class DataDrivenFunctionToolTests
             ModelId = "gpt-4",
             MaxToken = 2000,
             Temperature = 0.7f,
-            Functions = new[] { listDirectoryFunction, getDirTreeFunction },
+            Functions = [listDirectoryFunction, getDirTreeFunction],
         };
 
         // Save LmCore request
@@ -276,7 +272,7 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",

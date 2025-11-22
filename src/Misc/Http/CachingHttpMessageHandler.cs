@@ -66,7 +66,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
         try
         {
             // Generate cache key from URL and POST body
-            var cacheKey = await CachingHttpMessageHandler.GenerateCacheKeyAsync(request, cancellationToken);
+            var cacheKey = await GenerateCacheKeyAsync(request, cancellationToken);
 
             // Try to get from cache first
             var cachedResponse = await GetFromCacheAsync(cacheKey, cancellationToken);
@@ -107,19 +107,19 @@ public class CachingHttpMessageHandler : DelegatingHandler
         var keyBuilder = new StringBuilder();
 
         // Add URL
-        keyBuilder.Append(request.RequestUri?.ToString() ?? "");
+        _ = keyBuilder.Append(request.RequestUri?.ToString() ?? "");
 
         // Add POST body if present
         if (request.Content != null)
         {
             var content = await request.Content.ReadAsStringAsync(cancellationToken);
-            keyBuilder.Append(content);
+            _ = keyBuilder.Append(content);
         }
 
         // Add relevant headers that might affect the response
         if (request.Headers.Authorization != null)
         {
-            keyBuilder.Append($"auth:{request.Headers.Authorization.Scheme}");
+            _ = keyBuilder.Append($"auth:{request.Headers.Authorization.Scheme}");
             // Don't include the actual token for security
         }
 
@@ -162,7 +162,7 @@ public class CachingHttpMessageHandler : DelegatingHandler
             // Add headers
             foreach (var header in cachedItem.Headers)
             {
-                response.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                _ = response.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
             return response;
@@ -285,7 +285,7 @@ public class CachingHttpContent : HttpContent
         // Copy headers from original content
         foreach (var header in _originalContent.Headers)
         {
-            Headers.TryAddWithoutValidation(header.Key, header.Value);
+            _ = Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
     }
 
@@ -476,18 +476,30 @@ public class CachingStream : Stream
         }
     }
 
-    public override void Flush() => _originalStream.Flush();
+    public override void Flush()
+    {
+        _originalStream.Flush();
+    }
 
-    public override Task FlushAsync(CancellationToken cancellationToken) =>
-        _originalStream.FlushAsync(cancellationToken);
+    public override Task FlushAsync(CancellationToken cancellationToken)
+    {
+        return _originalStream.FlushAsync(cancellationToken);
+    }
 
-    public override long Seek(long offset, SeekOrigin origin) =>
+    public override long Seek(long offset, SeekOrigin origin)
+    {
         throw new NotSupportedException("Seeking is not supported");
+    }
 
-    public override void SetLength(long value) => throw new NotSupportedException("SetLength is not supported");
+    public override void SetLength(long value)
+    {
+        throw new NotSupportedException("SetLength is not supported");
+    }
 
-    public override void Write(byte[] buffer, int offset, int count) =>
+    public override void Write(byte[] buffer, int offset, int count)
+    {
         throw new NotSupportedException("Writing is not supported");
+    }
 
     protected override void Dispose(bool disposing)
     {
@@ -511,7 +523,7 @@ public class CachingStream : Stream
             // Wait for the caching task to complete (but don't block indefinitely)
             try
             {
-                taskToWait?.Wait(TimeSpan.FromSeconds(5));
+                _ = (taskToWait?.Wait(TimeSpan.FromSeconds(5)));
             }
             catch (Exception ex)
             {

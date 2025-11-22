@@ -60,21 +60,21 @@ public static class ServiceCollectionExtensions
         if (builderDescriptor == null)
         {
             // No builder yet – register a new one with the cache wrapper pre-attached
-            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            _ = services.AddSingleton<IHttpHandlerBuilder>(sp =>
             {
                 var hb = new HandlerBuilder();
                 var store = sp.GetRequiredService<IKvStore>();
                 var opts = sp.GetRequiredService<LlmCacheOptions>();
-                hb.Use(StandardWrappers.WithKvCache(store, opts));
+                _ = hb.Use(StandardWrappers.WithKvCache(store, opts));
                 return hb;
             });
         }
         else
         {
             // Builder already registered – replace the descriptor with one that adds our wrapper lazily
-            services.Remove(builderDescriptor);
+            _ = services.Remove(builderDescriptor);
 
-            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            _ = services.AddSingleton<IHttpHandlerBuilder>(sp =>
             {
                 var innerBuilder =
                     (builderDescriptor.ImplementationInstance as HandlerBuilder)
@@ -83,7 +83,7 @@ public static class ServiceCollectionExtensions
 
                 var store = sp.GetRequiredService<IKvStore>();
                 var opts = sp.GetRequiredService<LlmCacheOptions>();
-                innerBuilder.Use(StandardWrappers.WithKvCache(store, opts));
+                _ = innerBuilder.Use(StandardWrappers.WithKvCache(store, opts));
                 return innerBuilder;
             });
         }
@@ -158,11 +158,11 @@ public static class ServiceCollectionExtensions
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        return AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
+        return HttpClientFactory.Create(
             new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(
                 apiKey,
                 baseUrl,
-                AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.OpenAI
+                ProviderType.OpenAI
             ),
             handlerBuilder,
             timeout,
@@ -192,11 +192,11 @@ public static class ServiceCollectionExtensions
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        return AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
+        return HttpClientFactory.Create(
             new AchieveAi.LmDotnetTools.LmConfig.Http.ProviderConfig(
                 apiKey,
                 baseUrl,
-                AchieveAi.LmDotnetTools.LmConfig.Http.ProviderType.Anthropic
+                ProviderType.Anthropic
             ),
             handlerBuilder,
             timeout,
@@ -219,7 +219,7 @@ public static class ServiceCollectionExtensions
         var handlerBuilder = sp.GetRequiredService<IHttpHandlerBuilder>();
         var logger = sp.GetService<ILogger<CachingHttpMessageHandler>>();
 
-        var newClient = AchieveAi.LmDotnetTools.LmConfig.Http.HttpClientFactory.Create(
+        var newClient = HttpClientFactory.Create(
             provider: null,
             pipeline: handlerBuilder,
             timeout: existingClient.Timeout,
@@ -230,7 +230,7 @@ public static class ServiceCollectionExtensions
         newClient.BaseAddress = existingClient.BaseAddress;
         foreach (var h in existingClient.DefaultRequestHeaders)
         {
-            newClient.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
+            _ = newClient.DefaultRequestHeaders.TryAddWithoutValidation(h.Key, h.Value);
         }
 
         return newClient;

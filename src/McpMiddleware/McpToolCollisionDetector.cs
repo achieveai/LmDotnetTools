@@ -53,7 +53,7 @@ public class McpToolCollisionDetector
                         Name = tool.Name,
                         Description = tool.Description ?? string.Empty,
                     },
-                    Handler = _ => System.Threading.Tasks.Task.FromResult(string.Empty), // Dummy handler
+                    Handler = _ => Task.FromResult(string.Empty), // Dummy handler
                     ProviderName = serverId,
                 };
 

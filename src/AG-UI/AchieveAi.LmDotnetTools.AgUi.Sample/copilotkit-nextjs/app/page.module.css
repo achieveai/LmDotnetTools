@@ -1,30 +1,10 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  min-height: 100vh;
-}
-
-.App {
-  min-height: 100vh;
-  padding: 20px;
-}
-
 .container {
   max-width: 1200px;
   margin: 0 auto;
+  padding: 20px;
 }
 
-header {
+.container header {
   background: white;
   border-radius: 12px;
   padding: 30px;
@@ -32,25 +12,25 @@ header {
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
-header h1 {
+.container header h1 {
   color: #333;
   margin-bottom: 10px;
 }
 
-header p {
+.container header p {
   color: #666;
   margin-bottom: 20px;
   font-size: 16px;
 }
 
-.info-banner {
+.infoBanner {
   display: flex;
   gap: 20px;
   flex-wrap: wrap;
   margin-top: 15px;
 }
 
-.info-banner p {
+.infoBanner p {
   background: #f0f4ff;
   padding: 8px 16px;
   border-radius: 6px;
@@ -59,7 +39,7 @@ header p {
   margin: 0;
 }
 
-main {
+.container main {
   min-height: calc(100vh - 200px);
 }
 
@@ -70,7 +50,7 @@ main {
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
-.welcome-card h2 {
+.welcomeCard h2 {
   color: #333;
   margin-bottom: 30px;
   font-size: 28px;
@@ -107,14 +87,14 @@ main {
   color: #667eea;
 }
 
-.prompts-grid {
+.promptsGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 15px;
   margin-top: 15px;
 }
 
-.prompt-card {
+.promptCard {
   background: #f8f9fa;
   border: 2px solid #e9ecef;
   border-radius: 8px;
@@ -124,18 +104,18 @@ main {
   transition: all 0.2s;
 }
 
-.prompt-card:hover {
+.promptCard:hover {
   border-color: #667eea;
   transform: translateY(-2px);
   box-shadow: 0 4px 8px rgba(102, 126, 234, 0.2);
 }
 
-.prompt-icon {
+.promptIcon {
   font-size: 32px;
   margin-bottom: 10px;
 }
 
-.prompt-card p {
+.promptCard p {
   color: #555;
   font-size: 14px;
   margin: 0;
@@ -150,7 +130,7 @@ main {
   flex-wrap: wrap;
 }
 
-.arch-step {
+.archStep {
   display: flex;
   align-items: center;
   gap: 15px;
@@ -160,7 +140,7 @@ main {
   min-width: 200px;
 }
 
-.arch-number {
+.archNumber {
   width: 40px;
   height: 40px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -173,28 +153,28 @@ main {
   font-size: 18px;
 }
 
-.arch-content {
+.archContent {
   display: flex;
   flex-direction: column;
 }
 
-.arch-content strong {
+.archContent strong {
   color: #333;
   font-size: 16px;
 }
 
-.arch-content small {
+.archContent small {
   color: #999;
   font-size: 13px;
 }
 
-.arch-arrow {
+.archArrow {
   font-size: 24px;
   color: #667eea;
   font-weight: bold;
 }
 
-.features-grid {
+.featuresGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 15px;
@@ -210,7 +190,7 @@ main {
   border-radius: 6px;
 }
 
-.feature-icon {
+.featureIcon {
   font-size: 18px;
 }
 
@@ -219,12 +199,12 @@ main {
   font-size: 14px;
 }
 
-.tech-stack {
+.techStack {
   padding-top: 20px;
   border-top: 2px solid #f0f4ff;
 }
 
-.stack-tags {
+.stackTags {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
@@ -240,23 +220,17 @@ main {
   font-weight: 500;
 }
 
-/* CopilotKit customization */
-:root {
-  --copilot-kit-primary-color: #667eea;
-  --copilot-kit-secondary-color: #764ba2;
-}
-
 /* Responsive */
 @media (max-width: 768px) {
-  .App {
+  .container {
     padding: 10px;
   }
 
-  header {
+  .container header {
     padding: 20px;
   }
 
-  .info-banner {
+  .infoBanner {
     flex-direction: column;
   }
 
@@ -264,7 +238,7 @@ main {
     padding: 20px;
   }
 
-  .prompts-grid {
+  .promptsGrid {
     grid-template-columns: 1fr;
   }
 
@@ -272,11 +246,11 @@ main {
     flex-direction: column;
   }
 
-  .arch-arrow {
+  .archArrow {
     transform: rotate(90deg);
   }
 
-  .features-grid {
+  .featuresGrid {
     grid-template-columns: 1fr;
   }
 }

@@ -168,7 +168,7 @@ public static class EmbeddingResults
             Source = ErrorSource.Validation,
             RequestId = requestId,
             IsRetryable = false,
-            ValidationErrors = ImmutableList.Create(validationError),
+            ValidationErrors = [validationError],
         };
 
         return EmbeddingServiceResult<T>.CreateFailure(error);

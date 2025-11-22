@@ -1,7 +1,6 @@
 using System.Net;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using Xunit;
 
 namespace LmTestUtils.Tests;
 
@@ -303,10 +302,7 @@ public class ErrorResponseTests
         };
 
         // Act & Assert
-        await Assert.ThrowsAsync<TaskCanceledException>(async () =>
-        {
-            await client.GetAsync("https://api.anthropic.com/v1/messages");
-        });
+        _ = await Assert.ThrowsAsync<TaskCanceledException>(async () => await client.GetAsync("https://api.anthropic.com/v1/messages"));
     }
 
     [Fact]

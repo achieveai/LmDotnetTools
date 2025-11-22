@@ -2,7 +2,6 @@ using MemoryServer.Models;
 using MemoryServer.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Xunit;
 
 namespace MemoryServer.Tests.Services;
 
@@ -38,7 +37,7 @@ public class DeduplicationEngineTests
     public async Task DeduplicateResultsAsync_WithNullResults_ThrowsArgumentNullException()
     {
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+        _ = await Assert.ThrowsAsync<ArgumentNullException>(() =>
             _deduplicationEngine.DeduplicateResultsAsync(null!, _sessionContext)
         );
     }
@@ -70,7 +69,7 @@ public class DeduplicationEngineTests
 
         // Assert
         Assert.NotNull(deduplicationResults);
-        Assert.Single(deduplicationResults.Results);
+        _ = Assert.Single(deduplicationResults.Results);
         Assert.False(deduplicationResults.WasDeduplicationPerformed);
         Assert.Equal("Deduplication disabled or insufficient results", deduplicationResults.FallbackReason);
     }

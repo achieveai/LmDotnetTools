@@ -122,7 +122,7 @@ public class SqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        await ExecuteAsync(
+        _ = await ExecuteAsync(
             async conn =>
             {
                 await operation(conn);
@@ -137,7 +137,7 @@ public class SqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        await ExecuteInTransactionAsync(
+        _ = await ExecuteInTransactionAsync(
             async (conn, trans) =>
             {
                 await operation(conn, trans);
@@ -173,7 +173,9 @@ public class SqliteSession : ISqliteSession
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _logger.LogDebug(
             "Disposing SQLite session {SessionId} after {ElapsedMs}ms with {OperationCount} operations",
@@ -189,11 +191,11 @@ public class SqliteSession : ISqliteSession
                 // Force WAL checkpoint before closing to ensure all data is written
                 try
                 {
-                    await ExecuteAsync(async conn =>
+                    _ = await ExecuteAsync(async conn =>
                     {
                         using var cmd = conn.CreateCommand();
                         cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
-                        await cmd.ExecuteNonQueryAsync();
+                        _ = await cmd.ExecuteNonQueryAsync();
                         _logger.LogDebug("WAL checkpoint completed for session {SessionId}", SessionId);
                         return true;
                     });
@@ -232,7 +234,9 @@ public class SqliteSession : ISqliteSession
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         if (_disposed)
+        {
             throw new ObjectDisposedException(nameof(SqliteSession), $"Session {SessionId} is disposed");
+        }
 
         if (_connection == null)
         {
@@ -302,7 +306,7 @@ public class SqliteSession : ISqliteSession
             {
                 using var cmd = connection.CreateCommand();
                 cmd.CommandText = pragma;
-                await cmd.ExecuteNonQueryAsync(cancellationToken);
+                _ = await cmd.ExecuteNonQueryAsync(cancellationToken);
             }
             catch (Exception ex)
             {

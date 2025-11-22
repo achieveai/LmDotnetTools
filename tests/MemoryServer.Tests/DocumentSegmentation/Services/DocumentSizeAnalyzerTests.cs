@@ -3,7 +3,6 @@ using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -51,15 +50,15 @@ public class DocumentSizeAnalyzerTests
         var result = await _analyzer.AnalyzeDocumentAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result.CharacterCount.Should().Be(content.Length);
-        result.WordCount.Should().BeGreaterThan(0);
-        result.SentenceCount.Should().BeGreaterThan(0);
-        result.ParagraphCount.Should().Be(2); // Two paragraphs separated by \n\n
-        result.TokenCount.Should().BeGreaterThan(0);
+        _ = result.Should().NotBeNull();
+        _ = result.CharacterCount.Should().Be(content.Length);
+        _ = result.WordCount.Should().BeGreaterThan(0);
+        _ = result.SentenceCount.Should().BeGreaterThan(0);
+        _ = result.ParagraphCount.Should().Be(2); // Two paragraphs separated by \n\n
+        _ = result.TokenCount.Should().BeGreaterThan(0);
 
         // Token count should be roughly 1/4 of character count
-        result.TokenCount.Should().BeInRange(content.Length / 5, content.Length / 3);
+        _ = result.TokenCount.Should().BeInRange(content.Length / 5, content.Length / 3);
     }
 
     [Fact]
@@ -72,12 +71,12 @@ public class DocumentSizeAnalyzerTests
         var result = await _analyzer.AnalyzeDocumentAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result.CharacterCount.Should().Be(0);
-        result.WordCount.Should().Be(0);
-        result.SentenceCount.Should().Be(0);
-        result.ParagraphCount.Should().Be(1); // Default count
-        result.TokenCount.Should().Be(0);
+        _ = result.Should().NotBeNull();
+        _ = result.CharacterCount.Should().Be(0);
+        _ = result.WordCount.Should().Be(0);
+        _ = result.SentenceCount.Should().Be(0);
+        _ = result.ParagraphCount.Should().Be(1); // Default count
+        _ = result.TokenCount.Should().Be(0);
     }
 
     [Fact]
@@ -90,11 +89,11 @@ public class DocumentSizeAnalyzerTests
         var result = await _analyzer.AnalyzeDocumentAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result.CharacterCount.Should().Be(content.Length);
-        result.WordCount.Should().Be(0);
-        result.SentenceCount.Should().Be(0);
-        result.TokenCount.Should().Be(0);
+        _ = result.Should().NotBeNull();
+        _ = result.CharacterCount.Should().Be(content.Length);
+        _ = result.WordCount.Should().Be(0);
+        _ = result.SentenceCount.Should().Be(0);
+        _ = result.TokenCount.Should().Be(0);
     }
 
     [Theory]
@@ -117,7 +116,7 @@ public class DocumentSizeAnalyzerTests
         var result = _analyzer.ShouldSegmentDocument(statistics, documentType);
 
         // Assert
-        result.Should().Be(expectedResult);
+        _ = result.Should().Be(expectedResult);
     }
 
     [Theory]
@@ -139,8 +138,8 @@ public class DocumentSizeAnalyzerTests
         var result = _analyzer.CalculateOptimalSegmentCount(statistics, targetSize, maxSize);
 
         // Assert
-        result.Should().Be(expectedCount);
-        result.Should().BeGreaterThan(0);
+        _ = result.Should().Be(expectedCount);
+        _ = result.Should().BeGreaterThan(0);
     }
 
     [Theory]
@@ -158,8 +157,8 @@ public class DocumentSizeAnalyzerTests
         var result = _analyzer.EstimateProcessingTime(statistics, strategy);
 
         // Assert
-        result.Should().BeGreaterThan(0);
-        result.Should().BeLessThan(60000); // Less than 1 minute for 1000 words
+        _ = result.Should().BeGreaterThan(0);
+        _ = result.Should().BeLessThan(60000); // Less than 1 minute for 1000 words
     }
 
     [Fact]
@@ -173,7 +172,7 @@ public class DocumentSizeAnalyzerTests
         var result = _analyzer.EstimateProcessingTime(statistics, SegmentationStrategy.Hybrid);
 
         // Assert
-        result.Should().BeGreaterThan(5000); // Should include LLM overhead
+        _ = result.Should().BeGreaterThan(5000); // Should include LLM overhead
     }
 
     [Fact]
@@ -187,6 +186,6 @@ public class DocumentSizeAnalyzerTests
         var result = _analyzer.EstimateProcessingTime(statistics, SegmentationStrategy.StructureBased);
 
         // Assert
-        result.Should().BeLessThan(1000); // Should not include LLM overhead
+        _ = result.Should().BeLessThan(1000); // Should not include LLM overhead
     }
 }

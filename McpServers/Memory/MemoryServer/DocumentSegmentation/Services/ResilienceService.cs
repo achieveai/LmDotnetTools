@@ -1,5 +1,4 @@
 using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -91,7 +90,7 @@ public class ResilienceService : IResilienceService
         double ResponseTimeMs,
         bool Success,
         bool UsedFallback
-    )> _recentOperations = new();
+    )> _recentOperations = [];
     private const int MaxRecentOperations = 1000;
 
     public ResilienceService(
@@ -627,10 +626,7 @@ public class ResilienceService : IResilienceService
     {
         // Combine circuit breaker and retry policy
         return await _circuitBreaker.ExecuteAsync(
-            async () =>
-            {
-                return await _retryPolicy.ExecuteAsync(operation, operationName, cancellationToken);
-            },
+            async () => await _retryPolicy.ExecuteAsync(operation, operationName, cancellationToken),
             operationName,
             cancellationToken
         );
@@ -718,7 +714,9 @@ public class ResilienceService : IResilienceService
     private static double CalculatePercentile(List<double> sortedValues, double percentile)
     {
         if (sortedValues.Count == 0)
+        {
             return 0;
+        }
 
         var index = (int)Math.Ceiling(sortedValues.Count * percentile) - 1;
         index = Math.Max(0, Math.Min(index, sortedValues.Count - 1));
@@ -735,7 +733,9 @@ public class ResilienceService : IResilienceService
                 .ToList();
 
             if (baselineOps.Count == 0)
+            {
                 return 0;
+            }
 
             var baselineAverage = baselineOps.Average(op => op.ResponseTimeMs);
             return (currentResponseTime - baselineAverage) / baselineAverage;

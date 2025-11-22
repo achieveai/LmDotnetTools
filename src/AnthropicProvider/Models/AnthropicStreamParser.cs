@@ -70,7 +70,7 @@ public class AnthropicStreamParser
                 case "message_delta":
                     return HandleMessageDelta(json);
                 case "message_stop":
-                    return AnthropicStreamParser.HandleMessageStop(json);
+                    return HandleMessageStop(json);
                 case "ping":
                     return []; // Ignore ping events
                 default:
@@ -103,9 +103,9 @@ public class AnthropicStreamParser
             ),
             AnthropicContentBlockStopEvent contentBlockStopEvent => HandleTypedContentBlockStop(contentBlockStopEvent),
             AnthropicMessageDeltaEvent messageDeltaEvent => HandleTypedMessageDelta(messageDeltaEvent),
-            AnthropicMessageStopEvent => AnthropicStreamParser.HandleTypedMessageStop(),
+            AnthropicMessageStopEvent => HandleTypedMessageStop(),
             AnthropicPingEvent => [], // Ignore ping events
-            AnthropicErrorEvent errorEvent => AnthropicStreamParser.HandleTypedError(errorEvent),
+            AnthropicErrorEvent errorEvent => HandleTypedError(errorEvent),
             _ => [], // Unknown event type
         };
     }
@@ -163,8 +163,7 @@ public class AnthropicStreamParser
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                ToolCallUpdates = ImmutableList.Create(
-                    new ToolCallUpdate
+                ToolCallUpdates = [new ToolCallUpdate
                     {
                         ToolCallId = _contentBlocks[index].Id!,
                         Index = index,
@@ -174,8 +173,7 @@ public class AnthropicStreamParser
                             : null,
                         // Only include FunctionArgs if Input is available
                         FunctionArgs = input != null && input.Count > 0 ? input.ToJsonString() : null,
-                    }
-                ),
+                    }],
             };
 
             return [toolUpdate];
@@ -206,45 +204,48 @@ public class AnthropicStreamParser
         switch (deltaType)
         {
             case "text_delta":
-            {
-                var text = delta["text"]?.GetValue<string>() ?? string.Empty;
-                block.Text += text;
-
-                // Return a TextUpdateMessage for the delta
-                var textUpdate = new TextUpdateMessage
                 {
-                    Text = text,
-                    Role = ParseRole(_role),
-                    FromAgent = _messageId,
-                    GenerationId = _messageId,
-                    IsThinking = false,
-                };
+                    var text = delta["text"]?.GetValue<string>() ?? string.Empty;
+                    block.Text += text;
 
-                return [textUpdate];
-            }
+                    // Return a TextUpdateMessage for the delta
+                    var textUpdate = new TextUpdateMessage
+                    {
+                        Text = text,
+                        Role = ParseRole(_role),
+                        FromAgent = _messageId,
+                        GenerationId = _messageId,
+                        IsThinking = false,
+                    };
+
+                    return [textUpdate];
+                }
 
             case "thinking_delta":
-            {
-                var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
-                block.Text = thinkingText; // Replace with latest thinking
-
-                // Return a TextUpdateMessage for the thinking update
-                var thinkingUpdate = new TextUpdateMessage
                 {
-                    Text = thinkingText,
-                    Role = ParseRole(_role),
-                    FromAgent = _messageId,
-                    GenerationId = _messageId,
-                    IsThinking = true,
-                };
+                    var thinkingText = delta["thinking"]?.GetValue<string>() ?? string.Empty;
+                    block.Text = thinkingText; // Replace with latest thinking
 
-                return [thinkingUpdate];
-            }
+                    // Return a TextUpdateMessage for the thinking update
+                    var thinkingUpdate = new TextUpdateMessage
+                    {
+                        Text = thinkingText,
+                        Role = ParseRole(_role),
+                        FromAgent = _messageId,
+                        GenerationId = _messageId,
+                        IsThinking = true,
+                    };
+
+                    return [thinkingUpdate];
+                }
 
             case "input_json_delta":
-            {
-                return HandleJsonDelta(block, delta["partial_json"]?.GetValue<string>() ?? string.Empty);
-            }
+                {
+                    return HandleJsonDelta(block, delta["partial_json"]?.GetValue<string>() ?? string.Empty);
+                }
+
+            default:
+                break;
         }
 
         return [];
@@ -360,7 +361,7 @@ public class AnthropicStreamParser
     /// </summary>
     public List<IMessage> GetAllMessages()
     {
-        return _messages.ToList();
+        return [.. _messages];
     }
 
     private static Role ParseRole(string role)
@@ -445,8 +446,7 @@ public class AnthropicStreamParser
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                ToolCallUpdates = ImmutableList.Create(
-                    new ToolCallUpdate
+                ToolCallUpdates = [new ToolCallUpdate
                     {
                         ToolCallId = block.Id!,
                         Index = block.Index,
@@ -454,8 +454,7 @@ public class AnthropicStreamParser
                         FunctionName = !string.IsNullOrEmpty(block.Name) ? block.Name : null,
                         // Include the raw JSON as it's being built
                         FunctionArgs = partialJson,
-                    }
-                ),
+                    }],
             };
 
             return [toolUpdate];
@@ -516,9 +515,7 @@ public class AnthropicStreamParser
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,
-            ToolCalls = ImmutableList.Create(
-                new ToolCall(functionName, functionArgs) { ToolCallId = block.Id ?? string.Empty }
-            ),
+            ToolCalls = [new ToolCall(functionName, functionArgs) { ToolCallId = block.Id ?? string.Empty }],
         };
 
         // Apply usage metadata if available
@@ -540,7 +537,7 @@ public class AnthropicStreamParser
 
         public void AddDelta(string partialJson)
         {
-            _jsonBuffer.Append(partialJson);
+            _ = _jsonBuffer.Append(partialJson);
 
             try
             {
@@ -556,9 +553,15 @@ public class AnthropicStreamParser
 
         public bool IsComplete => _parsedInput != null;
 
-        public JsonNode? GetParsedInput() => _parsedInput;
+        public JsonNode? GetParsedInput()
+        {
+            return _parsedInput;
+        }
 
-        public string GetRawJson() => _jsonBuffer.ToString();
+        public string GetRawJson()
+        {
+            return _jsonBuffer.ToString();
+        }
     }
 
     /// <summary>
@@ -641,8 +644,7 @@ public class AnthropicStreamParser
                 Role = ParseRole(_role),
                 FromAgent = _messageId,
                 GenerationId = _messageId,
-                ToolCallUpdates = ImmutableList.Create(
-                    new ToolCallUpdate
+                ToolCallUpdates = [new ToolCallUpdate
                     {
                         ToolCallId = toolUseTool.Id,
                         Index = index,
@@ -654,8 +656,7 @@ public class AnthropicStreamParser
                             && toolUseTool.Input.GetPropertyCount() > 0
                                 ? toolUseTool.Input.ToString()
                                 : "", // Use empty object for no args instead of empty string
-                    }
-                ),
+                    }],
             };
 
             return [toolUpdate];
@@ -687,7 +688,7 @@ public class AnthropicStreamParser
             AnthropicTextDelta textDelta => HandleTextDelta(block, textDelta),
             AnthropicThinkingDelta thinkingDelta => HandleThinkingDelta(block, thinkingDelta),
             AnthropicInputJsonDelta inputJsonDelta => HandleInputJsonDelta(block, inputJsonDelta),
-            AnthropicSignatureDelta signatureDelta => AnthropicStreamParser.HandleSignatureDelta(block, signatureDelta),
+            AnthropicSignatureDelta signatureDelta => HandleSignatureDelta(block, signatureDelta),
             AnthropicToolCallsDelta toolCallsDelta => HandleToolCallsDelta(toolCallsDelta),
             _ => [],
         };
@@ -754,8 +755,7 @@ public class AnthropicStreamParser
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,
-            ToolCallUpdates = ImmutableList.Create(
-                new ToolCallUpdate
+            ToolCallUpdates = [new ToolCallUpdate
                 {
                     ToolCallId = toolCall.Id,
                     Index = toolCall.Index,
@@ -766,8 +766,7 @@ public class AnthropicStreamParser
                         toolCall.Input.ValueKind != JsonValueKind.Undefined && toolCall.Input.GetPropertyCount() > 0
                             ? toolCall.Input.ToString()
                             : "",
-                }
-            ),
+                }],
         };
 
         return [toolUpdate];

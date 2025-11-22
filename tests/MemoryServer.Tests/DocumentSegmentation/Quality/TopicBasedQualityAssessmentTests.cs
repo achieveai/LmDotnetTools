@@ -1,12 +1,9 @@
-using System.Text;
 using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Quality;
@@ -29,10 +26,7 @@ public class TopicBasedQualityAssessmentTests
         _mockLlmService = new Mock<ILlmProviderIntegrationService>();
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
 
-        var loggerFactory = LoggerFactory.Create(builder =>
-        {
-            builder.AddConsole().SetMinimumLevel(LogLevel.Information);
-        });
+        var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
         _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
@@ -53,17 +47,17 @@ public class TopicBasedQualityAssessmentTests
     )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running coherence test: {testName}");
-        System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine($"Expected range: {expectedMinCoherence:F2} - {expectedMaxCoherence:F2}");
-        System.Diagnostics.Debug.WriteLine($"Content length: {content.Length} characters");
+        Debug.WriteLine($"Running coherence test: {testName}");
+        Debug.WriteLine($"Description: {description}");
+        Debug.WriteLine($"Expected range: {expectedMinCoherence:F2} - {expectedMaxCoherence:F2}");
+        Debug.WriteLine($"Content length: {content.Length} characters");
 
         // Act
         var result = await _service.AnalyzeThematicCoherenceAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result
+        _ = result.Should().NotBeNull();
+        _ = result
             .CoherenceScore.Should()
             .BeInRange(
                 expectedMinCoherence,
@@ -71,14 +65,14 @@ public class TopicBasedQualityAssessmentTests
                 $"Coherence score for {testName} should be between {expectedMinCoherence:F2} and {expectedMaxCoherence:F2}"
             );
 
-        System.Diagnostics.Debug.WriteLine($"Actual coherence score: {result.CoherenceScore:F2}");
-        System.Diagnostics.Debug.WriteLine($"Primary topic: {result.PrimaryTopic}");
-        System.Diagnostics.Debug.WriteLine($"Topic keywords: [{string.Join(", ", result.TopicKeywords)}]");
+        Debug.WriteLine($"Actual coherence score: {result.CoherenceScore:F2}");
+        Debug.WriteLine($"Primary topic: {result.PrimaryTopic}");
+        Debug.WriteLine($"Topic keywords: [{string.Join(", ", result.TopicKeywords)}]");
 
         // Additional quality checks
-        result.SemanticUnity.Should().BeInRange(0.0, 1.0);
-        result.TopicConsistency.Should().BeInRange(0.0, 1.0);
-        result.PrimaryTopic.Should().NotBeNullOrWhiteSpace();
+        _ = result.SemanticUnity.Should().BeInRange(0.0, 1.0);
+        _ = result.TopicConsistency.Should().BeInRange(0.0, 1.0);
+        _ = result.PrimaryTopic.Should().NotBeNullOrWhiteSpace();
 
         _output.WriteLine($"{testName}: Score={result.CoherenceScore:F2}, Topic={result.PrimaryTopic}");
     }
@@ -99,28 +93,28 @@ public class TopicBasedQualityAssessmentTests
       Electric vehicles are becoming more prevalent due to environmental concerns.
     ";
 
-        System.Diagnostics.Debug.WriteLine($"Multi-topic content: {multiTopicContent}");
+        Debug.WriteLine($"Multi-topic content: {multiTopicContent}");
 
         // Act
         var result = await _service.AnalyzeThematicCoherenceAsync(multiTopicContent);
 
-        System.Diagnostics.Debug.WriteLine(
+        Debug.WriteLine(
             $"Coherence result: Score={result.CoherenceScore:F3}, PrimaryTopic={result.PrimaryTopic}"
         );
 
         // Assert
-        result.Should().NotBeNull();
+        _ = result.Should().NotBeNull();
 
         // Multiple topics should result in lower coherence
-        result
+        _ = result
             .CoherenceScore.Should()
             .BeLessThan(0.8, "Content with multiple distinct topics should have lower coherence");
 
         // Should identify topic diversity
-        result.TopicKeywords.Should().HaveCountGreaterThan(5, "Multi-topic content should have diverse keywords");
+        _ = result.TopicKeywords.Should().HaveCountGreaterThan(5, "Multi-topic content should have diverse keywords");
 
-        System.Diagnostics.Debug.WriteLine($"Multi-topic coherence: {result.CoherenceScore:F2}");
-        System.Diagnostics.Debug.WriteLine($"Keywords found: [{string.Join(", ", result.TopicKeywords)}]");
+        Debug.WriteLine($"Multi-topic coherence: {result.CoherenceScore:F2}");
+        Debug.WriteLine($"Keywords found: [{string.Join(", ", result.TopicKeywords)}]");
     }
 
     #endregion
@@ -139,10 +133,10 @@ public class TopicBasedQualityAssessmentTests
     )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running similarity test: {testName}");
-        System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine($"Segment 1 length: {segment1.Length}");
-        System.Diagnostics.Debug.WriteLine($"Segment 2 length: {segment2.Length}");
+        Debug.WriteLine($"Running similarity test: {testName}");
+        Debug.WriteLine($"Description: {description}");
+        Debug.WriteLine($"Segment 1 length: {segment1.Length}");
+        Debug.WriteLine($"Segment 2 length: {segment2.Length}");
 
         var segments = new List<DocumentSegment> { CreateSegment("1", segment1, 0), CreateSegment("2", segment2, 1) };
 
@@ -150,13 +144,13 @@ public class TopicBasedQualityAssessmentTests
         var validation = await _service.ValidateTopicSegmentsAsync(segments, segment1 + "\n\n" + segment2);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Check segment independence (inverse of similarity)
         var independence = validation.SegmentIndependence;
         var similarity = 1.0 - independence; // Convert independence to similarity
 
-        similarity
+        _ = similarity
             .Should()
             .BeInRange(
                 expectedMinSimilarity,
@@ -164,8 +158,8 @@ public class TopicBasedQualityAssessmentTests
                 $"Similarity for {testName} should be between {expectedMinSimilarity:F2} and {expectedMaxSimilarity:F2}"
             );
 
-        System.Diagnostics.Debug.WriteLine($"Calculated similarity: {similarity:F2}");
-        System.Diagnostics.Debug.WriteLine($"Segment independence: {independence:F2}");
+        Debug.WriteLine($"Calculated similarity: {similarity:F2}");
+        Debug.WriteLine($"Segment independence: {independence:F2}");
 
         _output.WriteLine($"{testName}: Similarity={similarity:F2}, Independence={independence:F2}");
     }
@@ -182,16 +176,16 @@ public class TopicBasedQualityAssessmentTests
         };
 
         var originalContent = string.Join("\n\n", similarSegments.Select(s => s.Content));
-        System.Diagnostics.Debug.WriteLine($"Testing similar segments with content length: {originalContent.Length}");
+        Debug.WriteLine($"Testing similar segments with content length: {originalContent.Length}");
 
         // Act
         var validation = await _service.ValidateTopicSegmentsAsync(similarSegments, originalContent);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Should identify low independence due to similarity
-        validation
+        _ = validation
             .SegmentIndependence.Should()
             .BeLessThan(0.7, "Similar segments should have low independence scores");
 
@@ -203,10 +197,10 @@ public class TopicBasedQualityAssessmentTests
             )
             .ToList();
 
-        consolidationRecommendations.Should().NotBeEmpty("Should recommend consolidating similar segments");
+        _ = consolidationRecommendations.Should().NotBeEmpty("Should recommend consolidating similar segments");
 
-        System.Diagnostics.Debug.WriteLine($"Independence score: {validation.SegmentIndependence:F2}");
-        System.Diagnostics.Debug.WriteLine($"Consolidation recommendations: {consolidationRecommendations.Count}");
+        Debug.WriteLine($"Independence score: {validation.SegmentIndependence:F2}");
+        Debug.WriteLine($"Consolidation recommendations: {consolidationRecommendations.Count}");
     }
 
     #endregion
@@ -225,10 +219,10 @@ public class TopicBasedQualityAssessmentTests
     )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running coverage test: {testName}");
-        System.Diagnostics.Debug.WriteLine($"Description: {description}");
-        System.Diagnostics.Debug.WriteLine($"Original document length: {originalDocument.Length}");
-        System.Diagnostics.Debug.WriteLine($"Number of segments: {segmentContents.Count}");
+        Debug.WriteLine($"Running coverage test: {testName}");
+        Debug.WriteLine($"Description: {description}");
+        Debug.WriteLine($"Original document length: {originalDocument.Length}");
+        Debug.WriteLine($"Number of segments: {segmentContents.Count}");
 
         var segments = segmentContents
             .Select((content, index) => CreateSegment((index + 1).ToString(), content, index))
@@ -238,8 +232,8 @@ public class TopicBasedQualityAssessmentTests
         var validation = await _service.ValidateTopicSegmentsAsync(segments, originalDocument);
 
         // Assert
-        validation.Should().NotBeNull();
-        validation
+        _ = validation.Should().NotBeNull();
+        _ = validation
             .TopicCoverage.Should()
             .BeInRange(
                 expectedMinCoverage,
@@ -247,8 +241,8 @@ public class TopicBasedQualityAssessmentTests
                 $"Topic coverage for {testName} should be between {expectedMinCoverage:F2} and {expectedMaxCoverage:F2}"
             );
 
-        System.Diagnostics.Debug.WriteLine($"Actual topic coverage: {validation.TopicCoverage:F2}");
-        System.Diagnostics.Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"Actual topic coverage: {validation.TopicCoverage:F2}");
+        Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
 
         _output.WriteLine(
             $"{testName}: Coverage={validation.TopicCoverage:F2}, Quality={validation.OverallQuality:F2}"
@@ -282,23 +276,23 @@ public class TopicBasedQualityAssessmentTests
             CreateSegment("2", "Education systems evolved with online learning platforms for global access.", 1),
         };
 
-        System.Diagnostics.Debug.WriteLine($"Testing incomplete coverage with {incompleteSegments.Count} segments");
+        Debug.WriteLine($"Testing incomplete coverage with {incompleteSegments.Count} segments");
 
         // Act
         var validation = await _service.ValidateTopicSegmentsAsync(incompleteSegments, completeDocument);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Should detect incomplete coverage
-        validation.TopicCoverage.Should().BeLessThan(0.9, "Incomplete segmentation should have low topic coverage");
+        _ = validation.TopicCoverage.Should().BeLessThan(0.9, "Incomplete segmentation should have low topic coverage");
 
         // Should identify content gaps
         var gapIssues = validation.Issues.Where(i => i.Type == ValidationIssueType.MissingContext).ToList();
-        gapIssues.Should().NotBeEmpty("Should identify content gaps in incomplete segmentation");
+        _ = gapIssues.Should().NotBeEmpty("Should identify content gaps in incomplete segmentation");
 
-        System.Diagnostics.Debug.WriteLine($"Coverage score: {validation.TopicCoverage:F2}");
-        System.Diagnostics.Debug.WriteLine($"Gap issues found: {gapIssues.Count}");
+        Debug.WriteLine($"Coverage score: {validation.TopicCoverage:F2}");
+        Debug.WriteLine($"Gap issues found: {gapIssues.Count}");
     }
 
     #endregion
@@ -317,9 +311,9 @@ public class TopicBasedQualityAssessmentTests
     )
     {
         // Arrange
-        System.Diagnostics.Debug.WriteLine($"Running benchmark: {benchmarkName}");
-        System.Diagnostics.Debug.WriteLine($"Strategy: {strategy}");
-        System.Diagnostics.Debug.WriteLine($"Quality description: {qualityDescription}");
+        Debug.WriteLine($"Running benchmark: {benchmarkName}");
+        Debug.WriteLine($"Strategy: {strategy}");
+        Debug.WriteLine($"Quality description: {qualityDescription}");
 
         var options = new TopicSegmentationOptions { UseLlmEnhancement = false, MinSegmentSize = 50 };
 
@@ -328,8 +322,8 @@ public class TopicBasedQualityAssessmentTests
         var validation = await _service.ValidateTopicSegmentsAsync(segments, content);
 
         // Assert
-        validation.Should().NotBeNull();
-        validation
+        _ = validation.Should().NotBeNull();
+        _ = validation
             .OverallQuality.Should()
             .BeInRange(
                 expectedMinQuality,
@@ -337,12 +331,12 @@ public class TopicBasedQualityAssessmentTests
                 $"Quality for {benchmarkName} should be between {expectedMinQuality:F2} and {expectedMaxQuality:F2}"
             );
 
-        System.Diagnostics.Debug.WriteLine($"Segments created: {segments.Count()}");
-        System.Diagnostics.Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine($"Topic coherence: {validation.AverageTopicCoherence:F2}");
-        System.Diagnostics.Debug.WriteLine($"Boundary accuracy: {validation.BoundaryAccuracy:F2}");
+        Debug.WriteLine($"Segments created: {segments.Count}");
+        Debug.WriteLine($"Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"Topic coherence: {validation.AverageTopicCoherence:F2}");
+        Debug.WriteLine($"Boundary accuracy: {validation.BoundaryAccuracy:F2}");
 
-        _output.WriteLine($"{benchmarkName}: Quality={validation.OverallQuality:F2}, Segments={segments.Count()}");
+        _output.WriteLine($"{benchmarkName}: Quality={validation.OverallQuality:F2}, Segments={segments.Count}");
     }
 
     [Fact]
@@ -377,31 +371,31 @@ public class TopicBasedQualityAssessmentTests
       important as ML systems become more prevalent in decision-making processes.
     ";
 
-        System.Diagnostics.Debug.WriteLine($"Testing excellent content with length: {excellentContent.Length}");
+        Debug.WriteLine($"Testing excellent content with length: {excellentContent.Length}");
 
         // Act
         var segments = await _service.SegmentByTopicsAsync(excellentContent, DocumentType.Technical);
         var validation = await _service.ValidateTopicSegmentsAsync(segments, excellentContent);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Excellent content should achieve high quality scores
-        validation
+        _ = validation
             .OverallQuality.Should()
             .BeGreaterThan(0.7, "Well-structured content should achieve high overall quality");
 
-        validation.AverageTopicCoherence.Should().BeGreaterThan(0.75, "Clear topics should have high coherence scores");
+        _ = validation.AverageTopicCoherence.Should().BeGreaterThan(0.75, "Clear topics should have high coherence scores");
 
-        validation
+        _ = validation
             .TopicCoverage.Should()
             .BeGreaterThan(0.8, "Comprehensive segmentation should have high topic coverage");
 
-        System.Diagnostics.Debug.WriteLine($"Excellent content results:");
-        System.Diagnostics.Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Topic coherence: {validation.AverageTopicCoherence:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Topic coverage: {validation.TopicCoverage:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Boundary accuracy: {validation.BoundaryAccuracy:F2}");
+        Debug.WriteLine($"Excellent content results:");
+        Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"  Topic coherence: {validation.AverageTopicCoherence:F2}");
+        Debug.WriteLine($"  Topic coverage: {validation.TopicCoverage:F2}");
+        Debug.WriteLine($"  Boundary accuracy: {validation.BoundaryAccuracy:F2}");
     }
 
     [Fact]
@@ -418,30 +412,30 @@ public class TopicBasedQualityAssessmentTests
       color is blue which reminds me of deep learning neural networks.
     ";
 
-        System.Diagnostics.Debug.WriteLine($"Testing poor content with length: {poorContent.Length}");
+        Debug.WriteLine($"Testing poor content with length: {poorContent.Length}");
 
         // Act
         var segments = await _service.SegmentByTopicsAsync(poorContent, DocumentType.Generic);
         var validation = await _service.ValidateTopicSegmentsAsync(segments, poorContent);
 
         // Assert
-        validation.Should().NotBeNull();
+        _ = validation.Should().NotBeNull();
 
         // Poor content should result in quality issues
-        validation.Issues.Should().NotBeEmpty("Poor content should generate quality issues");
+        _ = validation.Issues.Should().NotBeEmpty("Poor content should generate quality issues");
 
         // Should identify coherence problems
         var coherenceIssues = validation.Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence).ToList();
-        coherenceIssues.Should().NotBeEmpty("Should identify poor coherence in mixed content");
+        _ = coherenceIssues.Should().NotBeEmpty("Should identify poor coherence in mixed content");
 
-        System.Diagnostics.Debug.WriteLine($"Poor content results:");
-        System.Diagnostics.Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
-        System.Diagnostics.Debug.WriteLine($"  Issues found: {validation.Issues.Count}");
-        System.Diagnostics.Debug.WriteLine($"  Coherence issues: {coherenceIssues.Count}");
+        Debug.WriteLine($"Poor content results:");
+        Debug.WriteLine($"  Overall quality: {validation.OverallQuality:F2}");
+        Debug.WriteLine($"  Issues found: {validation.Issues.Count}");
+        Debug.WriteLine($"  Coherence issues: {coherenceIssues.Count}");
 
         foreach (var issue in validation.Issues.Take(3))
         {
-            System.Diagnostics.Debug.WriteLine($"  Issue: {issue.Type} - {issue.Description}");
+            Debug.WriteLine($"  Issue: {issue.Type} - {issue.Description}");
         }
     }
 
@@ -620,7 +614,7 @@ public class TopicBasedQualityAssessmentTests
 
     private void SetupDefaultMocks()
     {
-        _mockPromptManager
+        _ = _mockPromptManager
             .Setup(x =>
                 x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
@@ -633,10 +627,10 @@ public class TopicBasedQualityAssessmentTests
                 }
             );
 
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _ = _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
-    private DocumentSegment CreateSegment(string id, string content, int sequenceNumber)
+    private static DocumentSegment CreateSegment(string id, string content, int sequenceNumber)
     {
         return new DocumentSegment
         {

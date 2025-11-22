@@ -42,7 +42,7 @@ public static class McpServiceCollectionExtensions
 
         foreach (var assembly in assemblies)
         {
-            services.AddMcpFunctions(assembly);
+            _ = services.AddMcpFunctions(assembly);
         }
 
         return services;

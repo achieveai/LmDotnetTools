@@ -1,4 +1,3 @@
-using System;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
@@ -16,7 +15,7 @@ public class EventSerializationTests
         var sessionStartedEvent = new SessionStartedEvent
         {
             SessionId = "test-session-123",
-            StartedAt = DateTime.UtcNow
+            StartedAt = DateTime.UtcNow,
         };
 
         // Act & Assert - should not throw
@@ -34,7 +33,7 @@ public class EventSerializationTests
         var original = new SessionStartedEvent
         {
             SessionId = "test-session-456",
-            StartedAt = new DateTime(2025, 11, 16, 12, 0, 0, DateTimeKind.Utc)
+            StartedAt = new DateTime(2025, 11, 16, 12, 0, 0, DateTimeKind.Utc),
         };
 
         // Act
@@ -43,7 +42,7 @@ public class EventSerializationTests
 
         // Assert
         Assert.NotNull(deserialized);
-        Assert.IsType<SessionStartedEvent>(deserialized);
+        _ = Assert.IsType<SessionStartedEvent>(deserialized);
 
         var sessionEvent = (SessionStartedEvent)deserialized;
         Assert.Equal("SESSION_STARTED", sessionEvent.Type);
@@ -54,10 +53,7 @@ public class EventSerializationTests
     public void RunStartedEvent_Serialization_IncludesTypeDiscriminator()
     {
         // Arrange
-        var runStartedEvent = new RunStartedEvent
-        {
-            SessionId = "session-123"
-        };
+        var runStartedEvent = new RunStartedEvent { SessionId = "session-123" };
 
         // Act
         var json = JsonSerializer.Serialize<AgUiEventBase>(runStartedEvent, AgUiJsonOptions.Default);
@@ -75,7 +71,7 @@ public class EventSerializationTests
             SessionId = "session-789",
             ErrorCode = "TEST_ERROR",
             Message = "Test error message",
-            Recoverable = true
+            Recoverable = true,
         };
 
         // Act
@@ -84,7 +80,7 @@ public class EventSerializationTests
 
         // Assert
         Assert.NotNull(deserialized);
-        Assert.IsType<ErrorEvent>(deserialized);
+        _ = Assert.IsType<ErrorEvent>(deserialized);
 
         var errorEventDeserialized = (ErrorEvent)deserialized;
         Assert.Equal("RUN_ERROR", errorEventDeserialized.Type);
@@ -97,11 +93,7 @@ public class EventSerializationTests
     public void TextMessageContentEvent_Serialization_PreservesContent()
     {
         // Arrange
-        var textEvent = new TextMessageContentEvent
-        {
-            SessionId = "session-abc",
-            Content = "Hello, World!"
-        };
+        var textEvent = new TextMessageContentEvent { SessionId = "session-abc", Delta = "Hello, World!" };
 
         // Act
         var json = JsonSerializer.Serialize<AgUiEventBase>(textEvent, AgUiJsonOptions.Default);
@@ -109,10 +101,10 @@ public class EventSerializationTests
 
         // Assert
         Assert.NotNull(deserialized);
-        Assert.IsType<TextMessageContentEvent>(deserialized);
+        _ = Assert.IsType<TextMessageContentEvent>(deserialized);
 
         var textEventDeserialized = (TextMessageContentEvent)deserialized;
         Assert.Equal("TEXT_MESSAGE_CONTENT", textEventDeserialized.Type);
-        Assert.Equal(textEvent.Content, textEventDeserialized.Content);
+        Assert.Equal(textEvent.Delta, textEventDeserialized.Delta);
     }
 }

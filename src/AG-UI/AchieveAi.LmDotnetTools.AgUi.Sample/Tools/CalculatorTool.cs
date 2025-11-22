@@ -2,7 +2,6 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
@@ -23,47 +22,45 @@ public class CalculatorTool : IFunctionProvider
     public string ProviderName => "CalculatorProvider";
     public int Priority => 100;
 
+    private static readonly string[] sourceArray = ["add", "subtract", "multiply", "divide"];
+
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
         var contract = new FunctionContract
         {
             Name = "calculate",
             Description = "Perform basic mathematical calculations (add, subtract, multiply, divide)",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "operation",
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = new[] { "add", "subtract", "multiply", "divide" }
-                    },
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = sourceArray },
                     Description = "The mathematical operation to perform",
-                    IsRequired = true
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "a",
                     ParameterType = new JsonSchemaObject { Type = "number" },
                     Description = "First number",
-                    IsRequired = true
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "b",
                     ParameterType = new JsonSchemaObject { Type = "number" },
                     Description = "Second number",
-                    IsRequired = true
-                }
-            }.ToList()
+                    IsRequired = true,
+                },
+            ],
         };
 
         yield return new FunctionDescriptor
         {
             Contract = contract,
             Handler = ExecuteAsync,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 
@@ -88,13 +85,13 @@ public class CalculatorTool : IFunctionProvider
             // Simulate computation delay
             await Task.Delay(Random.Shared.Next(50, 150));
 
-            double result = args.Operation?.ToLower() switch
+            var result = args.Operation?.ToLower() switch
             {
                 "add" => args.A + args.B,
                 "subtract" => args.A - args.B,
                 "multiply" => args.A * args.B,
                 "divide" => args.B != 0 ? args.A / args.B : throw new DivideByZeroException("Cannot divide by zero"),
-                _ => throw new ArgumentException($"Unknown operation: {args.Operation}")
+                _ => throw new ArgumentException($"Unknown operation: {args.Operation}"),
             };
 
             var response = new
@@ -103,7 +100,7 @@ public class CalculatorTool : IFunctionProvider
                 a = args.A,
                 b = args.B,
                 result = result,
-                timestamp = DateTime.UtcNow.ToString("o")
+                timestamp = DateTime.UtcNow.ToString("o"),
             };
 
             var json = JsonSerializer.Serialize(response);

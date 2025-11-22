@@ -60,7 +60,7 @@ public class GraphUpdateInstructions
     /// The list of update instructions to execute.
     /// </summary>
     [JsonPropertyName("updates")]
-    public List<GraphUpdateInstruction> Updates { get; set; } = new();
+    public List<GraphUpdateInstruction> Updates { get; set; } = [];
 
     /// <summary>
     /// Metadata about the processing of these instructions.

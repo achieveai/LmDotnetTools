@@ -56,7 +56,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
 
         // Get the model name from options
-        string modelId = context.Options.ModelId;
+        var modelId = context.Options.ModelId;
 
         // Try to get agents for the model
         if (_modelAgentMap.TryGetValue(modelId, out var agents) && agents.Length > 0)
@@ -118,7 +118,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         }
 
         // Get the model name from options
-        string modelId = context.Options.ModelId;
+        var modelId = context.Options.ModelId;
 
         // Try to get agents for the model
         if (_modelAgentMap.TryGetValue(modelId, out var agents) && agents.Length > 0)

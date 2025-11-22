@@ -1,12 +1,6 @@
-using System;
-using System.IO;
 using System.Net;
-using System.Net.Http;
-using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using Xunit;
 
 namespace LmTestUtils.Tests
 {
@@ -116,9 +110,9 @@ namespace LmTestUtils.Tests
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
             );
 
-            var key1 = (string)method!.Invoke(middleware, new object[] { interaction1 })!;
-            var key2 = (string)method!.Invoke(middleware, new object[] { interaction2 })!;
-            var key3 = (string)method!.Invoke(middleware, new object[] { interaction3 })!;
+            var key1 = (string)method!.Invoke(middleware, [interaction1])!;
+            var key2 = (string)method!.Invoke(middleware, [interaction2])!;
+            var key3 = (string)method!.Invoke(middleware, [interaction3])!;
 
             // Assert
             // Same request content should generate same hash
@@ -158,7 +152,7 @@ namespace LmTestUtils.Tests
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance
             );
 
-            var key = (string)method!.Invoke(middleware, new object[] { interaction })!;
+            var key = (string)method!.Invoke(middleware, [interaction])!;
 
             // Assert
             Assert.Equal("undefined-request", key);
@@ -471,12 +465,16 @@ namespace LmTestUtils.Tests
         private static bool IsValidHexString(string input)
         {
             if (string.IsNullOrEmpty(input))
+            {
                 return false;
+            }
 
-            foreach (char c in input)
+            foreach (var c in input)
             {
                 if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')))
+                {
                     return false;
+                }
             }
             return true;
         }

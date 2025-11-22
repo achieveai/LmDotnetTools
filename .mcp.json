@@ -1,0 +1,46 @@
+{
+  "mcpServers": {
+    "sequential-thinking-tools": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "env": {}
+     },
+     "playwright": {
+       "command": "cmd",
+       "args": [
+         "/c",
+         "npx",
+         "-y",
+         "@playwright/mcp@latest"
+       ]
+    },
+    "seq": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "dotnet",
+        "tool",
+        "run",
+        "seq-mcp-server"
+      ],
+      "env": {
+        "SEQ_SERVER_URL": "http://localhost:5341",
+        "SEQ_API_KEY": "Uu5XkCVB6llwhmyF7N1e"
+      }
+    },
+    "clarify-doubt": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@achieveai/hitl-mcp-server@latest"
+      ]
+    }
+  }
+}

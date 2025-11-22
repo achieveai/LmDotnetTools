@@ -11,7 +11,10 @@ public record TextMessage : IMessage, ICanGetText
     [JsonPropertyName("text")]
     public required string Text { get; init; }
 
-    public string? GetText() => Text;
+    public string? GetText()
+    {
+        return Text;
+    }
 
     [JsonPropertyName("fromAgent")]
     public string? FromAgent { get; init; }
@@ -36,11 +39,24 @@ public record TextMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
 
-    public static BinaryData? GetBinary() => null;
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
 
-    public static ToolCall? GetToolCalls() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
 
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 public class TextMessageJsonConverter : ShadowPropertiesJsonConverter<TextMessage>
@@ -69,6 +85,8 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
 
     public string? RunId { get; set; }
 
+    public string? ParentRunId { get; set; }
+
     IMessage IMessageBuilder.Build()
     {
         return this.Build();
@@ -76,7 +94,7 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
 
     public void Add(TextUpdateMessage streamingMessageUpdate)
     {
-        _textBuilder.Append(streamingMessageUpdate.Text);
+        _ = _textBuilder.Append(streamingMessageUpdate.Text);
 
         // Set IsThinking from the update
         IsThinking = streamingMessageUpdate.IsThinking;
@@ -111,6 +129,7 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
             IsThinking = IsThinking,
             ThreadId = ThreadId,
             RunId = RunId,
+            ParentRunId = ParentRunId,
         };
     }
 }

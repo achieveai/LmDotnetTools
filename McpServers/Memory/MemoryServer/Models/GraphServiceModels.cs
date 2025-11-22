@@ -33,17 +33,17 @@ public class GraphUpdateSummary
     /// <summary>
     /// List of entities that were processed.
     /// </summary>
-    public List<string> ProcessedEntities { get; set; } = new();
+    public List<string> ProcessedEntities { get; set; } = [];
 
     /// <summary>
     /// List of relationship types that were processed.
     /// </summary>
-    public List<string> ProcessedRelationshipTypes { get; set; } = new();
+    public List<string> ProcessedRelationshipTypes { get; set; } = [];
 
     /// <summary>
     /// Any warnings or issues encountered during processing.
     /// </summary>
-    public List<string> Warnings { get; set; } = new();
+    public List<string> Warnings { get; set; } = [];
 }
 
 /// <summary>
@@ -54,27 +54,27 @@ public class HybridSearchResults
     /// <summary>
     /// Traditional search results (vector similarity, FTS, etc.).
     /// </summary>
-    public List<Memory> TraditionalResults { get; set; } = new();
+    public List<Memory> TraditionalResults { get; set; } = [];
 
     /// <summary>
     /// Graph-based search results from entity traversal.
     /// </summary>
-    public List<Memory> GraphResults { get; set; } = new();
+    public List<Memory> GraphResults { get; set; } = [];
 
     /// <summary>
     /// Combined and ranked results.
     /// </summary>
-    public List<HybridSearchResult> CombinedResults { get; set; } = new();
+    public List<HybridSearchResult> CombinedResults { get; set; } = [];
 
     /// <summary>
     /// Entities found that are relevant to the search query.
     /// </summary>
-    public List<Entity> RelevantEntities { get; set; } = new();
+    public List<Entity> RelevantEntities { get; set; } = [];
 
     /// <summary>
     /// Relationships found that are relevant to the search query.
     /// </summary>
-    public List<Relationship> RelevantRelationships { get; set; } = new();
+    public List<Relationship> RelevantRelationships { get; set; } = [];
 
     /// <summary>
     /// Total search time in milliseconds.
@@ -115,12 +115,12 @@ public class HybridSearchResult
     /// <summary>
     /// Entities in this memory that matched the search.
     /// </summary>
-    public List<string> MatchingEntities { get; set; } = new();
+    public List<string> MatchingEntities { get; set; } = [];
 
     /// <summary>
     /// Relationships in this memory that matched the search.
     /// </summary>
-    public List<string> MatchingRelationships { get; set; } = new();
+    public List<string> MatchingRelationships { get; set; } = [];
 }
 
 /// <summary>
@@ -157,17 +157,17 @@ public class GraphTraversalResult
     /// <summary>
     /// Entities found during traversal with their depth.
     /// </summary>
-    public List<(Entity Entity, Relationship? Relationship, int Depth)> TraversalResults { get; set; } = new();
+    public List<(Entity Entity, Relationship? Relationship, int Depth)> TraversalResults { get; set; } = [];
 
     /// <summary>
     /// All unique entities found.
     /// </summary>
-    public List<Entity> AllEntities { get; set; } = new();
+    public List<Entity> AllEntities { get; set; } = [];
 
     /// <summary>
     /// All unique relationships found.
     /// </summary>
-    public List<Relationship> AllRelationships { get; set; } = new();
+    public List<Relationship> AllRelationships { get; set; } = [];
 
     /// <summary>
     /// Maximum depth reached during traversal.
@@ -218,12 +218,12 @@ public class GraphRebuildSummary
     /// <summary>
     /// Any errors encountered during rebuild.
     /// </summary>
-    public List<string> Errors { get; set; } = new();
+    public List<string> Errors { get; set; } = [];
 
     /// <summary>
     /// Warnings encountered during rebuild.
     /// </summary>
-    public List<string> Warnings { get; set; } = new();
+    public List<string> Warnings { get; set; } = [];
 
     /// <summary>
     /// When the rebuild was started.
@@ -259,22 +259,22 @@ public class GraphValidationResult
     /// <summary>
     /// Validation errors found.
     /// </summary>
-    public List<GraphValidationError> Errors { get; set; } = new();
+    public List<GraphValidationError> Errors { get; set; } = [];
 
     /// <summary>
     /// Validation warnings found.
     /// </summary>
-    public List<GraphValidationWarning> Warnings { get; set; } = new();
+    public List<GraphValidationWarning> Warnings { get; set; } = [];
 
     /// <summary>
     /// Orphaned entities (entities with no relationships).
     /// </summary>
-    public List<Entity> OrphanedEntities { get; set; } = new();
+    public List<Entity> OrphanedEntities { get; set; } = [];
 
     /// <summary>
     /// Broken relationships (relationships referencing non-existent entities).
     /// </summary>
-    public List<Relationship> BrokenRelationships { get; set; } = new();
+    public List<Relationship> BrokenRelationships { get; set; } = [];
 
     /// <summary>
     /// Total validation time in milliseconds.

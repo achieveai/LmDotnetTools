@@ -4,7 +4,6 @@ using MemoryServer.DocumentSegmentation.Services;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -45,8 +44,8 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         var result = await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
 
         // Assert
-        result.Should().HaveCount(3);
-        result.Should().AllSatisfy(id => id.Should().BeGreaterThan(0));
+        _ = result.Should().HaveCount(3);
+        _ = result.Should().AllSatisfy(id => id.Should().BeGreaterThan(0));
     }
 
     [Fact]
@@ -59,7 +58,7 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         await using var session = await _sessionFactory.CreateSessionAsync();
 
         // Store segments first
-        await _repository.StoreSegmentsAsync(session, originalSegments, parentDocumentId, _testSessionContext);
+        _ = await _repository.StoreSegmentsAsync(session, originalSegments, parentDocumentId, _testSessionContext);
 
         // Act
         var retrievedSegments = await _repository.GetDocumentSegmentsAsync(
@@ -69,19 +68,19 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         );
 
         // Assert
-        retrievedSegments.Should().HaveCount(2);
-        retrievedSegments.Should().BeInAscendingOrder(s => s.SequenceNumber);
+        _ = retrievedSegments.Should().HaveCount(2);
+        _ = retrievedSegments.Should().BeInAscendingOrder(s => s.SequenceNumber);
 
-        for (int i = 0; i < originalSegments.Count; i++)
+        for (var i = 0; i < originalSegments.Count; i++)
         {
             var original = originalSegments[i];
             var retrieved = retrievedSegments[i];
 
-            retrieved.Id.Should().Be(original.Id);
-            retrieved.Content.Should().Be(original.Content);
-            retrieved.Title.Should().Be(original.Title);
-            retrieved.Summary.Should().Be(original.Summary);
-            retrieved.SequenceNumber.Should().Be(original.SequenceNumber);
+            _ = retrieved.Id.Should().Be(original.Id);
+            _ = retrieved.Content.Should().Be(original.Content);
+            _ = retrieved.Title.Should().Be(original.Title);
+            _ = retrieved.Summary.Should().Be(original.Summary);
+            _ = retrieved.SequenceNumber.Should().Be(original.SequenceNumber);
         }
     }
 
@@ -96,13 +95,13 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         await using var session = await _sessionFactory.CreateSessionAsync();
 
         // Store segments first
-        await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
+        _ = await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
 
         // Act
         var result = await _repository.StoreSegmentRelationshipsAsync(session, relationships, _testSessionContext);
 
         // Assert
-        result.Should().Be(1);
+        _ = result.Should().Be(1);
     }
 
     [Fact]
@@ -116,8 +115,8 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         await using var session = await _sessionFactory.CreateSessionAsync();
 
         // Store segments and relationships
-        await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
-        await _repository.StoreSegmentRelationshipsAsync(session, originalRelationships, _testSessionContext);
+        _ = await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
+        _ = await _repository.StoreSegmentRelationshipsAsync(session, originalRelationships, _testSessionContext);
 
         // Act
         var retrievedRelationships = await _repository.GetSegmentRelationshipsAsync(
@@ -127,14 +126,14 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         );
 
         // Assert
-        retrievedRelationships.Should().HaveCount(1);
+        _ = retrievedRelationships.Should().HaveCount(1);
         var retrieved = retrievedRelationships[0];
         var original = originalRelationships[0];
 
-        retrieved.SourceSegmentId.Should().Be(original.SourceSegmentId);
-        retrieved.TargetSegmentId.Should().Be(original.TargetSegmentId);
-        retrieved.RelationshipType.Should().Be(original.RelationshipType);
-        retrieved.Strength.Should().Be(original.Strength);
+        _ = retrieved.SourceSegmentId.Should().Be(original.SourceSegmentId);
+        _ = retrieved.TargetSegmentId.Should().Be(original.TargetSegmentId);
+        _ = retrieved.RelationshipType.Should().Be(original.RelationshipType);
+        _ = retrieved.Strength.Should().Be(original.Strength);
     }
 
     [Fact]
@@ -148,8 +147,8 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         await using var session = await _sessionFactory.CreateSessionAsync();
 
         // Store segments and relationships
-        await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
-        await _repository.StoreSegmentRelationshipsAsync(session, relationships, _testSessionContext);
+        _ = await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
+        _ = await _repository.StoreSegmentRelationshipsAsync(session, relationships, _testSessionContext);
 
         // Act
         var deletedCount = await _repository.DeleteDocumentSegmentsAsync(
@@ -159,7 +158,7 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         );
 
         // Assert
-        deletedCount.Should().Be(2);
+        _ = deletedCount.Should().Be(2);
 
         // Verify segments are deleted
         var remainingSegments = await _repository.GetDocumentSegmentsAsync(
@@ -167,7 +166,7 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
             parentDocumentId,
             _testSessionContext
         );
-        remainingSegments.Should().BeEmpty();
+        _ = remainingSegments.Should().BeEmpty();
 
         // Verify relationships are deleted
         var remainingRelationships = await _repository.GetSegmentRelationshipsAsync(
@@ -175,7 +174,7 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
             parentDocumentId,
             _testSessionContext
         );
-        remainingRelationships.Should().BeEmpty();
+        _ = remainingRelationships.Should().BeEmpty();
     }
 
     [Fact]
@@ -209,18 +208,18 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         await using var session = await _sessionFactory.CreateSessionAsync();
 
         // Act
-        await _repository.StoreSegmentsAsync(session, segments1, parentDocumentId, session1Context);
-        await _repository.StoreSegmentsAsync(session, segments2, parentDocumentId, session2Context);
+        _ = await _repository.StoreSegmentsAsync(session, segments1, parentDocumentId, session1Context);
+        _ = await _repository.StoreSegmentsAsync(session, segments2, parentDocumentId, session2Context);
 
         var session1Segments = await _repository.GetDocumentSegmentsAsync(session, parentDocumentId, session1Context);
         var session2Segments = await _repository.GetDocumentSegmentsAsync(session, parentDocumentId, session2Context);
 
         // Assert
-        session1Segments.Should().HaveCount(1);
-        session1Segments[0].Content.Should().Be("Content for session 1");
+        _ = session1Segments.Should().HaveCount(1);
+        _ = session1Segments[0].Content.Should().Be("Content for session 1");
 
-        session2Segments.Should().HaveCount(1);
-        session2Segments[0].Content.Should().Be("Content for session 2");
+        _ = session2Segments.Should().HaveCount(1);
+        _ = session2Segments[0].Content.Should().Be("Content for session 2");
     }
 
     [Fact]
@@ -237,22 +236,22 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         var parentDocumentId = 1;
         await using var session = await _sessionFactory.CreateSessionAsync();
 
-        await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
+        _ = await _repository.StoreSegmentsAsync(session, segments, parentDocumentId, _testSessionContext);
 
         // Act - Use simple text query that will work with fallback LIKE search
         var results = await _repository.SearchSegmentsAsync(session, "artificial", _testSessionContext);
 
         // Assert
-        results.Should().NotBeEmpty();
-        results.Should().Contain(s => s.Content.Contains("artificial"));
-        results.All(s => s.Metadata.ContainsKey("search_rank") || s.Metadata.ContainsKey("rank")).Should().BeTrue();
+        _ = results.Should().NotBeEmpty();
+        _ = results.Should().Contain(s => s.Content.Contains("artificial"));
+        _ = results.All(s => s.Metadata.ContainsKey("search_rank") || s.Metadata.ContainsKey("rank")).Should().BeTrue();
     }
 
-    private List<DocumentSegment> CreateTestSegments(int count)
+    private static List<DocumentSegment> CreateTestSegments(int count)
     {
         var segments = new List<DocumentSegment>();
 
-        for (int i = 1; i <= count; i++)
+        for (var i = 1; i <= count; i++)
         {
             segments.Add(CreateTestSegment($"test-segment-{i}", i, $"Test content for segment {i}"));
         }
@@ -260,7 +259,7 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         return segments;
     }
 
-    private DocumentSegment CreateTestSegment(string baseId, int sequenceNumber, string content)
+    private static DocumentSegment CreateTestSegment(string baseId, int sequenceNumber, string content)
     {
         // Create unique ID to avoid collisions across tests
         var uniqueId = $"{baseId}-{sequenceNumber}-{Guid.NewGuid():N}";
@@ -288,13 +287,15 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
         };
     }
 
-    private List<SegmentRelationship> CreateTestRelationships(List<DocumentSegment> segments)
+    private static List<SegmentRelationship> CreateTestRelationships(List<DocumentSegment> segments)
     {
         if (segments.Count < 2)
-            return new List<SegmentRelationship>();
-
-        return new List<SegmentRelationship>
         {
+            return [];
+        }
+
+        return
+        [
             new()
             {
                 Id = Guid.NewGuid().ToString(),
@@ -304,7 +305,7 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
                 Strength = 0.9,
                 Metadata = new Dictionary<string, object> { ["test"] = true },
             },
-        };
+        ];
     }
 
     public async ValueTask DisposeAsync()

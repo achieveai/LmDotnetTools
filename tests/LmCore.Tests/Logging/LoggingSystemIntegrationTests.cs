@@ -1,9 +1,4 @@
 using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -67,7 +62,7 @@ public class LoggingSystemIntegrationTests
         var context = new MiddlewareContext(messages, null);
         var mockAgent = new Mock<IAgent>();
 
-        mockAgent
+        _ = mockAgent
             .Setup(x =>
                 x.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -85,7 +80,7 @@ public class LoggingSystemIntegrationTests
         var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", mockLogger.Object);
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert - Verify that logging was called
         mockLogger.Verify(
@@ -129,7 +124,7 @@ public class LoggingSystemIntegrationTests
 
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = new List<ToolCall> { toolCall }.ToImmutableList(),
+            ToolCalls = [toolCall],
             Role = Role.Assistant,
             FromAgent = "test-agent",
         };
@@ -145,7 +140,7 @@ public class LoggingSystemIntegrationTests
         );
 
         // Act
-        await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
+        _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
 
         // Assert - Verify that function execution was logged
         mockLogger.Verify(
@@ -170,7 +165,7 @@ public class LoggingSystemIntegrationTests
     {
         // Arrange
         var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
-        mockLogger.Setup(x => x.IsEnabled(It.IsAny<LogLevel>())).Returns(false);
+        _ = mockLogger.Setup(x => x.IsEnabled(It.IsAny<LogLevel>())).Returns(false);
 
         var functions = new List<FunctionContract>
         {
@@ -193,7 +188,7 @@ public class LoggingSystemIntegrationTests
         var context = new MiddlewareContext(messages, null);
         var mockAgent = new Mock<IAgent>();
 
-        mockAgent
+        _ = mockAgent
             .Setup(x =>
                 x.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -214,9 +209,9 @@ public class LoggingSystemIntegrationTests
         const int iterations = 100;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-        for (int i = 0; i < iterations; i++)
+        for (var i = 0; i < iterations; i++)
         {
-            await middleware.InvokeAsync(context, mockAgent.Object);
+            _ = await middleware.InvokeAsync(context, mockAgent.Object);
         }
 
         stopwatch.Stop();
@@ -266,7 +261,7 @@ public class LoggingSystemIntegrationTests
 
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = new List<ToolCall> { toolCall }.ToImmutableList(),
+            ToolCalls = [toolCall],
             Role = Role.Assistant,
             FromAgent = "error-test-agent",
         };
@@ -277,7 +272,7 @@ public class LoggingSystemIntegrationTests
         var middleware = new FunctionCallMiddleware(functions, functionMap, "error-test-middleware", mockLogger.Object);
 
         // Act
-        await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
+        _ = await middleware.InvokeAsync(context, new Mock<IAgent>().Object);
 
         // Assert - Verify that error was logged with appropriate context
         mockLogger.Verify(
@@ -436,7 +431,7 @@ public class LoggingSystemIntegrationTests
 
         // Assert
         Assert.NotNull(logger);
-        Assert.IsType<NullLogger<LoggingSystemIntegrationTests>>(logger);
+        _ = Assert.IsType<NullLogger<LoggingSystemIntegrationTests>>(logger);
 
         // Should not throw when logging
         logger.LogInformation("Test message with null factory");

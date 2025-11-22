@@ -22,7 +22,7 @@ public class McpTransportIntegrationTests
         public static string? Description => "A test agent for MCP middleware";
         public static string? ModelId => "test-model";
         public static Dictionary<string, object>? ModelParameters => null;
-        public static IList<IMessage> History => new List<IMessage>();
+        public static IList<IMessage> History => [];
 
         public Task<IEnumerable<IMessage>> GenerateReplyAsync(
             IEnumerable<IMessage> messages,

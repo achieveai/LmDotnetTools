@@ -1,10 +1,8 @@
-using System.Collections.Immutable;
 using System.Diagnostics;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using LmEmbeddings.Models;
-using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -507,20 +505,20 @@ public class ValidationHelperTests
             },
         };
 
-    private static readonly string[] item = new[] { "item1" };
-    private static readonly string[] itemArray = new[] { "item1", "item2", "item3" };
-    private static readonly string[] itemArray0 = new[] { "valid1", "valid2" };
-    private static readonly string[] itemArray1 = new[] { "single" };
-    private static readonly string[] itemArray2 = new[] { "a", "b", "c" };
-    private static readonly string[] itemArray3 = new[] { "valid", "", "valid" };
-    private static readonly string[] itemArray4 = new[] { "valid", "   ", "valid" };
-    private static readonly string[] itemArray5 = new[] { "float", "base64" };
-    private static readonly string[] itemArray6 = new[] { "float", "base64", "binary" };
-    private static readonly string[] itemArray7 = new[] { "float", "base64" };
-    private static readonly string[] itemArray8 = new[] { "float", "base64" };
-    private static readonly string[] itemArray9 = new[] { "test input" };
-    private static readonly string[] itemArray10 = new[] { "input1", "input2" };
-    private static readonly string[] itemArray11 = new[] { "test" };
+    private static readonly string[] item = ["item1"];
+    private static readonly string[] itemArray = ["item1", "item2", "item3"];
+    private static readonly string[] itemArray0 = ["valid1", "valid2"];
+    private static readonly string[] itemArray1 = ["single"];
+    private static readonly string[] itemArray2 = ["a", "b", "c"];
+    private static readonly string[] itemArray3 = ["valid", "", "valid"];
+    private static readonly string[] itemArray4 = ["valid", "   ", "valid"];
+    private static readonly string[] itemArray5 = ["float", "base64"];
+    private static readonly string[] itemArray6 = ["float", "base64", "binary"];
+    private static readonly string[] itemArray7 = ["float", "base64"];
+    private static readonly string[] itemArray8 = ["float", "base64"];
+    private static readonly string[] itemArray9 = ["test input"];
+    private static readonly string[] itemArray10 = ["input1", "input2"];
+    private static readonly string[] itemArray11 = ["test"];
 
     #endregion
 }

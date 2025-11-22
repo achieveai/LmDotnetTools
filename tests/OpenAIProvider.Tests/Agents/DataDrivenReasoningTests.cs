@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -22,12 +21,12 @@ public class DataDrivenReasoningTests
 
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
 
-    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
-    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
+    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
+    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
 
     #region Playback test
 
@@ -40,7 +39,7 @@ public class DataDrivenReasoningTests
 
         // Wire HTTP client for playback only (allowAdditional = false)
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -97,7 +96,7 @@ public class DataDrivenReasoningTests
         const string testName = "BasicReasoning";
 
         // Short-circuit if data already there
-        string lmCoreRequestPath = _testDataManager.GetTestDataPath(
+        var lmCoreRequestPath = _testDataManager.GetTestDataPath(
             testName,
             ProviderType.OpenAI,
             DataType.LmCoreRequest
@@ -131,13 +130,13 @@ public class DataDrivenReasoningTests
         _testDataManager.SaveLmCoreRequest(
             testName,
             ProviderType.OpenAI,
-            messages.OfType<TextMessage>().ToArray(),
+            [.. messages.OfType<TextMessage>()],
             options
         );
 
         // 3) Configure record/playback handler
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -175,7 +174,7 @@ public class DataDrivenReasoningTests
     {
         const string testName = "O4MiniReasoning";
 
-        string lmCoreRequestPath = _testDataManager.GetTestDataPath(
+        var lmCoreRequestPath = _testDataManager.GetTestDataPath(
             testName,
             ProviderType.OpenAI,
             DataType.LmCoreRequest
@@ -212,12 +211,12 @@ public class DataDrivenReasoningTests
         _testDataManager.SaveLmCoreRequest(
             testName,
             ProviderType.OpenAI,
-            messages.OfType<TextMessage>().ToArray(),
+            [.. messages.OfType<TextMessage>()],
             options
         );
 
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -248,11 +247,15 @@ public class DataDrivenReasoningTests
 
     #region Helpers
 
-    private static string GetApiKeyFromEnv() =>
-        EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+    private static string GetApiKeyFromEnv()
+    {
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+    }
 
-    private static string GetApiBaseUrlFromEnv() =>
-        EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+    private static string GetApiBaseUrlFromEnv()
+    {
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+    }
 
     #endregion
 }

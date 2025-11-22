@@ -17,7 +17,7 @@ public static class AnthropicExtensions
     public static IMessage ToMessage(this AnthropicResponse response, string agentName)
     {
         // Extract text content from the response
-        string textContent = string.Empty;
+        var textContent = string.Empty;
         foreach (var content in response.Content)
         {
             if (content.Type == "text" && content is AnthropicResponseTextContent textContent1)
@@ -91,9 +91,7 @@ public static class AnthropicExtensions
 
             return new ToolsCallMessage
             {
-                ToolCalls = System.Collections.Immutable.ImmutableList.Create(
-                    new ToolCall(functionName, arguments) { ToolCallId = toolUseContent.Id }
-                ),
+                ToolCalls = [new ToolCall(functionName, arguments) { ToolCallId = toolUseContent.Id }],
                 Role = Role.Assistant,
                 GenerationId = responseId,
             };

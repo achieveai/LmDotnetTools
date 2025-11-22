@@ -86,7 +86,7 @@ public class ModelResolver : IModelResolver
         foreach (var provider in model.Providers)
         {
             // Check if provider should be excluded
-            if (ModelResolver.ShouldExcludeProvider(provider, criteria))
+            if (ShouldExcludeProvider(provider, criteria))
             {
                 continue;
             }
@@ -119,7 +119,7 @@ public class ModelResolver : IModelResolver
             {
                 foreach (var subProvider in provider.SubProviders)
                 {
-                    if (ModelResolver.ShouldExcludeSubProvider(subProvider, criteria))
+                    if (ShouldExcludeSubProvider(subProvider, criteria))
                     {
                         continue;
                     }
@@ -144,7 +144,7 @@ public class ModelResolver : IModelResolver
         }
 
         // Sort by preference based on criteria
-        return ModelResolver.SortProvidersByPreference(resolutions, criteria);
+        return SortProvidersByPreference(resolutions, criteria);
     }
 
     public Task<bool> IsProviderAvailableAsync(string providerName, CancellationToken cancellationToken = default)
@@ -384,7 +384,7 @@ public class ModelResolver : IModelResolver
         ProviderSelectionCriteria criteria
     )
     {
-        return resolutions.OrderByDescending(r => ModelResolver.CalculateProviderScore(r, criteria)).ToList();
+        return [.. resolutions.OrderByDescending(r => CalculateProviderScore(r, criteria))];
     }
 
     private static double CalculateProviderScore(ProviderResolution resolution, ProviderSelectionCriteria criteria)

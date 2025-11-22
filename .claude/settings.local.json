@@ -11,7 +11,9 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(sed:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(mkdir:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": [],
@@ -20,7 +22,7 @@
   "enabledMcpjsonServers": [
     "sequential-thinking-tools",
     "clarify-doubt",
-		"playwright",
+    "playwright",
     "seq"
   ]
 }

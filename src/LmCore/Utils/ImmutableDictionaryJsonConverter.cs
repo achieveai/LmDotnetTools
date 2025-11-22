@@ -59,14 +59,14 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
             else
             {
                 // For non-string keys, deserialize using the key converter
-                string propertyName = reader.GetString()!;
+                var propertyName = reader.GetString()!;
                 using var document = JsonDocument.Parse($"\"{propertyName}\"");
                 var keyReader = document.RootElement.GetRawText();
                 key = JsonSerializer.Deserialize<TKey>(keyReader, options)!;
             }
 
             // Read the value
-            reader.Read();
+            _ = reader.Read();
             TValue value;
 
             value = JsonSerializer.Deserialize<TValue>(ref reader, options)!;

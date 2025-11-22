@@ -2,10 +2,8 @@ using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace MemoryServer.DocumentSegmentation.Tests.DomainSpecific;
@@ -28,10 +26,7 @@ public class TopicBasedDomainSpecificTests
         _mockLlmService = new Mock<ILlmProviderIntegrationService>();
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
 
-        var loggerFactory = LoggerFactory.Create(builder =>
-        {
-            builder.AddConsole().SetMinimumLevel(LogLevel.Information);
-        });
+        var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
         _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
@@ -52,27 +47,27 @@ public class TopicBasedDomainSpecificTests
         var result = await _service.SegmentByTopicsAsync(legalDocument, DocumentType.Legal, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Legal documents should recognize section structure
-        result.Should().HaveCountGreaterThan(3); // Should identify multiple legal sections
+        _ = result.Should().HaveCountGreaterThan(3); // Should identify multiple legal sections
 
         // Verify segments contain legal terminology
         var allContent = string.Join(" ", result.Select(s => s.Content));
-        allContent.Should().ContainAny("whereas", "hereby", "agreement", "party", "clause", "provision");
+        _ = allContent.Should().ContainAny("whereas", "hereby", "agreement", "party", "clause", "provision");
 
         // Legal segments should have reasonable size for clauses/sections
-        result.All(s => s.Content.Length >= 50).Should().BeTrue();
+        _ = result.All(s => s.Content.Length >= 50).Should().BeTrue();
 
         // Verify legal-specific metadata
         foreach (var segment in result)
         {
-            segment.Metadata.Should().ContainKey("document_type");
-            segment.Metadata["document_type"].Should().Be(DocumentType.Legal.ToString());
+            _ = segment.Metadata.Should().ContainKey("document_type");
+            _ = segment.Metadata["document_type"].Should().Be(DocumentType.Legal.ToString());
         }
 
         _output.WriteLine($"Legal Document Segmentation:");
-        _output.WriteLine($"  Segments created: {result.Count()}");
+        _output.WriteLine($"  Segments created: {result.Count}");
         _output.WriteLine($"  Average segment length: {result.Average(s => s.Content.Length):F0} characters");
 
         foreach (var (segment, index) in result.Select((s, i) => (s, i)))
@@ -93,17 +88,17 @@ public class TopicBasedDomainSpecificTests
         var boundaries = await _service.DetectTopicBoundariesAsync(legalDocument, DocumentType.Legal);
 
         // Assert
-        boundaries.Should().NotBeEmpty();
+        _ = boundaries.Should().NotBeEmpty();
 
         // Legal documents should identify boundaries at clause transitions
-        boundaries.Should().HaveCountGreaterThan(2);
+        _ = boundaries.Should().HaveCountGreaterThan(2);
 
         // Boundaries should be positioned at legal section markers
         // Check that boundaries don't split clauses inappropriately
         foreach (var boundary in boundaries)
         {
-            boundary.Position.Should().BeInRange(0, legalDocument.Length - 1);
-            boundary.Confidence.Should().BeInRange(0.0, 1.0);
+            _ = boundary.Position.Should().BeInRange(0, legalDocument.Length - 1);
+            _ = boundary.Confidence.Should().BeInRange(0.0, 1.0);
         }
 
         _output.WriteLine($"Legal Boundary Detection:");
@@ -131,11 +126,11 @@ public class TopicBasedDomainSpecificTests
         var analysis = await _service.AnalyzeThematicCoherenceAsync(legalClause);
 
         // Assert
-        analysis.Should().NotBeNull();
-        analysis.CoherenceScore.Should().BeInRange(0.0, 1.0);
+        _ = analysis.Should().NotBeNull();
+        _ = analysis.CoherenceScore.Should().BeInRange(0.0, 1.0);
 
         // Legal text should have reasonable coherence despite formal structure
-        analysis
+        _ = analysis
             .CoherenceScore.Should()
             .BeGreaterThan(0.6, "Legal clauses should maintain thematic coherence despite formal language");
 
@@ -159,21 +154,21 @@ public class TopicBasedDomainSpecificTests
         var result = await _service.SegmentByTopicsAsync(technicalDocument, DocumentType.Technical, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Technical docs should identify API sections, code examples, etc.
-        result.Should().HaveCountGreaterThan(4);
+        _ = result.Should().HaveCountGreaterThan(4);
 
         // Verify segments contain technical terminology
         var allContent = string.Join(" ", result.Select(s => s.Content));
-        allContent.Should().ContainAny("API", "function", "method", "parameter", "return", "example", "code");
+        _ = allContent.Should().ContainAny("API", "function", "method", "parameter", "return", "example", "code");
 
         // Technical segments should handle code blocks appropriately
         var codeSegments = result.Where(s => s.Content.Contains("```") || s.Content.Contains("function")).ToList();
-        codeSegments.Should().NotBeEmpty("Should identify code-containing segments");
+        _ = codeSegments.Should().NotBeEmpty("Should identify code-containing segments");
 
         _output.WriteLine($"Technical Document Segmentation:");
-        _output.WriteLine($"  Segments created: {result.Count()}");
+        _output.WriteLine($"  Segments created: {result.Count}");
         _output.WriteLine($"  Code segments: {codeSegments.Count}");
         _output.WriteLine($"  Average segment length: {result.Average(s => s.Content.Length):F0} characters");
     }
@@ -188,15 +183,15 @@ public class TopicBasedDomainSpecificTests
         var boundaries = await _service.DetectTopicBoundariesAsync(technicalDocument, DocumentType.Technical);
 
         // Assert
-        boundaries.Should().NotBeEmpty();
+        _ = boundaries.Should().NotBeEmpty();
 
         // Technical docs should identify boundaries between different API sections
-        boundaries.Should().HaveCountGreaterThan(3);
+        _ = boundaries.Should().HaveCountGreaterThan(3);
 
         // Should recognize transitions between concepts (API -> Examples -> Parameters)
         foreach (var boundary in boundaries)
         {
-            boundary.Confidence.Should().BeInRange(0.0, 1.0);
+            _ = boundary.Confidence.Should().BeInRange(0.0, 1.0);
         }
 
         _output.WriteLine($"Technical Boundary Detection:");
@@ -231,10 +226,10 @@ public class TopicBasedDomainSpecificTests
         var analysis = await _service.AnalyzeThematicCoherenceAsync(codeExample);
 
         // Assert
-        analysis.Should().NotBeNull();
+        _ = analysis.Should().NotBeNull();
 
         // Technical content mixing text and code should maintain coherence
-        analysis
+        _ = analysis
             .CoherenceScore.Should()
             .BeGreaterThan(0.7, "Code examples with explanations should maintain thematic coherence");
 
@@ -257,25 +252,25 @@ public class TopicBasedDomainSpecificTests
         var result = await _service.SegmentByTopicsAsync(academicPaper, DocumentType.ResearchPaper, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Academic papers should identify standard sections
-        result.Should().HaveCountGreaterThan(4); // Abstract, Introduction, Methods, Results, Discussion, etc.
+        _ = result.Should().HaveCountGreaterThan(4); // Abstract, Introduction, Methods, Results, Discussion, etc.
 
         // Verify academic terminology and structure
         var allContent = string.Join(" ", result.Select(s => s.Content));
-        allContent
+        _ = allContent
             .Should()
             .ContainAny("abstract", "methodology", "results", "discussion", "conclusion", "research", "study");
 
         // Academic segments should be substantial
-        result
+        _ = result
             .Average(s => s.Content.Length)
             .Should()
             .BeGreaterThan(300, "Academic sections should be substantial in length");
 
         _output.WriteLine($"Academic Paper Segmentation:");
-        _output.WriteLine($"  Segments created: {result.Count()}");
+        _output.WriteLine($"  Segments created: {result.Count}");
         _output.WriteLine($"  Average segment length: {result.Average(s => s.Content.Length):F0} characters");
     }
 
@@ -289,15 +284,15 @@ public class TopicBasedDomainSpecificTests
         var boundaries = await _service.DetectTopicBoundariesAsync(academicPaper, DocumentType.ResearchPaper);
 
         // Assert
-        boundaries.Should().NotBeEmpty();
+        _ = boundaries.Should().NotBeEmpty();
 
         // Academic papers should identify clear section boundaries
-        boundaries.Should().HaveCountGreaterThan(3);
+        _ = boundaries.Should().HaveCountGreaterThan(3);
 
         // Boundaries should align with academic paper structure
         foreach (var boundary in boundaries)
         {
-            boundary.Confidence.Should().BeInRange(0.0, 1.0);
+            _ = boundary.Confidence.Should().BeInRange(0.0, 1.0);
         }
 
         _output.WriteLine($"Academic Boundary Detection:");
@@ -323,10 +318,10 @@ public class TopicBasedDomainSpecificTests
         var analysis = await _service.AnalyzeThematicCoherenceAsync(academicMethodology);
 
         // Assert
-        analysis.Should().NotBeNull();
+        _ = analysis.Should().NotBeNull();
 
         // Academic methodology should have high coherence
-        analysis
+        _ = analysis
             .CoherenceScore.Should()
             .BeGreaterThan(0.8, "Academic methodology sections should maintain high thematic coherence");
 
@@ -361,12 +356,12 @@ public class TopicBasedDomainSpecificTests
         var validation = await _service.ValidateTopicSegmentsAsync(segments, document);
 
         // Assert
-        validation.Should().NotBeNull();
-        validation.OverallQuality.Should().BeInRange(0.0, 1.0);
-        validation.AverageTopicCoherence.Should().BeInRange(0.0, 1.0);
+        _ = validation.Should().NotBeNull();
+        _ = validation.OverallQuality.Should().BeInRange(0.0, 1.0);
+        _ = validation.AverageTopicCoherence.Should().BeInRange(0.0, 1.0);
 
         // Domain-specific documents should have reasonable quality scores
-        validation
+        _ = validation
             .OverallQuality.Should()
             .BeGreaterThan(0.6, $"{documentType} documents should maintain good overall quality");
 
@@ -417,16 +412,16 @@ public class TopicBasedDomainSpecificTests
         var result = await _service.SegmentByTopicsAsync(mixedDocument, DocumentType.Generic, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Should handle mixed content appropriately
-        result.Should().HaveCountGreaterThan(2);
+        _ = result.Should().HaveCountGreaterThan(2);
 
         // Should not fail on mixed domain content
-        result.All(s => !string.IsNullOrWhiteSpace(s.Content)).Should().BeTrue();
+        _ = result.All(s => !string.IsNullOrWhiteSpace(s.Content)).Should().BeTrue();
 
         _output.WriteLine($"Mixed Domain Document Segmentation:");
-        _output.WriteLine($"  Segments created: {result.Count()}");
+        _output.WriteLine($"  Segments created: {result.Count}");
     }
 
     #endregion
@@ -435,7 +430,7 @@ public class TopicBasedDomainSpecificTests
 
     private void SetupDefaultMocks()
     {
-        _mockPromptManager
+        _ = _mockPromptManager
             .Setup(x =>
                 x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
@@ -448,10 +443,10 @@ public class TopicBasedDomainSpecificTests
                 }
             );
 
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _ = _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
-    private string CreateLegalDocument()
+    private static string CreateLegalDocument()
     {
         return @"
             SOFTWARE LICENSE AGREEMENT
@@ -502,7 +497,7 @@ public class TopicBasedDomainSpecificTests
         ";
     }
 
-    private string CreateTechnicalDocument()
+    private static string CreateTechnicalDocument()
     {
         return @"
             User Authentication API Documentation
@@ -601,7 +596,7 @@ public class TopicBasedDomainSpecificTests
         ";
     }
 
-    private string CreateAcademicPaper()
+    private static string CreateAcademicPaper()
     {
         return @"
             The Impact of User Interface Design on User Engagement in Mobile Applications:
@@ -709,7 +704,7 @@ public class TopicBasedDomainSpecificTests
         ";
     }
 
-    private string CreateGenericDocument()
+    private static string CreateGenericDocument()
     {
         return @"
             Modern Technology Trends and Their Impact on Society

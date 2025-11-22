@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Net;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils;
@@ -223,7 +221,7 @@ public class ServerEmbeddingsTests
 
         // Assert
         Assert.NotNull(models);
-        Assert.Single(models);
+        _ = Assert.Single(models);
         Assert.Equal("test-model", models[0]);
         Debug.WriteLine($"Available models returned: {string.Join(", ", models)}");
     }

@@ -28,7 +28,7 @@ public class TransportSessionInitializerTests
         };
 
         var optionsMock = new Mock<IOptions<MemoryServerOptions>>();
-        optionsMock.Setup(x => x.Value).Returns(_options);
+        _ = optionsMock.Setup(x => x.Value).Returns(_options);
 
         _initializer = new TransportSessionInitializer(
             _mockSessionManager.Object,
@@ -52,7 +52,7 @@ public class TransportSessionInitializerTests
             Source = SessionDefaultsSource.EnvironmentVariables,
         };
 
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.ProcessEnvironmentVariablesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedDefaults);
 
@@ -80,7 +80,7 @@ public class TransportSessionInitializerTests
         Debug.WriteLine("Testing STDIO session initialization without environment variables");
 
         // Arrange
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.ProcessEnvironmentVariablesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync((SessionDefaults?)null);
 
@@ -120,7 +120,7 @@ public class TransportSessionInitializerTests
             Source = SessionDefaultsSource.HttpHeaders,
         };
 
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.ProcessTransportContextAsync(queryParameters, headers, It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedDefaults);
 
@@ -151,7 +151,7 @@ public class TransportSessionInitializerTests
         Debug.WriteLine("Testing SSE session initialization without parameters or headers");
 
         // Arrange
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.ProcessTransportContextAsync(null, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync((SessionDefaults?)null);
 
@@ -180,7 +180,7 @@ public class TransportSessionInitializerTests
         var expectedCleanedCount = 5;
         var maxAge = TimeSpan.FromMinutes(_options.SessionDefaults.MaxSessionAge);
 
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.CleanupExpiredSessionsAsync(maxAge, It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedCleanedCount);
 
@@ -304,9 +304,13 @@ public class TransportSessionInitializerTests
         };
 
         if (fieldName == "AgentId")
+        {
             invalidDefaults.AgentId = longValue;
+        }
         else if (fieldName == "RunId")
+        {
             invalidDefaults.RunId = longValue;
+        }
 
         // Act
         var result = _initializer.ValidateSessionContext(invalidDefaults);
@@ -325,7 +329,7 @@ public class TransportSessionInitializerTests
         Debug.WriteLine("Testing STDIO session initialization with exception");
 
         // Arrange
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.ProcessEnvironmentVariablesAsync(It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Test exception"));
 
@@ -351,7 +355,7 @@ public class TransportSessionInitializerTests
         var queryParameters = new Dictionary<string, string> { { "user_id", "test_user" } };
         var headers = new Dictionary<string, string> { { "X-Memory-User-ID", "header_user" } };
 
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.ProcessTransportContextAsync(queryParameters, headers, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Test exception"));
 
@@ -379,7 +383,7 @@ public class TransportSessionInitializerTests
         // Arrange
         var maxAge = TimeSpan.FromMinutes(_options.SessionDefaults.MaxSessionAge);
 
-        _mockSessionManager
+        _ = _mockSessionManager
             .Setup(x => x.CleanupExpiredSessionsAsync(maxAge, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Test exception"));
 

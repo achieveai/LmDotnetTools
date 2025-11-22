@@ -92,7 +92,7 @@ public class NarrativeBoundary
     /// <summary>
     /// Phrases or words that triggered the detection of this boundary.
     /// </summary>
-    public List<string> TriggerPhrases { get; set; } = new List<string>();
+    public List<string> TriggerPhrases { get; set; } = [];
 
     /// <summary>
     /// Logical relationship between the segment before and after this boundary.
@@ -107,7 +107,7 @@ public class NarrativeBoundary
     /// <summary>
     /// Additional metadata about this narrative boundary.
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new Dictionary<string, object>();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 }
 
 /// <summary>
@@ -317,13 +317,13 @@ public class NarrativeFlowAnalysis
     /// <summary>
     /// Causal chain relationships detected in the narrative.
     /// </summary>
-    public List<CausalRelation> CausalChain { get; set; } = new List<CausalRelation>();
+    public List<CausalRelation> CausalChain { get; set; } = [];
 
     /// <summary>
     /// Narrative elements identified in the document.
     /// </summary>
     public Dictionary<NarrativeFunction, List<int>> NarrativeElements { get; set; } =
-        new Dictionary<NarrativeFunction, List<int>>();
+        [];
 
     /// <summary>
     /// Overall flow coherence score (0.0 to 1.0).
@@ -348,12 +348,12 @@ public class NarrativeFlowAnalysis
     /// <summary>
     /// Key narrative markers found in the text.
     /// </summary>
-    public List<string> NarrativeMarkers { get; set; } = new List<string>();
+    public List<string> NarrativeMarkers { get; set; } = [];
 
     /// <summary>
     /// Transition quality scores for each detected boundary.
     /// </summary>
-    public Dictionary<int, double> TransitionQualities { get; set; } = new Dictionary<int, double>();
+    public Dictionary<int, double> TransitionQualities { get; set; } = [];
 }
 
 /// <summary>
@@ -549,17 +549,17 @@ public class NarrativeSegmentationValidation
     /// Individual segment validation results.
     /// </summary>
     public List<NarrativeSegmentValidationResult> SegmentResults { get; set; } =
-        new List<NarrativeSegmentValidationResult>();
+        [];
 
     /// <summary>
     /// Issues found during narrative validation.
     /// </summary>
-    public List<ValidationIssue> Issues { get; set; } = new List<ValidationIssue>();
+    public List<ValidationIssue> Issues { get; set; } = [];
 
     /// <summary>
     /// Recommendations for improving narrative segmentation.
     /// </summary>
-    public List<string> Recommendations { get; set; } = new List<string>();
+    public List<string> Recommendations { get; set; } = [];
 }
 
 /// <summary>
@@ -600,5 +600,5 @@ public class NarrativeSegmentValidationResult
     /// <summary>
     /// Issues specific to this segment.
     /// </summary>
-    public List<ValidationIssue> Issues { get; set; } = new List<ValidationIssue>();
+    public List<ValidationIssue> Issues { get; set; } = [];
 }

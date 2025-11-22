@@ -175,7 +175,7 @@ public class OpenAIEmbeddingServiceHttpTests
         var service = new OpenAIEmbeddingService(_logger, httpClient, options);
 
         // Act
-        await service.GenerateEmbeddingsAsync(request);
+        _ = await service.GenerateEmbeddingsAsync(request);
 
         // Assert
         Assert.NotNull(capturedRequest);
@@ -249,7 +249,7 @@ public class OpenAIEmbeddingServiceHttpTests
         // Act - This should fail because we're returning empty data, but we only care about the request
         try
         {
-            await service.GenerateEmbeddingsAsync(request);
+            _ = await service.GenerateEmbeddingsAsync(request);
         }
         catch
         {
@@ -308,7 +308,7 @@ public class OpenAIEmbeddingServiceHttpTests
     private static string CreateValidOpenAIResponse(int embeddingCount, string format = "base64")
     {
         var embeddings = new List<object>();
-        for (int i = 0; i < embeddingCount; i++)
+        for (var i = 0; i < embeddingCount; i++)
         {
             var floatArray = GenerateTestEmbeddingArray(1536);
             object embeddingData;
@@ -350,7 +350,7 @@ public class OpenAIEmbeddingServiceHttpTests
     {
         var random = new Random(42); // Fixed seed for consistent tests
         var embedding = new float[size];
-        for (int i = 0; i < size; i++)
+        for (var i = 0; i < size; i++)
         {
             embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Range [-1, 1]
         }
@@ -526,14 +526,14 @@ public class OpenAIEmbeddingServiceHttpTests
             },
         };
 
-    private static readonly string[] item = new[] { "Hello world" };
-    private static readonly string[] itemArray = new[] { "Hello", "World", "Test" };
-    private static readonly string[] itemArray0 = new[] { "test" };
-    private static readonly string[] itemArray1 = new[] { "test" };
-    private static readonly string[] itemArray2 = new[] { "test1", "test2" };
-    private static readonly string[] itemArray3 = new[] { "test" };
-    private static readonly string[] itemArray4 = new[] { "test" };
-    private static readonly string[] itemArray5 = new[] { "test" };
+    private static readonly string[] item = ["Hello world"];
+    private static readonly string[] itemArray = ["Hello", "World", "Test"];
+    private static readonly string[] itemArray0 = ["test"];
+    private static readonly string[] itemArray1 = ["test"];
+    private static readonly string[] itemArray2 = ["test1", "test2"];
+    private static readonly string[] itemArray3 = ["test"];
+    private static readonly string[] itemArray4 = ["test"];
+    private static readonly string[] itemArray5 = ["test"];
 
     /// <summary>
     /// Test logger implementation for capturing log output
@@ -541,9 +541,15 @@ public class OpenAIEmbeddingServiceHttpTests
     private class TestLogger<T> : ILogger<T>
     {
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
+            where TState : notnull
+        {
+            return null;
+        }
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
 
         public void Log<TState>(
             LogLevel logLevel,

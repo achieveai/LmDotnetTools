@@ -1,7 +1,4 @@
 using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
@@ -25,7 +22,7 @@ public class NaturalToolUseTransformationIntegrationTests
 
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(weatherToolCall),
+            ToolCalls = [weatherToolCall],
             Role = Role.Assistant,
             FromAgent = "weather-assistant",
             GenerationId = "gen-weather-123",
@@ -37,7 +34,7 @@ public class NaturalToolUseTransformationIntegrationTests
 
         var toolResultMessage = new ToolsCallResultMessage
         {
-            ToolCallResults = ImmutableList.Create(weatherResult),
+            ToolCallResults = [weatherResult],
             Role = Role.User,
             Metadata = ImmutableDictionary
                 .Create<string, object>()
@@ -51,7 +48,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var transformed = ToolsCallAggregateTransformer.TransformToNaturalFormat(aggregateMessage);
 
         // Assert - Verify the transformation
-        Assert.IsType<TextMessage>(transformed);
+        _ = Assert.IsType<TextMessage>(transformed);
 
         var textMessage = (TextMessage)transformed;
 
@@ -162,8 +159,8 @@ public class NaturalToolUseTransformationIntegrationTests
             "{\"count\":42,\"total_revenue\":2500000,\"top_customers\":[{\"name\":\"TechCorp\",\"revenue\":500000},{\"name\":\"StartupXYZ\",\"revenue\":350000}]}"
         );
 
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var suffixMessage = new TextMessage
@@ -181,7 +178,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var combined = ToolsCallAggregateTransformer.CombineMessageSequence(messageSequence);
 
         // Assert
-        Assert.IsType<TextMessage>(combined);
+        _ = Assert.IsType<TextMessage>(combined);
         Assert.Equal(Role.Assistant, combined.Role);
         Assert.Equal("data-assistant", combined.FromAgent);
 
@@ -219,8 +216,8 @@ public class NaturalToolUseTransformationIntegrationTests
             "{\"status\":\"success\",\"transaction_id\":\"txn_abc123\",\"confirmation_code\":\"CONF789\"}"
         );
 
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "payment-processor");
 
         var conversationMessages = new IMessage[]
@@ -238,7 +235,7 @@ public class NaturalToolUseTransformationIntegrationTests
 
         // 1. Test single message transformation
         var transformedSingle = aggregateMessage.ToNaturalToolUse();
-        Assert.IsType<TextMessage>(transformedSingle);
+        _ = Assert.IsType<TextMessage>(transformedSingle);
         var transformedText = (TextMessage)transformedSingle;
         Assert.Contains("<tool_call name=\"ProcessPayment\">", transformedText.Text);
 
@@ -260,7 +257,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var transformedCollection = conversationMessages.ToNaturalToolUse().ToList();
         Assert.Equal(3, transformedCollection.Count);
         Assert.Same(conversationMessages[0], transformedCollection[0]); // First unchanged
-        Assert.IsType<TextMessage>(transformedCollection[1]); // Middle transformed
+        _ = Assert.IsType<TextMessage>(transformedCollection[1]); // Middle transformed
         Assert.Same(conversationMessages[2], transformedCollection[2]); // Last unchanged
 
         // 5. Test message sequence combination
@@ -280,10 +277,10 @@ public class NaturalToolUseTransformationIntegrationTests
         var problematicToolCall = new ToolCall(null, "invalid json {"); // Null name, invalid JSON
         var problematicToolResult = new ToolCallResult(null, "simple text result");
 
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(problematicToolCall) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [problematicToolCall] };
         var toolResultMessage = new ToolsCallResultMessage
         {
-            ToolCallResults = ImmutableList.Create(problematicToolResult),
+            ToolCallResults = [problematicToolResult],
         };
         var problematicAggregate = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
@@ -295,7 +292,7 @@ public class NaturalToolUseTransformationIntegrationTests
 
         // 2. Problematic aggregate should still transform (gracefully handles null function name)
         var problematicTransformed = problematicAggregate.ToNaturalToolUse();
-        Assert.IsType<TextMessage>(problematicTransformed);
+        _ = Assert.IsType<TextMessage>(problematicTransformed);
         var problematicTextMessage = (TextMessage)problematicTransformed;
         Assert.Contains("UnknownFunction", problematicTextMessage.Text); // Graceful fallback for null name
         Assert.Contains("invalid json {", problematicTextMessage.Text); // Invalid JSON preserved as-is
@@ -305,7 +302,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var mixedResult = mixedMessages.ToNaturalToolUse().ToList();
         Assert.Equal(2, mixedResult.Count);
         Assert.Same(regularMessage, mixedResult[0]); // First unchanged
-        Assert.IsType<TextMessage>(mixedResult[1]); // Second transformed despite issues
+        _ = Assert.IsType<TextMessage>(mixedResult[1]); // Second transformed despite issues
 
         // 4. Combination should work even with problematic messages
         var combinedResult = mixedMessages.CombineAsNaturalToolUse();
@@ -341,8 +338,8 @@ public class NaturalToolUseTransformationIntegrationTests
             "{\"total_sales\":1750000,\"breakdown\":{\"January\":580000,\"February\":620000,\"March\":550000},\"transactions\":156,\"average_order\":11218}"
         );
 
-        var salesCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(salesCall) };
-        var salesResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(salesResult) };
+        var salesCallMessage = new ToolsCallMessage { ToolCalls = [salesCall] };
+        var salesResultMessage = new ToolsCallResultMessage { ToolCallResults = [salesResult] };
         var salesAggregate = new ToolsCallAggregateMessage(salesCallMessage, salesResultMessage);
 
         var analysisMessage = new TextMessage
@@ -362,8 +359,8 @@ public class NaturalToolUseTransformationIntegrationTests
             "Q1 2024 Sales Summary:\\n\\nTotal Revenue: $1,750,000\\nTransactions: 156\\nAverage Order Value: $11,218\\n\\nMonthly Breakdown:\\n- January: $580,000 (33.1%)\\n- February: $620,000 (35.4%)\\n- March: $550,000 (31.4%)\\n\\nKey Insights:\\n- February was the strongest month\\n- Consistent performance across the quarter\\n- High average order value indicates quality customer base"
         );
 
-        var reportCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(reportCall) };
-        var reportResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(reportResult) };
+        var reportCallMessage = new ToolsCallMessage { ToolCalls = [reportCall] };
+        var reportResultMessage = new ToolsCallResultMessage { ToolCallResults = [reportResult] };
         var reportAggregate = new ToolsCallAggregateMessage(reportCallMessage, reportResultMessage);
 
         var finalMessage = new TextMessage
@@ -398,14 +395,14 @@ public class NaturalToolUseTransformationIntegrationTests
         Assert.Same(assistantReply, transformedConversation[1]);
 
         // Third message (sales aggregate) transformed
-        Assert.IsType<TextMessage>(transformedConversation[2]);
+        _ = Assert.IsType<TextMessage>(transformedConversation[2]);
         var salesTransformed = (TextMessage)transformedConversation[2];
         Assert.Contains("<tool_call name=\"GetSalesData\">", salesTransformed.Text);
         Assert.Contains("\"period\": \"Q1 2024\"", salesTransformed.Text);
         Assert.Contains("\"total_sales\": 1750000", salesTransformed.Text);
 
         // Fifth message (report aggregate) transformed
-        Assert.IsType<TextMessage>(transformedConversation[4]);
+        _ = Assert.IsType<TextMessage>(transformedConversation[4]);
         var reportTransformed = (TextMessage)transformedConversation[4];
         Assert.Contains("<tool_call name=\"CreateSummaryReport\">", reportTransformed.Text);
         Assert.Contains("Q1 2024 Sales Summary:", reportTransformed.Text);

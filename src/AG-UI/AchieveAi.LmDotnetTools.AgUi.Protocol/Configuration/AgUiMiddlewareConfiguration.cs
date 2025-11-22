@@ -47,15 +47,19 @@ public static class AgUiMiddlewareConfiguration
     public static IStreamingAgent ConfigureWithAgUi(
         this IStreamingAgent agent,
         IServiceProvider services,
-        bool includeJsonFragmentMiddleware = true)
+        bool includeJsonFragmentMiddleware = true
+    )
     {
+        ArgumentNullException.ThrowIfNull(agent, nameof(agent));
+        ArgumentNullException.ThrowIfNull(services, nameof(services));
+
         // Get required middleware instances from DI
         var agUiMiddleware = services.GetRequiredService<AgUiStreamingMiddleware>();
         var functionCallMiddleware = services.GetRequiredService<FunctionCallMiddleware>();
 
         // CRITICAL: Wire the AG-UI middleware as a callback to FunctionCallMiddleware
         // This enables real-time tool execution event capture
-        functionCallMiddleware.WithResultCallback(agUiMiddleware);
+        _ = functionCallMiddleware.WithResultCallback(agUiMiddleware);
 
         // Build the middleware chain in the correct order
         IStreamingAgent configuredAgent = agent;
@@ -124,10 +128,15 @@ public static class AgUiMiddlewareConfiguration
         FunctionCallMiddleware functionCallMiddleware,
         JsonFragmentUpdateMiddleware? jsonFragmentMiddleware = null,
         FunctionRegistry? functionRegistry = null,
-        MessageUpdateJoinerMiddleware? messageJoiner = null)
+        MessageUpdateJoinerMiddleware? messageJoiner = null
+    )
     {
+        ArgumentNullException.ThrowIfNull(agent, nameof(agent));
+        ArgumentNullException.ThrowIfNull(agUiMiddleware, nameof(agUiMiddleware));
+        ArgumentNullException.ThrowIfNull(functionCallMiddleware, nameof(functionCallMiddleware));
+
         // CRITICAL: Wire the callback
-        functionCallMiddleware.WithResultCallback(agUiMiddleware);
+        _ = functionCallMiddleware.WithResultCallback(agUiMiddleware);
 
         // Build the middleware chain
         IStreamingAgent configuredAgent = agent;
@@ -168,8 +177,12 @@ public static class AgUiMiddlewareConfiguration
     /// </remarks>
     public static FunctionCallMiddleware WithAgUiCallback(
         this FunctionCallMiddleware functionCallMiddleware,
-        AgUiStreamingMiddleware agUiMiddleware)
+        AgUiStreamingMiddleware agUiMiddleware
+    )
     {
+        ArgumentNullException.ThrowIfNull(functionCallMiddleware, nameof(functionCallMiddleware));
+        ArgumentNullException.ThrowIfNull(agUiMiddleware, nameof(agUiMiddleware));
+
         return functionCallMiddleware.WithResultCallback(agUiMiddleware);
     }
 }

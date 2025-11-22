@@ -1,18 +1,11 @@
 using System.CommandLine;
 using System.Text;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Prompts;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using MemoryServer.Configuration;
-using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using MemoryServer.Services;
 using MemoryServer.Tools;
 using MemoryServer.Utils;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 // Load environment variables from .env file early in startup
@@ -27,7 +20,7 @@ if (commandLineArgs.Length > 1 && commandLineArgs[1] == "generate-token")
     var rootCommand = new RootCommand("Memory MCP Server");
     rootCommand.AddCommand(TokenGeneratorCommand.CreateCommand());
 
-    return await rootCommand.InvokeAsync(commandLineArgs.Skip(1).ToArray());
+    return await rootCommand.InvokeAsync([.. commandLineArgs.Skip(1)]);
 }
 
 // Parse command line arguments for transport mode
@@ -70,57 +63,48 @@ static async Task RunSseServerAsync(string[] args, MemoryServerOptions options, 
     var builder = WebApplication.CreateBuilder(args);
 
     // Configure logging for development
-    builder.Logging.AddConsole();
+    _ = builder.Logging.AddConsole();
 
     // Add routing services (required for UseRouting)
-    builder.Services.AddRouting();
+    _ = builder.Services.AddRouting();
 
     // Add HTTP context accessor for JWT claims
-    builder.Services.AddHttpContextAccessor();
+    _ = builder.Services.AddHttpContextAccessor();
 
     // Add core memory server services
-    builder.Services.AddMemoryServerCore(configuration, builder.Environment);
+    _ = builder.Services.AddMemoryServerCore(configuration, builder.Environment);
 
     // Configure JWT authentication for SSE transport only
-    builder.Services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
-    builder.Services.AddScoped<ITokenService, TokenService>();
+    _ = builder.Services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
+    _ = builder.Services.AddScoped<ITokenService, TokenService>();
 
     var jwtOptions = new JwtOptions();
     configuration.GetSection("Jwt").Bind(jwtOptions);
 
     if (jwtOptions.IsValid())
     {
-        builder
+        _ = builder
             .Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddJwtBearer(options =>
+            .AddJwtBearer(options => options.TokenValidationParameters = new TokenValidationParameters
             {
-                options.TokenValidationParameters = new TokenValidationParameters
-                {
-                    ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Secret)),
-                    ValidateIssuer = true,
-                    ValidIssuer = jwtOptions.Issuer,
-                    ValidateAudience = true,
-                    ValidAudience = jwtOptions.Audience,
-                    ValidateLifetime = true,
-                    ClockSkew = TimeSpan.Zero,
-                };
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Secret)),
+                ValidateIssuer = true,
+                ValidIssuer = jwtOptions.Issuer,
+                ValidateAudience = true,
+                ValidAudience = jwtOptions.Audience,
+                ValidateLifetime = true,
+                ClockSkew = TimeSpan.Zero,
             });
 
-        builder.Services.AddAuthorization();
+        _ = builder.Services.AddAuthorization();
     }
 
     // Add MCP services for SSE transport
-    builder.Services.AddMcpServices(TransportMode.SSE);
+    _ = builder.Services.AddMcpServices(TransportMode.SSE);
 
     // Configure CORS for testing
-    builder.Services.AddCors(corsOptions =>
-    {
-        corsOptions.AddDefaultPolicy(policy =>
-        {
-            policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
-        });
-    });
+    _ = builder.Services.AddCors(corsOptions => corsOptions.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
     var app = builder.Build();
     await ConfigureSseApplication(app);
@@ -135,17 +119,17 @@ static async Task ConfigureSseApplication(WebApplication app)
     await DatabaseInitializer.InitializeAsync(app.Services);
 
     // Configure CORS
-    app.UseCors();
+    _ = app.UseCors();
 
     // Add routing first
-    app.UseRouting();
+    _ = app.UseRouting();
 
     // Add authentication and authorization middleware (after UseRouting)
-    app.UseAuthentication();
-    app.UseAuthorization();
+    _ = app.UseAuthentication();
+    _ = app.UseAuthorization();
 
     // Add middleware to extract URL parameters and headers for session context
-    app.Use(
+    _ = app.Use(
         async (context, next) =>
         {
             try
@@ -180,10 +164,10 @@ static async Task ConfigureSseApplication(WebApplication app)
     );
 
     // Add basic health check endpoint for testing
-    app.MapGet("/health", () => "OK");
+    _ = app.MapGet("/health", () => "OK");
 
     // Map MCP endpoints (this creates the /sse endpoint)
-    app.MapMcp();
+    _ = app.MapMcp();
 
     appLogger.LogInformation("🌐 Memory MCP Server configured for SSE transport");
 }
@@ -193,24 +177,22 @@ static async Task RunStdioServerAsync(string[] args, MemoryServerOptions options
     var builder = Host.CreateApplicationBuilder(args);
 
     // Configure logging for production use
-    builder.Logging.AddConsole(consoleLogOptions =>
-    {
+    _ = builder.Logging.AddConsole(consoleLogOptions =>
         // Configure all logs to go to stderr for STDIO transport
-        consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
-    });
+        consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace);
 
     // Add core memory server services
-    builder.Services.AddMemoryServerCore(configuration, builder.Environment);
+    _ = builder.Services.AddMemoryServerCore(configuration, builder.Environment);
 
     // Configure JWT services for STDIO (but no authentication middleware)
-    builder.Services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
-    builder.Services.AddScoped<ITokenService, TokenService>();
+    _ = builder.Services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
+    _ = builder.Services.AddScoped<ITokenService, TokenService>();
 
     // Add HTTP context accessor for consistency (even though not used in STDIO)
-    builder.Services.AddHttpContextAccessor();
+    _ = builder.Services.AddHttpContextAccessor();
 
     // Add MCP services for STDIO transport
-    builder.Services.AddMcpServices(TransportMode.STDIO);
+    _ = builder.Services.AddMcpServices(TransportMode.STDIO);
 
     var app = builder.Build();
 
@@ -245,7 +227,7 @@ public class Startup
     {
         // Create a minimal configuration for testing
         var builder = new ConfigurationBuilder();
-        builder.AddInMemoryCollection(
+        _ = builder.AddInMemoryCollection(
             new Dictionary<string, string?>
             {
                 ["MemoryServer:Database:ConnectionString"] = "Data Source=:memory:",
@@ -266,32 +248,26 @@ public class Startup
     public void ConfigureServices(IServiceCollection services)
     {
         // Add routing services (required for UseRouting)
-        services.AddRouting();
+        _ = services.AddRouting();
 
         // Add HTTP context accessor for JWT claims
-        services.AddHttpContextAccessor();
+        _ = services.AddHttpContextAccessor();
 
         // Use our extension methods for core services
-        services.AddMemoryServerCore(_configuration);
+        _ = services.AddMemoryServerCore(_configuration);
 
         // Configure JWT services for testing (but no authentication middleware for tests)
-        services.Configure<JwtOptions>(_configuration.GetSection("Jwt"));
-        services.AddScoped<ITokenService, TokenService>();
+        _ = services.Configure<JwtOptions>(_configuration.GetSection("Jwt"));
+        _ = services.AddScoped<ITokenService, TokenService>();
 
         // Override with test-specific LLM services
-        services.AddTestLlmServices();
+        _ = services.AddTestLlmServices();
 
         // Add MCP services for SSE transport
-        services.AddMcpServices(TransportMode.SSE);
+        _ = services.AddMcpServices(TransportMode.SSE);
 
         // Configure CORS for testing
-        services.AddCors(corsOptions =>
-        {
-            corsOptions.AddDefaultPolicy(policy =>
-            {
-                policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
-            });
-        });
+        _ = services.AddCors(corsOptions => corsOptions.AddDefaultPolicy(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
     }
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
@@ -300,17 +276,17 @@ public class Startup
         app.ApplicationServices.InitializeDatabaseSync();
 
         // Configure CORS
-        app.UseCors();
+        _ = app.UseCors();
 
         // Map MCP endpoints (this creates the /sse endpoint)
-        app.UseRouting();
+        _ = app.UseRouting();
 
-        app.UseEndpoints(endpoints =>
+        _ = app.UseEndpoints(endpoints =>
         {
             // Add basic health check endpoint for testing
-            endpoints.MapGet("/health", () => "OK");
+            _ = endpoints.MapGet("/health", () => "OK");
 
-            endpoints.MapMcp();
+            _ = endpoints.MapMcp();
         });
     }
 }

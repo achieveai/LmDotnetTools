@@ -9,7 +9,7 @@ public class JsonPropertyNameEnumConverter<T> : JsonConverter<T>
 {
     public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        string value = (reader.GetString() ?? throw new JsonException("Value was null.")).ToLowerInvariant();
+        var value = (reader.GetString() ?? throw new JsonException("Value was null.")).ToLowerInvariant();
 
         foreach (var field in typeToConvert.GetFields())
         {

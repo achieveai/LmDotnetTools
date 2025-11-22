@@ -36,7 +36,7 @@ public static class FunctionRegistryExtensions
             cancellationToken
         );
 
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         return registry;
     }
 
@@ -59,7 +59,7 @@ public static class FunctionRegistryExtensions
     {
         var provider = await McpClientFunctionProvider.CreateAsync(mcpClients, providerName, logger, cancellationToken);
 
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         return registry;
     }
 
@@ -93,7 +93,7 @@ public static class FunctionRegistryExtensions
             cancellationToken
         );
 
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         return registry;
     }
 

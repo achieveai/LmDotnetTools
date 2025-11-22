@@ -88,7 +88,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     )
     {
         // Inject usage tracking into options
-        var modifiedOptions = OpenRouterUsageMiddleware.InjectUsageTracking(context.Options);
+        var modifiedOptions = InjectUsageTracking(context.Options);
         var modifiedContext = new MiddlewareContext(context.Messages, modifiedOptions);
 
         // Generate reply with usage tracking enabled
@@ -111,7 +111,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
     )
     {
         // Inject usage tracking into options
-        var modifiedOptions = OpenRouterUsageMiddleware.InjectUsageTracking(context.Options);
+        var modifiedOptions = InjectUsageTracking(context.Options);
         var modifiedContext = new MiddlewareContext(context.Messages, modifiedOptions);
 
         // Generate streaming reply with usage tracking enabled
@@ -348,7 +348,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             // We should enhance if:
             // 1. No cost information is available (TotalCost is null or 0), OR
             // 2. This is a UsageMessage (indicating it came from upstream middleware) and we want to add OpenRouter-specific cost data
-            bool shouldEnhanceWithOpenRouter =
+            var shouldEnhanceWithOpenRouter =
                 (existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0) || (message is UsageMessage);
 
             _logger.LogDebug(
@@ -652,7 +652,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
 
         var totalStartTime = DateTimeOffset.UtcNow;
 
-        for (int attempt = 0; attempt <= MaxRetryCount; attempt++)
+        for (var attempt = 0; attempt <= MaxRetryCount; attempt++)
         {
             var attemptStartTime = DateTimeOffset.UtcNow;
 
@@ -934,7 +934,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         );
 
         // Check for token count discrepancies and log warnings if found
-        bool hasTokenDiscrepancies = false;
+        var hasTokenDiscrepancies = false;
 
         if (
             existingUsage.PromptTokens != 0

@@ -1,7 +1,3 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using Xunit;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Messages;
 
 public class MessageExtensionsNaturalToolUseTests
@@ -15,11 +11,11 @@ public class MessageExtensionsNaturalToolUseTests
 
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(toolCall),
+            ToolCalls = [toolCall],
             Role = Role.Assistant,
         };
 
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
 
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage, "test-agent");
 
@@ -27,7 +23,7 @@ public class MessageExtensionsNaturalToolUseTests
         var result = aggregateMessage.ToNaturalToolUse();
 
         // Assert
-        Assert.IsType<TextMessage>(result);
+        _ = Assert.IsType<TextMessage>(result);
         var textMessage = (TextMessage)result;
         Assert.Contains("<tool_call name=\"GetWeather\">", textMessage.Text);
         Assert.Contains("<tool_response name=\"GetWeather\">", textMessage.Text);
@@ -56,7 +52,7 @@ public class MessageExtensionsNaturalToolUseTests
         IMessage nullMessage = null!;
 
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => nullMessage.ToNaturalToolUse());
+        _ = Assert.Throws<ArgumentNullException>(() => nullMessage.ToNaturalToolUse());
     }
 
     [Fact]
@@ -67,8 +63,8 @@ public class MessageExtensionsNaturalToolUseTests
 
         var toolCall = new ToolCall("TestFunction", "{}");
         var toolResult = new ToolCallResult(null, "test result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[] { textMessage, aggregateMessage };
@@ -79,7 +75,7 @@ public class MessageExtensionsNaturalToolUseTests
         // Assert
         Assert.Equal(2, results.Count);
         Assert.Same(textMessage, results[0]); // First message unchanged
-        Assert.IsType<TextMessage>(results[1]); // Second message transformed
+        _ = Assert.IsType<TextMessage>(results[1]); // Second message transformed
         Assert.Contains("<tool_call name=\"TestFunction\">", ((TextMessage)results[1]).Text);
     }
 
@@ -91,8 +87,8 @@ public class MessageExtensionsNaturalToolUseTests
 
         var toolCall = new ToolCall("CheckWeather", "{\"city\":\"London\"}");
         var toolResult = new ToolCallResult(null, "Cloudy, 18°C");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var suffixMessage = new TextMessage { Text = "Hope that helps!", Role = Role.Assistant };
@@ -145,8 +141,8 @@ public class MessageExtensionsNaturalToolUseTests
         // Arrange
         var toolCall = new ToolCall("TestFunc", "{}");
         var toolResult = new ToolCallResult(null, "result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         var messages = new IMessage[]
@@ -198,8 +194,8 @@ public class MessageExtensionsNaturalToolUseTests
         // Arrange
         var toolCall = new ToolCall("TestFunc", "{}");
         var toolResult = new ToolCallResult(null, "result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -228,8 +224,8 @@ public class MessageExtensionsNaturalToolUseTests
         // Arrange - Create an aggregate message that might cause transformation to fail
         var toolCall = new ToolCall(null, null); // Invalid data
         var toolResult = new ToolCallResult(null, "result");
-        var toolCallMessage = new ToolsCallMessage { ToolCalls = ImmutableList.Create(toolCall) };
-        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = ImmutableList.Create(toolResult) };
+        var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
+        var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
         var aggregateMessage = new ToolsCallAggregateMessage(toolCallMessage, toolResultMessage);
 
         // Act
@@ -238,7 +234,7 @@ public class MessageExtensionsNaturalToolUseTests
         // Assert - Should still work due to graceful handling in transformer
         Assert.NotNull(result);
         // The transformer handles null function names gracefully, so this should actually transform
-        Assert.IsType<TextMessage>(result);
+        _ = Assert.IsType<TextMessage>(result);
     }
 
     [Fact]

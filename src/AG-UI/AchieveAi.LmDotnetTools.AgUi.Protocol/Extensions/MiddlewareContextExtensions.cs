@@ -48,7 +48,7 @@ public static class MiddlewareContextExtensions
             return Guid.NewGuid().ToString();
         }
 
-        return _sessionIds.GetOrAdd(conversationId, _ => Guid.NewGuid().ToString());
+        return _sessionIds.GetOrAdd(conversationId, conversationId);
     }
 
     /// <summary>
@@ -95,8 +95,8 @@ public static class MiddlewareContextExtensions
     {
         if (!string.IsNullOrEmpty(conversationId))
         {
-            _sessionIds.TryRemove(conversationId, out _);
-            _runIds.TryRemove(conversationId, out _);
+            _ = _sessionIds.TryRemove(conversationId, out _);
+            _ = _runIds.TryRemove(conversationId, out _);
         }
     }
 
@@ -126,7 +126,7 @@ public static class MiddlewareContextExtensions
     {
         if (!string.IsNullOrEmpty(conversationId))
         {
-            _runIds.TryRemove(conversationId, out _);
+            _ = _runIds.TryRemove(conversationId, out _);
         }
     }
 

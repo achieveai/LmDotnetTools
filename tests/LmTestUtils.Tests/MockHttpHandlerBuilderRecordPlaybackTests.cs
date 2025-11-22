@@ -1,9 +1,7 @@
 using System.Net;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using Xunit;
 
 namespace LmTestUtils.Tests;
 
@@ -16,8 +14,8 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var testFilePath = Path.GetTempFileName();
         var testData = new RecordPlaybackData
         {
-            Interactions = new List<RecordedInteraction>
-            {
+            Interactions =
+            [
                 new RecordedInteraction
                 {
                     SerializedRequest = JsonDocument
@@ -47,7 +45,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                     IsStreaming = false,
                     Provider = "OpenAI",
                 },
-            },
+            ],
         };
 
         await File.WriteAllTextAsync(
@@ -110,8 +108,8 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var testFilePath = Path.GetTempFileName();
         var testData = new RecordPlaybackData
         {
-            Interactions = new List<RecordedInteraction>
-            {
+            Interactions =
+            [
                 new RecordedInteraction
                 {
                     SerializedRequest = JsonDocument
@@ -136,7 +134,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                         )
                         .RootElement.Clone(),
                 },
-            },
+            ],
         };
 
         await File.WriteAllTextAsync(
@@ -184,8 +182,8 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var testFilePath = Path.GetTempFileName();
         var testData = new RecordPlaybackData
         {
-            Interactions = new List<RecordedInteraction>
-            {
+            Interactions =
+            [
                 new RecordedInteraction
                 {
                     SerializedRequest = JsonDocument
@@ -213,7 +211,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                         )
                         .RootElement.Clone(),
                 },
-            },
+            ],
         };
 
         await File.WriteAllTextAsync(
@@ -287,7 +285,9 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         finally
         {
             if (File.Exists(testFilePath))
+            {
                 File.Delete(testFilePath);
+            }
         }
     }
 
@@ -387,8 +387,8 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var testFilePath = Path.GetTempFileName();
         var testData = new RecordPlaybackData
         {
-            Interactions = new List<RecordedInteraction>
-            {
+            Interactions =
+            [
                 new RecordedInteraction
                 {
                     SerializedRequest = JsonDocument
@@ -415,7 +415,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                         )
                         .RootElement.Clone(),
                 },
-            },
+            ],
         };
 
         await File.WriteAllTextAsync(
@@ -483,8 +483,8 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
         var testFilePath = Path.GetTempFileName();
         var testData = new RecordPlaybackData
         {
-            Interactions = new List<RecordedInteraction>
-            {
+            Interactions =
+            [
                 new RecordedInteraction
                 {
                     SerializedRequest = JsonDocument
@@ -527,7 +527,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
                         )
                         .RootElement.Clone(),
                 },
-            },
+            ],
         };
 
         await File.WriteAllTextAsync(

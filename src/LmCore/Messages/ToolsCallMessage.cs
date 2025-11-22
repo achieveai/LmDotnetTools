@@ -32,13 +32,29 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
 
-    public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
 
-    public static string? GetText() => null;
+    public IEnumerable<ToolCall>? GetToolCalls()
+    {
+        return ToolCalls.Count > 0 ? ToolCalls : null;
+    }
 
-    public static BinaryData? GetBinary() => null;
+    public static string? GetText()
+    {
+        return null;
+    }
 
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
+
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 public class ToolsCallMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallMessage>
@@ -76,6 +92,10 @@ public record ToolsCallUpdateMessage : IMessage
     [JsonPropertyName("runId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
+
+    [JsonPropertyName("parentRunId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId { get; init; }
 }
 
 public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>
@@ -117,6 +137,8 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public string? RunId { get; set; }
 
+    public string? ParentRunId { get; set; }
+
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
         // Capture GenerationId from the message update if not already set
@@ -129,7 +151,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         foreach (var update in streamingMessageUpdate.ToolCallUpdates)
         {
             // Check if this update completes a current tool call based on Id or Index
-            bool isNewToolCall = false;
+            var isNewToolCall = false;
 
             // Rule 0: If we have both IDs (non-null) and they're different, it's a new tool call
             if (CurrentToolCallId != null && update.ToolCallId != null && CurrentToolCallId != update.ToolCallId)
@@ -232,6 +254,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             ToolCalls = toolCalls,
             ThreadId = ThreadId,
             RunId = RunId,
+            ParentRunId = ParentRunId,
         };
     }
 }

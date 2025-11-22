@@ -40,7 +40,7 @@ public class FunctionToolTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-3-7-sonnet-20250219",
-            Functions = new[] { weatherFunction },
+            Functions = [weatherFunction],
         };
         TestLogger.Log("Created options with function tools");
         TestLogger.LogObject("Function definition", weatherFunction);
@@ -143,7 +143,7 @@ public class FunctionToolTests
             ModelId = "claude-3-7-sonnet-20250219",
             MaxToken = 2000,
             Temperature = 0.7f,
-            Functions = new[] { listDirectoryFunction, deleteFileFunction, getDirTreeFunction, cleanupFunction },
+            Functions = [listDirectoryFunction, deleteFileFunction, getDirTreeFunction, cleanupFunction],
         };
         TestLogger.Log("Created options with multiple function tools");
 
@@ -223,7 +223,7 @@ public class FunctionToolTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-3-7-sonnet-20250219",
-            Functions = new[] { listDirFunction },
+            Functions = [listDirFunction],
         };
 
         // Act
@@ -233,7 +233,7 @@ public class FunctionToolTests
 
         // Verify we got a proper response with text
         Assert.NotNull(response);
-        Assert.IsType<TextMessage>(response.First());
+        _ = Assert.IsType<TextMessage>(response.First());
 
         var textResponse = (TextMessage)response.First();
         Assert.Contains("I'll help you list the files", textResponse.Text);
@@ -246,7 +246,7 @@ public class FunctionToolTests
         Assert.NotNull(capturedRequest.Tools);
 
         var tools = capturedRequest.Tools.ToList();
-        Assert.Single(tools);
+        _ = Assert.Single(tools);
         Assert.Equal("python_mcp-list_directory", tools[0].Name);
 
         TestLogger.Log($"Successfully validated tool use response with tool: {tools[0].Name}");

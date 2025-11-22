@@ -64,7 +64,7 @@ public class LlmSegmentationResponse
     /// <summary>
     /// Generated document segments
     /// </summary>
-    public List<DocumentSegment> Segments { get; set; } = new();
+    public List<DocumentSegment> Segments { get; set; } = [];
 
     /// <summary>
     /// Strategy that was actually used
@@ -99,7 +99,7 @@ public class LlmSegmentationResponse
     /// <summary>
     /// Any warnings or issues encountered
     /// </summary>
-    public List<string> Warnings { get; set; } = new();
+    public List<string> Warnings { get; set; } = [];
 }
 
 /// <summary>
@@ -182,7 +182,7 @@ public class LlmProviderConfiguration
     /// <summary>
     /// Fallback providers in order of preference
     /// </summary>
-    public List<string> FallbackProviders { get; set; } = new() { "Anthropic" };
+    public List<string> FallbackProviders { get; set; } = ["Anthropic"];
 
     /// <summary>
     /// Model preferences for different operations

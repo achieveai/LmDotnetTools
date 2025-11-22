@@ -34,11 +34,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     public static FakeHttpMessageHandler CreateSimpleHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFunc)
     {
         return new FakeHttpMessageHandler(
-            (request, cancellationToken) =>
-            {
-                return Task.FromResult(responseFunc(request));
-            }
-        );
+            (request, cancellationToken) => Task.FromResult(responseFunc(request)));
     }
 
     /// <summary>
@@ -106,11 +102,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
     public static FakeHttpMessageHandler CreateErrorHandler(Exception exception)
     {
         return new FakeHttpMessageHandler(
-            (request, cancellationToken) =>
-            {
-                throw exception;
-            }
-        );
+            (request, cancellationToken) => throw exception);
     }
 
     /// <summary>
@@ -329,7 +321,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         var streamData = new StringBuilder();
 
         // Stream start
-        streamData.AppendLine(
+        _ = streamData.AppendLine(
             "data: "
                 + JsonSerializer.Serialize(
                     new
@@ -352,9 +344,9 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         );
 
         // Content chunks
-        foreach (char c in content)
+        foreach (var c in content)
         {
-            streamData.AppendLine(
+            _ = streamData.AppendLine(
                 "data: "
                     + JsonSerializer.Serialize(
                         new
@@ -378,7 +370,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         }
 
         // Stream end
-        streamData.AppendLine(
+        _ = streamData.AppendLine(
             "data: "
                 + JsonSerializer.Serialize(
                     new
@@ -400,19 +392,15 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 )
         );
 
-        streamData.AppendLine("data: [DONE]");
+        _ = streamData.AppendLine("data: [DONE]");
 
         return new FakeHttpMessageHandler(
-            (request, cancellationToken) =>
-            {
-                return Task.FromResult(
+            (request, cancellationToken) => Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent(streamData.ToString(), Encoding.UTF8, "text/plain"),
                     }
-                );
-            }
-        );
+                ));
     }
 
     /// <summary>
@@ -428,12 +416,12 @@ public class FakeHttpMessageHandler : HttpMessageHandler
         {
             if (!string.IsNullOrEmpty(sseEvent.Id))
             {
-                streamData.AppendLine($"id: {sseEvent.Id}");
+                _ = streamData.AppendLine($"id: {sseEvent.Id}");
             }
 
             if (!string.IsNullOrEmpty(sseEvent.Event))
             {
-                streamData.AppendLine($"event: {sseEvent.Event}");
+                _ = streamData.AppendLine($"event: {sseEvent.Event}");
             }
 
             if (!string.IsNullOrEmpty(sseEvent.Data))
@@ -442,12 +430,12 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                 var dataLines = sseEvent.Data.Split('\n');
                 foreach (var line in dataLines)
                 {
-                    streamData.AppendLine($"data: {line}");
+                    _ = streamData.AppendLine($"data: {line}");
                 }
             }
 
             // Empty line to separate events
-            streamData.AppendLine();
+            _ = streamData.AppendLine();
         }
 
         return new FakeHttpMessageHandler(

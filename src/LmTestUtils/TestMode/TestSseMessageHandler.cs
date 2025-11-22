@@ -27,13 +27,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
     /// Used for backward compatibility when DI is not available.
     /// </summary>
     public TestSseMessageHandler()
-        : this(
-            LoggerFactory
-                .Create(builder => builder.AddConsole())
-                .CreateLogger<TestSseMessageHandler>(),
-            null,
-            null
-        )
+        : this(LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<TestSseMessageHandler>(), null, null)
     { }
 
     /// <summary>
@@ -51,17 +45,13 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
         _chainParser =
             chainParser
             ?? new InstructionChainParser(
-                LoggerFactory
-                    .Create(builder => builder.AddConsole())
-                    .CreateLogger<InstructionChainParser>()
+                LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<InstructionChainParser>()
             );
 
         _conversationAnalyzer =
             conversationAnalyzer
             ?? new ConversationAnalyzer(
-                LoggerFactory
-                    .Create(builder => builder.AddConsole())
-                    .CreateLogger<ConversationAnalyzer>(),
+                LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<ConversationAnalyzer>(),
                 _chainParser
             );
     }
@@ -74,36 +64,21 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
         CancellationToken cancellationToken
     )
     {
-        _logger.LogTrace(
-            "SendAsync called - Method: {Method}, URI: {Uri}",
-            request.Method,
-            request.RequestUri
-        );
+        _logger.LogTrace("SendAsync called - Method: {Method}, URI: {Uri}", request.Method, request.RequestUri);
         if (request.Method != HttpMethod.Post || request.RequestUri == null)
         {
             _logger.LogTrace("Not POST or no URI, returning 404");
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
-        if (
-            !request.RequestUri.AbsolutePath.EndsWith(
-                "/v1/chat/completions",
-                StringComparison.OrdinalIgnoreCase
-            )
-        )
+        if (!request.RequestUri.AbsolutePath.EndsWith("/v1/chat/completions", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogTrace(
-                "Path doesn't match /v1/chat/completions: {Path}",
-                request.RequestUri.AbsolutePath
-            );
+            _logger.LogTrace("Path doesn't match /v1/chat/completions: {Path}", request.RequestUri.AbsolutePath);
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
         _logger.LogTrace("Processing chat completions request");
 
-        var body =
-            request.Content == null
-                ? string.Empty
-                : await request.Content.ReadAsStringAsync(cancellationToken);
+        var body = request.Content == null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(body))
         {
             return new HttpResponseMessage(HttpStatusCode.BadRequest)
@@ -124,21 +99,21 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                 Content = new StringContent($"Invalid JSON: {ex.Message}"),
             };
         }
+
         using (doc)
         {
             var root = doc.RootElement;
 
             var stream =
-                root.TryGetProperty("stream", out var streamProp)
-                && streamProp.ValueKind == JsonValueKind.True;
+                root.TryGetProperty("stream", out var streamProp) && streamProp.ValueKind == JsonValueKind.True;
+
             if (!stream)
             {
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             }
 
             var model =
-                root.TryGetProperty("model", out var modelProp)
-                && modelProp.ValueKind == JsonValueKind.String
+                root.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String
                     ? modelProp.GetString()
                     : null;
 
@@ -149,11 +124,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
             if (instruction != null)
             {
                 // Execute the instruction at the calculated index
-                _logger.LogInformation(
-                    "Executing instruction {Index}: {Id}",
-                    responseCount + 1,
-                    instruction.IdMessage
-                );
+                _logger.LogInformation("Executing instruction {Index}: {Id}", responseCount + 1, instruction.IdMessage);
 
                 content = new SseStreamHttpContent(
                     instructionPlan: instruction,
@@ -176,7 +147,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                     var completion = new InstructionPlan(
                         "completion",
                         null,
-                        new List<InstructionMessage> { InstructionMessage.ForText(5) } // "Task completed successfully"
+                        [InstructionMessage.ForText(5)] // "Task completed successfully"
                     );
 
                     content = new SseStreamHttpContent(
@@ -189,15 +160,12 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                 else
                 {
                     // No chain found - fall back to existing single instruction logic for backward compatibility
-                    var latest =
-                        _conversationAnalyzer.ExtractLatestUserMessage(root) ?? string.Empty;
+                    var latest = _conversationAnalyzer.ExtractLatestUserMessage(root) ?? string.Empty;
                     var (plan, fallbackMessage) = TryParseInstructionPlan(latest);
 
                     if (plan is not null)
                     {
-                        _logger.LogInformation(
-                            "Using single instruction mode (backward compatibility)"
-                        );
+                        _logger.LogInformation("Using single instruction mode (backward compatibility)");
                         content = new SseStreamHttpContent(
                             instructionPlan: plan,
                             model: model,
@@ -208,10 +176,7 @@ public sealed class TestSseMessageHandler : HttpMessageHandler
                     else
                     {
                         // Generate simple response based on user message
-                        var reasoningFirst = fallbackMessage.Contains(
-                            "\nReason:",
-                            StringComparison.Ordinal
-                        );
+                        var reasoningFirst = fallbackMessage.Contains("\nReason:", StringComparison.Ordinal);
                         content = new SseStreamHttpContent(
                             userMessage: fallbackMessage,
                             model: model,

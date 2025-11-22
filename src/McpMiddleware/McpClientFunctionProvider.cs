@@ -144,7 +144,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             try
             {
                 var tools = await client.ListToolsAsync(cancellationToken: cancellationToken);
-                toolsByServer[serverId] = tools.ToList();
+                toolsByServer[serverId] = [.. tools];
                 logger.LogDebug("Retrieved tools for server {ServerId}: ToolCount={ToolCount}", serverId, tools.Count);
             }
             catch (Exception ex)
@@ -265,7 +265,10 @@ public partial class McpClientFunctionProvider : IFunctionProvider
     /// </summary>
     public int Priority => 100;
 
-    public IEnumerable<FunctionDescriptor> GetFunctions() => _functions;
+    public IEnumerable<FunctionDescriptor> GetFunctions()
+    {
+        return _functions;
+    }
 
     /// <summary>
     /// Extracts function contracts from MCP client tools
@@ -420,7 +423,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                             );
 
                             // Extract and format text response
-                            string result = string.Join(
+                            var result = string.Join(
                                 Environment.NewLine,
                                 response.Content != null
                                     ? response
@@ -860,7 +863,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
                         );
 
                         // Extract and format text response
-                        string result = string.Join(
+                        var result = string.Join(
                             Environment.NewLine,
                             response.Content != null
                                 ? response

@@ -39,7 +39,7 @@ public class OptionsOverridingMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -58,7 +58,7 @@ public class OptionsOverridingMiddlewareTests
             );
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -91,7 +91,7 @@ public class OptionsOverridingMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -110,7 +110,7 @@ public class OptionsOverridingMiddlewareTests
             );
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -152,7 +152,7 @@ public class OptionsOverridingMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -171,7 +171,7 @@ public class OptionsOverridingMiddlewareTests
             );
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -212,7 +212,7 @@ public class OptionsOverridingMiddlewareTests
         var mockStreamingAgent = new Mock<IStreamingAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockStreamingAgent
+        _ = mockStreamingAgent
             .Setup(a =>
                 a.GenerateReplyStreamingAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -231,7 +231,7 @@ public class OptionsOverridingMiddlewareTests
             );
 
         // Act
-        await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
+        _ = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -280,7 +280,7 @@ public class OptionsOverridingMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -299,7 +299,7 @@ public class OptionsOverridingMiddlewareTests
             );
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -362,7 +362,7 @@ public class OptionsOverridingMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -381,7 +381,7 @@ public class OptionsOverridingMiddlewareTests
             );
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);

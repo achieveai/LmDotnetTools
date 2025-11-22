@@ -6,8 +6,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 /// <summary>
 /// Default implementation of instruction chain parser for test mode.
 /// </summary>
-public sealed class InstructionChainParser(ILogger<InstructionChainParser> logger)
-    : IInstructionChainParser
+public sealed class InstructionChainParser(ILogger<InstructionChainParser> logger) : IInstructionChainParser
 {
     private const string InstructionStartTag = "<|instruction_start|>";
     private const string InstructionEndTag = "<|instruction_end|>";
@@ -43,10 +42,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
             var root = doc.RootElement;
 
             // Check for instruction_chain array format
-            if (
-                root.TryGetProperty("instruction_chain", out var chainEl)
-                && chainEl.ValueKind == JsonValueKind.Array
-            )
+            if (root.TryGetProperty("instruction_chain", out var chainEl) && chainEl.ValueKind == JsonValueKind.Array)
             {
                 var chain = new List<InstructionPlan>();
                 foreach (var item in chainEl.EnumerateArray())
@@ -65,10 +61,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
 
                 if (chain.Count > 0)
                 {
-                    _logger.LogInformation(
-                        "Parsed instruction chain with {Count} instructions",
-                        chain.Count
-                    );
+                    _logger.LogInformation("Parsed instruction chain with {Count} instructions", chain.Count);
 
                     return [.. chain];
                 }
@@ -107,24 +100,19 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
 
         // Extract id (optional, but useful for logging)
         var id =
-            instructionEl.TryGetProperty("id", out var idEl)
-            && idEl.ValueKind == JsonValueKind.String
+            instructionEl.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
                 ? idEl.GetString() ?? string.Empty
                 : string.Empty;
 
         // Extract id_message
         var idMessage =
-            instructionEl.TryGetProperty("id_message", out var idMsgEl)
-            && idMsgEl.ValueKind == JsonValueKind.String
+            instructionEl.TryGetProperty("id_message", out var idMsgEl) && idMsgEl.ValueKind == JsonValueKind.String
                 ? idMsgEl.GetString() ?? string.Empty
                 : id; // Fall back to id if id_message not present
 
         // Extract reasoning length (optional)
         int? reasoningLen = null;
-        if (
-            instructionEl.TryGetProperty("reasoning", out var reasonEl)
-            && reasonEl.ValueKind == JsonValueKind.Object
-        )
+        if (instructionEl.TryGetProperty("reasoning", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.Object)
         {
             if (
                 reasonEl.TryGetProperty("length", out var lenEl)
@@ -159,10 +147,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
     {
         var messages = new List<InstructionMessage>();
 
-        if (
-            !instructionEl.TryGetProperty("messages", out var msgsEl)
-            || msgsEl.ValueKind != JsonValueKind.Array
-        )
+        if (!instructionEl.TryGetProperty("messages", out var msgsEl) || msgsEl.ValueKind != JsonValueKind.Array)
         {
             return messages;
         }
@@ -175,10 +160,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
             }
 
             // Check for text message
-            if (
-                item.TryGetProperty("text_message", out var textEl)
-                && textEl.ValueKind == JsonValueKind.Object
-            )
+            if (item.TryGetProperty("text_message", out var textEl) && textEl.ValueKind == JsonValueKind.Object)
             {
                 if (
                     textEl.TryGetProperty("length", out var lEl)
@@ -192,10 +174,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
             }
 
             // Check for tool calls
-            if (
-                item.TryGetProperty("tool_call", out var toolEl)
-                && toolEl.ValueKind == JsonValueKind.Array
-            )
+            if (item.TryGetProperty("tool_call", out var toolEl) && toolEl.ValueKind == JsonValueKind.Array)
             {
                 var calls = ParseToolCalls(toolEl);
                 if (calls.Count > 0)
@@ -225,8 +204,7 @@ public sealed class InstructionChainParser(ILogger<InstructionChainParser> logge
                     : string.Empty;
 
             var argsObj = call.TryGetProperty("args", out var aEl) ? aEl : default;
-            var argsJson =
-                argsObj.ValueKind != JsonValueKind.Undefined ? argsObj.GetRawText() : "{}";
+            var argsJson = argsObj.ValueKind != JsonValueKind.Undefined ? argsObj.GetRawText() : "{}";
 
             calls.Add(new InstructionToolCall(name, argsJson));
         }

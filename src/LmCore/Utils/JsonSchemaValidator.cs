@@ -19,7 +19,10 @@ public class JsonSchemaValidator : IJsonSchemaValidator
     // --- Implementation using JsonSchema.Net (simplified) -------------------------
 
     /// <inheritdoc />
-    public bool Validate(string json, object schema) => ValidateDetailed(json, schema).IsValid;
+    public bool Validate(string json, object schema)
+    {
+        return ValidateDetailed(json, schema).IsValid;
+    }
 
     /// <inheritdoc />
     public SchemaValidationResult ValidateDetailed(string json, object schema)
@@ -51,11 +54,11 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         {
             jsonSchema = schema switch
             {
-                string schemaText => Json.Schema.JsonSchema.FromText(schemaText),
-                Models.JsonSchemaObject schemaObj => Json.Schema.JsonSchema.FromText(
+                string schemaText => JsonSchema.FromText(schemaText),
+                Models.JsonSchemaObject schemaObj => JsonSchema.FromText(
                     JsonSerializer.Serialize(schemaObj, SchemaSerializationOptions)
                 ),
-                FunctionContract funcContract => JsonSchemaValidator.BuildSchemaFromFunctionContract(funcContract),
+                FunctionContract funcContract => BuildSchemaFromFunctionContract(funcContract),
                 _ => throw new InvalidOperationException($"Unsupported schema type: {schema.GetType().Name}"),
             };
         }
@@ -118,7 +121,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
 
         var schemaText = root.ToJsonString();
         Console.WriteLine($"[DEBUG] Generated schema text: {schemaText}");
-        return Json.Schema.JsonSchema.FromText(schemaText);
+        return JsonSchema.FromText(schemaText);
     }
 
     private static List<string> ExtractValidationErrors(EvaluationResults result)

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
@@ -86,7 +85,7 @@ public class BaseEmbeddingServiceTests
             var result = await service.GenerateEmbeddingAsync(text, model);
             Assert.NotNull(result);
             Assert.NotNull(result.Embeddings);
-            Assert.Single(result.Embeddings);
+            _ = Assert.Single(result.Embeddings);
             Debug.WriteLine($"✓ Successfully generated embedding for model '{model}'");
         }
         else
@@ -415,32 +414,32 @@ public class BaseEmbeddingServiceTests
             },
         };
 
-    private static readonly string[] item = new[] { "text1", "text2" };
-    private static readonly string[] itemArray = new[] { "text1" };
-    private static readonly string[] itemArray0 = new[] { "text1", "" };
-    private static readonly string[] itemArray1 = new[] { "text1", "   " };
-    private static readonly string[] itemArray2 = new[] { "input", "model", "encoding_format", "dimensions", "user" };
-    private static readonly string[] itemArray3 = new[] { "normalized", "embedding_type" };
-    private static readonly string[] itemArray4 = new[] { "text1" };
-    private static readonly string[] itemArray5 = new[]
-    {
+    private static readonly string[] item = ["text1", "text2"];
+    private static readonly string[] itemArray = ["text1"];
+    private static readonly string[] itemArray0 = ["text1", ""];
+    private static readonly string[] itemArray1 = ["text1", "   "];
+    private static readonly string[] itemArray2 = ["input", "model", "encoding_format", "dimensions", "user"];
+    private static readonly string[] itemArray3 = ["normalized", "embedding_type"];
+    private static readonly string[] itemArray4 = ["text1"];
+    private static readonly string[] itemArray5 =
+    [
         "input",
         "model",
         "normalized",
         "embedding_type",
         "dimensions",
-    };
-    private static readonly string[] itemArray6 = new[] { "encoding_format", "user" };
-    private static readonly string[] itemArray7 = new[] { "input", "model" };
-    private static readonly string[] itemArray8 = new[]
-    {
+    ];
+    private static readonly string[] itemArray6 = ["encoding_format", "user"];
+    private static readonly string[] itemArray7 = ["input", "model"];
+    private static readonly string[] itemArray8 =
+    [
         "normalized",
         "embedding_type",
         "encoding_format",
         "dimensions",
         "user",
-    };
-    private static readonly string[] request = new[] { "text" };
+    ];
+    private static readonly string[] request = ["text"];
 
     #endregion
 
@@ -468,21 +467,20 @@ public class BaseEmbeddingServiceTests
             var jsonContent = JsonSerializer.Serialize(payload);
             var httpContent = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
             var response = await HttpClient.PostAsync("/embeddings", httpContent, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
 
             var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
             var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseContent);
 
             return new EmbeddingResponse
             {
-                Embeddings = embeddingResponse!
+                Embeddings = [.. embeddingResponse!
                     .Embeddings.Select(e => new EmbeddingItem
                     {
                         Vector = e.Vector,
                         Index = e.Index,
                         Text = e.Text,
-                    })
-                    .ToList(),
+                    })],
                 Model = embeddingResponse.Model,
                 Usage = new EmbeddingUsage
                 {
@@ -509,7 +507,7 @@ public class BaseEmbeddingServiceTests
         private class TestEmbeddingResponse
         {
             [JsonPropertyName("Embeddings")]
-            public List<TestEmbeddingItem> Embeddings { get; set; } = new();
+            public List<TestEmbeddingItem> Embeddings { get; set; } = [];
 
             [JsonPropertyName("Model")]
             public string Model { get; set; } = "";

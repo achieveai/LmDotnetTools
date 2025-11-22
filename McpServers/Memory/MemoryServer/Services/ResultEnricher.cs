@@ -105,7 +105,9 @@ public class ResultEnricher : IResultEnricher
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!options.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, "Enrichment timed out");
         }
@@ -118,7 +120,9 @@ public class ResultEnricher : IResultEnricher
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!options.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return CreateFallbackResults(results, metrics, totalStopwatch.Elapsed, $"Enrichment failed: {ex.Message}");
         }
@@ -155,7 +159,7 @@ public class ResultEnricher : IResultEnricher
             };
 
             // Enrich based on result type
-            bool wasEnriched = false;
+            var wasEnriched = false;
 
             switch (result.Type)
             {
@@ -186,6 +190,8 @@ public class ResultEnricher : IResultEnricher
                         cancellationToken
                     );
                     break;
+                default:
+                    break;
             }
 
             if (wasEnriched)
@@ -208,10 +214,12 @@ public class ResultEnricher : IResultEnricher
     )
     {
         if (result.OriginalMemory == null)
+        {
             return Task.FromResult(false);
+        }
 
         var relationshipStopwatch = Stopwatch.StartNew();
-        bool wasEnriched = false;
+        var wasEnriched = false;
 
         try
         {
@@ -250,10 +258,12 @@ public class ResultEnricher : IResultEnricher
     )
     {
         if (result.OriginalEntity == null)
+        {
             return false;
+        }
 
         var contextStopwatch = Stopwatch.StartNew();
-        bool wasEnriched = false;
+        var wasEnriched = false;
 
         try
         {
@@ -329,10 +339,12 @@ public class ResultEnricher : IResultEnricher
     )
     {
         if (result.OriginalRelationship == null)
+        {
             return false;
+        }
 
         var contextStopwatch = Stopwatch.StartNew();
-        bool wasEnriched = false;
+        var wasEnriched = false;
 
         try
         {
@@ -350,9 +362,14 @@ public class ResultEnricher : IResultEnricher
 
             var relatedEntities = new List<Entity>();
             if (sourceEntity != null)
+            {
                 relatedEntities.Add(sourceEntity);
+            }
+
             if (targetEntity != null)
+            {
                 relatedEntities.Add(targetEntity);
+            }
 
             var topEntities = relatedEntities
                 .Where(e => e.Confidence >= options.MinRelevanceScore)

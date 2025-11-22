@@ -49,13 +49,17 @@ public class MemoryService : IMemoryService
     )
     {
         if (string.IsNullOrWhiteSpace(content))
+        {
             throw new ArgumentException("Memory content cannot be empty", nameof(content));
+        }
 
         if (content.Length > _options.MaxMemoryLength)
+        {
             throw new ArgumentException(
                 $"Memory content cannot exceed {_options.MaxMemoryLength} characters",
                 nameof(content)
             );
+        }
 
         _logger.LogDebug(
             "Adding memory for session {SessionContext}, content length: {Length}",
@@ -216,7 +220,9 @@ public class MemoryService : IMemoryService
     )
     {
         if (string.IsNullOrWhiteSpace(query))
-            return new List<Memory>();
+        {
+            return [];
+        }
 
         // Apply configured limits
         limit = Math.Min(limit, _options.DefaultSearchLimit * 2); // Allow up to 2x default limit
@@ -350,13 +356,17 @@ public class MemoryService : IMemoryService
     )
     {
         if (string.IsNullOrWhiteSpace(content))
+        {
             throw new ArgumentException("Memory content cannot be empty", nameof(content));
+        }
 
         if (content.Length > _options.MaxMemoryLength)
+        {
             throw new ArgumentException(
                 $"Memory content cannot exceed {_options.MaxMemoryLength} characters",
                 nameof(content)
             );
+        }
 
         _logger.LogDebug(
             "Updating memory {Id} for session {SessionContext}, content length: {Length}",
@@ -551,7 +561,9 @@ public class MemoryService : IMemoryService
     public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(userId))
+        {
             throw new ArgumentException("UserId cannot be empty", nameof(userId));
+        }
 
         _logger.LogDebug("Getting all agents for user {UserId}", userId);
 
@@ -572,10 +584,14 @@ public class MemoryService : IMemoryService
     )
     {
         if (string.IsNullOrWhiteSpace(userId))
+        {
             throw new ArgumentException("UserId cannot be empty", nameof(userId));
+        }
 
         if (string.IsNullOrWhiteSpace(agentId))
+        {
             throw new ArgumentException("AgentId cannot be empty", nameof(agentId));
+        }
 
         _logger.LogDebug("Getting all runs for user {UserId} and agent {AgentId}", userId, agentId);
 

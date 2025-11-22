@@ -194,7 +194,7 @@ public class ShadowPropertySerializationTests
     {
         // Generate schema using .NET 9 API
         JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(Person));
-        string schemaJson = dotnetSchema.ToJsonString();
+        var schemaJson = dotnetSchema.ToJsonString();
         var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());
 
@@ -229,7 +229,7 @@ public class ShadowPropertySerializationTests
     {
         // Generate schema using .NET 9 API
         JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(typeof(UserAccount));
-        string schemaJson = dotnetSchema.ToJsonString();
+        var schemaJson = dotnetSchema.ToJsonString();
         var deserOptions = JsonSerializerOptionsFactory.CreateCaseInsensitive();
         deserOptions.Converters.Add(new JsonStringEnumConverter());
 

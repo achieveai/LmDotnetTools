@@ -459,6 +459,10 @@ public class GraphDecisionEngine : IGraphDecisionEngine
                 case GraphDecisionOperation.DELETE:
                     adjustments -= 0.1f; // Penalty for deletions
                     break;
+                case GraphDecisionOperation.NONE:
+                    break;
+                default:
+                    break;
             }
             adjustmentCount++;
 
@@ -627,7 +631,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     private static float CalculateStringSimilarity(string str1, string str2)
     {
         if (string.IsNullOrEmpty(str1) || string.IsNullOrEmpty(str2))
+        {
             return 0f;
+        }
 
         // Simple Levenshtein distance-based similarity
         var distance = LevenshteinDistance(str1.ToLowerInvariant(), str2.ToLowerInvariant());
@@ -639,15 +645,19 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     {
         var matrix = new int[s1.Length + 1, s2.Length + 1];
 
-        for (int i = 0; i <= s1.Length; i++)
-            matrix[i, 0] = i;
-
-        for (int j = 0; j <= s2.Length; j++)
-            matrix[0, j] = j;
-
-        for (int i = 1; i <= s1.Length; i++)
+        for (var i = 0; i <= s1.Length; i++)
         {
-            for (int j = 1; j <= s2.Length; j++)
+            matrix[i, 0] = i;
+        }
+
+        for (var j = 0; j <= s2.Length; j++)
+        {
+            matrix[0, j] = j;
+        }
+
+        for (var i = 1; i <= s1.Length; i++)
+        {
+            for (var j = 1; j <= s2.Length; j++)
             {
                 var cost = s1[i - 1] == s2[j - 1] ? 0 : 1;
                 matrix[i, j] = Math.Min(
@@ -664,10 +674,14 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     {
         // Check if new entity provides a more specific type
         if (string.IsNullOrEmpty(existing.Type) && !string.IsNullOrEmpty(newEntity.Type))
+        {
             return true;
+        }
 
         if (existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown")
+        {
             return true;
+        }
 
         return false;
     }
@@ -678,19 +692,25 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         var existingAliasCount = existing.Aliases?.Count ?? 0;
         var newAliasCount = newEntity.Aliases?.Count ?? 0;
         if (newAliasCount > existingAliasCount)
+        {
             return true;
+        }
 
         // Check if new entity has more metadata
         var existingMetadataCount = existing.Metadata?.Count ?? 0;
         var newMetadataCount = newEntity.Metadata?.Count ?? 0;
         if (newMetadataCount > existingMetadataCount)
+        {
             return true;
+        }
 
         // Check if new entity has more source memory IDs
         var existingSourceCount = existing.SourceMemoryIds?.Count ?? 0;
         var newSourceCount = newEntity.SourceMemoryIds?.Count ?? 0;
         if (newSourceCount > existingSourceCount)
+        {
             return true;
+        }
 
         return false;
     }
@@ -714,33 +734,60 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         // Merge aliases
         var allAliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (existing.Aliases != null)
+        {
             foreach (var alias in existing.Aliases)
-                allAliases.Add(alias);
-        if (newEntity.Aliases != null)
-            foreach (var alias in newEntity.Aliases)
-                allAliases.Add(alias);
+            {
+                _ = allAliases.Add(alias);
+            }
+        }
 
-        merged.Aliases = allAliases.Count > 0 ? allAliases.ToList() : null;
+        if (newEntity.Aliases != null)
+        {
+            foreach (var alias in newEntity.Aliases)
+            {
+                _ = allAliases.Add(alias);
+            }
+        }
+
+        merged.Aliases = allAliases.Count > 0 ? [.. allAliases] : null;
 
         // Merge source memory IDs
         var allSourceIds = new HashSet<int>();
         if (existing.SourceMemoryIds != null)
+        {
             foreach (var id in existing.SourceMemoryIds)
-                allSourceIds.Add(id);
-        if (newEntity.SourceMemoryIds != null)
-            foreach (var id in newEntity.SourceMemoryIds)
-                allSourceIds.Add(id);
+            {
+                _ = allSourceIds.Add(id);
+            }
+        }
 
-        merged.SourceMemoryIds = allSourceIds.Count > 0 ? allSourceIds.ToList() : null;
+        if (newEntity.SourceMemoryIds != null)
+        {
+            foreach (var id in newEntity.SourceMemoryIds)
+            {
+                _ = allSourceIds.Add(id);
+            }
+        }
+
+        merged.SourceMemoryIds = allSourceIds.Count > 0 ? [.. allSourceIds] : null;
 
         // Merge metadata
-        merged.Metadata = new Dictionary<string, object>();
+        merged.Metadata = [];
         if (existing.Metadata != null)
+        {
             foreach (var kvp in existing.Metadata)
+            {
                 merged.Metadata[kvp.Key] = kvp.Value;
+            }
+        }
+
         if (newEntity.Metadata != null)
+        {
             foreach (var kvp in newEntity.Metadata)
+            {
                 merged.Metadata[kvp.Key] = kvp.Value; // New metadata overwrites existing
+            }
+        }
 
         return merged;
     }
@@ -772,17 +819,27 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     )
     {
         if (existing == null && newMetadata == null)
+        {
             return null;
+        }
 
         var merged = new Dictionary<string, object>();
 
         if (existing != null)
+        {
             foreach (var kvp in existing)
+            {
                 merged[kvp.Key] = kvp.Value;
+            }
+        }
 
         if (newMetadata != null)
+        {
             foreach (var kvp in newMetadata)
+            {
                 merged[kvp.Key] = kvp.Value; // New metadata overwrites existing
+            }
+        }
 
         return merged.Count > 0 ? merged : null;
     }
@@ -805,13 +862,17 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     {
         // Check if new relationship has temporal context when existing doesn't
         if (string.IsNullOrEmpty(existing.TemporalContext) && !string.IsNullOrEmpty(newRelationship.TemporalContext))
+        {
             return true;
+        }
 
         // Check if new relationship has more metadata
         var existingMetadataCount = existing.Metadata?.Count ?? 0;
         var newMetadataCount = newRelationship.Metadata?.Count ?? 0;
         if (newMetadataCount > existingMetadataCount)
+        {
             return true;
+        }
 
         return false;
     }

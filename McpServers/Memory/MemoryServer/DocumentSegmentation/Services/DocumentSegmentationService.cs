@@ -1,8 +1,6 @@
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.DocumentSegmentation.Services;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.DocumentSegmentation.Services;
@@ -118,7 +116,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
 
             if (result.Relationships.Count != 0)
             {
-                await _repository.StoreSegmentRelationshipsAsync(
+                _ = await _repository.StoreSegmentRelationshipsAsync(
                     session,
                     result.Relationships,
                     sessionContext,
@@ -288,7 +286,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         var segmentCount = Math.Max(1, (int)Math.Ceiling((double)words.Length / targetSize));
         var wordsPerSegment = words.Length / segmentCount;
 
-        for (int i = 0; i < segmentCount; i++)
+        for (var i = 0; i < segmentCount; i++)
         {
             var startIndex = i * wordsPerSegment;
             var endIndex = (i == segmentCount - 1) ? words.Length : (i + 1) * wordsPerSegment;
@@ -331,7 +329,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         var relationships = new List<SegmentRelationship>();
 
         // Create sequential relationships between adjacent segments
-        for (int i = 0; i < segments.Count - 1; i++)
+        for (var i = 0; i < segments.Count - 1; i++)
         {
             var relationship = new SegmentRelationship
             {

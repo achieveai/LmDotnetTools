@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -76,8 +75,8 @@ public class SimpleLoggingTests
     {
         // Arrange
         var mockLogger = new Mock<ILogger<SimpleLoggingTests>>();
-        mockLogger.Setup(x => x.IsEnabled(LogLevel.Information)).Returns(true);
-        mockLogger.Setup(x => x.IsEnabled(LogLevel.Debug)).Returns(false);
+        _ = mockLogger.Setup(x => x.IsEnabled(LogLevel.Information)).Returns(true);
+        _ = mockLogger.Setup(x => x.IsEnabled(LogLevel.Debug)).Returns(false);
 
         // Act & Assert
         Assert.True(mockLogger.Object.IsEnabled(LogLevel.Information));
@@ -166,7 +165,7 @@ public class SimpleLoggingTests
 
         // Act - Measure performance
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        for (int i = 0; i < iterations; i++)
+        for (var i = 0; i < iterations; i++)
         {
             logger.LogInformation("Test message {Iteration}", i);
         }
@@ -185,12 +184,12 @@ public class SimpleLoggingTests
     {
         // Arrange
         var mockLogger = new Mock<ILogger<SimpleLoggingTests>>();
-        mockLogger.Setup(x => x.IsEnabled(It.IsAny<LogLevel>())).Returns(false);
+        _ = mockLogger.Setup(x => x.IsEnabled(It.IsAny<LogLevel>())).Returns(false);
         const int iterations = 1000;
 
         // Act - Measure performance
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        for (int i = 0; i < iterations; i++)
+        for (var i = 0; i < iterations; i++)
         {
             mockLogger.Object.LogInformation("Test message {Iteration}", i);
         }
@@ -259,7 +258,7 @@ public class SimpleLoggingTests
         var mockLoggerFactory = new Mock<ILoggerFactory>();
         var mockLogger = new Mock<ILogger>();
 
-        mockLoggerFactory.Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!)).Returns(mockLogger.Object);
+        _ = mockLoggerFactory.Setup(x => x.CreateLogger(typeof(SimpleLoggingTests).FullName!)).Returns(mockLogger.Object);
 
         // Act
         var logger = mockLoggerFactory.Object.CreateLogger(typeof(SimpleLoggingTests).FullName!);
@@ -281,7 +280,7 @@ public class SimpleLoggingTests
 
         // Assert
         Assert.NotNull(logger);
-        Assert.IsType<NullLogger<SimpleLoggingTests>>(logger);
+        _ = Assert.IsType<NullLogger<SimpleLoggingTests>>(logger);
     }
 
     #endregion

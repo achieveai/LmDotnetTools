@@ -24,7 +24,7 @@ public static class EmbeddingTestDataGenerator
     )
     {
         var embeddings = new List<object>();
-        for (int i = 0; i < embeddingCount; i++)
+        for (var i = 0; i < embeddingCount; i++)
         {
             embeddings.Add(
                 new
@@ -55,7 +55,7 @@ public static class EmbeddingTestDataGenerator
     public static string CreateValidRerankResponse(int documentCount, string model = "test-rerank-model")
     {
         var results = new List<object>();
-        for (int i = 0; i < documentCount; i++)
+        for (var i = 0; i < documentCount; i++)
         {
             results.Add(
                 new
@@ -87,7 +87,7 @@ public static class EmbeddingTestDataGenerator
     {
         var random = new Random(seed);
         var embedding = new float[size];
-        for (int i = 0; i < size; i++)
+        for (var i = 0; i < size; i++)
         {
             embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Range [-1, 1]
         }
@@ -104,7 +104,7 @@ public static class EmbeddingTestDataGenerator
     public static List<float[]> GenerateTestEmbeddingArrays(int count, int size, int baseSeed = 42)
     {
         var embeddings = new List<float[]>();
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             embeddings.Add(GenerateTestEmbeddingArray(size, baseSeed + i));
         }
@@ -120,7 +120,7 @@ public static class EmbeddingTestDataGenerator
     public static string[] CreateTestInputTexts(int count, string prefix = "test_input")
     {
         var inputs = new string[count];
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             inputs[i] = $"{prefix}_{i}";
         }
@@ -136,7 +136,7 @@ public static class EmbeddingTestDataGenerator
     public static string[] CreateTestDocumentTexts(int count, string prefix = "test_document")
     {
         var documents = new string[count];
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             documents[i] = $"{prefix}_{i} - This is a test document with some content for testing purposes.";
         }

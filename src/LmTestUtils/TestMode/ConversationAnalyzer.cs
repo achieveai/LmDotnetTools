@@ -6,23 +6,17 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 /// <summary>
 /// Default implementation of conversation analyzer for test mode.
 /// </summary>
-public sealed class ConversationAnalyzer(
-    ILogger<ConversationAnalyzer> logger,
-    IInstructionChainParser chainParser
-) : IConversationAnalyzer
+public sealed class ConversationAnalyzer(ILogger<ConversationAnalyzer> logger, IInstructionChainParser chainParser)
+    : IConversationAnalyzer
 {
-    private readonly ILogger<ConversationAnalyzer> _logger =
-        logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly ILogger<ConversationAnalyzer> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly IInstructionChainParser _chainParser =
         chainParser ?? throw new ArgumentNullException(nameof(chainParser));
 
     /// <inheritdoc />
     public (InstructionPlan? plan, int assistantResponseCount) AnalyzeConversation(JsonElement root)
     {
-        if (
-            !root.TryGetProperty("messages", out var messages)
-            || messages.ValueKind != JsonValueKind.Array
-        )
+        if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
         {
             _logger.LogDebug("No messages array found in conversation");
             return (null, 0);
@@ -49,11 +43,7 @@ public sealed class ConversationAnalyzer(
 
         if (instruction != null)
         {
-            _logger.LogInformation(
-                "Executing instruction {Index}: {Id}",
-                assistantCount + 1,
-                instruction.IdMessage
-            );
+            _logger.LogInformation("Executing instruction {Index}: {Id}", assistantCount + 1, instruction.IdMessage);
         }
         else
         {
@@ -66,10 +56,7 @@ public sealed class ConversationAnalyzer(
     /// <inheritdoc />
     public string? ExtractLatestUserMessage(JsonElement root)
     {
-        if (
-            !root.TryGetProperty("messages", out var messages)
-            || messages.ValueKind != JsonValueKind.Array
-        )
+        if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
         {
             _logger.LogDebug("No messages array found for user message extraction");
             return null;
@@ -124,9 +111,7 @@ public sealed class ConversationAnalyzer(
         return latest;
     }
 
-    private (InstructionPlan[]? chain, int messageIndex) FindLatestInstructionChain(
-        JsonElement messages
-    )
+    private (InstructionPlan[]? chain, int messageIndex) FindLatestInstructionChain(JsonElement messages)
     {
         InstructionPlan[]? chain = null;
         var chainMessageIndex = -1;
@@ -143,10 +128,7 @@ public sealed class ConversationAnalyzer(
             }
 
             // Check if this is a user message
-            if (
-                !message.TryGetProperty("role", out var role)
-                || role.ValueKind != JsonValueKind.String
-            )
+            if (!message.TryGetProperty("role", out var role) || role.ValueKind != JsonValueKind.String)
             {
                 continue;
             }
@@ -157,10 +139,7 @@ public sealed class ConversationAnalyzer(
             }
 
             // Check if it contains instruction tags
-            if (
-                message.TryGetProperty("content", out var content)
-                && content.ValueKind == JsonValueKind.String
-            )
+            if (message.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String)
             {
                 var contentStr = content.GetString() ?? string.Empty;
                 var extractedChain = _chainParser.ExtractInstructionChain(contentStr);
@@ -182,10 +161,7 @@ public sealed class ConversationAnalyzer(
         return (chain, chainMessageIndex);
     }
 
-    private static int CountAssistantResponsesAfterChain(
-        JsonElement messages,
-        int chainMessageIndex
-    )
+    private static int CountAssistantResponsesAfterChain(JsonElement messages, int chainMessageIndex)
     {
         var messageArray = messages.EnumerateArray().ToList();
         var assistantCount = 0;
@@ -198,10 +174,7 @@ public sealed class ConversationAnalyzer(
                 continue;
             }
 
-            if (
-                !message.TryGetProperty("role", out var role)
-                || role.ValueKind != JsonValueKind.String
-            )
+            if (!message.TryGetProperty("role", out var role) || role.ValueKind != JsonValueKind.String)
             {
                 continue;
             }

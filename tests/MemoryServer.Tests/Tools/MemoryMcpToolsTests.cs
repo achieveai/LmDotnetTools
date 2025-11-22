@@ -18,6 +18,7 @@ public class MemoryMcpToolsTests
     private readonly Mock<IEmbeddingManager> _mockEmbeddingManager;
     private readonly MemoryMcpTools _mcpTools;
     private readonly MemoryService _memoryService;
+    private static readonly float[] value = [0.1f, 0.2f, 0.3f];
 
     public MemoryMcpToolsTests()
     {
@@ -38,16 +39,16 @@ public class MemoryMcpToolsTests
         };
 
         var optionsMock = new Mock<IOptions<MemoryServerOptions>>();
-        optionsMock.Setup(x => x.Value).Returns(memoryOptions);
+        _ = optionsMock.Setup(x => x.Value).Returns(memoryOptions);
 
         var mockGraphMemoryService = new Mock<IGraphMemoryService>();
         var memoryServiceLogger = new Mock<ILogger<MemoryService>>();
 
         // Setup mock embedding manager
-        _mockEmbeddingManager
+        _ = _mockEmbeddingManager
             .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new float[] { 0.1f, 0.2f, 0.3f }); // Mock embedding
-        _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
+            .ReturnsAsync(value); // Mock embedding
+        _ = _mockEmbeddingManager.Setup(x => x.ModelName).Returns("mock-model");
 
         _memoryService = new MemoryService(
             _mockRepository,
@@ -60,7 +61,7 @@ public class MemoryMcpToolsTests
         // Setup session resolver to return predictable session contexts
         // When userId is null (from JWT), return "test_user"
         // When agentId is null (from JWT), return "test_agent"
-        _mockSessionResolver
+        _ = _mockSessionResolver
             .Setup(x =>
                 x.ResolveSessionContextAsync(
                     It.IsAny<string>(),

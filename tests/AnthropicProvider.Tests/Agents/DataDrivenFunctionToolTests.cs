@@ -1,10 +1,6 @@
 using System.Diagnostics;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.TestUtils;
 
 namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
@@ -13,7 +9,7 @@ public class DataDrivenFunctionToolTests
     private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
 
@@ -69,7 +65,7 @@ public class DataDrivenFunctionToolTests
         var responseWithoutUsage = response!.Where(r => !(r is UsageMessage)).ToList();
 
         // There should be one UsageMessage in the response
-        Assert.Single(response, r => r is UsageMessage);
+        _ = Assert.Single(response, r => r is UsageMessage);
 
         // Check that the remaining messages match what we expected
         Assert.Equal(expectedResponses.Count, responseWithoutUsage.Count);
@@ -78,13 +74,13 @@ public class DataDrivenFunctionToolTests
         {
             if (expectedResponse is TextMessage expectedTextResponse)
             {
-                Assert.IsType<TextMessage>(responseItem);
+                _ = Assert.IsType<TextMessage>(responseItem);
                 Assert.Equal(expectedTextResponse.Text, ((TextMessage)responseItem).Text);
                 Assert.Equal(expectedTextResponse.Role, responseItem.Role);
             }
             else if (expectedResponse is ToolsCallAggregateMessage expectedToolsCallAggregateMessage)
             {
-                Assert.IsType<ToolsCallAggregateMessage>(responseItem);
+                _ = Assert.IsType<ToolsCallAggregateMessage>(responseItem);
                 var toolsCallAggregateMessage = (ToolsCallAggregateMessage)responseItem;
                 Assert.Equal(expectedToolsCallAggregateMessage.Role, toolsCallAggregateMessage.Role);
                 Assert.Equal(expectedToolsCallAggregateMessage.FromAgent, toolsCallAggregateMessage.FromAgent);
@@ -126,8 +122,8 @@ public class DataDrivenFunctionToolTests
     public async Task CreateWeatherFunctionToolTestData()
     {
         // Skip if the test data already exists
-        string testName = "WeatherFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(
+        var testName = "WeatherFunctionTool";
+        var testDataPath = _testDataManager.GetTestDataPath(
             testName,
             ProviderType.Anthropic,
             DataType.LmCoreRequest
@@ -164,7 +160,7 @@ public class DataDrivenFunctionToolTests
         var options = new GenerateReplyOptions
         {
             ModelId = "claude-3-7-sonnet-20250219",
-            Functions = new[] { weatherFunction },
+            Functions = [weatherFunction],
         };
 
         // Save LmCore request
@@ -172,7 +168,7 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "Anthropic",
@@ -203,8 +199,8 @@ public class DataDrivenFunctionToolTests
     public async Task CreateMultiFunctionToolTestData()
     {
         // Skip if the test data already exists
-        string testName = "MultiFunctionTool";
-        string testDataPath = _testDataManager.GetTestDataPath(
+        var testName = "MultiFunctionTool";
+        var testDataPath = _testDataManager.GetTestDataPath(
             testName,
             ProviderType.Anthropic,
             DataType.LmCoreRequest
@@ -265,7 +261,7 @@ public class DataDrivenFunctionToolTests
             ModelId = "claude-3-7-sonnet-20250219",
             MaxToken = 2000,
             Temperature = 0.7f,
-            Functions = new[] { listDirectoryFunction, getDirTreeFunction },
+            Functions = [listDirectoryFunction, getDirTreeFunction],
         };
 
         // Save LmCore request
@@ -273,7 +269,7 @@ public class DataDrivenFunctionToolTests
 
         // 2. Create client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "Anthropic",

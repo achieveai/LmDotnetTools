@@ -1,12 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging.Abstractions;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -19,9 +12,9 @@ public class FunctionRegistryBuilderTests
         var registry = new FunctionRegistry();
 
         // Act & Assert
-        Assert.IsType<IFunctionRegistryBuilder>(registry, exactMatch: false);
-        Assert.IsType<IFunctionRegistryWithProviders>(registry, exactMatch: false);
-        Assert.IsType<IConfiguredFunctionRegistry>(registry, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryBuilder>(registry, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(registry, exactMatch: false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(registry, exactMatch: false);
     }
 
     [Fact]
@@ -35,7 +28,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.AddProvider(provider);
 
         // Assert
-        Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
     }
 
     [Fact]
@@ -50,7 +43,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.AddFunction(contract, handler);
 
         // Assert
-        Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
     }
 
     [Fact]
@@ -64,7 +57,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithLogger(logger);
 
         // Assert
-        Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryBuilder>(result, exactMatch: false);
     }
 
     [Fact]
@@ -77,7 +70,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithConflictResolution(ConflictResolution.TakeFirst);
 
         // Assert
-        Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
     }
 
     [Fact]
@@ -90,7 +83,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithConflictHandler((key, candidates) => candidates.First());
 
         // Assert
-        Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
+        _ = Assert.IsType<IFunctionRegistryWithProviders>(result, exactMatch: false);
     }
 
     [Fact]
@@ -104,7 +97,7 @@ public class FunctionRegistryBuilderTests
         var result = builder.WithFilterConfig(config);
 
         // Assert
-        Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
     }
 
     [Fact]
@@ -117,15 +110,15 @@ public class FunctionRegistryBuilderTests
         var result = builder.Configure();
 
         // Assert
-        Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(result, exactMatch: false);
     }
 
     [Fact]
     public void FluentChaining_WorksCorrectly()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
-        string[] stringArray0 = new[] { "func2" };
+        string[] stringArray = ["func1"];
+        string[] stringArray0 = ["func2"];
         var provider1 = CreateTestProvider("Provider1", stringArray);
         var provider2 = CreateTestProvider("Provider2", stringArray0);
         var contract = CreateTestContract("func3");
@@ -146,7 +139,7 @@ public class FunctionRegistryBuilderTests
             );
 
         // Assert
-        Assert.IsType<IConfiguredFunctionRegistry>(configured, exactMatch: false);
+        _ = Assert.IsType<IConfiguredFunctionRegistry>(configured, exactMatch: false);
 
         // Verify we can build
         var (contracts, handlers) = configured.Build();
@@ -189,7 +182,7 @@ public class FunctionRegistryBuilderTests
         var filterConfig = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            ProviderConfigs = new Dictionary<string, ProviderFilterConfig>(),
+            ProviderConfigs = [],
         };
 
         var providerConfig = new ProviderFilterConfig();
@@ -201,7 +194,7 @@ public class FunctionRegistryBuilderTests
         field?.SetValue(providerConfig, "invalid prefix"); // Invalid due to space
 
         filterConfig.ProviderConfigs["TestProvider"] = providerConfig;
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var issues = registry.ValidateConfiguration();
@@ -260,7 +253,7 @@ public class FunctionRegistryBuilderTests
     public void GetMarkdownDocumentation_ReturnsDocumentation()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry =
             new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure()
             as IConfiguredFunctionRegistry;
@@ -279,7 +272,7 @@ public class FunctionRegistryBuilderTests
     public void BuildMiddleware_CreatesMiddleware()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry =
             new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure()
             as IConfiguredFunctionRegistry;
@@ -298,9 +291,9 @@ public class FunctionRegistryBuilderTests
         // This test demonstrates a complete workflow using the fluent interface
 
         // Arrange
-        string[] stringArray = new[] { "search", "list" };
-        string[] stringArray0 = new[] { "func2" };
-        string[] stringArray1 = new[] { "getCurrentWeather", "getForecast" };
+        string[] stringArray = ["search", "list"];
+        string[] stringArray0 = ["func2"];
+        string[] stringArray1 = ["getCurrentWeather", "getForecast"];
         var provider1 = CreateTestProvider("MCP", stringArray);
         var provider2 = CreateTestProvider("Weather", stringArray1);
 
@@ -315,7 +308,7 @@ public class FunctionRegistryBuilderTests
                     new FunctionFilterConfig
                     {
                         EnableFiltering = true,
-                        GlobalAllowedFunctions = new List<string> { "search", "getCurrentWeather" },
+                        GlobalAllowedFunctions = ["search", "getCurrentWeather"],
                         ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
                         {
                             ["Weather"] = new ProviderFilterConfig { CustomPrefix = "weather" },

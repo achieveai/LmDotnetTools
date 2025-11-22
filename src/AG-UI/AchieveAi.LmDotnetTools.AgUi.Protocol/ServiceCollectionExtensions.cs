@@ -16,25 +16,26 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddAgUiProtocol(
         this IServiceCollection services,
-        Action<AgUiMiddlewareOptions>? configureOptions = null)
+        Action<AgUiMiddlewareOptions>? configureOptions = null
+    )
     {
         // Configure options
         if (configureOptions != null)
         {
-            services.Configure(configureOptions);
+            _ = services.Configure(configureOptions);
         }
         else
         {
-            services.Configure<AgUiMiddlewareOptions>(options => { });
+            _ = services.Configure<AgUiMiddlewareOptions>(options => { });
         }
 
         // Register core services
-        services.AddSingleton<IEventPublisher, ChannelEventPublisher>();
-        services.AddSingleton<IMessageConverter, MessageToAgUiConverter>();
-        services.AddSingleton<IToolCallTracker, ToolCallTracker>();
+        _ = services.AddSingleton<IEventPublisher, ChannelEventPublisher>();
+        _ = services.AddScoped<IMessageConverter, MessageToAgUiConverter>(); // Scoped for instance state
+        _ = services.AddSingleton<IToolCallTracker, ToolCallTracker>();
 
-        // Register the middleware
-        services.AddSingleton<AgUiStreamingMiddleware>();
+        // Register the middleware as Scoped since it depends on scoped IMessageConverter
+        _ = services.AddScoped<AgUiStreamingMiddleware>();
 
         return services;
     }

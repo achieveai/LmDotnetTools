@@ -6,7 +6,6 @@ using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Integration;
 
@@ -69,15 +68,15 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         );
 
         // Assert
-        result.Should().NotBeNull();
-        result.IsComplete.Should().BeTrue();
-        result.Error.Should().BeNull();
-        result.ShouldSegment.Should().BeTrue();
-        result.DocumentStatistics.WordCount.Should().BeGreaterThan(1500);
-        result.Segments.Should().NotBeEmpty();
-        result.StoredSegmentIds.Should().NotBeEmpty();
-        result.StoredSegmentIds.Should().HaveCount(result.Segments.Count);
-        result.VerificationSuccessful.Should().BeTrue();
+        _ = result.Should().NotBeNull();
+        _ = result.IsComplete.Should().BeTrue();
+        _ = result.Error.Should().BeNull();
+        _ = result.ShouldSegment.Should().BeTrue();
+        _ = result.DocumentStatistics.WordCount.Should().BeGreaterThan(1500);
+        _ = result.Segments.Should().NotBeEmpty();
+        _ = result.StoredSegmentIds.Should().NotBeEmpty();
+        _ = result.StoredSegmentIds.Should().HaveCount(result.Segments.Count);
+        _ = result.VerificationSuccessful.Should().BeTrue();
     }
 
     [Fact]
@@ -95,13 +94,13 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         );
 
         // Assert
-        result.Should().NotBeNull();
-        result.IsComplete.Should().BeTrue();
-        result.Error.Should().BeNull();
-        result.ShouldSegment.Should().BeFalse();
-        result.DocumentStatistics.WordCount.Should().BeLessThan(1500);
-        result.Segments.Should().BeEmpty();
-        result.StoredSegmentIds.Should().BeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.IsComplete.Should().BeTrue();
+        _ = result.Error.Should().BeNull();
+        _ = result.ShouldSegment.Should().BeFalse();
+        _ = result.DocumentStatistics.WordCount.Should().BeLessThan(1500);
+        _ = result.Segments.Should().BeEmpty();
+        _ = result.StoredSegmentIds.Should().BeEmpty();
     }
 
     [Fact]
@@ -120,10 +119,10 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         );
 
         // Assert
-        emailResult.Should().NotBeNull();
-        emailResult.ShouldSegment.Should().BeTrue();
-        emailResult.DocumentType.Should().Be(DocumentType.Email);
-        emailResult.DomainInstructions.Should().NotBeEmpty();
+        _ = emailResult.Should().NotBeNull();
+        _ = emailResult.ShouldSegment.Should().BeTrue();
+        _ = emailResult.DocumentType.Should().Be(DocumentType.Email);
+        _ = emailResult.DomainInstructions.Should().NotBeEmpty();
     }
 
     [Fact]
@@ -156,19 +155,19 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         var result2 = await _integration.ProcessDocumentWorkflowAsync(content, parentDocumentId2, session2Context);
 
         // Assert
-        result1.Should().NotBeNull();
-        result2.Should().NotBeNull();
+        _ = result1.Should().NotBeNull();
+        _ = result2.Should().NotBeNull();
 
-        result1.IsComplete.Should().BeTrue();
-        result2.IsComplete.Should().BeTrue();
+        _ = result1.IsComplete.Should().BeTrue();
+        _ = result2.IsComplete.Should().BeTrue();
 
-        result1.SessionContext.UserId.Should().Be("user1");
-        result2.SessionContext.UserId.Should().Be("user2");
+        _ = result1.SessionContext.UserId.Should().Be("user1");
+        _ = result2.SessionContext.UserId.Should().Be("user2");
 
         // Both should have segments but they should be isolated
-        result1.StoredSegmentIds.Should().NotBeEmpty();
-        result2.StoredSegmentIds.Should().NotBeEmpty();
-        result1.StoredSegmentIds.Should().NotIntersectWith(result2.StoredSegmentIds);
+        _ = result1.StoredSegmentIds.Should().NotBeEmpty();
+        _ = result2.StoredSegmentIds.Should().NotBeEmpty();
+        _ = result1.StoredSegmentIds.Should().NotIntersectWith(result2.StoredSegmentIds);
     }
 
     [Fact]
@@ -182,20 +181,20 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         var result = await _integration.ProcessDocumentWorkflowAsync(content, parentDocumentId, _testSessionContext);
 
         // Assert - Verify all workflow steps completed
-        result.DocumentStatistics.Should().NotBeNull();
-        result.DocumentStatistics.WordCount.Should().BeGreaterThan(0);
+        _ = result.DocumentStatistics.Should().NotBeNull();
+        _ = result.DocumentStatistics.WordCount.Should().BeGreaterThan(0);
 
-        result.PromptsValid.Should().BeTrue();
-        result.AvailablePrompts.Should().NotBeEmpty();
-        result.DomainInstructions.Should().NotBeEmpty();
+        _ = result.PromptsValid.Should().BeTrue();
+        _ = result.AvailablePrompts.Should().NotBeEmpty();
+        _ = result.DomainInstructions.Should().NotBeEmpty();
 
-        result.Segments.Should().NotBeEmpty();
-        result.Relationships.Should().NotBeEmpty();
+        _ = result.Segments.Should().NotBeEmpty();
+        _ = result.Relationships.Should().NotBeEmpty();
 
-        result.StoredSegmentIds.Should().NotBeEmpty();
-        result.StoredRelationshipCount.Should().BeGreaterThan(0);
+        _ = result.StoredSegmentIds.Should().NotBeEmpty();
+        _ = result.StoredRelationshipCount.Should().BeGreaterThan(0);
 
-        result.VerificationSuccessful.Should().BeTrue();
+        _ = result.VerificationSuccessful.Should().BeTrue();
     }
 
     [Fact]
@@ -209,27 +208,27 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         var result = await _integration.ProcessDocumentWorkflowAsync(content, parentDocumentId, _testSessionContext);
 
         // Assert
-        result.Segments.Should().NotBeEmpty();
+        _ = result.Segments.Should().NotBeEmpty();
 
         foreach (var segment in result.Segments)
         {
             // Quality scores should be reasonable
-            segment.Quality.CoherenceScore.Should().BeInRange(0.0, 1.0);
-            segment.Quality.IndependenceScore.Should().BeInRange(0.0, 1.0);
-            segment.Quality.TopicConsistencyScore.Should().BeInRange(0.0, 1.0);
+            _ = segment.Quality.CoherenceScore.Should().BeInRange(0.0, 1.0);
+            _ = segment.Quality.IndependenceScore.Should().BeInRange(0.0, 1.0);
+            _ = segment.Quality.TopicConsistencyScore.Should().BeInRange(0.0, 1.0);
 
             // Content should not be empty
-            segment.Content.Should().NotBeEmpty();
-            segment.Id.Should().NotBeEmpty();
-            segment.SequenceNumber.Should().BeGreaterThan(0);
+            _ = segment.Content.Should().NotBeEmpty();
+            _ = segment.Id.Should().NotBeEmpty();
+            _ = segment.SequenceNumber.Should().BeGreaterThan(0);
 
             // Metadata should contain test markers
-            segment.Metadata.Should().ContainKey("created_by");
-            segment.Metadata["created_by"].Should().Be("workflow_demo");
+            _ = segment.Metadata.Should().ContainKey("created_by");
+            _ = segment.Metadata["created_by"].Should().Be("workflow_demo");
         }
     }
 
-    private string CreateLargeTestDocument(int targetWordCount)
+    private static string CreateLargeTestDocument(int targetWordCount)
     {
         var words = new[]
         {
@@ -265,7 +264,7 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         var random = new Random(42); // Fixed seed for reproducible tests
         var result = new List<string>();
 
-        for (int i = 0; i < targetWordCount; i++)
+        for (var i = 0; i < targetWordCount; i++)
         {
             result.Add(words[random.Next(words.Length)]);
 
@@ -285,13 +284,13 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         return string.Join(" ", result);
     }
 
-    private string CreateSmallTestDocument(int targetWordCount)
+    private static string CreateSmallTestDocument(int targetWordCount)
     {
         var words = new[] { "short", "brief", "concise", "summary", "overview", "introduction" };
         var random = new Random(42);
         var result = new List<string>();
 
-        for (int i = 0; i < targetWordCount; i++)
+        for (var i = 0; i < targetWordCount; i++)
         {
             result.Add(words[random.Next(words.Length)]);
         }
@@ -299,7 +298,7 @@ public class DocumentSegmentationWorkflowTests : IAsyncDisposable
         return string.Join(" ", result);
     }
 
-    private DocumentSegmentationOptions CreateTestOptions()
+    private static DocumentSegmentationOptions CreateTestOptions()
     {
         return new DocumentSegmentationOptions
         {

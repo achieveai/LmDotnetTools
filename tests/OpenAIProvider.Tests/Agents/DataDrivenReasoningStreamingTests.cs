@@ -6,7 +6,6 @@ using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
 using static AchieveAi.LmDotnetTools.TestUtils.TestUtils;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
@@ -22,8 +21,8 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 public class DataDrivenReasoningStreamingTests
 {
     private readonly ProviderTestDataManager _dm = new();
-    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
-    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
+    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
+    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
 
     #region Raw Streaming Playback
 
@@ -62,7 +61,9 @@ public class DataDrivenReasoningStreamingTests
         var stream = await agent.GenerateReplyStreamingAsync(messages, options);
         var response = new List<IMessage>();
         await foreach (var msg in stream)
+        {
             response.Add(msg);
+        }
 
         // Assert raw streaming shape
         Assert.True(
@@ -160,7 +161,9 @@ public class DataDrivenReasoningStreamingTests
         var stream = await agent.GenerateReplyStreamingAsync(messages, options);
         var response = new List<IMessage>();
         await foreach (var msg in stream)
+        {
             response.Add(msg);
+        }
 
         // Basic assertions - verify joiner middleware is working
         Assert.False(
@@ -280,7 +283,7 @@ public class DataDrivenReasoningStreamingTests
         // Debug: Show the last few messages
         var lastMessages = streamingResponse.TakeLast(5).ToList();
         Debug.WriteLine("Last 5 messages:");
-        for (int i = 0; i < lastMessages.Count; i++)
+        for (var i = 0; i < lastMessages.Count; i++)
         {
             var msg = lastMessages[i];
             Debug.WriteLine($"  [{i}] {msg.GetType().Name}: {msg}");
@@ -351,7 +354,7 @@ public class DataDrivenReasoningStreamingTests
 
     private async Task CreateStreamingArtefactsAsync(string testName, string modelId)
     {
-        string lmCoreRequestPath = _dm.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
+        var lmCoreRequestPath = _dm.GetTestDataPath(testName, ProviderType.OpenAI, DataType.LmCoreRequest);
         if (File.Exists(lmCoreRequestPath))
         {
             Debug.WriteLine($"Artefacts for {testName} already exist. Skip creation.");
@@ -377,7 +380,7 @@ public class DataDrivenReasoningStreamingTests
             }.ToImmutableDictionary(),
         };
 
-        _dm.SaveLmCoreRequest(testName, ProviderType.OpenAI, messages.OfType<TextMessage>().ToArray(), options);
+        _dm.SaveLmCoreRequest(testName, ProviderType.OpenAI, [.. messages.OfType<TextMessage>()], options);
 
         // Build handler for recording
         var cassettePath = Path.Combine(
@@ -401,7 +404,9 @@ public class DataDrivenReasoningStreamingTests
         var stream = await agent.GenerateReplyStreamingAsync(messages, options);
         var response = new List<IMessage>();
         await foreach (var msg in stream)
+        {
             response.Add(msg);
+        }
 
         if (!response.Any(m => m is ReasoningMessage or ReasoningUpdateMessage))
         {
@@ -417,11 +422,15 @@ public class DataDrivenReasoningStreamingTests
 
     #region Helpers
 
-    private static string GetApiKeyFromEnv() =>
-        EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+    private static string GetApiKeyFromEnv()
+    {
+        return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
+    }
 
-    private static string GetApiBaseUrlFromEnv() =>
-        EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+    private static string GetApiBaseUrlFromEnv()
+    {
+        return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeysArray, "https://api.openai.com/v1");
+    }
 
     #endregion
 }

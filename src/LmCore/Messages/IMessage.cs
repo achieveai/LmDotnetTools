@@ -23,18 +23,27 @@ public interface IMessage
     public ImmutableDictionary<string, object>? Metadata { get; }
 
     /// <summary>
-    /// Thread identifier for conversation continuity (used with AG-UI protocol)
-    /// Maps to a persistent conversation thread across multiple runs
-    /// </summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ThreadId => null;
-
-    /// <summary>
     /// Run identifier for this specific execution (used with AG-UI protocol)
     /// Tracks individual runs within a conversation thread
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId => null;
 
-    public ImmutableDictionary<string, object?>? GetMetaTools() => null;
+    /// <summary>
+    /// Parent Run identifier for branching/time travel (creates git-like lineage)
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentRunId => null;
+
+    /// <summary>
+    /// Thread identifier for conversation continuity (used with AG-UI protocol)
+    /// Maps to a persistent conversation thread across multiple runs
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ThreadId => null;
+
+    public ImmutableDictionary<string, object?>? GetMetaTools()
+    {
+        return null;
+    }
 }

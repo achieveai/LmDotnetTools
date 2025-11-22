@@ -21,8 +21,8 @@ public class PromptReader : IPromptReader
             throw new FileNotFoundException($"The prompt file '{filePath}' was not found.");
         }
 
-        string fullPath = Path.GetFullPath(filePath);
-        _prompts = PromptReader.ParseYamlFile(File.ReadAllText(fullPath));
+        var fullPath = Path.GetFullPath(filePath);
+        _prompts = ParseYamlFile(File.ReadAllText(fullPath));
     }
 
     /// <summary>
@@ -32,7 +32,7 @@ public class PromptReader : IPromptReader
     public PromptReader(Stream stream)
     {
         using var reader = new StreamReader(stream);
-        _prompts = PromptReader.ParseYamlFile(reader.ReadToEnd());
+        _prompts = ParseYamlFile(reader.ReadToEnd());
     }
 
     /// <summary>
@@ -48,7 +48,7 @@ public class PromptReader : IPromptReader
                 $"Resource '{resourceName}' not found in assembly '{assembly.FullName}'."
             );
         using var reader = new StreamReader(stream);
-        _prompts = PromptReader.ParseYamlFile(reader.ReadToEnd());
+        _prompts = ParseYamlFile(reader.ReadToEnd());
     }
 
     /// <summary>
@@ -65,7 +65,7 @@ public class PromptReader : IPromptReader
         foreach (var promptName in result.Keys)
         {
             var versions = result[promptName];
-            var latestVersion = PromptReader.FindLatestVersion(versions.Keys);
+            var latestVersion = FindLatestVersion(versions.Keys);
             versions["latest"] = versions[latestVersion];
         }
 
@@ -80,7 +80,7 @@ public class PromptReader : IPromptReader
     private static string FindLatestVersion(IEnumerable<string> versions)
     {
         Version latest = new Version(0, 0);
-        string latestString = "";
+        var latestString = "";
 
         foreach (var version in versions)
         {
@@ -106,7 +106,7 @@ public class PromptReader : IPromptReader
     {
         var allowedRoles = new HashSet<string> { "system", "user", "assistant" };
 
-        return chainData
+        return [.. chainData
             .Select(m =>
             {
                 var role = m.Keys.First().ToLower();
@@ -127,8 +127,7 @@ public class PromptReader : IPromptReader
                         },
                         Text = content,
                     } as IMessage;
-            })
-            .ToList();
+            })];
     }
 
     /// <summary>
@@ -144,7 +143,7 @@ public class PromptReader : IPromptReader
             throw new KeyNotFoundException($"Prompt '{promptName}' not found.");
         }
 
-        if (!promptVersions.TryGetValue(version, out object? promptContent))
+        if (!promptVersions.TryGetValue(version, out var promptContent))
         {
             throw new KeyNotFoundException($"Version '{version}' not found for prompt '{promptName}'.");
         }
@@ -166,7 +165,7 @@ public class PromptReader : IPromptReader
                 .ToList();
             try
             {
-                var messages = PromptReader.ParsePromptChain(rv);
+                var messages = ParsePromptChain(rv);
                 return new PromptChain(promptName, version, messages);
             }
             catch (ArgumentException ex)
@@ -243,13 +242,12 @@ public record PromptChain(string Name, string Version, List<IMessage> Messages) 
     {
         return variables == null
             ? Messages
-            : Messages
+            : [.. Messages
                 .Select<IMessage, IMessage>(m => new TextMessage
                 {
                     Role = m.Role,
-                    Text = PromptChain.ApplyVariables(((ICanGetText)m).GetText()!, variables),
-                })
-                .ToList();
+                    Text = ApplyVariables(((ICanGetText)m).GetText()!, variables),
+                })];
     }
 
     /// <summary>

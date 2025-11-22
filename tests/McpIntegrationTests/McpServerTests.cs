@@ -77,7 +77,7 @@ public class McpServerTests
 
             var receivedMessage = agent.ReceivedMessages.FirstOrDefault();
             Assert.NotNull(receivedMessage);
-            Assert.IsType<TextMessage>(receivedMessage);
+            _ = Assert.IsType<TextMessage>(receivedMessage);
 
             // The message received by the agent should be the initial text message
             var textMessage = receivedMessage as TextMessage;

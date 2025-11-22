@@ -60,14 +60,14 @@ public class McpFunctionCallExtensionsTests
         Assert.NotNull(sayHelloContract);
         Assert.Equal("Greets a person by name", sayHelloContract!.Description);
         Assert.NotNull(sayHelloContract.Parameters);
-        Assert.Single(sayHelloContract.Parameters!);
+        _ = Assert.Single(sayHelloContract.Parameters!);
         Assert.Equal("name", sayHelloContract.Parameters!.First().Name);
 
         var sayGoodbyeContract = contractsList.FirstOrDefault(c => c.Name == "SayGoodbye");
         Assert.NotNull(sayGoodbyeContract);
         Assert.Equal("Says goodbye to a person by name", sayGoodbyeContract!.Description);
         Assert.NotNull(sayGoodbyeContract.Parameters);
-        Assert.Single(sayGoodbyeContract.Parameters!);
+        _ = Assert.Single(sayGoodbyeContract.Parameters!);
         Assert.Equal("name", sayGoodbyeContract.Parameters!.First().Name);
 
         // Test CalculatorTool methods
@@ -120,13 +120,13 @@ public class McpFunctionCallExtensionsTests
         // Act & Assert for Add
         var addResult = await functionMap["CalculatorTool-Add"]("{\"a\":5,\"b\":3}");
         // Parse the result to verify it's a valid number
-        double addNumber = double.Parse(addResult.Trim('\"'));
+        var addNumber = double.Parse(addResult.Trim('\"'));
         Assert.Equal(8, addNumber);
 
         // Act & Assert for Divide
         var divideResult = await functionMap["CalculatorTool-Divide"]("{\"a\":10,\"b\":2}");
         // Parse the result to verify it's a valid number
-        double divideNumber = double.Parse(divideResult.Trim('\"'));
+        var divideNumber = double.Parse(divideResult.Trim('\"'));
         Assert.Equal(5, divideNumber);
 
         // Test error handling for Divide by zero

@@ -32,24 +32,32 @@ public class SessionContext
     public bool Matches(SessionContext other)
     {
         if (other == null)
+        {
             return false;
+        }
 
         // User ID must always match
         if (UserId != other.UserId)
+        {
             return false;
+        }
 
         // If either has AgentId, they must match
         if (!string.IsNullOrEmpty(AgentId) || !string.IsNullOrEmpty(other.AgentId))
         {
             if (AgentId != other.AgentId)
+            {
                 return false;
+            }
         }
 
         // If either has RunId, they must match
         if (!string.IsNullOrEmpty(RunId) || !string.IsNullOrEmpty(other.RunId))
         {
             if (RunId != other.RunId)
+            {
                 return false;
+            }
         }
 
         return true;
@@ -98,7 +106,9 @@ public class SessionContext
 
             // Only add run part if it exists
             if (!string.IsNullOrEmpty(RunId))
+            {
                 parts.Add(RunId);
+            }
         }
         else if (!string.IsNullOrEmpty(RunId))
         {
@@ -116,9 +126,15 @@ public class SessionContext
     public SessionScope GetScope()
     {
         if (!string.IsNullOrEmpty(RunId))
+        {
             return SessionScope.Run;
+        }
+
         if (!string.IsNullOrEmpty(AgentId))
+        {
             return SessionScope.Agent;
+        }
+
         return SessionScope.User;
     }
 }

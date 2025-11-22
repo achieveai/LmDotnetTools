@@ -7,5 +7,8 @@ public static class LmConfigStandardWrappers
     public static Func<HttpMessageHandler, ILogger?, HttpMessageHandler> WithRetry(
         int maxAttempts = 3,
         TimeSpan? delay = null
-    ) => (inner, _) => new RetryHandler(maxAttempts, delay) { InnerHandler = inner };
+    )
+    {
+        return (inner, _) => new RetryHandler(maxAttempts, delay) { InnerHandler = inner };
+    }
 }

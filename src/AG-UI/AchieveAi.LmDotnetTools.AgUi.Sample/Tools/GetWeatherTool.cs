@@ -1,9 +1,7 @@
-using System.ComponentModel;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
@@ -14,7 +12,7 @@ namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 public class GetWeatherTool : IFunctionProvider
 {
     private readonly ILogger<GetWeatherTool> _logger;
-    private static readonly string[] Conditions = { "Sunny", "Cloudy", "Rainy", "Snowy", "Foggy", "Windy", "Stormy" };
+    private static readonly string[] Conditions = ["Sunny", "Cloudy", "Rainy", "Snowy", "Foggy", "Windy", "Stormy"];
 
     public GetWeatherTool(ILogger<GetWeatherTool> logger)
     {
@@ -25,40 +23,38 @@ public class GetWeatherTool : IFunctionProvider
     public string ProviderName => "WeatherProvider";
     public int Priority => 100;
 
+    private static readonly string[] sourceArray = ["celsius", "fahrenheit"];
+
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
         var contract = new FunctionContract
         {
             Name = "get_weather",
             Description = "Get current weather information for a specified city",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "city",
                     ParameterType = new JsonSchemaObject { Type = "string" },
                     Description = "The name of the city to get weather for",
-                    IsRequired = true
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "units",
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = new[] { "celsius", "fahrenheit" }
-                    },
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = sourceArray },
                     Description = "Temperature units (celsius or fahrenheit)",
-                    IsRequired = false
-                }
-            }.ToList()
+                    IsRequired = false,
+                },
+            ],
         };
 
         yield return new FunctionDescriptor
         {
             Contract = contract,
             Handler = ExecuteAsync,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 
@@ -84,9 +80,7 @@ public class GetWeatherTool : IFunctionProvider
             await Task.Delay(Random.Shared.Next(100, 300));
 
             // Generate mock weather data
-            var temperature = args.Units == "fahrenheit"
-                ? Random.Shared.Next(40, 90)
-                : Random.Shared.Next(5, 32);
+            var temperature = args.Units == "fahrenheit" ? Random.Shared.Next(40, 90) : Random.Shared.Next(5, 32);
 
             var result = new
             {
@@ -96,7 +90,7 @@ public class GetWeatherTool : IFunctionProvider
                 condition = Conditions[Random.Shared.Next(Conditions.Length)],
                 humidity = Random.Shared.Next(30, 90),
                 windSpeed = Random.Shared.Next(5, 30),
-                timestamp = DateTime.UtcNow.ToString("o")
+                timestamp = DateTime.UtcNow.ToString("o"),
             };
 
             var json = JsonSerializer.Serialize(result);

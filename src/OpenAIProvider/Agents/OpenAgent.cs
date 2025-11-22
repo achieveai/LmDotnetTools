@@ -94,7 +94,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
             if (
                 coreUsage.ExtraProperties != null
-                && coreUsage.ExtraProperties.TryGetValue("estimated_cost", out object? value)
+                && coreUsage.ExtraProperties.TryGetValue("estimated_cost", out var value)
             )
             {
                 totalCost = value switch
@@ -152,12 +152,12 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 tokensPerSecond
             );
 
-            var resultMessages = openMessage.ToMessages();
+            var resultMessages = openMessage.ToMessages().Select(m => m.WithIds(options)).ToList();
 
             _logger.LogDebug(
                 "Message conversion details: CompletionId={CompletionId}, ConvertedMessageCount={MessageCount}, HasToolCalls={HasToolCalls}",
                 openMessage.CompletionId,
-                resultMessages.Count(),
+                resultMessages.Count,
                 openMessage.ChatMessage.ToolCalls?.Any() == true
             );
 
@@ -180,11 +180,11 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
                 ChatMessage = response.Choices!.First().Message!,
             };
 
-            var resultMessages = openMessage.ToMessages();
+            var resultMessages = openMessage.ToMessages().Select(m => m.WithIds(options)).ToList();
             _logger.LogDebug(
                 "Message conversion details (no usage): CompletionId={CompletionId}, ConvertedMessageCount={MessageCount}, HasToolCalls={HasToolCalls}",
                 openMessage.CompletionId,
-                resultMessages.Count(),
+                resultMessages.Count,
                 openMessage.ChatMessage.ToolCalls?.Any() == true
             );
 
@@ -218,24 +218,25 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
         );
 
         // Return the streaming response as an IAsyncEnumerable
-        return await Task.FromResult(GenerateStreamingMessages(request, cancellationToken));
+        return await Task.FromResult(GenerateStreamingMessages(request, options, cancellationToken));
     }
 
     private async IAsyncEnumerable<IMessage> GenerateStreamingMessages(
         ChatCompletionRequest request,
+        GenerateReplyOptions? options,
         [EnumeratorCancellation] CancellationToken cancellationToken
     )
     {
         var response = _client.StreamingChatCompletionsAsync(request, cancellationToken)!;
 
-        string completionId = string.Empty;
-        string modelId = string.Empty;
-        int totalChunks = 0;
-        bool hasUsageData = false;
+        var completionId = string.Empty;
+        var modelId = string.Empty;
+        var totalChunks = 0;
+        var hasUsageData = false;
         var startTime = DateTime.UtcNow;
         DateTime? firstTokenTime = null;
-        int totalPromptTokens = 0;
-        int totalCompletionTokens = 0;
+        var totalPromptTokens = 0;
+        var totalCompletionTokens = 0;
         double? totalCost = null;
 
         await foreach (var item in response)
@@ -306,7 +307,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
             foreach (var message in streamingMessages)
             {
-                yield return message;
+                yield return message.WithIds(options);
             }
         }
 

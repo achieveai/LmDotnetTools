@@ -109,7 +109,7 @@ public class GraphExtractionService : IGraphExtractionService
                     AgentId = sessionContext.AgentId,
                     RunId = sessionContext.RunId,
                     Confidence = e.Confidence,
-                    SourceMemoryIds = new List<int> { memoryId },
+                    SourceMemoryIds = [memoryId],
                     Metadata = new Dictionary<string, object>
                     {
                         ["extraction_reasoning"] = e.Reasoning ?? "",
@@ -198,7 +198,7 @@ public class GraphExtractionService : IGraphExtractionService
                     AgentId = sessionContext.AgentId,
                     RunId = sessionContext.RunId,
                     Confidence = e.Confidence,
-                    SourceMemoryIds = new List<int> { memoryId },
+                    SourceMemoryIds = [memoryId],
                     Metadata = new Dictionary<string, object>
                     {
                         ["extraction_reasoning"] = e.Reasoning ?? "",
@@ -360,7 +360,9 @@ public class GraphExtractionService : IGraphExtractionService
         try
         {
             if (!entities.Any())
+            {
                 return entities;
+            }
 
             _logger.LogInformation(
                 "Validating and cleaning {EntityCount} entities for session {SessionContext}",
@@ -437,8 +439,8 @@ public class GraphExtractionService : IGraphExtractionService
                         AgentId = sessionContext.AgentId,
                         RunId = sessionContext.RunId,
                         Confidence = e.Confidence,
-                        SourceMemoryIds = originalEntity?.SourceMemoryIds ?? new List<int>(),
-                        Metadata = originalEntity?.Metadata ?? new Dictionary<string, object>(),
+                        SourceMemoryIds = originalEntity?.SourceMemoryIds ?? [],
+                        Metadata = originalEntity?.Metadata ?? [],
                     };
                 })
                 .ToList();
@@ -469,7 +471,9 @@ public class GraphExtractionService : IGraphExtractionService
         try
         {
             if (!relationships.Any())
+            {
                 return relationships;
+            }
 
             _logger.LogInformation(
                 "Validating and cleaning {RelationshipCount} relationships for session {SessionContext}",
@@ -551,7 +555,7 @@ public class GraphExtractionService : IGraphExtractionService
                         Confidence = r.Confidence,
                         SourceMemoryId = originalRelationship?.SourceMemoryId,
                         TemporalContext = r.TemporalContext,
-                        Metadata = originalRelationship?.Metadata ?? new Dictionary<string, object>(),
+                        Metadata = originalRelationship?.Metadata ?? [],
                     };
                 })
                 .ToList();
@@ -799,19 +803,19 @@ public class GraphExtractionService : IGraphExtractionService
             try
             {
                 return JsonSerializer.Deserialize<List<ExtractedEntity>>(jsonContent, _jsonOptions)
-                    ?? new List<ExtractedEntity>();
+                    ?? [];
             }
             catch
             {
                 // If that fails, try to parse as wrapped object with "entities" property
                 var wrappedResult = JsonSerializer.Deserialize<EntityExtractionWrapper>(jsonContent, _jsonOptions);
-                return wrappedResult?.Entities ?? new List<ExtractedEntity>();
+                return wrappedResult?.Entities ?? [];
             }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to parse entities from JSON response: {Response}", jsonResponse);
-            return new List<ExtractedEntity>();
+            return [];
         }
     }
 
@@ -825,7 +829,7 @@ public class GraphExtractionService : IGraphExtractionService
             try
             {
                 return JsonSerializer.Deserialize<List<ExtractedRelationship>>(jsonContent, _jsonOptions)
-                    ?? new List<ExtractedRelationship>();
+                    ?? [];
             }
             catch
             {
@@ -834,13 +838,13 @@ public class GraphExtractionService : IGraphExtractionService
                     jsonContent,
                     _jsonOptions
                 );
-                return wrappedResult?.Relationships ?? new List<ExtractedRelationship>();
+                return wrappedResult?.Relationships ?? [];
             }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to parse relationships from JSON response: {Response}", jsonResponse);
-            return new List<ExtractedRelationship>();
+            return [];
         }
     }
 
@@ -900,7 +904,9 @@ public class GraphExtractionService : IGraphExtractionService
     private static string ExtractJsonFromResponse(string response)
     {
         if (string.IsNullOrWhiteSpace(response))
+        {
             return string.Empty;
+        }
 
         // First, try to find JSON within markdown code blocks
         var lines = response.Split('\n');
@@ -926,7 +932,9 @@ public class GraphExtractionService : IGraphExtractionService
         {
             var jsonContent = string.Join('\n', jsonLines).Trim();
             if (!string.IsNullOrEmpty(jsonContent))
+            {
                 return jsonContent;
+            }
         }
 
         // If no markdown blocks found, try to extract JSON directly
@@ -934,7 +942,7 @@ public class GraphExtractionService : IGraphExtractionService
         var startIndex = -1;
         var isObject = false;
 
-        for (int i = 0; i < response.Length; i++)
+        for (var i = 0; i < response.Length; i++)
         {
             if (response[i] == '{')
             {
@@ -957,7 +965,7 @@ public class GraphExtractionService : IGraphExtractionService
             var inString = false;
             var escaped = false;
 
-            for (int i = startIndex; i < response.Length; i++)
+            for (var i = startIndex; i < response.Length; i++)
             {
                 var c = response[i];
 
@@ -982,13 +990,21 @@ public class GraphExtractionService : IGraphExtractionService
                 if (!inString)
                 {
                     if (c == '{')
+                    {
                         braceCount++;
+                    }
                     else if (c == '}')
+                    {
                         braceCount--;
+                    }
                     else if (c == '[')
+                    {
                         bracketCount++;
+                    }
                     else if (c == ']')
+                    {
                         bracketCount--;
+                    }
 
                     // Check if we've closed all braces/brackets
                     if (isObject && braceCount == 0 && i > startIndex)
@@ -1063,22 +1079,22 @@ public class GraphExtractionService : IGraphExtractionService
     private class CombinedExtractionResult
     {
         [JsonPropertyName("entities")]
-        public List<ExtractedEntity> Entities { get; set; } = new();
+        public List<ExtractedEntity> Entities { get; set; } = [];
 
         [JsonPropertyName("relationships")]
-        public List<ExtractedRelationship> Relationships { get; set; } = new();
+        public List<ExtractedRelationship> Relationships { get; set; } = [];
     }
 
     private class EntityExtractionWrapper
     {
         [JsonPropertyName("entities")]
-        public List<ExtractedEntity> Entities { get; set; } = new();
+        public List<ExtractedEntity> Entities { get; set; } = [];
     }
 
     private class RelationshipExtractionWrapper
     {
         [JsonPropertyName("relationships")]
-        public List<ExtractedRelationship> Relationships { get; set; } = new();
+        public List<ExtractedRelationship> Relationships { get; set; } = [];
     }
 
     #endregion

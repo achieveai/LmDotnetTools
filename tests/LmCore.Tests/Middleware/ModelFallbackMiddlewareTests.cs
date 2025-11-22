@@ -84,7 +84,7 @@ public class ModelFallbackMiddlewareTests
 
         // Create a failing agent that throws an exception
         var failingAgent = new Mock<IAgent>();
-        failingAgent
+        _ = failingAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -121,7 +121,7 @@ public class ModelFallbackMiddlewareTests
         );
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Equal("Success response", ((TextMessage)result.First()).Text);
     }
 
@@ -135,7 +135,7 @@ public class ModelFallbackMiddlewareTests
 
         // Create failing agents
         var failingAgent1 = new Mock<IAgent>();
-        failingAgent1
+        _ = failingAgent1
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -146,7 +146,7 @@ public class ModelFallbackMiddlewareTests
             .ThrowsAsync(new Exception("Agent 1 failure"));
 
         var failingAgent2 = new Mock<IAgent>();
-        failingAgent2
+        _ = failingAgent2
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -192,7 +192,7 @@ public class ModelFallbackMiddlewareTests
 
         // Create failing agents
         var failingAgent1 = new Mock<IAgent>();
-        failingAgent1
+        _ = failingAgent1
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -203,7 +203,7 @@ public class ModelFallbackMiddlewareTests
             .ThrowsAsync(new Exception("Agent 1 failure"));
 
         var failingAgent2 = new Mock<IAgent>();
-        failingAgent2
+        _ = failingAgent2
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -215,7 +215,7 @@ public class ModelFallbackMiddlewareTests
 
         // Create a failing default agent
         var failingDefaultAgent = new Mock<IAgent>();
-        failingDefaultAgent
+        _ = failingDefaultAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),

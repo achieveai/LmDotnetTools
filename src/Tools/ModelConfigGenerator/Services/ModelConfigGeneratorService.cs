@@ -196,7 +196,7 @@ public partial class ModelConfigGeneratorService
             _logger.LogDebug("Limited to max {MaxModels} models", options.MaxModels);
         }
 
-        return filtered.ToList();
+        return [.. filtered];
     }
 
     /// <summary>
@@ -309,7 +309,7 @@ public partial class ModelConfigGeneratorService
         var outputDir = Path.GetDirectoryName(Path.GetFullPath(options.OutputPath));
         if (!string.IsNullOrEmpty(outputDir))
         {
-            Directory.CreateDirectory(outputDir);
+            _ = Directory.CreateDirectory(outputDir);
         }
 
         var json = JsonSerializer.Serialize(appConfig, jsonOptions);
@@ -427,7 +427,7 @@ public partial class ModelConfigGeneratorService
     /// </summary>
     public static IReadOnlyList<string> GetSupportedFamilies()
     {
-        return ModelFamilyPatterns.Keys.ToList();
+        return [.. ModelFamilyPatterns.Keys];
     }
 
     /// <summary>

@@ -1,6 +1,5 @@
 namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -40,7 +39,9 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         _creationStackTrace = Environment.StackTrace;
 
         if (_logger.IsEnabled(LogLevel.Debug))
+        {
             _logger.LogDebug("MiddlewareWrappingStreamingAgent created: Middleware={MiddlewareName}", _middlewareName);
+        }
     }
 
     public MiddlewareWrappingStreamingAgent(
@@ -61,7 +62,9 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         _creationStackTrace = Environment.StackTrace;
 
         if (_logger.IsEnabled(LogLevel.Debug))
+        {
             _logger.LogDebug("MiddlewareWrappingStreamingAgent created: Middleware={MiddlewareName}", _middlewareName);
+        }
     }
 
     public Task<IEnumerable<IMessage>> GenerateReplyAsync(
@@ -181,7 +184,7 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
         {
             await foreach (var message in sourceStream.WithCancellation(cancellationToken))
             {
-                Interlocked.Increment(ref activeYieldCount);
+                _ = Interlocked.Increment(ref activeYieldCount);
                 var yieldStartTime = DateTime.UtcNow;
 
                 try
@@ -212,7 +215,7 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
                 }
                 finally
                 {
-                    Interlocked.Decrement(ref activeYieldCount);
+                    _ = Interlocked.Decrement(ref activeYieldCount);
                 }
             }
 

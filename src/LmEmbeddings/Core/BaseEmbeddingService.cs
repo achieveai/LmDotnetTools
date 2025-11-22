@@ -1,5 +1,3 @@
-using System.Net;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
@@ -108,13 +106,17 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         // Use the first available model as default for the simple API
         var availableModels = await GetAvailableModelsAsync(cancellationToken);
         if (!availableModels.Any())
+        {
             throw new InvalidOperationException("No models available for embedding generation");
+        }
 
         var defaultModel = availableModels[0];
         var response = await GenerateEmbeddingAsync(sentence, defaultModel, cancellationToken);
 
         if (response.Embeddings?.Any() != true)
+        {
             throw new InvalidOperationException("No embeddings returned from service");
+        }
 
         return response.Embeddings[0].Vector;
     }
@@ -260,13 +262,19 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
 
         // Add Jina-specific parameters
         if (request.Normalized.HasValue)
+        {
             payload["normalized"] = request.Normalized.Value;
+        }
 
         if (!string.IsNullOrEmpty(request.EncodingFormat))
+        {
             payload["embedding_type"] = request.EncodingFormat;
+        }
 
         if (request.Dimensions.HasValue)
+        {
             payload["dimensions"] = request.Dimensions.Value;
+        }
 
         // Add any additional options
         if (request.AdditionalOptions != null)
@@ -309,13 +317,19 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         };
 
         if (!string.IsNullOrEmpty(request.EncodingFormat))
+        {
             payload["encoding_format"] = request.EncodingFormat;
+        }
 
         if (request.Dimensions.HasValue)
+        {
             payload["dimensions"] = request.Dimensions.Value;
+        }
 
         if (!string.IsNullOrEmpty(request.User))
+        {
             payload["user"] = request.User;
+        }
 
         // Add any additional options
         if (request.AdditionalOptions != null)
@@ -388,6 +402,8 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
                 break;
             case EmbeddingApiType.Default:
                 ValidateOpenAIParameters(request);
+                break;
+            default:
                 break;
         }
     }

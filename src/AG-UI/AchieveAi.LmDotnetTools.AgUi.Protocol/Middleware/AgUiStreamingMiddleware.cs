@@ -55,7 +55,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         IOptions<AgUiMiddlewareOptions>? options = null,
         ISessionRepository? sessionRepository = null,
         IMessageRepository? messageRepository = null,
-        IEventRepository? eventRepository = null)
+        IEventRepository? eventRepository = null
+    )
     {
         _eventPublisher = eventPublisher;
         _converter = converter;
@@ -74,7 +75,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     public async Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // For non-streaming responses, just pass through
         return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
@@ -88,13 +90,11 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     public async Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // Get stream from next middleware in the chain
-        var stream = await agent.GenerateReplyStreamingAsync(
-            context.Messages,
-            context.Options,
-            cancellationToken);
+        var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
 
         // Process stream and yield messages (interceptor pattern)
         return ProcessStreamWithEvents(stream, context, cancellationToken);
@@ -115,16 +115,15 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     private async IAsyncEnumerable<IMessage> ProcessStreamWithEvents(
         IAsyncEnumerable<IMessage> messages,
         MiddlewareContext context,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         // Get session ID from GenerateReplyOptions first, fall back to generating new one
         // This ensures sessionId is consistent with the controller's sessionId
-        var sessionId = context.Options?.SessionId
-            ?? context.Options?.ConversationId
-            ?? context.GetOrCreateSessionId();
+        var sessionId = context.GetOrCreateSessionId(context.Options?.ThreadId);
+        var threadId = context.Options?.ThreadId;
 
-        var runId = context.Options?.RunId
-            ?? context.GetOrCreateRunId();
+        var runId = context.Options?.RunId ?? context.GetOrCreateRunId();
 
         // Store context for tool callbacks
         _currentContext = context;
@@ -133,11 +132,15 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         _ = PersistSessionStartAsync(sessionId, context, ct);
 
         // Publish run-started event as side effect
-        await PublishEventSafely(new RunStartedEvent
-        {
-            SessionId = sessionId,
-            RunId = runId
-        }, ct);
+        await PublishEventSafely(
+            new RunStartedEvent
+            {
+                SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
+            },
+            ct
+        );
 
         // Process all messages, yielding them through
         await foreach (var message in messages.WithCancellation(ct).ConfigureAwait(false))
@@ -147,21 +150,30 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
 
             // Convert and publish AG-UI events as side effect
             // Errors in publishing don't break the stream
-            await ProcessMessageAsync(message, sessionId, ct);
+            await ProcessMessageAsync(message, sessionId, threadId, runId, ct);
 
             // ALWAYS yield message through, even if event publishing failed
             yield return message;
         }
 
+        foreach (var evt in _converter.Flush(sessionId, threadId, runId))
+        {
+            await PublishEventSafely(evt, ct);
+        }
+
         // Publish run-finished event as side effect
         // We always report success here - errors in event publishing are logged
         // but don't affect the overall run status
-        await PublishEventSafely(new RunFinishedEvent
-        {
-            SessionId = sessionId,
-            RunId = runId,
-            Status = RunStatus.Success
-        }, ct);
+        await PublishEventSafely(
+            new RunFinishedEvent
+            {
+                SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
+                Status = RunStatus.Success,
+            },
+            ct
+        );
 
         // Persist session end (fire-and-forget, non-blocking)
         _ = PersistSessionEndAsync(sessionId, RunStatus.Success, ct);
@@ -171,20 +183,32 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     /// Processes a single message by converting it to AG-UI events and publishing them.
     /// Errors in conversion or publishing are logged but don't break the stream.
     /// </summary>
-    private async Task ProcessMessageAsync(IMessage message, string sessionId, CancellationToken ct)
+    private async Task ProcessMessageAsync(
+        IMessage message,
+        string sessionId,
+        string? threadId,
+        string? runId,
+        CancellationToken ct
+    )
     {
-        await PublishMessageEventsSafely(message, sessionId, ct);
+        await PublishMessageEventsSafely(message, sessionId, threadId, runId, ct);
     }
 
     /// <summary>
     /// Safely publishes AG-UI events for a message without breaking the stream.
     /// This wrapper ensures that errors in conversion or publishing don't propagate.
     /// </summary>
-    private async Task PublishMessageEventsSafely(IMessage message, string sessionId, CancellationToken ct)
+    private async Task PublishMessageEventsSafely(
+        IMessage message,
+        string sessionId,
+        string? threadId,
+        string? runId,
+        CancellationToken ct
+    )
     {
         try
         {
-            var events = _converter.ConvertToAgUiEvents(message, sessionId);
+            var events = _converter.ConvertToAgUiEvents(message, sessionId, threadId, runId);
 
             foreach (var evt in events)
             {
@@ -198,11 +222,13 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Error converting/publishing message events for session {SessionId}. " +
-                "Message type: {MessageType}. Stream will continue.",
+            _logger.LogError(
+                ex,
+                "Error converting/publishing message events for session {SessionId}. "
+                    + "Message type: {MessageType}. Stream will continue.",
                 sessionId,
-                message.GetType().Name);
+                message.GetType().Name
+            );
             // DON'T throw - continue processing
         }
     }
@@ -219,8 +245,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
 
             if (_options.EnableDebugLogging)
             {
-                _logger.LogDebug("Published event {EventType} for session {SessionId}",
-                    evt.Type, evt.SessionId);
+                _logger.LogDebug("Published event {EventType} for session {SessionId}", evt.Type, evt.SessionId);
             }
         }
         catch (OperationCanceledException)
@@ -231,11 +256,13 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Failed to publish event {EventType} for session {SessionId}. " +
-                "Event will be skipped but stream will continue.",
+            _logger.LogError(
+                ex,
+                "Failed to publish event {EventType} for session {SessionId}. "
+                    + "Event will be skipped but stream will continue.",
                 evt.Type,
-                evt.SessionId);
+                evt.SessionId
+            );
             // DON'T throw - continue processing
             // This ensures the message stream continues even if event publishing fails
         }
@@ -250,7 +277,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         string toolCallId,
         string functionName,
         string functionArgs,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // Get session ID from stored context
         if (_currentContext == null)
@@ -259,16 +287,18 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             return;
         }
 
-        var sessionId = _currentContext.Value.Options?.SessionId
-            ?? _currentContext.Value.Options?.ConversationId
-            ?? _currentContext.Value.GetOrCreateSessionId();
+        var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
+        var threadId = _currentContext.Value.Options?.ThreadId;
+        var runId = _currentContext.Value.Options?.RunId;
 
         // Publish tool-call-start event
         var toolCallStartEvent = new ToolCallStartEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
-            ToolName = functionName
+            ToolName = functionName,
         };
 
         await PublishEventSafely(toolCallStartEvent, cancellationToken);
@@ -277,8 +307,10 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         var toolCallArgsEvent = new ToolCallArgumentsEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
-            Delta = functionArgs
+            Delta = functionArgs,
         };
 
         await PublishEventSafely(toolCallArgsEvent, cancellationToken);
@@ -290,7 +322,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     public async Task OnToolResultAvailableAsync(
         string toolCallId,
         ToolCallResult result,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // Get session ID from stored context
         if (_currentContext == null)
@@ -299,17 +332,19 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             return;
         }
 
-        var sessionId = _currentContext.Value.Options?.SessionId
-            ?? _currentContext.Value.Options?.ConversationId
-            ?? _currentContext.Value.GetOrCreateSessionId();
+        var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
+        var threadId = _currentContext.Value.Options?.ThreadId;
+        var runId = _currentContext.Value.Options?.RunId;
 
         // Tool results are no longer separate events in the protocol
         // They should be embedded in messages. For now, just emit tool-call-end event
         var toolCallEndEvent = new ToolCallEndEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
-            Duration = TimeSpan.Zero // We don't track duration here
+            Duration = TimeSpan.Zero, // We don't track duration here
         };
 
         await PublishEventSafely(toolCallEndEvent, cancellationToken);
@@ -322,7 +357,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         string toolCallId,
         string functionName,
         string error,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         // Get session ID from stored context
         if (_currentContext == null)
@@ -331,17 +367,19 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             return;
         }
 
-        var sessionId = _currentContext.Value.Options?.SessionId
-            ?? _currentContext.Value.Options?.ConversationId
-            ?? _currentContext.Value.GetOrCreateSessionId();
+        var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
+        var threadId = _currentContext.Value.Options?.ThreadId;
+        var runId = _currentContext.Value.Options?.RunId;
 
         // Tool call errors should be reported as RUN_ERROR events
         var errorEvent = new ErrorEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ErrorCode = "TOOL_CALL_ERROR",
             Message = $"Tool call {functionName} failed: {error}",
-            Recoverable = true
+            Recoverable = true,
         };
 
         await PublishEventSafely(errorEvent, cancellationToken);
@@ -350,8 +388,10 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         var toolCallEndEvent = new ToolCallEndEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
-            Duration = TimeSpan.Zero
+            Duration = TimeSpan.Zero,
         };
 
         await PublishEventSafely(toolCallEndEvent, cancellationToken);
@@ -368,10 +408,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     /// This method runs asynchronously without blocking the message stream.
     /// Errors are logged but do not affect stream processing.
     /// </remarks>
-    private async Task PersistSessionStartAsync(
-        string sessionId,
-        MiddlewareContext context,
-        CancellationToken ct)
+    private async Task PersistSessionStartAsync(string sessionId, MiddlewareContext context, CancellationToken ct)
     {
         if (_sessionRepository == null)
         {
@@ -386,7 +423,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
                 ConversationId = null, // TODO: Extract from context metadata when available
                 StartTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 Status = "Started",
-                MetadataJson = null // TODO: Add metadata if needed
+                MetadataJson = null, // TODO: Add metadata if needed
             };
 
             await _sessionRepository.CreateAsync(session, ct);
@@ -411,10 +448,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     /// This method runs asynchronously without blocking the message stream.
     /// Errors are logged but do not affect stream processing.
     /// </remarks>
-    private async Task PersistMessageAsync(
-        IMessage message,
-        string sessionId,
-        CancellationToken ct)
+    private async Task PersistMessageAsync(IMessage message, string sessionId, CancellationToken ct)
     {
         if (_messageRepository == null)
         {
@@ -430,13 +464,16 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             {
                 Id = messageId,
                 SessionId = sessionId,
-                MessageJson = JsonSerializer.Serialize(message, new JsonSerializerOptions
-                {
-                    WriteIndented = false,
-                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-                }),
+                MessageJson = JsonSerializer.Serialize(
+                    message,
+                    new JsonSerializerOptions
+                    {
+                        WriteIndented = false,
+                        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                    }
+                ),
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                MessageType = message.GetType().Name
+                MessageType = message.GetType().Name,
             };
 
             await _messageRepository.CreateAsync(messageEntity, ct);
@@ -461,10 +498,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     /// This method runs asynchronously without blocking the message stream.
     /// Errors are logged but do not affect stream processing.
     /// </remarks>
-    private async Task PersistSessionEndAsync(
-        string sessionId,
-        RunStatus status,
-        CancellationToken ct)
+    private async Task PersistSessionEndAsync(string sessionId, RunStatus status, CancellationToken ct)
     {
         if (_sessionRepository == null)
         {
@@ -485,11 +519,15 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
             var updatedSession = session with
             {
                 EndTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Status = status == RunStatus.Success ? "Completed" : "Failed"
+                Status = status == RunStatus.Success ? "Completed" : "Failed",
             };
 
             await _sessionRepository.UpdateAsync(updatedSession, ct);
-            _logger.LogDebug("Persisted session end for {SessionId} with status {Status}", sessionId, updatedSession.Status);
+            _logger.LogDebug(
+                "Persisted session end for {SessionId} with status {Status}",
+                sessionId,
+                updatedSession.Status
+            );
         }
         catch (OperationCanceledException)
         {

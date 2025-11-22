@@ -11,11 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 
-public sealed class InstructionPlan(
-    string idMessage,
-    int? reasoningLength,
-    List<InstructionMessage> messages
-)
+public sealed class InstructionPlan(string idMessage, int? reasoningLength, List<InstructionMessage> messages)
 {
     public string IdMessage { get; } = idMessage;
     public int? ReasoningLength { get; } = reasoningLength;
@@ -118,9 +114,7 @@ public sealed class SseStreamHttpContent : HttpContent
     protected override Stream CreateContentReadStream(CancellationToken cancellationToken)
     {
         var pipe = new Pipe();
-        var logger = LoggerFactory
-            .Create(builder => builder.AddConsole())
-            .CreateLogger<SseStreamHttpContent>();
+        var logger = LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<SseStreamHttpContent>();
 
         _ = Task.Run(
             async () =>
@@ -159,9 +153,7 @@ public sealed class SseStreamHttpContent : HttpContent
         return Task.FromResult(CreateContentReadStream(CancellationToken.None));
     }
 
-    protected override Task<Stream> CreateContentReadStreamAsync(
-        CancellationToken cancellationToken
-    )
+    protected override Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken)
     {
         return Task.FromResult(CreateContentReadStream(cancellationToken));
     }
@@ -279,9 +271,7 @@ public sealed class SseStreamHttpContent : HttpContent
                 if (plan.ReasoningLength is int rlen && rlen > 0)
                 {
                     var reasoning = string.Join(" ", GenerateLoremChunks(rlen, _wordsPerChunk));
-                    choices = choices.Concat(
-                        ChunkReasoningText(msgIndex, reasoning, _wordsPerChunk)
-                    );
+                    choices = choices.Concat(ChunkReasoningText(msgIndex, reasoning, _wordsPerChunk));
                 }
 
                 if (textLen > 0)
@@ -297,11 +287,7 @@ public sealed class SseStreamHttpContent : HttpContent
                 var sequenceId = msgIndex + 1;
 
                 choices = choices.Concat(
-                    ChunkToolCalls(
-                        msgIndex,
-                        message.ToolCalls.Select(tc => (tc.Name, tc.ArgsJson)),
-                        _wordsPerChunk
-                    )
+                    ChunkToolCalls(msgIndex, message.ToolCalls.Select(tc => (tc.Name, tc.ArgsJson)), _wordsPerChunk)
                 );
             }
         }
@@ -408,28 +394,18 @@ public sealed class SseStreamHttpContent : HttpContent
 
         for (var i = 0; i < basis.Length; i += wordsPerChunk)
         {
-            var chunkTokens = basis
-                .Skip(i)
-                .Take(Math.Min(wordsPerChunk, basis.Length - i))
-                .ToList();
+            var chunkTokens = basis.Skip(i).Take(Math.Min(wordsPerChunk, basis.Length - i)).ToList();
             yield return string.Join(string.Empty, chunkTokens);
         }
     }
 
-    private static IEnumerable<Choice> ChunkReasoningText(
-        int index,
-        string reasoning,
-        int wordsPerChunk
-    )
+    private static IEnumerable<Choice> ChunkReasoningText(int index, string reasoning, int wordsPerChunk)
     {
         var tokens = reasoning.Split(' ');
         var useReasoning = true; // reasoning.GetHashCode() % 2 == 0;
         for (var i = 0; i < tokens.Length; i += wordsPerChunk)
         {
-            var chunkTokens = string.Join(
-                ' ',
-                tokens.Skip(i).Take(Math.Min(wordsPerChunk, tokens.Length - i))
-            );
+            var chunkTokens = string.Join(' ', tokens.Skip(i).Take(Math.Min(wordsPerChunk, tokens.Length - i)));
             yield return useReasoning
                 ? new Choice
                 {
@@ -449,11 +425,7 @@ public sealed class SseStreamHttpContent : HttpContent
                         Role = RoleEnum.Assistant,
                         ReasoningDetails =
                         [
-                            new ChatMessage.ReasoningDetail
-                            {
-                                Type = "reasoning.summary",
-                                Summary = chunkTokens,
-                            },
+                            new ChatMessage.ReasoningDetail { Type = "reasoning.summary", Summary = chunkTokens },
                         ],
                         Content = string.Empty,
                     },
@@ -479,19 +451,12 @@ public sealed class SseStreamHttpContent : HttpContent
         };
     }
 
-    private static IEnumerable<Choice> ChunkTextMessage(
-        int index,
-        string textContent,
-        int wordsPerChunk
-    )
+    private static IEnumerable<Choice> ChunkTextMessage(int index, string textContent, int wordsPerChunk)
     {
         var tokens = textContent.Split(' ');
         for (var i = 0; i < tokens.Length; i += wordsPerChunk)
         {
-            var chunkTokens = string.Join(
-                ' ',
-                tokens.Skip(i).Take(Math.Min(wordsPerChunk, tokens.Length - i))
-            );
+            var chunkTokens = string.Join(' ', tokens.Skip(i).Take(Math.Min(wordsPerChunk, tokens.Length - i)));
             yield return new Choice
             {
                 Index = index,
@@ -520,10 +485,7 @@ public sealed class SseStreamHttpContent : HttpContent
 
             // Store complete tool call for final message
             allToolCalls.Add(
-                new FunctionContent(tool_call_id, new FunctionCall(functionName, argsJson))
-                {
-                    Index = idx,
-                }
+                new FunctionContent(tool_call_id, new FunctionCall(functionName, argsJson)) { Index = idx }
             );
 
             // First chunk: function name with empty arguments
@@ -536,13 +498,7 @@ public sealed class SseStreamHttpContent : HttpContent
                     Role = RoleEnum.Assistant,
                     ToolCalls =
                     [
-                        new FunctionContent(
-                            tool_call_id,
-                            new FunctionCall(functionName, string.Empty)
-                        )
-                        {
-                            Index = idx,
-                        },
+                        new FunctionContent(tool_call_id, new FunctionCall(functionName, string.Empty)) { Index = idx },
                     ],
                 },
             };
@@ -560,10 +516,7 @@ public sealed class SseStreamHttpContent : HttpContent
                         Role = RoleEnum.Assistant,
                         ToolCalls =
                         [
-                            new FunctionContent(
-                                tool_call_id,
-                                new FunctionCall(null, argsJson.Substring(i, len))
-                            )
+                            new FunctionContent(tool_call_id, new FunctionCall(null, argsJson.Substring(i, len)))
                             {
                                 Index = idx,
                             },

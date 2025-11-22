@@ -52,7 +52,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             context.Options,
             cancellationToken
         );
-        return MessageUpdateJoinerMiddleware.TransformStreamWithBuilder(sourceStream, cancellationToken);
+        return TransformStreamWithBuilder(sourceStream, cancellationToken);
     }
 
     private static async IAsyncEnumerable<IMessage> TransformStreamWithBuilder(
@@ -73,14 +73,14 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             // If we receive a usage message, store it to emit at the end
             if (message is UsageMessage usage)
             {
-                usageAccumulator.AddUsageFromMessage(usage);
+                _ = usageAccumulator.AddUsageFromMessage(usage);
                 continue; // Don't yield usage message yet
             }
 
             // Check if the message has usage in metadata (legacy support)
             if (message.Metadata != null && message.Metadata.ContainsKey("usage"))
             {
-                usageAccumulator.AddUsageFromMessageMetadata(message);
+                _ = usageAccumulator.AddUsageFromMessageMetadata(message);
             }
 
             // Check if we're switching message types and need to complete current builder
@@ -97,14 +97,14 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
             lastMessageType = message.GetType();
 
             // Process the current message
-            var processedMessage = MessageUpdateJoinerMiddleware.ProcessStreamingMessage(
+            var processedMessage = ProcessStreamingMessage(
                 message,
                 ref activeBuilder,
                 ref activeBuilderType
             );
 
             // Only emit the message if it's not being accumulated by a builder
-            bool isBeingAccumulated =
+            var isBeingAccumulated =
                 activeBuilder != null
                 && (
                     message is TextUpdateMessage
@@ -142,7 +142,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // Handle tool call updates (ToolsCallUpdateMessage)
         if (message is ToolsCallUpdateMessage toolCallUpdate)
         {
-            return MessageUpdateJoinerMiddleware.ProcessToolCallUpdate(
+            return ProcessToolCallUpdate(
                 toolCallUpdate,
                 ref activeBuilder,
                 ref activeBuilderType
@@ -156,7 +156,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         // For rqwen/qwen3-235b-a22b-thinking-2507easoning update messages
         else if (message is ReasoningUpdateMessage reasoningUpdate)
         {
-            return MessageUpdateJoinerMiddleware.ProcessReasoningUpdate(
+            return ProcessReasoningUpdate(
                 reasoningUpdate,
                 ref activeBuilder,
                 ref activeBuilderType

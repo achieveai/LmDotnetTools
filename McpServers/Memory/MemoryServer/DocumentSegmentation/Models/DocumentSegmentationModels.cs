@@ -49,7 +49,7 @@ public class DocumentSegmentationResult
     /// <summary>
     /// Generated document segments
     /// </summary>
-    public List<DocumentSegment> Segments { get; set; } = new();
+    public List<DocumentSegment> Segments { get; set; } = [];
 
     /// <summary>
     /// Segmentation metadata and processing information
@@ -59,7 +59,7 @@ public class DocumentSegmentationResult
     /// <summary>
     /// Relationships between segments
     /// </summary>
-    public List<SegmentRelationship> Relationships { get; set; } = new();
+    public List<SegmentRelationship> Relationships { get; set; } = [];
 
     /// <summary>
     /// Whether segmentation completed successfully
@@ -69,7 +69,7 @@ public class DocumentSegmentationResult
     /// <summary>
     /// Any warnings or issues encountered during segmentation
     /// </summary>
-    public List<string> Warnings { get; set; } = new();
+    public List<string> Warnings { get; set; } = [];
 }
 
 /// <summary>
@@ -110,7 +110,7 @@ public class DocumentSegment
     /// <summary>
     /// Additional segment metadata
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 }
 
 /// <summary>
@@ -141,7 +141,7 @@ public class SegmentQuality
     /// <summary>
     /// List of identified quality issues
     /// </summary>
-    public List<string> QualityIssues { get; set; } = new();
+    public List<string> QualityIssues { get; set; } = [];
 }
 
 /// <summary>
@@ -177,7 +177,7 @@ public class SegmentRelationship
     /// <summary>
     /// Additional relationship metadata
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 }
 
 /// <summary>
@@ -316,5 +316,5 @@ public class SegmentationQualityAssessment
     /// <summary>
     /// Quality feedback and recommendations
     /// </summary>
-    public List<string> QualityFeedback { get; set; } = new();
+    public List<string> QualityFeedback { get; set; } = [];
 }

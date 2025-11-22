@@ -23,13 +23,15 @@ public class CopilotKitController : ControllerBase
     private readonly ToolCallingAgent _toolCallingAgent;
     private readonly InstructionChainAgent _instructionChainAgent;
     private readonly IFunctionCallMiddlewareFactory _middlewareFactory;
+    private static readonly string[] value = ["ToolCallingAgent", "InstructionChainAgent"];
 
     public CopilotKitController(
         ILogger<CopilotKitController> logger,
         ICopilotKitSessionMapper sessionMapper,
         ToolCallingAgent toolCallingAgent,
         InstructionChainAgent instructionChainAgent,
-        IFunctionCallMiddlewareFactory middlewareFactory)
+        IFunctionCallMiddlewareFactory middlewareFactory
+    )
     {
         _logger = logger;
         _sessionMapper = sessionMapper;
@@ -53,19 +55,20 @@ public class CopilotKitController : ControllerBase
     [ProducesResponseType(typeof(CopilotKitResponse), StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult<CopilotKitResponse>> HandleCopilotKitRequest(
         [FromBody] CopilotKitRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
-        _logger.LogInformation("CopilotKit request received - ThreadId: {ThreadId}, RunId: {RunId}, AgentName: {AgentName}",
-            request.ThreadId ?? "NULL", request.RunId ?? "NULL", request.AgentName ?? "DEFAULT");
+        _logger.LogInformation(
+            "CopilotKit request received - ThreadId: {ThreadId}, RunId: {RunId}, AgentName: {AgentName}",
+            request.ThreadId ?? "NULL",
+            request.RunId ?? "NULL",
+            request.AgentName ?? "DEFAULT"
+        );
 
         if (!ModelState.IsValid)
         {
             _logger.LogWarning("Invalid CopilotKit request model state");
-            return BadRequest(new CopilotKitResponse
-            {
-                Status = "error",
-                ErrorMessage = "Invalid request format"
-            });
+            return BadRequest(new CopilotKitResponse { Status = "error", ErrorMessage = "Invalid request format" });
         }
 
         try
@@ -74,20 +77,27 @@ public class CopilotKitController : ControllerBase
             var sessionId = _sessionMapper.CreateOrResumeSession(request.ThreadId, request.RunId);
             var threadInfo = _sessionMapper.GetThreadInfo(sessionId);
 
-            _logger.LogInformation("Session mapping - SessionId: {SessionId}, ThreadId: {ThreadId}, RunId: {RunId}",
-                sessionId, threadInfo?.ThreadId, threadInfo?.RunId);
+            _logger.LogInformation(
+                "Session mapping - SessionId: {SessionId}, ThreadId: {ThreadId}, RunId: {RunId}",
+                sessionId,
+                threadInfo?.ThreadId,
+                threadInfo?.RunId
+            );
 
             // 2. Get the appropriate agent
-            var agentName = request.AgentName ?? "ToolCallingAgent"; // Default agent
+            var agentName = request.AgentName ?? "InstructionChainAgent"; // Default agent
             var agent = GetAgent(agentName);
             if (agent == null)
             {
                 _logger.LogWarning("Unknown agent requested: {AgentName}", agentName);
-                return BadRequest(new CopilotKitResponse
-                {
-                    Status = "error",
-                    ErrorMessage = $"Unknown agent: {agentName}. Available agents: ToolCallingAgent, InstructionChainAgent"
-                });
+                return BadRequest(
+                    new CopilotKitResponse
+                    {
+                        Status = "error",
+                        ErrorMessage =
+                            $"Unknown agent: {agentName}. Available agents: ToolCallingAgent, InstructionChainAgent",
+                    }
+                );
             }
 
             // 3. Convert CopilotKit messages to LmCore format
@@ -100,18 +110,21 @@ public class CopilotKitController : ControllerBase
             // SESSION_STARTED, RUN_STARTED, TEXT_MESSAGE_*, TOOL_CALL_*, RUN_FINISHED, and errors
             _logger.LogInformation("Starting agent execution in background for session {SessionId}", sessionId);
 
-            _ = Task.Run(async () =>
-            {
-                try
+            _ = Task.Run(
+                async () =>
                 {
-                    await ExecuteAgentAsync(agent, messages, sessionId, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Background agent execution failed for session {SessionId}", sessionId);
-                    // AgUiStreamingMiddleware handles error event publishing
-                }
-            }, cancellationToken);
+                    try
+                    {
+                        await ExecuteAgentAsync(agent, messages, sessionId, default);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Background agent execution failed for session {SessionId}", sessionId);
+                        // AgUiStreamingMiddleware handles error event publishing
+                    }
+                },
+                default
+            );
 
             // 6. Build WebSocket URL
             var wsScheme = Request.IsHttps ? "wss" : "ws";
@@ -126,22 +139,24 @@ public class CopilotKitController : ControllerBase
                 WebSocketUrl = wsUrl,
                 Status = "running",
                 AgentName = agentName,
-                Timestamp = DateTime.UtcNow
+                Timestamp = DateTime.UtcNow,
             };
 
-            _logger.LogInformation("CopilotKit request processed successfully - Session: {SessionId}, WebSocket: {WsUrl}",
-                sessionId, wsUrl);
+            _logger.LogInformation(
+                "CopilotKit request processed successfully - Session: {SessionId}, WebSocket: {WsUrl}",
+                sessionId,
+                wsUrl
+            );
 
             return Ok(response);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to process CopilotKit request");
-            return StatusCode(500, new CopilotKitResponse
-            {
-                Status = "error",
-                ErrorMessage = $"Internal error: {ex.Message}"
-            });
+            return StatusCode(
+                500,
+                new CopilotKitResponse { Status = "error", ErrorMessage = $"Internal error: {ex.Message}" }
+            );
         }
     }
 
@@ -153,50 +168,59 @@ public class CopilotKitController : ControllerBase
     public ActionResult<object> Health()
     {
         _logger.LogTrace("CopilotKit health check called");
-        return Ok(new
-        {
-            status = "healthy",
-            timestamp = DateTime.UtcNow,
-            protocol = "AG-UI",
-            supportedAgents = new[] { "ToolCallingAgent", "InstructionChainAgent" }
-        });
+        return Ok(
+            new
+            {
+                status = "healthy",
+                timestamp = DateTime.UtcNow,
+                protocol = "AG-UI",
+                supportedAgents = value,
+            }
+        );
     }
 
-    private IStreamingAgent? GetAgent(string agentName) => agentName switch
+    private IStreamingAgent? GetAgent(string agentName)
     {
-        "ToolCallingAgent" => _toolCallingAgent,
-        "InstructionChainAgent" => _instructionChainAgent,
-        _ => null
-    };
+        return agentName switch
+        {
+            "ToolCallingAgent" => _toolCallingAgent,
+            "InstructionChainAgent" => _instructionChainAgent,
+            _ => null,
+        };
+    }
 
-    private List<IMessage> ConvertMessages(List<CopilotKitMessage>? messages)
+    private static List<IMessage> ConvertMessages(List<CopilotKitMessage>? messages)
     {
         if (messages == null || messages.Count == 0)
         {
-            return new List<IMessage>();
+            return [];
         }
 
-        return messages.Select(msg => new TextMessage
-        {
-            Text = msg.Content,
-            Role = msg.Role.ToLowerInvariant() switch
+        return [.. messages
+            .Select(msg => new TextMessage
             {
-                "user" => Role.User,
-                "assistant" => Role.Assistant,
-                "system" => Role.System,
-                _ => Role.User
-            },
-            FromAgent = msg.Name ?? (msg.Role.ToLowerInvariant() == "user" ? "User" : "Assistant"),
-            GenerationId = Guid.NewGuid().ToString(),
-            Metadata = ImmutableDictionary<string, object>.Empty
-        }).ToList<IMessage>();
+                Text = msg.Content,
+                Role = msg.Role.ToLowerInvariant() switch
+                {
+                    "user" => Role.User,
+                    "assistant" => Role.Assistant,
+                    "system" => Role.System,
+                    _ => Role.User,
+                },
+                FromAgent =
+                    msg.Name
+                    ?? (msg.Role.Equals("user", StringComparison.InvariantCultureIgnoreCase) ? "User" : "Assistant"),
+                GenerationId = Guid.NewGuid().ToString(),
+                Metadata = ImmutableDictionary<string, object>.Empty,
+            })];
     }
 
     private async Task ExecuteAgentAsync(
         IStreamingAgent agent,
         IEnumerable<IMessage> messages,
         string sessionId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken
+    )
     {
         _logger.LogInformation("Executing agent for session {SessionId}", sessionId);
 
@@ -204,9 +228,8 @@ public class CopilotKitController : ControllerBase
         {
             MaxToken = 4096,
             Temperature = 0.7f,
-            SessionId = sessionId,
-            ConversationId = sessionId,
-            RunId = Guid.NewGuid().ToString()
+            RunId = Guid.NewGuid().ToString(),
+            ThreadId = sessionId,
         };
 
         try
@@ -219,14 +242,15 @@ public class CopilotKitController : ControllerBase
 
             // CRITICAL: Wire AgUiStreamingMiddleware as callback for tool execution events
             // This enables real-time TOOL_CALL_START, TOOL_CALL_ARGS, and TOOL_CALL_RESULT events
-            functionCallMiddleware.WithResultCallback(agUiMiddleware);
+            _ = functionCallMiddleware.WithResultCallback(agUiMiddleware);
 
             // Build middleware chain in correct order:
             // 1. AgUiStreamingMiddleware intercepts and publishes events
             // 2. FunctionCallMiddleware executes tools and triggers callbacks
             var wrappedAgent = agent
                 .WithMiddleware(agUiMiddleware)
-                .WithMiddleware(functionCallMiddleware);
+                .WithMiddleware(functionCallMiddleware)
+                .WithMiddleware(new MessageUpdateJoinerMiddleware("messageUpdateJoiner"));
 
             _logger.LogInformation("Agent wrapped with AgUiStreamingMiddleware and FunctionCallMiddleware");
 
@@ -241,8 +265,11 @@ public class CopilotKitController : ControllerBase
             // Just consume the stream - no manual event publishing needed
             await foreach (var message in responseStream.WithCancellation(cancellationToken))
             {
-                _logger.LogDebug("Agent produced message of type {MessageType} for session {SessionId}",
-                    message.GetType().Name, sessionId);
+                _logger.LogDebug(
+                    "Agent produced message of type {MessageType} for session {SessionId}",
+                    message.GetType().Name,
+                    sessionId
+                );
                 // AgUiStreamingMiddleware already published events for this message
             }
 

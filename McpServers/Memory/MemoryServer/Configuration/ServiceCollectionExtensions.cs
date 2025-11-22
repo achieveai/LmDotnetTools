@@ -1,13 +1,6 @@
-using System.Text.Json;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Prompts;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
@@ -16,7 +9,6 @@ using MemoryServer.Models;
 using MemoryServer.Services;
 using MemoryServer.Tools;
 using MemoryServer.Utils;
-using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Configuration;
 
@@ -29,60 +21,60 @@ public static class ServiceCollectionExtensions
     )
     {
         // Add memory cache
-        services.AddMemoryCache();
+        _ = services.AddMemoryCache();
 
         // Configure options from appsettings
-        services.Configure<DatabaseOptions>(configuration.GetSection("MemoryServer:Database"));
-        services.Configure<MemoryServerOptions>(configuration.GetSection("MemoryServer"));
-        services.Configure<DocumentSegmentationOptions>(configuration.GetSection("MemoryServer:DocumentSegmentation"));
+        _ = services.Configure<DatabaseOptions>(configuration.GetSection("MemoryServer:Database"));
+        _ = services.Configure<MemoryServerOptions>(configuration.GetSection("MemoryServer"));
+        _ = services.Configure<DocumentSegmentationOptions>(configuration.GetSection("MemoryServer:DocumentSegmentation"));
 
         // Register Database Session Pattern infrastructure
-        services.AddDatabaseServices(environment);
+        _ = services.AddDatabaseServices(environment);
 
         // Register core infrastructure
-        services.AddSingleton<MemoryIdGenerator>();
+        _ = services.AddSingleton<MemoryIdGenerator>();
 
         // Register session management services
-        services.AddScoped<ISessionContextResolver, SessionContextResolver>();
-        services.AddScoped<ISessionManager, SessionManager>();
-        services.AddScoped<TransportSessionInitializer>();
+        _ = services.AddScoped<ISessionContextResolver, SessionContextResolver>();
+        _ = services.AddScoped<ISessionManager, SessionManager>();
+        _ = services.AddScoped<TransportSessionInitializer>();
 
         // Register memory services
-        services.AddScoped<IMemoryRepository, MemoryRepository>();
-        services.AddScoped<IMemoryService, MemoryService>();
+        _ = services.AddScoped<IMemoryRepository, MemoryRepository>();
+        _ = services.AddScoped<IMemoryService, MemoryService>();
 
         // Register embedding services for vector storage
-        services.AddScoped<IEmbeddingManager, EmbeddingManager>();
+        _ = services.AddScoped<IEmbeddingManager, EmbeddingManager>();
 
         // Register graph database services
-        services.AddScoped<IGraphRepository, GraphRepository>();
-        services.AddScoped<IGraphExtractionService, GraphExtractionService>();
-        services.AddScoped<IGraphDecisionEngine, GraphDecisionEngine>();
-        services.AddScoped<IGraphMemoryService, GraphMemoryService>();
+        _ = services.AddScoped<IGraphRepository, GraphRepository>();
+        _ = services.AddScoped<IGraphExtractionService, GraphExtractionService>();
+        _ = services.AddScoped<IGraphDecisionEngine, GraphDecisionEngine>();
+        _ = services.AddScoped<IGraphMemoryService, GraphMemoryService>();
 
         // Register unified search engine for Phase 6
-        services.AddScoped<IUnifiedSearchEngine, UnifiedSearchEngine>();
+        _ = services.AddScoped<IUnifiedSearchEngine, UnifiedSearchEngine>();
 
         // Register reranking engine for Phase 7
-        services.AddScoped<IRerankingEngine, RerankingEngine>();
+        _ = services.AddScoped<IRerankingEngine, RerankingEngine>();
 
         // Register deduplication engine for Phase 8
-        services.AddScoped<IDeduplicationEngine, DeduplicationEngine>();
+        _ = services.AddScoped<IDeduplicationEngine, DeduplicationEngine>();
 
         // Register result enrichment engine for Phase 8
-        services.AddScoped<IResultEnricher, ResultEnricher>();
+        _ = services.AddScoped<IResultEnricher, ResultEnricher>();
 
         // Register LLM services
-        services.AddLlmServices();
+        _ = services.AddLlmServices();
 
         // Register LmConfig integration
-        services.AddScoped<ILmConfigService, LmConfigService>();
+        _ = services.AddScoped<ILmConfigService, LmConfigService>();
 
         // Register Document Segmentation services (Phase 1)
-        services.AddDocumentSegmentationServices();
+        _ = services.AddDocumentSegmentationServices();
 
         // Register MCP tools
-        services.AddScoped<MemoryMcpTools>();
+        _ = services.AddScoped<MemoryMcpTools>();
 
         return services;
     }
@@ -92,31 +84,31 @@ public static class ServiceCollectionExtensions
         // Document Segmentation services - Phase 1 implementation
 
         // Core segmentation service interface - implemented in Week 3
-        services.AddScoped<IDocumentSegmentationService, DocumentSegmentationService>();
+        _ = services.AddScoped<IDocumentSegmentationService, DocumentSegmentationService>();
 
         // Specialized segmentation services
-        services.AddScoped<ITopicBasedSegmentationService, TopicBasedSegmentationService>();
-        services.AddScoped<IStructureBasedSegmentationService, StructureBasedSegmentationService>();
-        services.AddScoped<INarrativeBasedSegmentationService, NarrativeBasedSegmentationService>();
-        services.AddScoped<IHybridSegmentationService, HybridSegmentationService>();
+        _ = services.AddScoped<ITopicBasedSegmentationService, TopicBasedSegmentationService>();
+        _ = services.AddScoped<IStructureBasedSegmentationService, StructureBasedSegmentationService>();
+        _ = services.AddScoped<INarrativeBasedSegmentationService, NarrativeBasedSegmentationService>();
+        _ = services.AddScoped<IHybridSegmentationService, HybridSegmentationService>();
 
         // LLM integration services
-        services.AddScoped<ILlmProviderIntegrationService, LlmProviderIntegrationService>();
+        _ = services.AddScoped<ILlmProviderIntegrationService, LlmProviderIntegrationService>();
 
         // Quality assessment services
-        services.AddScoped<ISegmentationQualityAssessmentService, SegmentationQualityAssessmentService>();
+        _ = services.AddScoped<ISegmentationQualityAssessmentService, SegmentationQualityAssessmentService>();
 
         // Prompt management service - implemented in Week 2
-        services.AddScoped<ISegmentationPromptManager, SegmentationPromptManager>();
+        _ = services.AddScoped<ISegmentationPromptManager, SegmentationPromptManager>();
 
         // Repository for segment storage - implemented in Week 2
-        services.AddScoped<IDocumentSegmentRepository, DocumentSegmentRepository>();
+        _ = services.AddScoped<IDocumentSegmentRepository, DocumentSegmentRepository>();
 
         // Document size detection service - implemented in Week 2
-        services.AddScoped<IDocumentSizeAnalyzer, DocumentSizeAnalyzer>();
+        _ = services.AddScoped<IDocumentSizeAnalyzer, DocumentSizeAnalyzer>();
 
         // Error handling and resilience services - Phase 2 error handling
-        services.AddErrorHandlingServices();
+        _ = services.AddErrorHandlingServices();
 
         // Session context integration is built into all services through dependency injection
         // All services accept SessionContext parameter and use Database Session Pattern
@@ -127,7 +119,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddErrorHandlingServices(this IServiceCollection services)
     {
         // Register resilience configurations with default values
-        services.AddSingleton<CircuitBreakerConfiguration>(_ => new CircuitBreakerConfiguration
+        _ = services.AddSingleton<CircuitBreakerConfiguration>(_ => new CircuitBreakerConfiguration
         {
             FailureThreshold = 5,
             TimeoutMs = 30000,
@@ -135,7 +127,7 @@ public static class ServiceCollectionExtensions
             ExponentialFactor = 2.0,
         });
 
-        services.AddSingleton<RetryConfiguration>(_ => new RetryConfiguration
+        _ = services.AddSingleton<RetryConfiguration>(_ => new RetryConfiguration
         {
             MaxRetries = 3,
             BaseDelayMs = 1000,
@@ -144,7 +136,7 @@ public static class ServiceCollectionExtensions
             JitterPercent = 0.1,
         });
 
-        services.AddSingleton<GracefulDegradationConfiguration>(_ => new GracefulDegradationConfiguration
+        _ = services.AddSingleton<GracefulDegradationConfiguration>(_ => new GracefulDegradationConfiguration
         {
             FallbackTimeoutMs = 5000,
             RuleBasedQualityScore = 0.7,
@@ -153,9 +145,9 @@ public static class ServiceCollectionExtensions
         });
 
         // Register resilience services
-        services.AddSingleton<ICircuitBreakerService, CircuitBreakerService>();
-        services.AddSingleton<IRetryPolicyService, RetryPolicyService>();
-        services.AddScoped<IResilienceService, ResilienceService>();
+        _ = services.AddSingleton<ICircuitBreakerService, CircuitBreakerService>();
+        _ = services.AddSingleton<IRetryPolicyService, RetryPolicyService>();
+        _ = services.AddScoped<IResilienceService, ResilienceService>();
 
         return services;
     }
@@ -167,7 +159,7 @@ public static class ServiceCollectionExtensions
     {
         // For MCP server, always use production database services
         // Test services should only be used in actual test projects
-        services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
+        _ = services.AddSingleton<ISqliteSessionFactory, SqliteSessionFactory>();
 
         return services;
     }
@@ -175,17 +167,17 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddLlmServices(this IServiceCollection services)
     {
         // Register prompt reader that loads from embedded resources with file system fallback
-        services.AddScoped<IPromptReader, EmbeddedPromptReader>();
+        _ = services.AddScoped<IPromptReader, EmbeddedPromptReader>();
 
         // Register LmConfig with embedded resource configuration
         // This will properly register UnifiedAgent, ModelResolver, ProviderAgentFactory, and AppConfig
-        services.AddLmConfigFromEmbeddedResource("models.json");
+        _ = services.AddLmConfigFromEmbeddedResource("models.json");
 
         // Register LmConfig integration
-        services.AddScoped<ILmConfigService, LmConfigService>();
+        _ = services.AddScoped<ILmConfigService, LmConfigService>();
 
         // Add HTTP client factory for provider connections
-        services.AddHttpClient();
+        _ = services.AddHttpClient();
 
         // Note: IAgent is now provided through ILmConfigService.CreateAgentAsync()
         // instead of direct dependency injection for better model selection and provider management
@@ -202,14 +194,14 @@ public static class ServiceCollectionExtensions
 
         if (transportMode == TransportMode.SSE)
         {
-            mcpBuilder.WithHttpTransport();
+            _ = mcpBuilder.WithHttpTransport();
         }
         else
         {
-            mcpBuilder.WithStdioServerTransport();
+            _ = mcpBuilder.WithStdioServerTransport();
         }
 
-        mcpBuilder.WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
+        _ = mcpBuilder.WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
 
         return services;
     }
@@ -217,10 +209,10 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddTestLlmServices(this IServiceCollection services)
     {
         // Register prompt reader that loads from embedded resources with file system fallback
-        services.AddScoped<IPromptReader, EmbeddedPromptReader>();
+        _ = services.AddScoped<IPromptReader, EmbeddedPromptReader>();
 
         // Use mock agent for testing
-        services.AddScoped<IAgent>(provider => new MockAgent("test-agent"));
+        _ = services.AddScoped<IAgent>(provider => new MockAgent("test-agent"));
 
         return services;
     }

@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -106,7 +105,7 @@ public class CircuitBreakerService : ICircuitBreakerService
                 _logger.LogInformation("Circuit breaker transitioning to Half-Open for {OperationName}", operationName);
 
                 var halfOpenState = state with { State = CircuitBreakerStateEnum.HalfOpen };
-                _circuitStates.TryUpdate(operationName, halfOpenState, state);
+                _ = _circuitStates.TryUpdate(operationName, halfOpenState, state);
                 state = halfOpenState;
             }
         }
@@ -172,7 +171,7 @@ public class CircuitBreakerService : ICircuitBreakerService
                 LastError = null,
             };
 
-            _circuitStates.TryUpdate(operationName, newState, currentState);
+            _ = _circuitStates.TryUpdate(operationName, newState, currentState);
         }
     }
 
@@ -221,7 +220,7 @@ public class CircuitBreakerService : ICircuitBreakerService
                     LastError = exception.Message,
                 };
 
-                _circuitStates.TryUpdate(operationName, openState, currentState);
+                _ = _circuitStates.TryUpdate(operationName, openState, currentState);
             }
             else
             {
@@ -232,7 +231,7 @@ public class CircuitBreakerService : ICircuitBreakerService
                     LastError = exception.Message,
                 };
 
-                _circuitStates.TryUpdate(operationName, failureState, currentState);
+                _ = _circuitStates.TryUpdate(operationName, failureState, currentState);
             }
         }
     }
@@ -281,7 +280,7 @@ public class CircuitBreakerService : ICircuitBreakerService
                 LastError = "Forced open for testing",
             };
 
-            _circuitStates.TryUpdate(operationName, openState, currentState);
+            _ = _circuitStates.TryUpdate(operationName, openState, currentState);
 
             _logger.LogWarning("Circuit breaker forced open for {OperationName}", operationName);
         }
@@ -308,7 +307,7 @@ public class CircuitBreakerService : ICircuitBreakerService
                 LastError = null,
             };
 
-            _circuitStates.TryUpdate(operationName, closedState, currentState);
+            _ = _circuitStates.TryUpdate(operationName, closedState, currentState);
 
             _logger.LogInformation("Circuit breaker forced closed for {OperationName}", operationName);
         }

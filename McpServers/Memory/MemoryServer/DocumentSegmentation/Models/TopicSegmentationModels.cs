@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using MemoryServer.DocumentSegmentation.Models;
 
 namespace MemoryServer.DocumentSegmentation.Models;
 
@@ -84,7 +81,7 @@ public class TopicBoundary
     /// <summary>
     /// Keywords that indicate the topic change.
     /// </summary>
-    public List<string> TransitionKeywords { get; set; } = new();
+    public List<string> TransitionKeywords { get; set; } = [];
 
     /// <summary>
     /// Strength of the topic transition (0.0-1.0).
@@ -141,17 +138,17 @@ public class ThematicCoherenceAnalysis
     /// <summary>
     /// Secondary topics mentioned in the segment.
     /// </summary>
-    public List<string> SecondaryTopics { get; set; } = new();
+    public List<string> SecondaryTopics { get; set; } = [];
 
     /// <summary>
     /// Key concepts and themes identified.
     /// </summary>
-    public List<string> KeyConcepts { get; set; } = new();
+    public List<string> KeyConcepts { get; set; } = [];
 
     /// <summary>
     /// Topic keywords extracted from the content.
     /// </summary>
-    public List<string> TopicKeywords { get; set; } = new();
+    public List<string> TopicKeywords { get; set; } = [];
 
     /// <summary>
     /// Semantic unity score (0.0-1.0).
@@ -166,7 +163,7 @@ public class ThematicCoherenceAnalysis
     /// <summary>
     /// Reasons for coherence score.
     /// </summary>
-    public List<string> CoherenceReasons { get; set; } = new();
+    public List<string> CoherenceReasons { get; set; } = [];
 }
 
 /// <summary>
@@ -202,17 +199,17 @@ public class TopicSegmentationValidation
     /// <summary>
     /// Individual segment validation results.
     /// </summary>
-    public List<SegmentValidationResult> SegmentResults { get; set; } = new();
+    public List<SegmentValidationResult> SegmentResults { get; set; } = [];
 
     /// <summary>
     /// Issues identified during validation.
     /// </summary>
-    public List<ValidationIssue> Issues { get; set; } = new();
+    public List<ValidationIssue> Issues { get; set; } = [];
 
     /// <summary>
     /// Recommendations for improvement.
     /// </summary>
-    public List<string> Recommendations { get; set; } = new();
+    public List<string> Recommendations { get; set; } = [];
 }
 
 /// <summary>
@@ -243,7 +240,7 @@ public class SegmentValidationResult
     /// <summary>
     /// Quality issues found in this segment.
     /// </summary>
-    public List<ValidationIssue> Issues { get; set; } = new();
+    public List<ValidationIssue> Issues { get; set; } = [];
 }
 
 /// <summary>
@@ -357,12 +354,12 @@ public class TopicAnalysis
     /// <summary>
     /// Secondary topics present in the segment.
     /// </summary>
-    public List<string> SecondaryTopics { get; set; } = new();
+    public List<string> SecondaryTopics { get; set; } = [];
 
     /// <summary>
     /// Key terms and concepts associated with the primary topic.
     /// </summary>
-    public List<string> KeyTerms { get; set; } = new();
+    public List<string> KeyTerms { get; set; } = [];
 
     /// <summary>
     /// Topic coherence score for the segment (0.0 to 1.0).
@@ -382,7 +379,7 @@ public class TopicAnalysis
     /// <summary>
     /// Semantic keywords extracted from the segment.
     /// </summary>
-    public Dictionary<string, double> SemanticKeywords { get; set; } = new();
+    public Dictionary<string, double> SemanticKeywords { get; set; } = [];
 
     /// <summary>
     /// Analysis method used to identify topics.
@@ -459,7 +456,7 @@ public class TopicTransitionQuality
     /// <summary>
     /// Transitional phrases or elements identified.
     /// </summary>
-    public List<string> TransitionalElements { get; set; } = new();
+    public List<string> TransitionalElements { get; set; } = [];
 }
 
 /// <summary>
@@ -500,12 +497,12 @@ public class TopicCoherence
     /// <summary>
     /// Issues detected that affect coherence.
     /// </summary>
-    public List<TopicCoherenceIssue> Issues { get; set; } = new();
+    public List<TopicCoherenceIssue> Issues { get; set; } = [];
 
     /// <summary>
     /// Suggestions for improving topic coherence.
     /// </summary>
-    public List<string> ImprovementSuggestions { get; set; } = new();
+    public List<string> ImprovementSuggestions { get; set; } = [];
 }
 
 /// <summary>

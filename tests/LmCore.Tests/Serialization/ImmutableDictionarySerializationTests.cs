@@ -471,6 +471,10 @@ public class ImmutableDictionarySerializationTests
             case JsonValueKind.Null:
                 output.WriteLine($"{indentStr}null");
                 break;
+            case JsonValueKind.Undefined:
+                break;
+            default:
+                break;
         }
     }
 }

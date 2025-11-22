@@ -64,8 +64,8 @@ public class GraphMemoryService : IGraphMemoryService
 
             // Analyze what updates should be made
             var instructions = await _decisionEngine.AnalyzeGraphUpdatesAsync(
-                entities.ToList(),
-                relationships.ToList(),
+                [.. entities],
+                [.. relationships],
                 sessionContext,
                 cancellationToken
             );
@@ -119,8 +119,8 @@ public class GraphMemoryService : IGraphMemoryService
             }
 
             // Track processed entities and relationships
-            summary.ProcessedEntities = entities.Select(e => e.Name).Distinct().ToList();
-            summary.ProcessedRelationshipTypes = relationships.Select(r => r.RelationshipType).Distinct().ToList();
+            summary.ProcessedEntities = [.. entities.Select(e => e.Name).Distinct()];
+            summary.ProcessedRelationshipTypes = [.. relationships.Select(r => r.RelationshipType).Distinct()];
 
             stopwatch.Stop();
             summary.ProcessingTimeMs = stopwatch.ElapsedMilliseconds;
@@ -167,7 +167,7 @@ public class GraphMemoryService : IGraphMemoryService
                 ? PerformGraphSearchAsync(query, sessionContext, maxResults, cancellationToken)
                 : Task.FromResult(new List<Memory>());
 
-            await Task.WhenAll(traditionalTask, graphTask);
+            _ = await Task.WhenAll(traditionalTask, graphTask);
 
             results.TraditionalResults = await traditionalTask;
             results.GraphResults = await graphTask;
@@ -250,13 +250,12 @@ public class GraphMemoryService : IGraphMemoryService
                 cancellationToken
             );
 
-            result.TraversalResults = traversalResults.ToList();
-            result.AllEntities = traversalResults.Select(t => t.Entity).Distinct().ToList();
-            result.AllRelationships = traversalResults
+            result.TraversalResults = [.. traversalResults];
+            result.AllEntities = [.. traversalResults.Select(t => t.Entity).Distinct()];
+            result.AllRelationships = [.. traversalResults
                 .Where(t => t.Relationship != null)
                 .Select(t => t.Relationship!)
-                .Distinct()
-                .ToList();
+                .Distinct()];
             result.MaxDepthReached = traversalResults.Any() ? traversalResults.Max(t => t.Depth) : 0;
 
             stopwatch.Stop();
@@ -443,8 +442,8 @@ public class GraphMemoryService : IGraphMemoryService
             var connectedEntities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var relationship in relationships)
             {
-                connectedEntities.Add(relationship.Source);
-                connectedEntities.Add(relationship.Target);
+                _ = connectedEntities.Add(relationship.Source);
+                _ = connectedEntities.Add(relationship.Target);
             }
 
             foreach (var entity in entities)
@@ -551,7 +550,7 @@ public class GraphMemoryService : IGraphMemoryService
                     if (instruction.EntityData != null)
                     {
                         _logger.LogDebug("EXECUTING: Adding entity '{EntityName}'", instruction.EntityData.Name);
-                        await _graphRepository.AddEntityAsync(
+                        _ = await _graphRepository.AddEntityAsync(
                             instruction.EntityData,
                             instruction.SessionContext,
                             cancellationToken
@@ -564,7 +563,7 @@ public class GraphMemoryService : IGraphMemoryService
                         var relationshipInfo =
                             $"'{instruction.RelationshipData.Source}' --[{instruction.RelationshipData.RelationshipType}]--> '{instruction.RelationshipData.Target}'";
                         _logger.LogDebug("EXECUTING: Adding relationship {RelationshipInfo}", relationshipInfo);
-                        await _graphRepository.AddRelationshipAsync(
+                        _ = await _graphRepository.AddRelationshipAsync(
                             instruction.RelationshipData,
                             instruction.SessionContext,
                             cancellationToken
@@ -577,7 +576,7 @@ public class GraphMemoryService : IGraphMemoryService
                 case GraphDecisionOperation.UPDATE:
                     if (instruction.EntityData != null)
                     {
-                        await _graphRepository.UpdateEntityAsync(
+                        _ = await _graphRepository.UpdateEntityAsync(
                             instruction.EntityData,
                             instruction.SessionContext,
                             cancellationToken
@@ -586,7 +585,7 @@ public class GraphMemoryService : IGraphMemoryService
                     }
                     else if (instruction.RelationshipData != null)
                     {
-                        await _graphRepository.UpdateRelationshipAsync(
+                        _ = await _graphRepository.UpdateRelationshipAsync(
                             instruction.RelationshipData,
                             instruction.SessionContext,
                             cancellationToken
@@ -598,7 +597,7 @@ public class GraphMemoryService : IGraphMemoryService
                 case GraphDecisionOperation.DELETE:
                     if (instruction.EntityData != null)
                     {
-                        await _graphRepository.DeleteEntityAsync(
+                        _ = await _graphRepository.DeleteEntityAsync(
                             instruction.EntityData.Id,
                             instruction.SessionContext,
                             cancellationToken
@@ -606,12 +605,16 @@ public class GraphMemoryService : IGraphMemoryService
                     }
                     else if (instruction.RelationshipData != null)
                     {
-                        await _graphRepository.DeleteRelationshipAsync(
+                        _ = await _graphRepository.DeleteRelationshipAsync(
                             instruction.RelationshipData.Id,
                             instruction.SessionContext,
                             cancellationToken
                         );
                     }
+                    break;
+                case GraphDecisionOperation.NONE:
+                    break;
+                default:
                     break;
             }
         }
@@ -656,7 +659,7 @@ public class GraphMemoryService : IGraphMemoryService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error performing traditional search");
-            return new List<Memory>();
+            return [];
         }
     }
 
@@ -721,12 +724,12 @@ public class GraphMemoryService : IGraphMemoryService
                 }
             }
 
-            return memories.Take(maxResults).ToList();
+            return [.. memories.Take(maxResults)];
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error performing graph search");
-            return new List<Memory>();
+            return [];
         }
     }
 
@@ -740,7 +743,7 @@ public class GraphMemoryService : IGraphMemoryService
         var processedMemoryIds = new HashSet<int>();
 
         // Add traditional results
-        for (int i = 0; i < traditionalResults.Count; i++)
+        for (var i = 0; i < traditionalResults.Count; i++)
         {
             var memory = traditionalResults[i];
             var traditionalScore = 1.0f - (float)i / traditionalResults.Count; // Higher score for earlier results
@@ -756,11 +759,11 @@ public class GraphMemoryService : IGraphMemoryService
                 }
             );
 
-            processedMemoryIds.Add(memory.Id);
+            _ = processedMemoryIds.Add(memory.Id);
         }
 
         // Add graph results
-        for (int i = 0; i < graphResults.Count; i++)
+        for (var i = 0; i < graphResults.Count; i++)
         {
             var memory = graphResults[i];
             var graphScore = 1.0f - (float)i / graphResults.Count;
@@ -791,7 +794,7 @@ public class GraphMemoryService : IGraphMemoryService
         }
 
         // Sort by combined score and return top results
-        return combinedResults.OrderByDescending(r => r.CombinedScore).Take(maxResults).ToList();
+        return [.. combinedResults.OrderByDescending(r => r.CombinedScore).Take(maxResults)];
     }
 
     private async Task PopulateRelevantGraphDataAsync(
@@ -836,9 +839,7 @@ public class GraphMemoryService : IGraphMemoryService
                 limit: 1000,
                 cancellationToken: cancellationToken
             );
-            results.RelevantRelationships = relationships
-                .Where(r => entityNames.Contains(r.Source) || entityNames.Contains(r.Target))
-                .ToList();
+            results.RelevantRelationships = [.. relationships.Where(r => entityNames.Contains(r.Source) || entityNames.Contains(r.Target))];
         }
         catch (Exception ex)
         {
@@ -867,13 +868,13 @@ public class GraphMemoryService : IGraphMemoryService
             // Delete all relationships first (to avoid foreign key constraints)
             foreach (var relationship in relationships)
             {
-                await _graphRepository.DeleteRelationshipAsync(relationship.Id, sessionContext, cancellationToken);
+                _ = await _graphRepository.DeleteRelationshipAsync(relationship.Id, sessionContext, cancellationToken);
             }
 
             // Delete all entities
             foreach (var entity in entities)
             {
-                await _graphRepository.DeleteEntityAsync(entity.Id, sessionContext, cancellationToken);
+                _ = await _graphRepository.DeleteEntityAsync(entity.Id, sessionContext, cancellationToken);
             }
 
             _logger.LogDebug(

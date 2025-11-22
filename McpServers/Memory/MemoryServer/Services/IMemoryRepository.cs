@@ -184,7 +184,7 @@ public class MemoryStats
     /// <summary>
     /// Memory count by session scope.
     /// </summary>
-    public Dictionary<string, int> MemoryCountByScope { get; set; } = new();
+    public Dictionary<string, int> MemoryCountByScope { get; set; } = [];
 }
 
 /// <summary>

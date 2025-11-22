@@ -20,18 +20,12 @@ public sealed record TextMessageContentEvent : AgUiEventBase
     /// <summary>
     /// The text content chunk
     /// </summary>
-    [JsonPropertyName("content")]
-    public string Content { get; init; } = string.Empty;
+    [JsonPropertyName("delta")]
+    public string Delta { get; init; } = string.Empty;
 
     /// <summary>
     /// Sequential index of this chunk within the message
     /// </summary>
     [JsonPropertyName("chunkIndex")]
     public int ChunkIndex { get; init; }
-
-    /// <summary>
-    /// Indicates whether this content is thinking/reasoning (vs final response)
-    /// </summary>
-    [JsonPropertyName("isThinking")]
-    public bool IsThinking { get; init; }
 }

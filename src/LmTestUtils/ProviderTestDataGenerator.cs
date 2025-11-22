@@ -1,5 +1,3 @@
-using System.Net;
-
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
 /// <summary>
@@ -157,12 +155,12 @@ public static class ProviderTestDataGenerator
     /// <returns>List of test messages</returns>
     public static List<object> CreateTestMessages()
     {
-        return new List<object>
-        {
+        return
+        [
             CreateTestMessage("system", "You are a helpful assistant."),
             CreateTestMessage("user", "Hello, how are you?"),
             CreateTestMessage("assistant", "I'm doing well, thank you for asking!"),
-        };
+        ];
     }
 
     /// <summary>

@@ -8,6 +8,7 @@
     <AssemblyName>AchieveAi.LmDotnetTools.ModelConfigGenerator.Tests</AssemblyName>
     <RootNamespace>AchieveAi.LmDotnetTools.ModelConfigGenerator.Tests</RootNamespace>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.6.0" />

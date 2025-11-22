@@ -25,20 +25,22 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
             throw new ArgumentException("Session ID cannot be null or empty", nameof(sessionId));
         }
 
-        if (webSocket == null)
-        {
-            throw new ArgumentNullException(nameof(webSocket));
-        }
+        ArgumentNullException.ThrowIfNull(webSocket);
 
         if (_connections.TryAdd(sessionId, webSocket))
         {
-            _logger.LogInformation("WebSocket connection added for session {SessionId}. Total connections: {Count}",
-                sessionId, _connections.Count);
+            _logger.LogInformation(
+                "WebSocket connection added for session {SessionId}. Total connections: {Count}",
+                sessionId,
+                _connections.Count
+            );
         }
         else
         {
-            _logger.LogWarning("Failed to add WebSocket connection for session {SessionId} - session already exists",
-                sessionId);
+            _logger.LogWarning(
+                "Failed to add WebSocket connection for session {SessionId} - session already exists",
+                sessionId
+            );
             throw new InvalidOperationException($"Session {sessionId} already has an active connection");
         }
     }
@@ -53,15 +55,19 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
 
         if (_connections.TryRemove(sessionId, out var webSocket))
         {
-            _logger.LogInformation("WebSocket connection removed for session {SessionId}. Remaining connections: {Count}",
-                sessionId, _connections.Count);
+            _logger.LogInformation(
+                "WebSocket connection removed for session {SessionId}. Remaining connections: {Count}",
+                sessionId,
+                _connections.Count
+            );
 
             // Dispose the WebSocket if it's still open
             if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
             {
                 try
                 {
-                    webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", CancellationToken.None)
+                    webSocket
+                        .CloseAsync(WebSocketCloseStatus.NormalClosure, "Session closed", CancellationToken.None)
                         .GetAwaiter()
                         .GetResult();
                 }
@@ -92,7 +98,7 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
     /// <inheritdoc/>
     public IEnumerable<string> GetActiveSessions()
     {
-        return _connections.Keys.ToList();
+        return [.. _connections.Keys];
     }
 
     /// <inheritdoc/>

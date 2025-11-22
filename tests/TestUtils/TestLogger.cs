@@ -8,7 +8,10 @@ using System.Text.Json;
 /// </summary>
 public static class TestLogger
 {
-    public static void Log(string message) => Console.WriteLine($"[TEST_LOG] {message}");
+    public static void Log(string message)
+    {
+        Console.WriteLine($"[TEST_LOG] {message}");
+    }
 
     public static void LogObject(string name, object? obj)
     {

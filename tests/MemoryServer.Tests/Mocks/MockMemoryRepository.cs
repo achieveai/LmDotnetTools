@@ -9,7 +9,7 @@ namespace MemoryServer.Tests.Mocks;
 /// </summary>
 public class MockMemoryRepository : IMemoryRepository
 {
-    private readonly Dictionary<int, Memory> _memories = new();
+    private readonly Dictionary<int, Memory> _memories = [];
     private int _nextId = 1;
 
     // Configuration for testing scenarios
@@ -20,8 +20,8 @@ public class MockMemoryRepository : IMemoryRepository
     public Exception? ExceptionToThrow { get; set; }
 
     // Tracking for verification
-    public List<string> MethodCalls { get; } = new();
-    public Dictionary<string, object?> LastCallParameters { get; } = new();
+    public List<string> MethodCalls { get; } = [];
+    public Dictionary<string, object?> LastCallParameters { get; } = [];
 
     public Task<Memory> AddAsync(
         string content,
@@ -141,7 +141,7 @@ public class MockMemoryRepository : IMemoryRepository
             return Task.FromResult(false);
         }
 
-        _memories.Remove(id);
+        _ = _memories.Remove(id);
         return Task.FromResult(true);
     }
 
@@ -235,7 +235,7 @@ public class MockMemoryRepository : IMemoryRepository
 
         foreach (var memory in toDelete)
         {
-            _memories.Remove(memory.Id);
+            _ = _memories.Remove(memory.Id);
         }
 
         return Task.FromResult(toDelete.Count);
@@ -279,11 +279,20 @@ public class MockMemoryRepository : IMemoryRepository
         }
     }
 
-    public int GetMemoryCount() => _memories.Count;
+    public int GetMemoryCount()
+    {
+        return _memories.Count;
+    }
 
-    public bool HasMemory(int id) => _memories.ContainsKey(id);
+    public bool HasMemory(int id)
+    {
+        return _memories.ContainsKey(id);
+    }
 
-    public Memory? GetMemoryById(int id) => _memories.TryGetValue(id, out var memory) ? memory : null;
+    public Memory? GetMemoryById(int id)
+    {
+        return _memories.TryGetValue(id, out var memory) ? memory : null;
+    }
 
     // Vector storage and search methods (mock implementations)
 

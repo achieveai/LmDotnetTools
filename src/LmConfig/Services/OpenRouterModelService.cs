@@ -50,7 +50,7 @@ public class OpenRouterModelService
             var cacheDir = Path.GetDirectoryName(cacheFilePath);
             if (!string.IsNullOrEmpty(cacheDir))
             {
-                Directory.CreateDirectory(cacheDir);
+                _ = Directory.CreateDirectory(cacheDir);
             }
             _cacheFilePath = cacheFilePath;
         }
@@ -58,7 +58,7 @@ public class OpenRouterModelService
         {
             // Default to temp directory
             var tempDir = Path.Combine(Path.GetTempPath(), "LmDotnetTools");
-            Directory.CreateDirectory(tempDir);
+            _ = Directory.CreateDirectory(tempDir);
             _cacheFilePath = Path.Combine(tempDir, "openrouter-cache.json");
         }
 
@@ -153,7 +153,7 @@ public class OpenRouterModelService
         CancellationToken cancellationToken
     )
     {
-        for (int attempt = 0; attempt <= maxRetries; attempt++)
+        for (var attempt = 0; attempt <= maxRetries; attempt++)
         {
             try
             {
@@ -468,7 +468,7 @@ public class OpenRouterModelService
                 }
                 finally
                 {
-                    _backgroundRefreshSemaphore.Release();
+                    _ = _backgroundRefreshSemaphore.Release();
                 }
             },
             CancellationToken.None
@@ -485,7 +485,7 @@ public class OpenRouterModelService
 
         try
         {
-            await FetchAndCacheDataAsync(cancellationToken);
+            _ = await FetchAndCacheDataAsync(cancellationToken);
             _logger.LogDebug("Cache refresh completed successfully");
         }
         catch (OperationCanceledException)
@@ -576,7 +576,7 @@ public class OpenRouterModelService
             }
             finally
             {
-                _cacheSemaphore.Release();
+                _ = _cacheSemaphore.Release();
             }
         }
         catch (JsonException ex)
@@ -639,7 +639,7 @@ public class OpenRouterModelService
             }
 
             // Validate at least some models have required fields
-            int validModels = 0;
+            var validModels = 0;
             foreach (var modelNode in modelsArray)
             {
                 if (modelNode == null)
@@ -670,7 +670,7 @@ public class OpenRouterModelService
             }
 
             // Validate model details structure for a sample of entries
-            int checkedDetails = 0;
+            var checkedDetails = 0;
             foreach (var kvp in cache.ModelDetails.Take(5)) // Check first 5 entries for performance
             {
                 if (string.IsNullOrEmpty(kvp.Key) || kvp.Value == null)
@@ -877,7 +877,7 @@ public class OpenRouterModelService
         }
         finally
         {
-            semaphore.Release();
+            _ = semaphore.Release();
         }
     }
 
@@ -1037,7 +1037,7 @@ public class OpenRouterModelService
         }
         finally
         {
-            _cacheSemaphore.Release();
+            _ = _cacheSemaphore.Release();
         }
     }
 
@@ -1193,10 +1193,10 @@ public class OpenRouterModelService
         var createdDate = TryParseDateTime(createdAtString);
 
         // Check if model is reasoning-capable
-        var isReasoning = OpenRouterModelService.CheckIfReasoningModel(primaryModelNode);
+        var isReasoning = CheckIfReasoningModel(primaryModelNode);
 
         // Create capabilities
-        var capabilities = OpenRouterModelService.CreateModelCapabilities(
+        var capabilities = CreateModelCapabilities(
             primaryModelNode,
             inputModalities,
             outputModalities,
@@ -1300,7 +1300,7 @@ public class OpenRouterModelService
             Name = "OpenRouter",
             ModelName = modelSlug,
             Priority = 1000, // Highest priority for OpenRouter
-            Pricing = OpenRouterModelService.GetBestPricingFromSubProviders(openRouterSubProviders),
+            Pricing = GetBestPricingFromSubProviders(openRouterSubProviders),
             SubProviders = openRouterSubProviders,
             Tags = ["openrouter", "aggregator"],
         };
@@ -1311,7 +1311,7 @@ public class OpenRouterModelService
         // If no providers were created, create a basic OpenRouter provider
         if (providers.Count == 0)
         {
-            providers.Add(OpenRouterModelService.CreateFallbackProvider(modelSlug));
+            providers.Add(CreateFallbackProvider(modelSlug));
         }
 
         return new ModelConfig
@@ -1360,14 +1360,14 @@ public class OpenRouterModelService
             }
 
             // Get pricing information
-            var pricing = OpenRouterModelService.CreatePricingConfig(endpoint);
+            var pricing = CreatePricingConfig(endpoint);
 
             // Create provider tags
-            var tags = OpenRouterModelService.CreateProviderTags(endpoint, isFree, quantization, variant);
+            var tags = CreateProviderTags(endpoint, isFree, quantization, variant);
 
             // Get provider info for additional metadata
             var providerInfo = endpoint["provider_info"];
-            var subProviders = OpenRouterModelService.CreateSubProviders(providerInfo);
+            var subProviders = CreateSubProviders(providerInfo);
 
             return Task.FromResult<ProviderConfig?>(
                 new ProviderConfig
@@ -1539,7 +1539,7 @@ public class OpenRouterModelService
             }
 
             // Get pricing information
-            var pricing = OpenRouterModelService.CreatePricingConfig(endpoint);
+            var pricing = CreatePricingConfig(endpoint);
 
             return new SubProviderConfig
             {
@@ -1617,11 +1617,11 @@ public class OpenRouterModelService
         // Create thinking capabilities
         ThinkingCapability? thinking = null;
         var reasoningConfig = modelNode["reasoning_config"];
-        if (reasoningConfig != null || OpenRouterModelService.CheckIfReasoningModel(modelNode))
+        if (reasoningConfig != null || CheckIfReasoningModel(modelNode))
         {
             thinking = new ThinkingCapability
             {
-                Type = OpenRouterModelService.DetermineThinkingType(modelNode),
+                Type = DetermineThinkingType(modelNode),
                 IsBuiltIn = true, // Most OpenRouter reasoning models have built-in thinking
                 IsExposed = true,
             };
@@ -1854,7 +1854,7 @@ public class OpenRouterModelService
         }
         finally
         {
-            _cacheSemaphore.Release();
+            _ = _cacheSemaphore.Release();
         }
     }
 
@@ -1884,7 +1884,7 @@ public class OpenRouterModelService
         private static string FormatBytes(long bytes)
         {
             string[] suffixes = ["B", "KB", "MB", "GB"];
-            int counter = 0;
+            var counter = 0;
             decimal number = bytes;
             while (Math.Round(number / 1024) >= 1)
             {

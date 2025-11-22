@@ -69,7 +69,7 @@ public class MemoryIdGenerator
         }
         finally
         {
-            _generationSemaphore.Release();
+            _ = _generationSemaphore.Release();
         }
     }
 
@@ -79,10 +79,14 @@ public class MemoryIdGenerator
     public async Task<List<int>> GenerateMultipleIdsAsync(int count, CancellationToken cancellationToken = default)
     {
         if (count <= 0)
+        {
             throw new ArgumentException("Count must be positive", nameof(count));
+        }
 
         if (count > 1000)
+        {
             throw new ArgumentException("Cannot generate more than 1000 IDs at once", nameof(count));
+        }
 
         await _generationSemaphore.WaitAsync(cancellationToken);
 
@@ -95,7 +99,7 @@ public class MemoryIdGenerator
                 {
                     var ids = new List<int>();
 
-                    for (int i = 0; i < count; i++)
+                    for (var i = 0; i < count; i++)
                     {
                         using var command = connection.CreateCommand();
                         command.Transaction = transaction;
@@ -128,7 +132,7 @@ public class MemoryIdGenerator
         }
         finally
         {
-            _generationSemaphore.Release();
+            _ = _generationSemaphore.Release();
         }
     }
 
@@ -148,7 +152,7 @@ public class MemoryIdGenerator
                     command.CommandText =
                         @"
                     SELECT COUNT(*) FROM memory_id_sequence WHERE id <= @id";
-                    command.Parameters.AddWithValue("@id", id);
+                    _ = command.Parameters.AddWithValue("@id", id);
 
                     var count = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
                     return count > 0;

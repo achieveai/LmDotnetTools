@@ -66,7 +66,7 @@ public class ProviderStatistics
         {
             lock (_lock)
             {
-                return _recentMetrics.ToList();
+                return [.. _recentMetrics];
             }
         }
     }
@@ -180,7 +180,7 @@ public class ProviderStatistics
     {
         lock (_lock)
         {
-            return _modelStats.Values.OrderByDescending(m => m.TotalRequests).Take(count).ToList();
+            return [.. _modelStats.Values.OrderByDescending(m => m.TotalRequests).Take(count)];
         }
     }
 
@@ -191,7 +191,7 @@ public class ProviderStatistics
     {
         lock (_lock)
         {
-            return _modelStats.Values.OrderByDescending(m => m.TotalTokens).Take(count).ToList();
+            return [.. _modelStats.Values.OrderByDescending(m => m.TotalTokens).Take(count)];
         }
     }
 }

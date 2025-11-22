@@ -1,7 +1,3 @@
-using System;
-using System.Linq;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -9,7 +5,7 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 public class FunctionRegistryDebugTest
 {
     private readonly ITestOutputHelper _output;
-    private static readonly string[] functionNames = new[] { "func1" };
+    private static readonly string[] functionNames = ["func1"];
 
     public FunctionRegistryDebugTest(ITestOutputHelper output)
     {
@@ -26,8 +22,8 @@ public class FunctionRegistryDebugTest
         var explicitHandler = FunctionRegistryTests.CreateTestHandler("explicit-result");
 
         // Act
-        registry.AddProvider(provider);
-        registry.AddFunction(explicitContract, explicitHandler);
+        _ = registry.AddProvider(provider);
+        _ = registry.AddFunction(explicitContract, explicitHandler);
         var (contracts, handlers) = registry.Build();
 
         // Debug output

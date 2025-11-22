@@ -2,7 +2,6 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -70,25 +69,22 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         // Serialize JsonElement to JSON string
         var argumentsJson = JsonSerializer.Serialize(toolCall.Function.Arguments);
 
-        return new ToolCall(
-            FunctionName: toolCall.Function.Name,
-            FunctionArgs: argumentsJson)
+        return new ToolCall(FunctionName: toolCall.Function.Name, FunctionArgs: argumentsJson)
         {
-            ToolCallId = toolCall.Id
+            ToolCallId = toolCall.Id,
         };
     }
 
     /// <inheritdoc/>
     public (IEnumerable<IMessage> messages, GenerateReplyOptions options) ConvertRunAgentInput(
         DataObjects.DTOs.RunAgentInput input,
-        IEnumerable<FunctionContract>? availableFunctions = null)
+        IEnumerable<FunctionContract>? availableFunctions = null
+    )
     {
         ArgumentNullException.ThrowIfNull(input);
 
         // Convert history
-        var messages = input.History != null
-            ? ConvertMessageHistory(input.History).ToList()
-            : new List<IMessage>();
+        var messages = input.History != null ? ConvertMessageHistory(input.History).ToList() : [];
 
         // Create new user message from input.Message
         var userMessage = new TextMessage
@@ -96,7 +92,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
             Text = input.Message,
             Role = Role.User,
             GenerationId = Guid.NewGuid().ToString(),
-            Metadata = input.Context  // Merge context as metadata
+            Metadata = input.Context, // Merge context as metadata
         };
         messages.Add(userMessage);
 
@@ -106,51 +102,47 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         return (messages, options);
     }
 
-    private TextMessage ConvertTextMessage(DataObjects.DTOs.Message message)
+    private static TextMessage ConvertTextMessage(DataObjects.DTOs.Message message)
     {
         return new TextMessage
         {
             Text = message.Content ?? string.Empty,
             Role = ConvertRole(message.Role),
             GenerationId = message.Id,
-            FromAgent = message.Name
+            FromAgent = message.Name,
         };
     }
 
     private ToolsCallMessage ConvertToolsCallMessage(DataObjects.DTOs.Message message)
     {
-        var toolCalls = message.ToolCalls!
-            .Select(ConvertToolCall)
-            .ToImmutableList();
+        var toolCalls = message.ToolCalls!.Select(ConvertToolCall).ToImmutableList();
 
         return new ToolsCallMessage
         {
             Role = ConvertRole(message.Role),
             GenerationId = message.Id,
             FromAgent = message.Name,
-            ToolCalls = toolCalls
+            ToolCalls = toolCalls,
         };
     }
 
-    private ToolsCallResultMessage ConvertToolResultMessage(DataObjects.DTOs.Message message)
+    private static ToolsCallResultMessage ConvertToolResultMessage(DataObjects.DTOs.Message message)
     {
-        var result = new ToolCallResult(
-            ToolCallId: message.ToolCallId,
-            Result: message.Content ?? string.Empty
-        );
+        var result = new ToolCallResult(ToolCallId: message.ToolCallId, Result: message.Content ?? string.Empty);
 
         return new ToolsCallResultMessage
         {
             Role = ConvertRole(message.Role),
             GenerationId = message.Id,
             FromAgent = message.Name,
-            ToolCallResults = ImmutableList.Create(result)
+            ToolCallResults = [result],
         };
     }
 
-    private GenerateReplyOptions ConvertConfiguration(
+    private static GenerateReplyOptions ConvertConfiguration(
         DataObjects.DTOs.RunConfiguration? config,
-        IEnumerable<FunctionContract>? availableFunctions)
+        IEnumerable<FunctionContract>? availableFunctions
+    )
     {
         if (config == null)
         {
@@ -166,7 +158,9 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
             {
                 // These will be handled as first-class properties, skip from extra
                 if (param.Key == "top_p" || param.Key == "seed" || param.Key == "stop")
+                {
                     continue;
+                }
 
                 extraProps.Add(param.Key, param.Value);
             }
@@ -177,9 +171,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         if (config.EnabledTools != null && availableFunctions != null)
         {
             var enabledSet = config.EnabledTools.ToHashSet();
-            functions = availableFunctions
-                .Where(f => enabledSet.Contains(f.Name))
-                .ToArray();
+            functions = [.. availableFunctions.Where(f => enabledSet.Contains(f.Name))];
         }
 
         return new GenerateReplyOptions
@@ -191,7 +183,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
             RandomSeed = ExtractInt(config.ModelParameters, "seed"),
             StopSequence = ExtractStringArray(config.ModelParameters, "stop"),
             Functions = functions,
-            ExtraProperties = extraProps.ToImmutable()
+            ExtraProperties = extraProps.ToImmutable(),
         };
     }
 
@@ -203,41 +195,47 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
             "user" => Role.User,
             "assistant" => Role.Assistant,
             "tool" => Role.Tool,
-            _ => Role.Assistant
+            _ => Role.Assistant,
         };
     }
 
     private static float? ExtractFloat(Dictionary<string, object>? dict, string key)
     {
         if (dict == null || !dict.TryGetValue(key, out var value))
+        {
             return null;
+        }
 
         return value switch
         {
             float f => f,
             double d => (float)d,
             int i => (float)i,
-            _ => null
+            _ => null,
         };
     }
 
     private static int? ExtractInt(Dictionary<string, object>? dict, string key)
     {
         if (dict == null || !dict.TryGetValue(key, out var value))
+        {
             return null;
+        }
 
         return value switch
         {
             int i => i,
             long l => (int)l,
-            _ => null
+            _ => null,
         };
     }
 
     private static string[]? ExtractStringArray(Dictionary<string, object>? dict, string key)
     {
         if (dict == null || !dict.TryGetValue(key, out var value))
+        {
             return null;
+        }
 
         return value as string[];
     }

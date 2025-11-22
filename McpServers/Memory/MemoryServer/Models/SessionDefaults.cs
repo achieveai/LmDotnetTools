@@ -30,7 +30,7 @@ public class SessionDefaults
     /// <summary>
     /// Default metadata
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 
     /// <summary>
     /// Source of the session defaults
@@ -74,13 +74,19 @@ public class SessionDefaults
         };
 
         if (queryParameters.TryGetValue("user_id", out var userId))
+        {
             defaults.UserId = userId;
+        }
 
         if (queryParameters.TryGetValue("agent_id", out var agentId))
+        {
             defaults.AgentId = agentId;
+        }
 
         if (queryParameters.TryGetValue("run_id", out var runId))
+        {
             defaults.RunId = runId;
+        }
 
         return defaults;
     }
@@ -100,13 +106,19 @@ public class SessionDefaults
         };
 
         if (headers.TryGetValue("X-Memory-User-ID", out var userId))
+        {
             defaults.UserId = userId;
+        }
 
         if (headers.TryGetValue("X-Memory-Agent-ID", out var agentId))
+        {
             defaults.AgentId = agentId;
+        }
 
         if (headers.TryGetValue("X-Memory-Run-ID", out var runId))
+        {
             defaults.RunId = runId;
+        }
 
         return defaults;
     }

@@ -153,5 +153,8 @@ public class SseTestServerFixture : IDisposable
 public class SimpleTestTool
 {
     [McpServerTool, Description("Simple test tool that returns a greeting")]
-    public static string SayHello(string name) => $"Hello, {name}!";
+    public static string SayHello(string name)
+    {
+        return $"Hello, {name}!";
+    }
 }

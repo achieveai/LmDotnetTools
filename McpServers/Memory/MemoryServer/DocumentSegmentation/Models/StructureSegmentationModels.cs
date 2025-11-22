@@ -106,7 +106,7 @@ public class StructureBoundary
     /// <summary>
     /// Formatting indicators that suggest structure.
     /// </summary>
-    public List<string> FormattingIndicators { get; set; } = new();
+    public List<string> FormattingIndicators { get; set; } = [];
 }
 
 /// <summary>
@@ -198,12 +198,12 @@ public class HierarchicalStructureAnalysis
     /// <summary>
     /// Detected document outline or table of contents.
     /// </summary>
-    public List<StructuralOutlineItem> DocumentOutline { get; set; } = new();
+    public List<StructuralOutlineItem> DocumentOutline { get; set; } = [];
 
     /// <summary>
     /// Structural patterns detected in the document.
     /// </summary>
-    public List<string> StructuralPatterns { get; set; } = new();
+    public List<string> StructuralPatterns { get; set; } = [];
 
     /// <summary>
     /// Quality of structural organization.
@@ -239,7 +239,7 @@ public class StructuralOutlineItem
     /// <summary>
     /// Child sections under this item.
     /// </summary>
-    public List<StructuralOutlineItem> Children { get; set; } = new();
+    public List<StructuralOutlineItem> Children { get; set; } = [];
 
     /// <summary>
     /// Type of structural element.
@@ -280,17 +280,17 @@ public class StructureSegmentationValidation
     /// <summary>
     /// Individual segment validation results.
     /// </summary>
-    public List<StructureSegmentValidationResult> SegmentResults { get; set; } = new();
+    public List<StructureSegmentValidationResult> SegmentResults { get; set; } = [];
 
     /// <summary>
     /// Issues identified during validation.
     /// </summary>
-    public List<StructureValidationIssue> Issues { get; set; } = new();
+    public List<StructureValidationIssue> Issues { get; set; } = [];
 
     /// <summary>
     /// Recommendations for improvement.
     /// </summary>
-    public List<string> Recommendations { get; set; } = new();
+    public List<string> Recommendations { get; set; } = [];
 }
 
 /// <summary>
@@ -326,7 +326,7 @@ public class StructureSegmentValidationResult
     /// <summary>
     /// Quality issues found in this segment.
     /// </summary>
-    public List<StructureValidationIssue> Issues { get; set; } = new();
+    public List<StructureValidationIssue> Issues { get; set; } = [];
 }
 
 /// <summary>

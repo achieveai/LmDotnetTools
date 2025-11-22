@@ -155,7 +155,7 @@ public class OpenClient : BaseHttpService, IOpenClient
                 },
                 async (httpResponse) =>
                 {
-                    httpResponse.EnsureSuccessStatusCode();
+                    _ = httpResponse.EnsureSuccessStatusCode();
                     var responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken);
                     var chatResponse =
                         await JsonSerializer.DeserializeAsync<ChatCompletionResponse>(

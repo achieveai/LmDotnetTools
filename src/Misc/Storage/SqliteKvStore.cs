@@ -64,7 +64,7 @@ public class SqliteKvStore : IKvStore
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       )";
-        command.ExecuteNonQuery();
+        _ = command.ExecuteNonQuery();
         _initialized = true;
     }
 
@@ -80,7 +80,7 @@ public class SqliteKvStore : IKvStore
 
         using var command = _connection.CreateCommand();
         command.CommandText = "SELECT value FROM cache WHERE key = @key";
-        command.Parameters.AddWithValue("@key", key);
+        _ = command.Parameters.AddWithValue("@key", key);
 
         // Using async API
         using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -117,9 +117,9 @@ public class SqliteKvStore : IKvStore
       VALUES (@key, @value)
       ON CONFLICT(key) DO UPDATE SET 
       value = @value";
-        command.Parameters.AddWithValue("@key", key);
-        command.Parameters.AddWithValue("@value", serializedValue);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        _ = command.Parameters.AddWithValue("@key", key);
+        _ = command.Parameters.AddWithValue("@value", serializedValue);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     /// <inheritdoc/>

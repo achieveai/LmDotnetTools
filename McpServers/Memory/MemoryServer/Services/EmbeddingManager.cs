@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using MemoryServer.Models;
@@ -76,20 +75,22 @@ public class EmbeddingManager : IEmbeddingManager
     public async Task<float[]> GenerateEmbeddingAsync(string content, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(content))
+        {
             throw new ArgumentException("Content cannot be empty", nameof(content));
+        }
 
-        Interlocked.Increment(ref _totalRequests);
+        _ = Interlocked.Increment(ref _totalRequests);
 
         // Check cache first
         var cacheKey = GenerateCacheKey(content);
         if (_cache.TryGetValue(cacheKey, out float[]? cachedEmbedding))
         {
-            Interlocked.Increment(ref _cacheHits);
+            _ = Interlocked.Increment(ref _cacheHits);
             _logger.LogDebug("Cache hit for embedding generation");
             return cachedEmbedding!;
         }
 
-        Interlocked.Increment(ref _cacheMisses);
+        _ = Interlocked.Increment(ref _cacheMisses);
 
         // Generate new embedding
         try
@@ -98,7 +99,9 @@ public class EmbeddingManager : IEmbeddingManager
             var response = await embeddingService.GenerateEmbeddingAsync(content, ModelName, cancellationToken);
 
             if (response.Embeddings == null || response.Embeddings.Count == 0)
+            {
                 throw new InvalidOperationException("Embedding service returned no embeddings");
+            }
 
             var embedding = response.Embeddings[0].Vector;
 
@@ -108,7 +111,7 @@ public class EmbeddingManager : IEmbeddingManager
                 SlidingExpiration = TimeSpan.FromHours(_options.CacheExpirationHours),
                 Size = embedding.Length * sizeof(float),
             };
-            _cache.Set(cacheKey, embedding, cacheOptions);
+            _ = _cache.Set(cacheKey, embedding, cacheOptions);
 
             _logger.LogDebug("Generated and cached embedding for content (length: {Length})", content.Length);
             return embedding;
@@ -129,13 +132,15 @@ public class EmbeddingManager : IEmbeddingManager
     )
     {
         if (contents == null || contents.Count == 0)
-            return new List<float[]>();
+        {
+            return [];
+        }
 
         var results = new List<float[]>();
         var uncachedContents = new List<(int index, string content)>();
 
         // Check cache for existing embeddings
-        for (int i = 0; i < contents.Count; i++)
+        for (var i = 0; i < contents.Count; i++)
         {
             var content = contents[i];
             if (string.IsNullOrWhiteSpace(content))
@@ -143,17 +148,17 @@ public class EmbeddingManager : IEmbeddingManager
                 throw new ArgumentException($"Content at index {i} cannot be empty", nameof(contents));
             }
 
-            Interlocked.Increment(ref _totalRequests);
+            _ = Interlocked.Increment(ref _totalRequests);
 
             var cacheKey = GenerateCacheKey(content);
             if (_cache.TryGetValue(cacheKey, out float[]? cachedEmbedding))
             {
-                Interlocked.Increment(ref _cacheHits);
+                _ = Interlocked.Increment(ref _cacheHits);
                 results.Add(cachedEmbedding!);
             }
             else
             {
-                Interlocked.Increment(ref _cacheMisses);
+                _ = Interlocked.Increment(ref _cacheMisses);
                 uncachedContents.Add((i, content));
                 results.Add(null!); // Placeholder
             }
@@ -176,10 +181,12 @@ public class EmbeddingManager : IEmbeddingManager
                 var response = await embeddingService.GenerateEmbeddingsAsync(request, cancellationToken);
 
                 if (response.Embeddings == null || response.Embeddings.Count != uncachedTexts.Count)
+                {
                     throw new InvalidOperationException("Embedding service returned unexpected number of embeddings");
+                }
 
                 // Update results and cache
-                for (int i = 0; i < uncachedContents.Count; i++)
+                for (var i = 0; i < uncachedContents.Count; i++)
                 {
                     var (index, content) = uncachedContents[i];
                     var embedding = response.Embeddings[i].Vector;
@@ -193,7 +200,7 @@ public class EmbeddingManager : IEmbeddingManager
                         SlidingExpiration = TimeSpan.FromHours(_options.CacheExpirationHours),
                         Size = embedding.Length * sizeof(float),
                     };
-                    _cache.Set(cacheKey, embedding, cacheOptions);
+                    _ = _cache.Set(cacheKey, embedding, cacheOptions);
                 }
 
                 _logger.LogDebug("Generated and cached {Count} embeddings in batch", uncachedContents.Count);
@@ -224,13 +231,17 @@ public class EmbeddingManager : IEmbeddingManager
     )
     {
         if (queryEmbedding == null || queryEmbedding.Length == 0)
+        {
             throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
+        }
 
         if (queryEmbedding.Length != EmbeddingDimension)
+        {
             throw new ArgumentException(
                 $"Query embedding dimension ({queryEmbedding.Length}) does not match expected dimension ({EmbeddingDimension})",
                 nameof(queryEmbedding)
             );
+        }
 
         try
         {
@@ -339,7 +350,9 @@ public class EmbeddingManager : IEmbeddingManager
     private async Task<IEmbeddingService> GetEmbeddingServiceAsync(CancellationToken cancellationToken)
     {
         if (_cachedEmbeddingService != null)
+        {
             return _cachedEmbeddingService;
+        }
 
         _logger.LogDebug("Creating embedding service via LmConfigService");
 

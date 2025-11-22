@@ -2,7 +2,6 @@ using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
@@ -127,7 +126,7 @@ public class RetryPolicyServiceTests
         cts.Cancel();
 
         // Act & Assert
-        await Assert.ThrowsAsync<TaskCanceledException>(() =>
+        _ = await Assert.ThrowsAsync<TaskCanceledException>(() =>
             _service.ExecuteAsync(
                 async () =>
                 {
@@ -277,7 +276,7 @@ public class RetryPolicyServiceTests
         var attemptNumber = 2;
 
         // Act - Calculate multiple delays to see jitter variation
-        for (int i = 0; i < 10; i++)
+        for (var i = 0; i < 10; i++)
         {
             var delay = _service.CalculateDelay(attemptNumber);
             delays.Add(delay.TotalMilliseconds);
@@ -298,14 +297,10 @@ public class RetryPolicyServiceTests
 
         Assert.All(
             delays,
-            delay =>
-            {
-                Assert.True(
+            delay => Assert.True(
                     delay >= expectedMin && delay <= expectedMax,
                     $"Delay {delay}ms should be between {expectedMin}ms and {expectedMax}ms"
-                );
-            }
-        );
+                ));
     }
 
     [Fact]
@@ -316,7 +311,7 @@ public class RetryPolicyServiceTests
         var attempts = 0;
 
         // Act
-        await _service.ExecuteAsync(
+        _ = await _service.ExecuteAsync(
             () =>
             {
                 attempts++;

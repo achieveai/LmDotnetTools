@@ -1,4 +1,3 @@
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
@@ -17,8 +16,8 @@ public class NaturalToolUseMiddlewareTests
     {
         _mockSchemaValidator = new Mock<IJsonSchemaValidator>();
         _mockFallbackParser = new Mock<IAgent>();
-        _functionContracts = new List<FunctionContract>
-        {
+        _functionContracts =
+        [
             new FunctionContract
             {
                 Name = "GetWeather",
@@ -41,7 +40,7 @@ public class NaturalToolUseMiddlewareTests
                     },
                 },
             },
-        };
+        ];
 
         _functionMap = new Dictionary<string, Func<string, Task<string>>>
         {
@@ -74,7 +73,7 @@ public class NaturalToolUseMiddlewareTests
     private static Mock<IAgent> SetupMockAgent(string responseText)
     {
         var mockAgent = new Mock<IAgent>();
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -95,7 +94,7 @@ public class NaturalToolUseMiddlewareTests
     private static Mock<IStreamingAgent> SetupStreamingAgent(string text)
     {
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        mockStreamingAgent
+        _ = mockStreamingAgent
             .Setup(a =>
                 a.GenerateReplyStreamingAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -166,10 +165,10 @@ public class NaturalToolUseMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string validToolCall =
+        var validToolCall =
             "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(validToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var result = await middleware.InvokeAsync(_defaultContext, mockAgent.Object);
@@ -182,7 +181,7 @@ public class NaturalToolUseMiddlewareTests
         var toolCallAggregates = result.OfType<ToolsCallAggregateMessage>().ToList();
 
         Assert.NotEmpty(textMessages); // Should have prefix text message
-        Assert.Single(toolCallAggregates); // Should have exactly one tool call
+        _ = Assert.Single(toolCallAggregates); // Should have exactly one tool call
 
         // Verify the tool call was processed correctly
         var toolCallMessage = toolCallAggregates.First();
@@ -202,17 +201,17 @@ public class NaturalToolUseMiddlewareTests
         var middleware = CreateMiddleware();
 
         // Create a response with proper tool call format but invalid JSON inside
-        string invalidJsonToolCall =
+        var invalidJsonToolCall =
             "Let me get that weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\"\n  \"invalid_json\": true,\n}\n```\n</tool_call>";
         var mockAgent = SetupMockAgent(invalidJsonToolCall);
 
         // Setup schema validator to reject the JSON (invalid schema)
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(false);
 
         // Setup fallback parser to return valid JSON (this is what the fallback parser is supposed to do)
-        string validFallbackJson =
+        var validFallbackJson =
             "```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```";
-        _mockFallbackParser
+        _ = _mockFallbackParser
             .Setup(f =>
                 f.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -228,7 +227,7 @@ public class NaturalToolUseMiddlewareTests
             );
 
         // Make schema validator accept the fixed JSON from the fallback parser
-        _mockSchemaValidator
+        _ = _mockSchemaValidator
             .SetupSequence(v => v.Validate(It.IsAny<string>(), It.IsAny<string>()))
             .Returns(false) // First call with invalid JSON
             .Returns(true); // Second call with fixed JSON from fallback
@@ -298,10 +297,10 @@ public class NaturalToolUseMiddlewareTests
     {
         // Arrange
         var middleware = CreateMiddleware();
-        string validToolCall =
+        var validToolCall =
             "Here's the weather: <tool_call name=\"GetWeather\">\n```json\n{\n  \"location\": \"San Francisco, CA\",\n  \"unit\": \"fahrenheit\"\n}\n```\n</tool_call>";
         var mockAgent = SetupStreamingAgent(validToolCall);
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var streamingResult = await middleware.InvokeStreamingAsync(_defaultContext, mockAgent.Object);
@@ -315,7 +314,7 @@ public class NaturalToolUseMiddlewareTests
         var toolCallMessages = result.OfType<ToolsCallAggregateMessage>().ToList();
 
         Assert.NotEmpty(textUpdates);
-        Assert.Single(toolCallMessages); // Should have exactly one tool call
+        _ = Assert.Single(toolCallMessages); // Should have exactly one tool call
 
         // Verify the tool call was parsed correctly
         var toolCallMessage = toolCallMessages.First();
@@ -343,7 +342,7 @@ public class NaturalToolUseMiddlewareTests
             "sius\"\n}\n```\n</tool_call> There you go!",
         };
 
-        mockStreamingAgent
+        _ = mockStreamingAgent
             .Setup(a =>
                 a.GenerateReplyStreamingAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -353,7 +352,7 @@ public class NaturalToolUseMiddlewareTests
             )
             .Returns(Task.FromResult(CreateChunkedAsyncEnumerable(chunks)));
 
-        _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
+        _ = _mockSchemaValidator.Setup(v => v.Validate(It.IsAny<string>(), It.IsAny<string>())).Returns(true);
 
         // Act
         var streamingResult = await middleware.InvokeStreamingAsync(_defaultContext, mockStreamingAgent.Object);
@@ -367,7 +366,7 @@ public class NaturalToolUseMiddlewareTests
         var toolCallMessages = result.OfType<ToolsCallAggregateMessage>().ToList();
 
         Assert.NotEmpty(textUpdates);
-        Assert.Single(toolCallMessages); // Should have exactly one tool call
+        _ = Assert.Single(toolCallMessages); // Should have exactly one tool call
 
         // Verify the tool call was parsed correctly despite being chunked
         var toolCallMessage = toolCallMessages.First();
@@ -391,7 +390,7 @@ public class NaturalToolUseMiddlewareTests
         // Create a streaming response with incomplete tool call that should be held back
         var chunks = new List<string> { "Here's some text and then a partial <tool_ca" };
 
-        mockStreamingAgent
+        _ = mockStreamingAgent
             .Setup(a =>
                 a.GenerateReplyStreamingAsync(
                     It.IsAny<IEnumerable<IMessage>>(),

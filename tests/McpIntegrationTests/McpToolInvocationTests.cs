@@ -84,27 +84,27 @@ public class McpToolInvocationTests
 
         // Test positive integers
         var positiveResult = await functionMap["CalculatorTool-Add"]("{\"a\":5,\"b\":3}");
-        double positiveValue = double.Parse(positiveResult.Trim('\"'));
+        var positiveValue = double.Parse(positiveResult.Trim('\"'));
         Assert.Equal(8, positiveValue);
 
         // Test negative numbers
         var negativeResult = await functionMap["CalculatorTool-Add"]("{\"a\":-10,\"b\":-5}");
-        double negativeValue = double.Parse(negativeResult.Trim('\"'));
+        var negativeValue = double.Parse(negativeResult.Trim('\"'));
         Assert.Equal(-15, negativeValue);
 
         // Test mixed numbers
         var mixedResult = await functionMap["CalculatorTool-Add"]("{\"a\":7.5,\"b\":-2.5}");
-        double mixedValue = double.Parse(mixedResult.Trim('\"'));
+        var mixedValue = double.Parse(mixedResult.Trim('\"'));
         Assert.Equal(5, mixedValue);
 
         // Test large numbers
         var largeResult = await functionMap["CalculatorTool-Add"]("{\"a\":1000000,\"b\":234567}");
-        double largeValue = double.Parse(largeResult.Trim('\"'));
+        var largeValue = double.Parse(largeResult.Trim('\"'));
         Assert.Equal(1234567, largeValue);
 
         // Test decimal precision
         var decimalResult = await functionMap["CalculatorTool-Add"]("{\"a\":0.1,\"b\":0.2}");
-        double decimalValue = double.Parse(decimalResult.Trim('\"'));
+        var decimalValue = double.Parse(decimalResult.Trim('\"'));
         Assert.Equal(0.3, decimalValue, 10); // Using precision to handle floating point errors
     }
 
@@ -118,27 +118,27 @@ public class McpToolInvocationTests
 
         // Test multiplication
         var multiplyResult = await functionMap["CalculatorTool-Multiply"]("{\"a\":4,\"b\":5}");
-        double multiplyValue = double.Parse(multiplyResult.Trim('\"'));
+        var multiplyValue = double.Parse(multiplyResult.Trim('\"'));
         Assert.Equal(20, multiplyValue);
 
         // Test subtraction
         var subtractResult = await functionMap["CalculatorTool-Subtract"]("{\"a\":10,\"b\":3}");
-        double subtractValue = double.Parse(subtractResult.Trim('\"'));
+        var subtractValue = double.Parse(subtractResult.Trim('\"'));
         Assert.Equal(7, subtractValue);
 
         // Test division
         var divideResult = await functionMap["CalculatorTool-Divide"]("{\"a\":10,\"b\":2}");
-        double divideValue = double.Parse(divideResult.Trim('\"'));
+        var divideValue = double.Parse(divideResult.Trim('\"'));
         Assert.Equal(5, divideValue);
 
         // Test square root
         var sqrtResult = await functionMap["CalculatorTool-Sqrt"]("{\"x\":16}");
-        double sqrtValue = double.Parse(sqrtResult.Trim('\"'));
+        var sqrtValue = double.Parse(sqrtResult.Trim('\"'));
         Assert.Equal(4, sqrtValue);
 
         // Test power
         var powerResult = await functionMap["CalculatorTool-Power"]("{\"x\":2,\"y\":3}");
-        double powerValue = double.Parse(powerResult.Trim('\"'));
+        var powerValue = double.Parse(powerResult.Trim('\"'));
         Assert.Equal(8, powerValue);
     }
 

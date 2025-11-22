@@ -200,18 +200,18 @@ public class McpMiddlewareFactory
             && argsElement.ValueKind == JsonValueKind.Array
         )
         {
-            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
+            arguments = [.. argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty)];
         }
         else if (
             jsonElement.TryGetProperty("Arguments", out argsElement)
             && argsElement.ValueKind == JsonValueKind.Array
         )
         {
-            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
+            arguments = [.. argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty)];
         }
         else if (jsonElement.TryGetProperty("args", out argsElement) && argsElement.ValueKind == JsonValueKind.Array)
         {
-            arguments = argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty).ToArray();
+            arguments = [.. argsElement.EnumerateArray().Select(e => e.GetString() ?? string.Empty)];
         }
 
         // If no command found, try to parse from a single command string that might include arguments
@@ -229,7 +229,7 @@ public class McpMiddlewareFactory
                         if (parts.Length > 0)
                         {
                             command = parts[0];
-                            arguments = parts.Skip(1).ToArray();
+                            arguments = [.. parts.Skip(1)];
                             break;
                         }
                     }
@@ -311,10 +311,8 @@ public class McpMiddlewareFactory
         return argsObj switch
         {
             string[] stringArray => stringArray,
-            IEnumerable<string> stringEnumerable => stringEnumerable.ToArray(),
-            IEnumerable<object> objectEnumerable => objectEnumerable
-                .Select(o => o?.ToString() ?? string.Empty)
-                .ToArray(),
+            IEnumerable<string> stringEnumerable => [.. stringEnumerable],
+            IEnumerable<object> objectEnumerable => [.. objectEnumerable.Select(o => o?.ToString() ?? string.Empty)],
             string singleArg => singleArg.Split(' ', StringSplitOptions.RemoveEmptyEntries),
             _ => [],
         };

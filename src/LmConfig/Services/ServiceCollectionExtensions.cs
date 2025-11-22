@@ -39,7 +39,7 @@ public static class ServiceCollectionExtensions
     )
     {
         // Configure AppConfig from configuration
-        services.Configure<AppConfig>(configurationSection);
+        _ = services.Configure<AppConfig>(configurationSection);
 
         // Register core services using shared helper
         return RegisterLmConfigServices(services, registerAsDefaultAgent: true);
@@ -56,7 +56,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(appConfig);
 
         // Configure AppConfig as singleton
-        services.AddSingleton(Options.Create(appConfig));
+        _ = services.AddSingleton(Options.Create(appConfig));
 
         // Register core services using shared helper
         return RegisterLmConfigServices(services, registerAsDefaultAgent: true);
@@ -128,11 +128,11 @@ public static class ServiceCollectionExtensions
         // Configure AppConfig from options
         if (options.AppConfig != null)
         {
-            services.AddSingleton(Options.Create(options.AppConfig));
+            _ = services.AddSingleton(Options.Create(options.AppConfig));
         }
         else if (options.ConfigurationSection != null)
         {
-            services.Configure<AppConfig>(options.ConfigurationSection);
+            _ = services.Configure<AppConfig>(options.ConfigurationSection);
         }
         else
         {
@@ -142,7 +142,7 @@ public static class ServiceCollectionExtensions
         }
 
         // Register core services using shared helper
-        RegisterLmConfigServices(services, options.RegisterAsDefaultAgent);
+        _ = RegisterLmConfigServices(services, options.RegisterAsDefaultAgent);
 
         // Configure HTTP clients for providers if specified
         if (options.ConfigureHttpClients != null)
@@ -211,48 +211,48 @@ public static class ServiceCollectionExtensions
     private static IServiceCollection RegisterLmConfigServices(IServiceCollection services, bool registerAsDefaultAgent)
     {
         // Register core services
-        services.AddSingleton<IModelResolver, ModelResolver>();
-        services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
-        services.AddSingleton<OpenRouterModelService>();
+        _ = services.AddSingleton<IModelResolver, ModelResolver>();
+        _ = services.AddSingleton<IProviderAgentFactory, ProviderAgentFactory>();
+        _ = services.AddSingleton<OpenRouterModelService>();
         // Ensure a single IHttpHandlerBuilder and attach the retry wrapper.
         var hbDescriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IHttpHandlerBuilder));
 
         if (hbDescriptor == null)
         {
-            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            _ = services.AddSingleton<IHttpHandlerBuilder>(sp =>
             {
                 var b = new HandlerBuilder();
-                b.Use(LmConfigStandardWrappers.WithRetry());
+                _ = b.Use(LmConfigStandardWrappers.WithRetry());
                 return b;
             });
         }
         else
         {
-            services.Remove(hbDescriptor);
-            services.AddSingleton<IHttpHandlerBuilder>(sp =>
+            _ = services.Remove(hbDescriptor);
+            _ = services.AddSingleton<IHttpHandlerBuilder>(sp =>
             {
                 var inner =
                     (hbDescriptor.ImplementationInstance as HandlerBuilder)
                     ?? (hbDescriptor.ImplementationFactory?.Invoke(sp) as HandlerBuilder)
                     ?? new HandlerBuilder();
 
-                inner.Use(LmConfigStandardWrappers.WithRetry());
+                _ = inner.Use(LmConfigStandardWrappers.WithRetry());
                 return inner;
             });
         }
 
         // Register the unified agent
-        services.AddScoped<UnifiedAgent>();
+        _ = services.AddScoped<UnifiedAgent>();
 
         // Register as default agent if requested
         if (registerAsDefaultAgent)
         {
-            services.AddScoped<IAgent>(provider => provider.GetRequiredService<UnifiedAgent>());
-            services.AddScoped<IStreamingAgent>(provider => provider.GetRequiredService<UnifiedAgent>());
+            _ = services.AddScoped<IAgent>(provider => provider.GetRequiredService<UnifiedAgent>());
+            _ = services.AddScoped<IStreamingAgent>(provider => provider.GetRequiredService<UnifiedAgent>());
         }
 
         // Add HTTP client factory for provider connections
-        services.AddHttpClient();
+        _ = services.AddHttpClient();
 
         return services;
     }
