@@ -34,6 +34,7 @@ kv_store
 LLM_CACHE/
 *.log
 
+nul
 .playwright-mcp/
 .next/
 node_modules/

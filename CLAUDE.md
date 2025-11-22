@@ -1,0 +1,1 @@
+- When using playwright, ALWAYS use `Task` tool to make sure playwright doest polute primary context.
