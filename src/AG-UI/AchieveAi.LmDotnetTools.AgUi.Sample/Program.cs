@@ -49,7 +49,7 @@ var seqUrl = builder.Configuration["Seq:ServerUrl"];
 if (!string.IsNullOrWhiteSpace(seqUrl))
 {
     var seqApiKey = builder.Configuration["Seq:ApiKey"];
-    logConfig.WriteTo.Seq(
+    _ = logConfig.WriteTo.Seq(
         serverUrl: seqUrl,
         apiKey: seqApiKey,
         restrictedToMinimumLevel: Serilog.Events.LogEventLevel.Debug
@@ -135,8 +135,8 @@ startupLogger.Information("Registering sample agents...");
 builder.Services.AddSingleton<ToolCallingAgent>();
 builder.Services.AddSingleton<InstructionChainAgent>();
 // Also register as IStreamingAgent for AG-UI controller
-builder.Services.AddSingleton<IStreamingAgent>(sp => sp.GetRequiredService<ToolCallingAgent>());
 builder.Services.AddSingleton<IStreamingAgent>(sp => sp.GetRequiredService<InstructionChainAgent>());
+builder.Services.AddSingleton<IStreamingAgent>(sp => sp.GetRequiredService<ToolCallingAgent>());
 startupLogger.Information("  Registered: ToolCallingAgent, InstructionChainAgent (as IStreamingAgent)");
 
 // Register CopilotKit session mapper
@@ -149,7 +149,7 @@ builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.AllowAnyOrigin()
+        _ = policy.AllowAnyOrigin()
               .AllowAnyMethod()
               .AllowAnyHeader();
     });

@@ -38,7 +38,7 @@ public class MessageToAgUiConverter : IMessageConverter
             ReasoningUpdateMessage reasoningUpdate => ConvertReasoningUpdate(reasoningUpdate, sessionId, threadId, runId),
             TextMessage textMessage => ConvertTextMessage(textMessage, sessionId, threadId, runId),
             ToolsCallAggregateMessage aggregate => ConvertToolsCallAggregateMessage(aggregate, sessionId, threadId, runId),
-            ReasoningMessage reasoningMessage => ConvertReasoningMessage(reasoningMessage, sessionId, threadId, runId),
+            ReasoningMessage reasoningMessage => [], // ConvertReasoningMessage(reasoningMessage, sessionId, threadId, runId),
             ToolsCallMessage toolsCallMessage => ConvertToolsCallMessage(toolsCallMessage, sessionId, threadId, runId),
             _ => HandleUnknown(sessionId, threadId, runId)
         };

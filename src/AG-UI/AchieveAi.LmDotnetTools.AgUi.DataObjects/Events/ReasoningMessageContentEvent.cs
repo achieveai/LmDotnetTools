@@ -20,7 +20,7 @@ public sealed record ReasoningMessageContentEvent : AgUiEventBase
     /// <summary>
     /// The reasoning content chunk
     /// </summary>
-    [JsonPropertyName("content")]
+    [JsonPropertyName("delta")]
     public string Delta { get; init; } = string.Empty;
 
     /// <summary>
