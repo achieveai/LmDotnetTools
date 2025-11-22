@@ -198,7 +198,7 @@ public static class EmbeddingResults
             Message = $"API call to {provider} failed with status {statusCode}",
             Source = ErrorSource.Api,
             RequestId = requestId,
-            IsRetryable = statusCode >= 500 || statusCode == 429,
+            IsRetryable = statusCode is >= 500 or 429,
             RetryAfterMs = statusCode >= 500 ? 1000 : null,
         };
 

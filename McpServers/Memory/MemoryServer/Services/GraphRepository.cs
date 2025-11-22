@@ -122,12 +122,7 @@ public class GraphRepository : IGraphRepository
                 _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                if (await reader.ReadAsync(cancellationToken))
-                {
-                    return MapEntityFromReader(reader);
-                }
-
-                return null;
+                return await reader.ReadAsync(cancellationToken) ? MapEntityFromReader(reader) : null;
             },
             cancellationToken
         );
@@ -163,12 +158,7 @@ public class GraphRepository : IGraphRepository
                 _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                if (await reader.ReadAsync(cancellationToken))
-                {
-                    return MapEntityFromReader(reader);
-                }
-
-                return null;
+                return await reader.ReadAsync(cancellationToken) ? MapEntityFromReader(reader) : null;
             },
             cancellationToken
         );
@@ -468,12 +458,7 @@ public class GraphRepository : IGraphRepository
                 _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                if (await reader.ReadAsync(cancellationToken))
-                {
-                    return MapRelationshipFromReader(reader);
-                }
-
-                return null;
+                return await reader.ReadAsync(cancellationToken) ? MapRelationshipFromReader(reader) : null;
             },
             cancellationToken
         );
@@ -1265,12 +1250,7 @@ public class GraphRepository : IGraphRepository
         _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
         using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (await reader.ReadAsync(cancellationToken))
-        {
-            return MapEntityFromReader(reader);
-        }
-
-        return null;
+        return await reader.ReadAsync(cancellationToken) ? MapEntityFromReader(reader) : null;
     }
 
     public async Task<GraphStatistics> GetGraphStatisticsAsync(

@@ -56,11 +56,7 @@ public class RetryPolicyServiceTests
             () =>
             {
                 attempts++;
-                if (attempts < 3)
-                {
-                    throw new HttpRequestException("503 Service Unavailable");
-                }
-                return Task.FromResult(expectedResult);
+                return attempts < 3 ? throw new HttpRequestException("503 Service Unavailable") : Task.FromResult(expectedResult);
             },
             operationName
         );
@@ -315,11 +311,7 @@ public class RetryPolicyServiceTests
             () =>
             {
                 attempts++;
-                if (attempts < 2)
-                {
-                    throw new HttpRequestException("503 Service Unavailable");
-                }
-                return Task.FromResult("success");
+                return attempts < 2 ? throw new HttpRequestException("503 Service Unavailable") : Task.FromResult("success");
             },
             operationName
         );

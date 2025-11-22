@@ -355,12 +355,9 @@ public class DocumentSegmentationService : IDocumentSegmentationService
     {
         // Simple summary: first sentence or first 100 characters
         var sentences = content.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        if (sentences.Length != 0 && sentences[0].Length <= 100)
-        {
-            return sentences[0].Trim() + ".";
-        }
-
-        return content.Length <= 100 ? content : content[..97] + "...";
+        return sentences.Length != 0 && sentences[0].Length <= 100
+            ? sentences[0].Trim() + "."
+            : content.Length <= 100 ? content : content[..97] + "...";
     }
 
     #endregion

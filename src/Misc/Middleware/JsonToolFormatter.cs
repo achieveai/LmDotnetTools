@@ -36,7 +36,7 @@ public class JsonToolFormatter
             indentLevel = 0;
             _indentLevels[toolCallName] = indentLevel;
         }
-        if (!_processedStringsByTool.TryGetValue(toolCallName, out HashSet<string>? processedStrings))
+        if (!_processedStringsByTool.TryGetValue(toolCallName, out var processedStrings))
         {
             processedStrings = [];
             _processedStringsByTool[toolCallName] = processedStrings;
@@ -49,7 +49,7 @@ public class JsonToolFormatter
             {
                 // Special case for EndObject and EndArray - they need one less indent level
                 var indentAmount =
-                    update.Kind == JsonFragmentKind.EndObject || update.Kind == JsonFragmentKind.EndArray
+                    update.Kind is JsonFragmentKind.EndObject or JsonFragmentKind.EndArray
                         ? Math.Max(0, (indentLevel - 1) * 2)
                         : (indentLevel * 2);
 

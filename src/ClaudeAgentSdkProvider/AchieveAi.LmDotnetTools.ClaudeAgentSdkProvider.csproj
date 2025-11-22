@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\LmCore\AchieveAi.LmDotnetTools.LmCore.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
+    <PackageReference Include="System.Text.Json" Version="9.0.5" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- NuGet Package Metadata -->
+    <PackageId>AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider</PackageId>
+    <Description>Claude Agent SDK provider for the LmDotnetTools library, enabling integration with claude-agent-sdk Node.js CLI.</Description>
+    <PackageTags>$(PackageTags);claude;agent-sdk;provider</PackageTags>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+</Project>

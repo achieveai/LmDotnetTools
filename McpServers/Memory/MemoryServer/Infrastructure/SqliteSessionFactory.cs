@@ -16,7 +16,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     private readonly ILogger<SqliteSessionFactory> _logger;
     private readonly SemaphoreSlim _initializationSemaphore;
     private readonly ConcurrentDictionary<string, DateTime> _activeSessions;
-    private readonly object _metricsLock = new();
+    private readonly Lock _metricsLock = new();
 
     private bool _isInitialized;
     private int _totalSessionsCreated;
@@ -450,14 +450,12 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     private static string MaskConnectionString(string connectionString)
     {
         // Simple masking for logging - hide sensitive parts
-        if (connectionString.Contains("Password", StringComparison.OrdinalIgnoreCase))
-        {
-            return connectionString
+        return connectionString.Contains("Password", StringComparison.OrdinalIgnoreCase)
+            ? connectionString
                 .Split(';')
                 .Select(part => part.Contains("Password", StringComparison.OrdinalIgnoreCase) ? "Password=***" : part)
-                .Aggregate((a, b) => $"{a};{b}");
-        }
-        return connectionString;
+                .Aggregate((a, b) => $"{a};{b}")
+            : connectionString;
     }
 }
 

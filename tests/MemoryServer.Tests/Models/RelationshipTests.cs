@@ -112,10 +112,10 @@ public class RelationshipTests
         {
             Assert.True(string.IsNullOrWhiteSpace(relationship.UserId), "UserId should be empty or whitespace");
         }
-        if (confidence < 0 || confidence > 1)
+        if (confidence is < 0 or > 1)
         {
             Assert.True(
-                relationship.Confidence < 0 || relationship.Confidence > 1,
+                relationship.Confidence is < 0 or > 1,
                 "Confidence should be out of valid range"
             );
         }

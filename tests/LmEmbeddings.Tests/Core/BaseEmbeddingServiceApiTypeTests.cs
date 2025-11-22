@@ -347,12 +347,9 @@ public class BaseEmbeddingServiceApiTypeTests
                     var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
                     var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseJson);
 
-                    if (embeddingResponse?.Embeddings == null)
-                    {
-                        throw new InvalidOperationException("Invalid response from API");
-                    }
-
-                    return new EmbeddingResponse
+                    return embeddingResponse?.Embeddings == null
+                        ? throw new InvalidOperationException("Invalid response from API")
+                        : new EmbeddingResponse
                     {
                         Embeddings = [.. embeddingResponse
                             .Embeddings.Select(e => new EmbeddingItem

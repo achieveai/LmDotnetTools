@@ -475,12 +475,7 @@ Examples:
     )
     {
         var (task, taskRef, error) = FindTaskWithReference(taskId, subtaskId);
-        if (task == null)
-        {
-            return error!;
-        }
-
-        return FormatTaskDetails(task, taskRef);
+        return task == null ? error! : FormatTaskDetails(task, taskRef);
     }
 
     [Function(
@@ -1025,23 +1020,13 @@ Examples:
     public static TaskManager DeserializeTasks(JsonElement json)
     {
         var state = JsonSerializer.Deserialize<ManagerState>(json);
-        if (state == null)
-        {
-            return new TaskManager();
-        }
-
-        return new TaskManager(state);
+        return state == null ? new TaskManager() : new TaskManager(state);
     }
 
     public static TaskManager DeserializeTasks(string json)
     {
         var tasks = JsonSerializer.Deserialize<ManagerState>(json);
-        if (tasks == null)
-        {
-            return new TaskManager();
-        }
-
-        return new TaskManager(tasks);
+        return tasks == null ? new TaskManager() : new TaskManager(tasks);
     }
 
     private string GetTaskCounts(string countType)
@@ -1049,7 +1034,7 @@ Examples:
         var allTasks = _state.RootTasks.SelectMany(t => t.SubTasks).ToList();
         var total = allTasks.Count;
         var completed = allTasks.Count(t => t.Status == TaskStatus.Completed);
-        var pending = allTasks.Count(t => t.Status == TaskStatus.NotStarted || t.Status == TaskStatus.InProgress);
+        var pending = allTasks.Count(t => t.Status is TaskStatus.NotStarted or TaskStatus.InProgress);
         var removed = allTasks.Count(t => t.Status == TaskStatus.Removed);
 
         return countType switch

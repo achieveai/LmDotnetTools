@@ -174,7 +174,7 @@ public class FilterResultTests
     public void FilterRuleType_CorrectlyIndicatesFiltering(FilterRuleType ruleType, bool expectedFiltered)
     {
         // Arrange & Act
-        FilterResult result = ruleType switch
+        var result = ruleType switch
         {
             FilterRuleType.None => FilterResult.Include(),
             FilterRuleType.ProviderDisabled => FilterResult.FilteredByDisabledProvider("test"),

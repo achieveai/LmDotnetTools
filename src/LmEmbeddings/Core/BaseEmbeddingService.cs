@@ -113,12 +113,9 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         var defaultModel = availableModels[0];
         var response = await GenerateEmbeddingAsync(sentence, defaultModel, cancellationToken);
 
-        if (response.Embeddings?.Any() != true)
-        {
-            throw new InvalidOperationException("No embeddings returned from service");
-        }
-
-        return response.Embeddings[0].Vector;
+        return response.Embeddings?.Any() != true
+            ? throw new InvalidOperationException("No embeddings returned from service")
+            : response.Embeddings[0].Vector;
     }
 
     /// <inheritdoc />

@@ -8,10 +8,11 @@ public class ProviderFilterConfigTests
     public void CustomPrefix_WithValidPrefix_SetsSuccessfully()
     {
         // Arrange
-        var config = new ProviderFilterConfig();
-
-        // Act
-        config.CustomPrefix = "valid_prefix";
+        var config = new ProviderFilterConfig
+        {
+            // Act
+            CustomPrefix = "valid_prefix"
+        };
 
         // Assert
         Assert.Equal("valid_prefix", config.CustomPrefix);
@@ -21,8 +22,10 @@ public class ProviderFilterConfigTests
     public void CustomPrefix_WithNull_SetsSuccessfully()
     {
         // Arrange
-        var config = new ProviderFilterConfig();
-        config.CustomPrefix = "initial";
+        var config = new ProviderFilterConfig
+        {
+            CustomPrefix = "initial"
+        };
 
         // Act
         config.CustomPrefix = null;
@@ -140,7 +143,7 @@ public class ProviderFilterConfigTests
         field?.SetValue(config, "invalid prefix");
 
         // Act & Assert
-        var exception = Assert.Throws<ArgumentException>(() => config.Validate());
+        var exception = Assert.Throws<ArgumentException>(config.Validate);
         Assert.Equal("CustomPrefix", exception.ParamName);
         Assert.Contains("invalid characters", exception.Message);
     }
@@ -170,10 +173,11 @@ public class ProviderFilterConfigTests
     public void CustomPrefix_WithVariousValidPrefixes_SetsSuccessfully(string validPrefix)
     {
         // Arrange
-        var config = new ProviderFilterConfig();
-
-        // Act
-        config.CustomPrefix = validPrefix;
+        var config = new ProviderFilterConfig
+        {
+            // Act
+            CustomPrefix = validPrefix
+        };
 
         // Assert
         Assert.Equal(validPrefix, config.CustomPrefix);

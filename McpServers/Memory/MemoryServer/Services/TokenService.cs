@@ -107,7 +107,7 @@ public class TokenService : ITokenService
                 ClockSkew = TimeSpan.Zero,
             };
 
-            _ = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
+            _ = tokenHandler.ValidateToken(token, validationParameters, out var validatedToken);
             return true;
         }
         catch (Exception ex)

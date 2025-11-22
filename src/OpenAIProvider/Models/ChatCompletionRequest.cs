@@ -143,8 +143,7 @@ public record ChatCompletionRequest
                 TopP = options.TopP,
                 Stream =
                     options.ExtraProperties.TryGetValue("stream", out var stream) && stream is bool
-                        ? (bool)stream
-                        : false,
+                        && (bool)stream,
                 SafePrompt =
                     options.ExtraProperties.TryGetValue("safe_prompt", out var safePrompt) && safePrompt is bool
                         ? (bool)safePrompt
@@ -166,7 +165,7 @@ public record ChatCompletionRequest
             case CompositeMessage compositeMsg:
                 if (
                     compositeMsg.Messages.Any(m =>
-                        m is ToolsCallAggregateMessage || m is ToolsCallMessage || m is ToolsCallResultMessage
+                        m is ToolsCallAggregateMessage or ToolsCallMessage or ToolsCallResultMessage
                     )
                 )
                 {
@@ -204,12 +203,11 @@ public record ChatCompletionRequest
 
                     var reasoningMessage = compositeMsg
                         .Messages.OfType<ReasoningMessage>()
-                        .Where(r =>
+                        .FirstOrDefault(r =>
                             hasEncryptedReasoning
                                 ? r.Visibility == ReasoningVisibility.Encrypted
                                 : r.Visibility == ReasoningVisibility.Plain
-                        )
-                        .FirstOrDefault();
+                        );
 
                     if (reasoningMessage != null)
                     {
@@ -300,7 +298,7 @@ public record ChatCompletionRequest
                     ToolCalls = [.. toolCallMessage
                         .GetToolCalls()!
                         .Select(tc => new FunctionContent(
-                            tc.ToolCallId ?? "call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
+                            tc.ToolCallId ?? ("call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode()),
                             new FunctionCall(tc.FunctionName!, tc.FunctionArgs!)
                         )
                         {
@@ -372,7 +370,7 @@ public record ChatCompletionRequest
 
                 default:
                     // For other message types (system/user/tool etc.) just forward conversion without merging
-                    if (m is TextUpdateMessage || m is ToolsCallUpdateMessage || m is ReasoningUpdateMessage)
+                    if (m is TextUpdateMessage or ToolsCallUpdateMessage or ReasoningUpdateMessage)
                     {
                         // never send update messages in ChatCompletionRequest
                         continue;
@@ -414,13 +412,11 @@ public record ChatCompletionRequest
             {
                 selected = [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted)];
             }
-            else if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary))
-            {
-                selected = [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary)];
-            }
             else
             {
-                selected = [.. reasoningBuffer];
+                selected = reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary)
+                    ? [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary)]
+                    : [.. reasoningBuffer];
             }
 
             if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)

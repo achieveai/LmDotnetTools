@@ -200,7 +200,7 @@ public static class MessageExtensions
     /// <returns>True if the sequence contains transformable ToolsCallAggregateMessage instances</returns>
     public static bool ContainsTransformableToolCalls(this IEnumerable<IMessage> messages)
     {
-        return messages == null ? false : messages.Any(m => m is ToolsCallAggregateMessage);
+        return messages != null && messages.Any(m => m is ToolsCallAggregateMessage);
     }
 
     /// <summary>
@@ -218,12 +218,7 @@ public static class MessageExtensions
     /// </summary>
     public static IMessage WithIds(this IMessage message, GenerateReplyOptions? options)
     {
-        if (options == null)
-        {
-            return message;
-        }
-
-        return message.WithIds(options.RunId, options.ParentRunId, options.ThreadId);
+        return options == null ? message : message.WithIds(options.RunId, options.ParentRunId, options.ThreadId);
     }
 
     /// <summary>

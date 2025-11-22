@@ -130,12 +130,7 @@ public class SessionContext
             return SessionScope.Run;
         }
 
-        if (!string.IsNullOrEmpty(AgentId))
-        {
-            return SessionScope.Agent;
-        }
-
-        return SessionScope.User;
+        return !string.IsNullOrEmpty(AgentId) ? SessionScope.Agent : SessionScope.User;
     }
 }
 

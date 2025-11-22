@@ -212,6 +212,10 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(relationships, nameof(relationships));
+        ArgumentNullException.ThrowIfNull(sessionContext, nameof(sessionContext));
+        ArgumentNullException.ThrowIfNull(session, nameof(session));
+
         if (relationships == null || relationships.Count == 0)
         {
             return 0;
@@ -551,14 +555,9 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
 
-                    if (sql.Contains("@queryLike"))
-                    {
-                        _ = command.Parameters.AddWithValue("@queryLike", $"%{query}%");
-                    }
-                    else
-                    {
-                        _ = command.Parameters.AddWithValue("@query", query);
-                    }
+                    _ = sql.Contains("@queryLike")
+                        ? command.Parameters.AddWithValue("@queryLike", $"%{query}%")
+                        : command.Parameters.AddWithValue("@query", query);
 
                     _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
                     _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);

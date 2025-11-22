@@ -159,7 +159,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         }
 
         // Separate UsageMessage objects from other messages
-        var nonUsageMessages = messageList.Where(m => !(m is UsageMessage)).ToList();
+        var nonUsageMessages = messageList.Where(m => m is not UsageMessage).ToList();
         var usageMessages = messageList.OfType<UsageMessage>().ToList();
 
         _logger.LogDebug(
@@ -349,7 +349,7 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
             // 1. No cost information is available (TotalCost is null or 0), OR
             // 2. This is a UsageMessage (indicating it came from upstream middleware) and we want to add OpenRouter-specific cost data
             var shouldEnhanceWithOpenRouter =
-                (existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0) || (message is UsageMessage);
+                existingUsage.TotalCost == null || existingUsage.TotalCost == 0.0 || (message is UsageMessage);
 
             _logger.LogDebug(
                 "Enhancement evaluation: TotalCost={TotalCost}, IsUsageMessage={IsUsageMessage}, ShouldEnhance={ShouldEnhance}",

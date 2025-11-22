@@ -332,16 +332,13 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
         var requestedFormat = encodingFormat.ToLowerInvariant();
 
         // Validate that the requested format matches the detected format
-        if (detectedFormat != requestedFormat)
-        {
-            throw new InvalidOperationException(
+        return detectedFormat != requestedFormat
+            ? throw new InvalidOperationException(
                 $"Encoding format mismatch: requested '{requestedFormat}' but detected '{detectedFormat}' "
                     + $"based on data type {embedding?.GetType().Name ?? "null"}. "
                     + $"Consider omitting EncodingFormat to enable auto-detection."
-            );
-        }
-
-        return requestedFormat switch
+            )
+            : requestedFormat switch
         {
             "base64" => DecodeBase64Embedding(embedding.ToString()!),
             "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
@@ -392,14 +389,11 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     /// <returns>A float array representing the decoded embedding vector</returns>
     private static float[] DecodeFloatArrayEmbedding(JsonElement jsonElement)
     {
-        if (jsonElement.ValueKind != JsonValueKind.Array)
-        {
-            throw new InvalidOperationException(
+        return jsonElement.ValueKind != JsonValueKind.Array
+            ? throw new InvalidOperationException(
                 $"Expected JsonElement with Array ValueKind for float format, but got {jsonElement.ValueKind}"
-            );
-        }
-
-        return [.. jsonElement.EnumerateArray().Select(x => x.GetSingle())];
+            )
+            : [.. jsonElement.EnumerateArray().Select(x => x.GetSingle())];
     }
 
     /// <summary>

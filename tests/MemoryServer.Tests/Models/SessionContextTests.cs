@@ -71,7 +71,7 @@ public class SessionContextTests
         Debug.WriteLine($"Method: {factoryMethod}, UserId: {userId}, AgentId: {agentId}, RunId: {runId}");
 
         // Act
-        SessionContext context = factoryMethod switch
+        var context = factoryMethod switch
         {
             "ForUser" => SessionContext.ForUser(userId),
             "ForAgent" => SessionContext.ForAgent(userId, agentId!),

@@ -477,7 +477,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var messageStream = await middleware.InvokeStreamingAsync(context, fakeAgent);
 
         var result = new List<IMessage>();
-        TimeSpan finalChunkLatency = TimeSpan.Zero;
+        var finalChunkLatency = TimeSpan.Zero;
 
         await foreach (var message in messageStream)
         {

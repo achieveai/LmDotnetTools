@@ -31,10 +31,10 @@ public record PerformanceProfile
     public int RetriedRequests { get; init; }
 
     /// <summary>Success rate as a percentage (0-100)</summary>
-    public double SuccessRate => TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double SuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Retry rate as a percentage (0-100)</summary>
-    public double RetryRate => TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
+    public double RetryRate => TotalRequests > 0 ? RetriedRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Average request duration</summary>
     public TimeSpan AverageRequestDuration { get; init; }

@@ -43,7 +43,7 @@ public static class EnvironmentVariables
     public static bool GetEnableUsageMiddleware(IConfiguration configuration)
     {
         var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(EnableUsageMiddleware, null, "true");
-        return bool.TryParse(value, out var result) ? result : true;
+        return !bool.TryParse(value, out var result) || result;
     }
 
     /// <summary>
@@ -54,7 +54,7 @@ public static class EnvironmentVariables
     public static bool GetEnableInlineUsage(IConfiguration configuration)
     {
         var value = EnvironmentVariableHelper.GetEnvironmentVariableWithFallback(EnableInlineUsage, null, "true");
-        return bool.TryParse(value, out var result) ? result : true;
+        return !bool.TryParse(value, out var result) || result;
     }
 
     /// <summary>

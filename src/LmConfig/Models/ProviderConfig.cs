@@ -57,7 +57,7 @@ public record ProviderConfig
     /// <returns>True if the provider has all required tags, false otherwise.</returns>
     public bool HasAllTags(IEnumerable<string> requiredTags)
     {
-        return Tags == null ? false : requiredTags.All(tag => Tags.Contains(tag));
+        return Tags != null && requiredTags.All(tag => Tags.Contains(tag));
     }
 
     /// <summary>
@@ -67,6 +67,6 @@ public record ProviderConfig
     /// <returns>True if the provider has at least one of the tags, false otherwise.</returns>
     public bool HasAnyTag(IEnumerable<string> tags)
     {
-        return Tags == null ? false : tags.Any(tag => Tags.Contains(tag));
+        return Tags != null && tags.Any(tag => Tags.Contains(tag));
     }
 }

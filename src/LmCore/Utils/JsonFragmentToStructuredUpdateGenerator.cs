@@ -376,7 +376,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 {
                     IsInString = false,
                     IsEscaped = false,
-                    IsStartOrEnd = currentFrame.Type == ContainerType.Array ? false : currentFrame.IsStartOrEnd,
+                    IsStartOrEnd = currentFrame.Type != ContainerType.Array && currentFrame.IsStartOrEnd,
                 }
             );
 
@@ -625,7 +625,7 @@ public class JsonFragmentToStructuredUpdateGenerator
                 {
                     IsInString = true,
                     IsEscaped = false,
-                    IsStartOrEnd = currentFrame.Type == ContainerType.Array ? false : currentFrame.IsStartOrEnd,
+                    IsStartOrEnd = currentFrame.Type != ContainerType.Array && currentFrame.IsStartOrEnd,
                 }
             );
 
@@ -698,7 +698,7 @@ public class JsonFragmentToStructuredUpdateGenerator
 
     private JsonFragmentUpdate CreateLiteralTokenUpdate(string token)
     {
-        if (token == "true" || token == "false")
+        if (token is "true" or "false")
         {
             return new JsonFragmentUpdate(GetCurrentPath(), JsonFragmentKind.CompleteBoolean, token, token);
         }

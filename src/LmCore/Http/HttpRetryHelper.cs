@@ -129,7 +129,7 @@ public static class HttpRetryHelper
                         throw new HttpRequestException(errorMessage, null, response.StatusCode);
                     }
                 }
-                catch (Exception ex) when (!(ex is HttpRequestException))
+                catch (Exception ex) when (ex is not HttpRequestException)
                 {
                     // If reading response body fails, fall back to standard behavior
                     _ = response.EnsureSuccessStatusCode();

@@ -45,12 +45,7 @@ public sealed class EventRepository : IEventRepository
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
-        if (await reader.ReadAsync(ct))
-        {
-            return MapEventEntity(reader);
-        }
-
-        return null;
+        return await reader.ReadAsync(ct) ? MapEventEntity(reader) : null;
     }
 
     /// <inheritdoc/>

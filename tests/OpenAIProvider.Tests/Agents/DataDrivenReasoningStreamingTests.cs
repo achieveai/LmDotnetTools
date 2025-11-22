@@ -249,8 +249,7 @@ public class DataDrivenReasoningStreamingTests
         // Check that we don't have excessive empty text updates
         var emptyTextUpdates = streamingResponse
             .OfType<TextUpdateMessage>()
-            .Where(t => string.IsNullOrEmpty(t.Text))
-            .Count();
+            .Count(t => string.IsNullOrEmpty(t.Text));
 
         Debug.WriteLine($"Empty text updates found: {emptyTextUpdates}");
         Assert.True(emptyTextUpdates < 10, $"Should not have many empty text updates, found {emptyTextUpdates}");
@@ -258,8 +257,7 @@ public class DataDrivenReasoningStreamingTests
         // Check that we don't have excessive zero-token usage messages
         var zeroTokenUsageMessages = streamingResponse
             .OfType<UsageMessage>()
-            .Where(u => u.Usage.PromptTokens == 0 && u.Usage.CompletionTokens == 0 && u.Usage.TotalTokens == 0)
-            .Count();
+            .Count(u => u.Usage.PromptTokens == 0 && u.Usage.CompletionTokens == 0 && u.Usage.TotalTokens == 0);
 
         Debug.WriteLine($"Zero-token usage messages found: {zeroTokenUsageMessages}");
         Assert.True(
@@ -269,7 +267,7 @@ public class DataDrivenReasoningStreamingTests
 
         // Check that reasoning messages are meaningful (not tiny fragments)
         var reasoningMessages = streamingResponse.OfType<ReasoningMessage>().ToList();
-        var tinyReasoningMessages = reasoningMessages.Where(r => r.Reasoning.Length < 10).Count();
+        var tinyReasoningMessages = reasoningMessages.Count(r => r.Reasoning.Length < 10);
 
         Debug.WriteLine($"Reasoning messages: {reasoningMessages.Count}, tiny fragments: {tinyReasoningMessages}");
 

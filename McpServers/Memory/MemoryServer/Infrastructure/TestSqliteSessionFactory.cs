@@ -16,7 +16,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
     private readonly string _sharedDatabasePath;
     private readonly string _sharedConnectionString;
     private readonly ConcurrentDictionary<string, DateTime> _activeSessions;
-    private readonly object _metricsLock = new();
+    private readonly Lock _metricsLock = new();
 
     private int _totalSessionsCreated;
     private int _failedSessionCreations;

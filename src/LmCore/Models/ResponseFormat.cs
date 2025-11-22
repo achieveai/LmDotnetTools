@@ -365,7 +365,7 @@ public static class JsonSchemaTypeHelper
     {
         return type.Is<string>()
             ? type.Get<string>()
-            : type.Get<IReadOnlyList<string>>().Where(x => x != "null").FirstOrDefault() ?? "object";
+            : type.Get<IReadOnlyList<string>>().FirstOrDefault(x => x != "null") ?? "object";
     }
 
     public static Union<string, IReadOnlyList<string>> ToType(string typeString)

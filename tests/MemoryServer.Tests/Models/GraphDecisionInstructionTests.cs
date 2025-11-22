@@ -76,10 +76,10 @@ public class GraphDecisionInstructionTests
         };
 
         // Assert - Instruction creation doesn't throw, but we can validate the data
-        if (confidence < 0 || confidence > 1)
+        if (confidence is < 0 or > 1)
         {
             Assert.True(
-                instruction.Confidence < 0 || instruction.Confidence > 1,
+                instruction.Confidence is < 0 or > 1,
                 "Confidence should be out of valid range"
             );
         }

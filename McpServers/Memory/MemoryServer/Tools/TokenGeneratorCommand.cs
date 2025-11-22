@@ -34,7 +34,7 @@ public static class TokenGeneratorCommand
         };
 
         command.SetHandler(
-            async (userId, agentId) => await GenerateTokenAsync(userId, agentId),
+            GenerateTokenAsync,
             userIdOption,
             agentIdOption
         );

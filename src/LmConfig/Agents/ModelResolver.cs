@@ -351,8 +351,7 @@ public class ModelResolver : IModelResolver
         return
             criteria.MaxPromptCostPerMillion.HasValue
             && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-            ? true
-            : criteria.MaxCompletionCostPerMillion.HasValue
+            || criteria.MaxCompletionCostPerMillion.HasValue
                 && provider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 
@@ -374,8 +373,7 @@ public class ModelResolver : IModelResolver
         return
             criteria.MaxPromptCostPerMillion.HasValue
             && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-            ? true
-            : criteria.MaxCompletionCostPerMillion.HasValue
+            || criteria.MaxCompletionCostPerMillion.HasValue
                 && subProvider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 

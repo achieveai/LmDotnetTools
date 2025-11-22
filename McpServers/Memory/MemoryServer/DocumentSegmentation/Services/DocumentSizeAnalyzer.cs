@@ -67,10 +67,9 @@ public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
                 WordCount = CountWords(content),
                 SentenceCount = CountSentences(content),
                 ParagraphCount = CountParagraphs(content),
+                // Estimate token count (rough approximation: 1 token ≈ 4 characters for English)
+                TokenCount = EstimateTokenCount(content)
             };
-
-            // Estimate token count (rough approximation: 1 token ≈ 4 characters for English)
-            statistics.TokenCount = EstimateTokenCount(content);
 
             _logger.LogDebug(
                 "Document analysis complete: {WordCount} words, {TokenCount} tokens, {SentenceCount} sentences, {ParagraphCount} paragraphs",
@@ -174,7 +173,7 @@ public partial class DocumentSizeAnalyzer : IDocumentSizeAnalyzer
         // LLM overhead for intelligent segmentation
         var llmOverhead = _options.LlmOptions.EnableLlmSegmentation ? 5000 : 0; // 5 seconds base overhead
 
-        var estimatedTime = (long)(statistics.WordCount * baseTimePerWord + llmOverhead);
+        var estimatedTime = (long)((statistics.WordCount * baseTimePerWord) + llmOverhead);
 
         _logger.LogDebug(
             "Estimated processing time for {Strategy}: {Time}ms for {WordCount} words",

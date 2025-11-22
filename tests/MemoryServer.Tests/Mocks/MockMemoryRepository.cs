@@ -73,12 +73,7 @@ public class MockMemoryRepository : IMemoryRepository
         }
 
         // Check session context access
-        if (!memory.GetSessionContext().Matches(sessionContext))
-        {
-            return Task.FromResult<Memory?>(null);
-        }
-
-        return Task.FromResult<Memory?>(memory);
+        return !memory.GetSessionContext().Matches(sessionContext) ? Task.FromResult<Memory?>(null) : Task.FromResult<Memory?>(memory);
     }
 
     public Task<Memory?> UpdateAsync(

@@ -268,7 +268,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         {
             if (!functionsByKey.TryGetValue(descriptor.Key, out var value))
             {
-                value = ([]);
+                value = [];
                 functionsByKey[descriptor.Key] = value;
             }
 
@@ -279,15 +279,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         var resolvedFunctions = new List<FunctionDescriptor>();
         foreach (var kvp in functionsByKey)
         {
-            FunctionDescriptor resolved;
-            if (kvp.Value.Count == 1)
-            {
-                resolved = kvp.Value.First();
-            }
-            else
-            {
-                resolved = ResolveConflict(kvp.Key, kvp.Value);
-            }
+            var resolved = kvp.Value.Count == 1 ? kvp.Value.First() : ResolveConflict(kvp.Key, kvp.Value);
             resolvedFunctions.Add(resolved);
         }
 
@@ -404,7 +396,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             {
                 if (!allFunctions.TryGetValue(function.Key, out var value))
                 {
-                    value = ([]);
+                    value = [];
                     allFunctions[function.Key] = value;
                 }
 
@@ -422,14 +414,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         var resolvedFunctions = new Dictionary<string, FunctionDescriptor>();
         foreach (var kvp in allFunctions)
         {
-            if (kvp.Value.Count == 1)
-            {
-                resolvedFunctions[kvp.Key] = kvp.Value.First();
-            }
-            else
-            {
-                resolvedFunctions[kvp.Key] = ResolveConflict(kvp.Key, kvp.Value);
-            }
+            resolvedFunctions[kvp.Key] = kvp.Value.Count == 1 ? kvp.Value.First() : ResolveConflict(kvp.Key, kvp.Value);
         }
 
         // Generate markdown documentation

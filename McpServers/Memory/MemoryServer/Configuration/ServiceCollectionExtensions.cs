@@ -192,14 +192,7 @@ public static class ServiceCollectionExtensions
     {
         var mcpBuilder = services.AddMcpServer();
 
-        if (transportMode == TransportMode.SSE)
-        {
-            _ = mcpBuilder.WithHttpTransport();
-        }
-        else
-        {
-            _ = mcpBuilder.WithStdioServerTransport();
-        }
+        _ = transportMode == TransportMode.SSE ? mcpBuilder.WithHttpTransport() : mcpBuilder.WithStdioServerTransport();
 
         _ = mcpBuilder.WithToolsFromAssembly(typeof(MemoryMcpTools).Assembly);
 

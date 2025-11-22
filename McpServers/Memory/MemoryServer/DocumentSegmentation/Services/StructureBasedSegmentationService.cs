@@ -933,7 +933,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
             }
         }
 
-        return Math.Max(0.0, 1.0 - (double)inconsistencies / outline.Count);
+        return Math.Max(0.0, 1.0 - ((double)inconsistencies / outline.Count));
     }
 
     private static double CalculateOrganizationQuality(string content, List<StructuralOutlineItem> outline)
@@ -1075,7 +1075,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
             }
         }
 
-        return Math.Max(0.0, 1.0 - (double)inconsistencies / levels.Count);
+        return Math.Max(0.0, 1.0 - ((double)inconsistencies / levels.Count));
     }
 
     private static double CalculateStructuralBoundaryAccuracy(List<DocumentSegment> segments, string originalContent)
@@ -1172,12 +1172,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
             return "methodology";
         }
 
-        if (content.Contains("results", StringComparison.OrdinalIgnoreCase))
-        {
-            return "results";
-        }
-
-        return "content";
+        return content.Contains("results", StringComparison.OrdinalIgnoreCase) ? "results" : "content";
     }
 
     private static List<string> ExtractStructuralKeywords(string content)

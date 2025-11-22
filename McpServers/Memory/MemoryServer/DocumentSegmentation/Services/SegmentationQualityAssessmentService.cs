@@ -54,14 +54,14 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
             var coherenceValidationTasks = segments.Select(segment =>
                 ValidateSemanticCoherenceAsync(segment, options, cancellationToken)
             );
-            assessment.CoherenceValidations = [.. (await Task.WhenAll(coherenceValidationTasks))];
+            assessment.CoherenceValidations = [.. await Task.WhenAll(coherenceValidationTasks)];
 
             // Step 2: Calculate independence scores
             _logger.LogDebug("Calculating independence scores for all segments");
             var independenceAnalysisTasks = segments.Select(segment =>
                 CalculateIndependenceScoreAsync(segment, segments, originalContent, cancellationToken)
             );
-            assessment.IndependenceAnalyses = [.. (await Task.WhenAll(independenceAnalysisTasks))];
+            assessment.IndependenceAnalyses = [.. await Task.WhenAll(independenceAnalysisTasks)];
 
             // Step 3: Validate topic consistency
             _logger.LogDebug("Validating topic consistency across segments");
@@ -782,7 +782,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         var criticalIssues = assessment
             .QualityIssues.IssuesBySeverity.GetValueOrDefault(QualityIssueSeverity.Critical, [])
             .Count;
-        factors.Add(Math.Max(0.0, 1.0 - criticalIssues / 5.0));
+        factors.Add(Math.Max(0.0, 1.0 - (criticalIssues / 5.0)));
 
         // Higher confidence if quality standards are met
         factors.Add(assessment.MeetsQualityStandards ? 1.0 : 0.5);
@@ -1081,12 +1081,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         }
 
         // Check for referential markers
-        if (ReferentialPattern.IsMatch(segment1.Content))
-        {
-            return DependencyType.Referential;
-        }
-
-        return DependencyType.Contextual;
+        return ReferentialPattern.IsMatch(segment1.Content) ? DependencyType.Referential : DependencyType.Contextual;
     }
 
     private static List<string> GenerateIndependenceRecommendations(IndependenceScoreAnalysis analysis)
@@ -1279,16 +1274,10 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         var segmentContent = string.Join(" ", segments.Select(s => s.Content));
         var originalSentences = SentencePattern
             .Split(originalContent)
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Count();
-        var segmentSentences = SentencePattern.Split(segmentContent).Where(s => !string.IsNullOrWhiteSpace(s)).Count();
+            .Count(s => !string.IsNullOrWhiteSpace(s));
+        var segmentSentences = SentencePattern.Split(segmentContent).Count(s => !string.IsNullOrWhiteSpace(s));
 
-        if (originalSentences == 0)
-        {
-            return Task.FromResult(1.0);
-        }
-
-        return Task.FromResult(Math.Min(1.0, (double)segmentSentences / originalSentences));
+        return originalSentences == 0 ? Task.FromResult(1.0) : Task.FromResult(Math.Min(1.0, (double)segmentSentences / originalSentences));
     }
 
     private static List<ContentGap> IdentifyContentGaps(List<DocumentSegment> segments, string originalContent)

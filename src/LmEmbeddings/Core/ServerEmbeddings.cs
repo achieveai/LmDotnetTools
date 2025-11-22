@@ -259,12 +259,7 @@ public class ServerEmbeddings : BaseEmbeddingService
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
                 var embeddingResponse = JsonSerializer.Deserialize<EmbeddingResponse>(responseJson);
 
-                if (embeddingResponse?.Embeddings == null)
-                {
-                    throw new InvalidOperationException("Invalid response from API");
-                }
-
-                return embeddingResponse;
+                return embeddingResponse?.Embeddings == null ? throw new InvalidOperationException("Invalid response from API") : embeddingResponse;
             },
             cancellationToken: cancellationToken
         );

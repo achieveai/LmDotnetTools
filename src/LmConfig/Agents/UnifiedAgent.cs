@@ -414,7 +414,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
 
             return resolution;
         }
-        catch (Exception ex) when (!(ex is InvalidOperationException))
+        catch (Exception ex) when (ex is not InvalidOperationException)
         {
             stopwatch.Stop();
             _logger.LogError(

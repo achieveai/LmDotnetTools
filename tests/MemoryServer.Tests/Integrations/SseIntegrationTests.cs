@@ -36,9 +36,9 @@ public class SseIntegrationTests : IClassFixture<SseTestServerFixture>, IDisposa
 
         // Assert - SSE endpoint should exist (even if it returns method not allowed for HEAD)
         Assert.True(
-            response.StatusCode == System.Net.HttpStatusCode.OK
-                || response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed
-                || response.StatusCode == System.Net.HttpStatusCode.BadRequest
+            response.StatusCode is System.Net.HttpStatusCode.OK
+                or System.Net.HttpStatusCode.MethodNotAllowed
+                or System.Net.HttpStatusCode.BadRequest
         );
         _output.WriteLine($"✅ SSE endpoint exists and responds: {response.StatusCode}");
     }

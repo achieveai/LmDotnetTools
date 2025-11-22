@@ -14,12 +14,9 @@ public static class MessageExtensions
     /// <returns>The extracted text or null if the message is null</returns>
     public static string? GetText(this IMessage? message)
     {
-        if (message == null)
-        {
-            return null;
-        }
-
-        return message switch
+        return message == null
+            ? null
+            : message switch
         {
             TextMessage textMessage => textMessage.Text,
             ToolsCallResultMessage toolCallResult => string.Join(

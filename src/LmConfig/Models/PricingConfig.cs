@@ -27,8 +27,8 @@ public record PricingConfig
     /// <returns>Total cost in dollars</returns>
     public decimal CalculateTotalCost(int promptTokens, int completionTokens)
     {
-        var promptCost = (decimal)((promptTokens * PromptPerMillion) / 1_000_000.0);
-        var completionCost = (decimal)((completionTokens * CompletionPerMillion) / 1_000_000.0);
+        var promptCost = (decimal)(promptTokens * PromptPerMillion / 1_000_000.0);
+        var completionCost = (decimal)(completionTokens * CompletionPerMillion / 1_000_000.0);
         return promptCost + completionCost;
     }
 
@@ -39,7 +39,7 @@ public record PricingConfig
     /// <returns>Prompt cost in dollars</returns>
     public decimal CalculatePromptCost(int promptTokens)
     {
-        return (decimal)((promptTokens * PromptPerMillion) / 1_000_000.0);
+        return (decimal)(promptTokens * PromptPerMillion / 1_000_000.0);
     }
 
     /// <summary>
@@ -49,7 +49,7 @@ public record PricingConfig
     /// <returns>Completion cost in dollars</returns>
     public decimal CalculateCompletionCost(int completionTokens)
     {
-        return (decimal)((completionTokens * CompletionPerMillion) / 1_000_000.0);
+        return (decimal)(completionTokens * CompletionPerMillion / 1_000_000.0);
     }
 }
 

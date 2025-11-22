@@ -19,12 +19,9 @@ public class LowerCaseEnumConverter<TEnum> : JsonConverter<TEnum>
         }
 
         // Try case-insensitive parse to be flexible on input
-        if (Enum.TryParse<TEnum>(value, ignoreCase: true, out var result))
-        {
-            return result;
-        }
-
-        throw new JsonException($"Cannot convert '{value}' to {typeof(TEnum).Name}");
+        return Enum.TryParse<TEnum>(value, ignoreCase: true, out var result)
+            ? result
+            : throw new JsonException($"Cannot convert '{value}' to {typeof(TEnum).Name}");
     }
 
     public override void Write(Utf8JsonWriter writer, TEnum value, JsonSerializerOptions options)
