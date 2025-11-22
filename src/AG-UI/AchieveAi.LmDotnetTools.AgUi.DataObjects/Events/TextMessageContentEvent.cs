@@ -20,7 +20,7 @@ public sealed record TextMessageContentEvent : AgUiEventBase
     /// <summary>
     /// The text content chunk
     /// </summary>
-    [JsonPropertyName("content")]
+    [JsonPropertyName("delta")]
     public string Delta { get; init; } = string.Empty;
 
     /// <summary>

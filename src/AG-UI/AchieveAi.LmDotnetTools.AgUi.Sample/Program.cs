@@ -6,6 +6,7 @@ using AchieveAi.LmDotnetTools.AgUi.Persistence.Database;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Middleware;
 using AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 using AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
+using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Extensions;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Options;
@@ -72,7 +73,9 @@ if (!string.IsNullOrWhiteSpace(seqUrl))
 // ===== SERVICE CONFIGURATION =====
 
 // Add controllers and API support
-builder.Services.AddControllers();
+// Include controllers from AgUi.AspNetCore assembly
+builder.Services.AddControllers()
+    .AddApplicationPart(typeof(AchieveAi.LmDotnetTools.AgUi.AspNetCore.Controllers.AgUiController).Assembly);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -131,7 +134,10 @@ startupLogger.Information("  Registered: GetWeatherTool, CalculatorTool, SearchT
 startupLogger.Information("Registering sample agents...");
 builder.Services.AddSingleton<ToolCallingAgent>();
 builder.Services.AddSingleton<InstructionChainAgent>();
-startupLogger.Information("  Registered: ToolCallingAgent, InstructionChainAgent");
+// Also register as IStreamingAgent for AG-UI controller
+builder.Services.AddSingleton<IStreamingAgent>(sp => sp.GetRequiredService<ToolCallingAgent>());
+builder.Services.AddSingleton<IStreamingAgent>(sp => sp.GetRequiredService<InstructionChainAgent>());
+startupLogger.Information("  Registered: ToolCallingAgent, InstructionChainAgent (as IStreamingAgent)");
 
 // Register CopilotKit session mapper
 startupLogger.Information("Registering CopilotKit services...");

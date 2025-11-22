@@ -35,3 +35,5 @@ LLM_CACHE/
 *.log
 
 .playwright-mcp/
+.next/
+node_modules/

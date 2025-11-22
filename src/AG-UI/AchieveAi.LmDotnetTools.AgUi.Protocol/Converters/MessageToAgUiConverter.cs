@@ -29,27 +29,27 @@ public class MessageToAgUiConverter : IMessageConverter
     }
 
     /// <inheritdoc/>
-    public IEnumerable<AgUiEventBase> ConvertToAgUiEvents(IMessage message, string sessionId)
+    public IEnumerable<AgUiEventBase> ConvertToAgUiEvents(IMessage message, string sessionId, string? threadId = null, string? runId = null)
     {
         return message switch
         {
-            TextUpdateMessage textUpdate => ConvertTextUpdate(textUpdate, sessionId),
-            ToolsCallUpdateMessage toolUpdate => ConvertToolCallUpdate(toolUpdate, sessionId),
-            ReasoningUpdateMessage reasoningUpdate => ConvertReasoningUpdate(reasoningUpdate, sessionId),
-            TextMessage textMessage => ConvertTextMessage(textMessage, sessionId),
-            ToolsCallAggregateMessage aggregate => ConvertToolsCallAggregateMessage(aggregate, sessionId),
-            ReasoningMessage reasoningMessage => ConvertReasoningMessage(reasoningMessage, sessionId),
-            ToolsCallMessage toolsCallMessage => ConvertToolsCallMessage(toolsCallMessage, sessionId),
-            _ => HandleUnknown(sessionId)
+            TextUpdateMessage textUpdate => ConvertTextUpdate(textUpdate, sessionId, threadId, runId),
+            ToolsCallUpdateMessage toolUpdate => ConvertToolCallUpdate(toolUpdate, sessionId, threadId, runId),
+            ReasoningUpdateMessage reasoningUpdate => ConvertReasoningUpdate(reasoningUpdate, sessionId, threadId, runId),
+            TextMessage textMessage => ConvertTextMessage(textMessage, sessionId, threadId, runId),
+            ToolsCallAggregateMessage aggregate => ConvertToolsCallAggregateMessage(aggregate, sessionId, threadId, runId),
+            ReasoningMessage reasoningMessage => ConvertReasoningMessage(reasoningMessage, sessionId, threadId, runId),
+            ToolsCallMessage toolsCallMessage => ConvertToolsCallMessage(toolsCallMessage, sessionId, threadId, runId),
+            _ => HandleUnknown(sessionId, threadId, runId)
         };
     }
 
-    public IEnumerable<AgUiEventBase> Flush(string sessionId)
+    public IEnumerable<AgUiEventBase> Flush(string sessionId, string? threadId = null, string? runId = null)
     {
         if (_activeMessageKey.HasValue)
         {
             var (messageId, messageType) = _activeMessageKey.Value;
-            foreach (var endEvent in CloseOrphanedMessage(messageId, messageType, sessionId))
+            foreach (var endEvent in CloseOrphanedMessage(messageId, messageType, sessionId, threadId, runId))
             {
                 yield return endEvent;
             }
@@ -57,20 +57,20 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private IEnumerable<AgUiEventBase> HandleUnknown(string sessionId)
+    private IEnumerable<AgUiEventBase> HandleUnknown(string sessionId, string? threadId, string? runId)
     {
         // Check if we're switching to a different message - close the previous one
         if (_activeMessageKey.HasValue)
         {
             var (prevId, prevType) = _activeMessageKey.Value;
-            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId))
+            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId, threadId, runId))
             {
                 yield return endEvent;
             }
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertTextUpdate(TextUpdateMessage update, string sessionId)
+    private IEnumerable<AgUiEventBase> ConvertTextUpdate(TextUpdateMessage update, string sessionId, string? threadId, string? runId)
     {
         var messageType = update.IsThinking ? "Thinking" : "Text";
         var messageId = GetOrCreateMessageId(update.GenerationId);
@@ -80,7 +80,7 @@ public class MessageToAgUiConverter : IMessageConverter
         if (_activeMessageKey.HasValue && _activeMessageKey.Value != currentKey)
         {
             var (prevId, prevType) = _activeMessageKey.Value;
-            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId))
+            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId, threadId, runId))
             {
                 yield return endEvent;
             }
@@ -98,6 +98,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new TextMessageStartEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 Role = ConvertRole(update.Role)
             };
@@ -110,6 +112,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new TextMessageContentEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 Delta = update.Text,
                 ChunkIndex = chunkIndex,
@@ -119,7 +123,7 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertToolCallUpdate(ToolsCallUpdateMessage update, string sessionId)
+    private IEnumerable<AgUiEventBase> ConvertToolCallUpdate(ToolsCallUpdateMessage update, string sessionId, string? threadId, string? runId)
     {
         foreach (var toolCallUpdate in update.ToolCallUpdates)
         {
@@ -134,7 +138,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 if (_activeMessageKey.HasValue && _activeMessageKey.Value != currentKey)
                 {
                     var (prevId, prevType) = _activeMessageKey.Value;
-                    foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId))
+                    foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId, threadId, runId))
                     {
                         yield return endEvent;
                     }
@@ -146,6 +150,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ToolCallStartEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     ToolCallId = toolCallId,
                     ToolName = toolCallUpdate.FunctionName
                 };
@@ -162,6 +168,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ToolCallArgumentsEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     ToolCallId = toolCallId,
                     Delta = toolCallUpdate.FunctionArgs,
                     JsonFragmentUpdates = fragmentUpdates
@@ -174,6 +182,8 @@ public class MessageToAgUiConverter : IMessageConverter
                     yield return new ToolCallEndEvent
                     {
                         SessionId = sessionId,
+                        ThreadId = threadId,
+                        RunId = runId,
                         ToolCallId = toolCallId,
                         Duration = duration
                     };
@@ -188,7 +198,7 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertTextMessage(TextMessage textMessage, string sessionId)
+    private IEnumerable<AgUiEventBase> ConvertTextMessage(TextMessage textMessage, string sessionId, string? threadId, string? runId)
     {
         var messageId = GetOrCreateMessageId(textMessage.GenerationId);
 
@@ -196,6 +206,8 @@ public class MessageToAgUiConverter : IMessageConverter
         yield return new TextMessageStartEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             MessageId = messageId,
             Role = ConvertRole(textMessage.Role)
         };
@@ -206,6 +218,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new TextMessageContentEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 Delta = textMessage.Text,
                 ChunkIndex = 0
@@ -216,13 +230,15 @@ public class MessageToAgUiConverter : IMessageConverter
         yield return new TextMessageEndEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             MessageId = messageId,
             TotalChunks = string.IsNullOrEmpty(textMessage.Text) ? 0 : 1,
             TotalLength = textMessage.Text?.Length ?? 0
         };
     }
 
-    private IEnumerable<AgUiEventBase> ConvertToolsCallMessage(ToolsCallMessage toolsCallMessage, string sessionId)
+    private IEnumerable<AgUiEventBase> ConvertToolsCallMessage(ToolsCallMessage toolsCallMessage, string sessionId, string? threadId, string? runId)
     {
         foreach (var toolCall in toolsCallMessage.ToolCalls)
         {
@@ -234,6 +250,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ToolCallStartEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 ToolCallId = toolCallId,
                 ToolName = toolCall.FunctionName
             };
@@ -244,6 +262,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ToolCallArgumentsEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     ToolCallId = toolCallId,
                     Delta = toolCall.FunctionArgs,
                     JsonFragmentUpdates = null
@@ -255,16 +275,18 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ToolCallEndEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 ToolCallId = toolCallId,
                 Duration = duration
             };
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertToolsCallAggregateMessage(ToolsCallAggregateMessage aggregate, string sessionId)
+    private IEnumerable<AgUiEventBase> ConvertToolsCallAggregateMessage(ToolsCallAggregateMessage aggregate, string sessionId, string? threadId, string? runId)
     {
         // First, emit events for the tool call request
-        foreach (var evt in ConvertToolsCallMessage(aggregate.ToolsCallMessage, sessionId))
+        foreach (var evt in ConvertToolsCallMessage(aggregate.ToolsCallMessage, sessionId, threadId, runId))
         {
             yield return evt;
         }
@@ -279,6 +301,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ToolCallResultEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     ToolCallId = toolCallId,
                     Content = result.Result
                 };
@@ -286,13 +310,13 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertReasoningMessage(ReasoningMessage reasoningMessage, string sessionId)
+    private IEnumerable<AgUiEventBase> ConvertReasoningMessage(ReasoningMessage reasoningMessage, string sessionId, string? threadId, string? runId)
     {
         // Check if we're switching to a different message - close the previous one
         if (_activeMessageKey.HasValue)
         {
             var (prevId, prevType) = _activeMessageKey.Value;
-            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId))
+            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId, threadId, runId))
             {
                 yield return endEvent;
             }
@@ -305,6 +329,8 @@ public class MessageToAgUiConverter : IMessageConverter
         var reasoningStartEvent = new ReasoningStartEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             EncryptedReasoning = reasoningMessage.Visibility == ReasoningVisibility.Encrypted
                 ? reasoningMessage.Reasoning
                 : null
@@ -318,6 +344,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ReasoningMessageStartEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 Visibility = visibilityString
             };
@@ -328,6 +356,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ReasoningMessageContentEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     MessageId = messageId,
                     Delta = reasoningMessage.Reasoning,
                     ChunkIndex = 0
@@ -338,6 +368,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ReasoningMessageEndEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 TotalChunks = string.IsNullOrEmpty(reasoningMessage.Reasoning) ? 0 : 1,
                 TotalLength = reasoningMessage.Reasoning?.Length ?? 0
@@ -348,6 +380,8 @@ public class MessageToAgUiConverter : IMessageConverter
         var reasoningEndEvent = new ReasoningEndEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             Summary = reasoningMessage.Visibility == ReasoningVisibility.Summary
                 ? reasoningMessage.Reasoning
                 : null
@@ -355,7 +389,7 @@ public class MessageToAgUiConverter : IMessageConverter
         yield return reasoningEndEvent;
     }
 
-    private IEnumerable<AgUiEventBase> ConvertReasoningUpdate(ReasoningUpdateMessage update, string sessionId)
+    private IEnumerable<AgUiEventBase> ConvertReasoningUpdate(ReasoningUpdateMessage update, string sessionId, string? threadId, string? runId)
     {
         const string messageType = "reasoning";
         var messageId = GetOrCreateMessageId(update.GenerationId);
@@ -365,7 +399,7 @@ public class MessageToAgUiConverter : IMessageConverter
         if (_activeMessageKey.HasValue && _activeMessageKey.Value != currentKey)
         {
             var (prevId, prevType) = _activeMessageKey.Value;
-            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId))
+            foreach (var endEvent in CloseOrphanedMessage(prevId, prevType, sessionId, threadId, runId))
             {
                 yield return endEvent;
             }
@@ -385,6 +419,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ReasoningStartEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 EncryptedReasoning = null
             };
 
@@ -392,6 +428,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ReasoningMessageStartEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 Visibility = visibilityString
             };
@@ -404,6 +442,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ReasoningMessageContentEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 Delta = update.Reasoning,
                 ChunkIndex = chunkIndex
@@ -421,6 +461,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ReasoningMessageEndEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 MessageId = messageId,
                 TotalChunks = totalChunks,
                 TotalLength = state.TotalLength
@@ -430,6 +472,8 @@ public class MessageToAgUiConverter : IMessageConverter
             yield return new ReasoningEndEvent
             {
                 SessionId = sessionId,
+                ThreadId = threadId,
+                RunId = runId,
                 Summary = null  // Summary would come from a separate message
             };
 
@@ -457,7 +501,7 @@ public class MessageToAgUiConverter : IMessageConverter
     /// <summary>
     /// Closes an orphaned message by emitting appropriate END events
     /// </summary>
-    private IEnumerable<AgUiEventBase> CloseOrphanedMessage(string messageId, string messageType, string sessionId)
+    private IEnumerable<AgUiEventBase> CloseOrphanedMessage(string messageId, string messageType, string sessionId, string? threadId, string? runId)
     {
         var key = $"{messageId}_{messageType}";
         if (!_messageStates.TryGetValue(key, out var state))
@@ -479,6 +523,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new TextMessageEndEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     MessageId = messageId,
                     TotalChunks = totalChunks,
                     TotalLength = state.TotalLength
@@ -490,6 +536,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ReasoningMessageEndEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     MessageId = messageId,
                     TotalChunks = totalChunks,
                     TotalLength = state.TotalLength
@@ -497,6 +545,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ReasoningEndEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     Summary = null
                 };
                 break;
@@ -508,6 +558,8 @@ public class MessageToAgUiConverter : IMessageConverter
                 yield return new ToolCallEndEvent
                 {
                     SessionId = sessionId,
+                    ThreadId = threadId,
+                    RunId = runId,
                     ToolCallId = messageId
                 };
                 break;

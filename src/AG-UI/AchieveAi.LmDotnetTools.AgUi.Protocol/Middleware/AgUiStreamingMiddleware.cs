@@ -120,6 +120,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         // Get session ID from GenerateReplyOptions first, fall back to generating new one
         // This ensures sessionId is consistent with the controller's sessionId
         var sessionId = context.GetOrCreateSessionId(context.Options?.ThreadId);
+        var threadId = context.Options?.ThreadId;
 
         var runId = context.Options?.RunId
             ?? context.GetOrCreateRunId();
@@ -134,6 +135,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         await PublishEventSafely(new RunStartedEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
             RunId = runId
         }, ct);
 
@@ -145,13 +147,13 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
 
             // Convert and publish AG-UI events as side effect
             // Errors in publishing don't break the stream
-            await ProcessMessageAsync(message, sessionId, ct);
+            await ProcessMessageAsync(message, sessionId, threadId, runId, ct);
 
             // ALWAYS yield message through, even if event publishing failed
             yield return message;
         }
 
-        foreach (var evt in _converter.Flush(sessionId))
+        foreach (var evt in _converter.Flush(sessionId, threadId, runId))
         {
             await PublishEventSafely(evt, ct);
         }
@@ -162,6 +164,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         await PublishEventSafely(new RunFinishedEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
             RunId = runId,
             Status = RunStatus.Success
         }, ct);
@@ -174,20 +177,20 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
     /// Processes a single message by converting it to AG-UI events and publishing them.
     /// Errors in conversion or publishing are logged but don't break the stream.
     /// </summary>
-    private async Task ProcessMessageAsync(IMessage message, string sessionId, CancellationToken ct)
+    private async Task ProcessMessageAsync(IMessage message, string sessionId, string? threadId, string? runId, CancellationToken ct)
     {
-        await PublishMessageEventsSafely(message, sessionId, ct);
+        await PublishMessageEventsSafely(message, sessionId, threadId, runId, ct);
     }
 
     /// <summary>
     /// Safely publishes AG-UI events for a message without breaking the stream.
     /// This wrapper ensures that errors in conversion or publishing don't propagate.
     /// </summary>
-    private async Task PublishMessageEventsSafely(IMessage message, string sessionId, CancellationToken ct)
+    private async Task PublishMessageEventsSafely(IMessage message, string sessionId, string? threadId, string? runId, CancellationToken ct)
     {
         try
         {
-            var events = _converter.ConvertToAgUiEvents(message, sessionId);
+            var events = _converter.ConvertToAgUiEvents(message, sessionId, threadId, runId);
 
             foreach (var evt in events)
             {
@@ -263,11 +266,15 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         }
 
         var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
+        var threadId = _currentContext.Value.Options?.ThreadId;
+        var runId = _currentContext.Value.Options?.RunId;
 
         // Publish tool-call-start event
         var toolCallStartEvent = new ToolCallStartEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
             ToolName = functionName
         };
@@ -278,6 +285,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         var toolCallArgsEvent = new ToolCallArgumentsEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
             Delta = functionArgs
         };
@@ -301,12 +310,16 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         }
 
         var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
+        var threadId = _currentContext.Value.Options?.ThreadId;
+        var runId = _currentContext.Value.Options?.RunId;
 
         // Tool results are no longer separate events in the protocol
         // They should be embedded in messages. For now, just emit tool-call-end event
         var toolCallEndEvent = new ToolCallEndEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
             Duration = TimeSpan.Zero // We don't track duration here
         };
@@ -331,11 +344,15 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         }
 
         var sessionId = _currentContext.Value.GetOrCreateSessionId(_currentContext.Value.Options?.ThreadId);
+        var threadId = _currentContext.Value.Options?.ThreadId;
+        var runId = _currentContext.Value.Options?.RunId;
 
         // Tool call errors should be reported as RUN_ERROR events
         var errorEvent = new ErrorEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ErrorCode = "TOOL_CALL_ERROR",
             Message = $"Tool call {functionName} failed: {error}",
             Recoverable = true
@@ -347,6 +364,8 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         var toolCallEndEvent = new ToolCallEndEvent
         {
             SessionId = sessionId,
+            ThreadId = threadId,
+            RunId = runId,
             ToolCallId = toolCallId,
             Duration = TimeSpan.Zero
         };
