@@ -19,6 +19,14 @@ public record struct ToolCall(
     [JsonPropertyName("tool_call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolCallId { get; init; }
+
+    /// <summary>
+    /// Order index of this tool call within its containing ToolCallMessage.
+    /// Enables deterministic reconstruction of tool call order for KV cache optimization.
+    /// </summary>
+    [JsonPropertyName("toolCallIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int ToolCallIdx { get; init; }
 }
 
 public record struct ToolCallResult(

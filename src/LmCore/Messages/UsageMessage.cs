@@ -65,6 +65,13 @@ public record UsageMessage : IMessage, ICanGetUsage
     [JsonPropertyName("runId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
+
+    /// <summary>
+    /// Order index of this message within its generation (same GenerationId).
+    /// </summary>
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
 }
 
 /// <summary>

@@ -338,150 +338,8 @@ public class FunctionCallMiddleware : IStreamingMiddleware
     }
 
     /// <summary>
-    /// Execute a single tool call and return the result
-    /// </summary>
-    private async Task<ToolCallResult> ExecuteToolCallAsync(
-        ToolCall toolCall,
-        CancellationToken cancellationToken = default
-    )
-    {
-        var functionName = toolCall.FunctionName!;
-        var functionArgs = toolCall.FunctionArgs!;
-        var startTime = DateTime.UtcNow;
-
-        // Notify callback that tool call is starting
-        if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
-        {
-            await _resultCallback.OnToolCallStartedAsync(
-                toolCall.ToolCallId,
-                functionName,
-                functionArgs,
-                cancellationToken
-            );
-        }
-
-        if (_functionMap.TryGetValue(functionName, out var func))
-        {
-            try
-            {
-                var result = await func(functionArgs);
-                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-
-                _logger.LogInformation(
-                    "Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
-                    functionName,
-                    duration,
-                    true
-                );
-
-                var toolCallResult = new ToolCallResult(toolCall.ToolCallId, result);
-
-                // Notify callback that result is available
-                if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
-                {
-                    await _resultCallback.OnToolResultAvailableAsync(
-                        toolCall.ToolCallId,
-                        toolCallResult,
-                        cancellationToken
-                    );
-                }
-
-                return toolCallResult;
-            }
-            catch (Exception ex)
-            {
-                var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-
-                _logger.LogError(
-                    ex,
-                    "Function execution failed: Name={FunctionName}, Args={Args}, Duration={Duration}ms, ToolCallId={ToolCallId}",
-                    functionName,
-                    functionArgs,
-                    duration,
-                    toolCall.ToolCallId
-                );
-
-                _logger.LogInformation(
-                    "Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
-                    functionName,
-                    duration,
-                    false
-                );
-
-                var errorMessage = $"Error executing function: {ex.Message}";
-
-                // Notify callback about the error
-                if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
-                {
-                    await _resultCallback.OnToolCallErrorAsync(
-                        toolCall.ToolCallId,
-                        functionName,
-                        errorMessage,
-                        cancellationToken
-                    );
-                }
-
-                // Handle exceptions during function execution
-                var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage);
-
-                // Still notify with result (containing error)
-                if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
-                {
-                    await _resultCallback.OnToolResultAvailableAsync(
-                        toolCall.ToolCallId,
-                        errorResult,
-                        cancellationToken
-                    );
-                }
-
-                return errorResult;
-            }
-        }
-        else
-        {
-            // Return error for unavailable function
-            var availableFunctions = string.Join(", ", _functionMap.Keys);
-            var errorMessage = $"Function '{functionName}' is not available. Available functions: {availableFunctions}";
-
-            _logger.LogError(
-                "Function mapping error: Unavailable function '{FunctionName}' requested, ToolCallId={ToolCallId}, AvailableFunctions=[{AvailableFunctions}]",
-                functionName,
-                toolCall.ToolCallId,
-                availableFunctions
-            );
-
-            _logger.LogInformation(
-                "Function executed: Name={FunctionName}, Duration={Duration}ms, Success={Success}",
-                functionName,
-                0,
-                false
-            );
-
-            // Notify callback about the error
-            if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
-            {
-                await _resultCallback.OnToolCallErrorAsync(
-                    toolCall.ToolCallId,
-                    functionName,
-                    errorMessage,
-                    cancellationToken
-                );
-            }
-
-            var errorResult = new ToolCallResult(toolCall.ToolCallId, errorMessage);
-
-            // Still notify with result (containing error)
-            if (_resultCallback != null && !string.IsNullOrEmpty(toolCall.ToolCallId))
-            {
-                await _resultCallback.OnToolResultAvailableAsync(toolCall.ToolCallId, errorResult, cancellationToken);
-            }
-
-            return errorResult;
-        }
-    }
-
-    /// <summary>
-    /// Execute multiple tool calls and return a message with results
+    /// Execute multiple tool calls and return a message with results.
+    /// This method now delegates to ToolCallExecutor for actual execution.
     /// </summary>
     private async Task<ToolsCallResultMessage> ExecuteToolCallsAsync(
         IEnumerable<ToolCall> toolCalls,
@@ -489,57 +347,53 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
-        var toolCallResults = new List<ToolCallResult>();
-        var toolCallCount = toolCalls.Count();
-        var startTime = DateTime.UtcNow;
-
-        _logger.LogInformation("Tool call processing started: ToolCallCount={ToolCallCount}", toolCallCount);
-
-        foreach (var toolCall in toolCalls)
+        // Create a ToolsCallMessage from the tool calls for the executor
+        var toolsCallMessage = new ToolsCallMessage
         {
-            try
-            {
-                var result = await ExecuteToolCallAsync(toolCall, cancellationToken);
-                toolCallResults.Add(result);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "Tool call processing error: ToolCallId={ToolCallId}, FunctionName={FunctionName}",
-                    toolCall.ToolCallId,
-                    toolCall.FunctionName
-                );
-
-                // Add an error result for this tool call
-                toolCallResults.Add(
-                    new ToolCallResult(toolCall.ToolCallId, $"Tool call processing error: {ex.Message}")
-                );
-            }
-        }
-
-        var duration = (DateTime.UtcNow - startTime).TotalMilliseconds;
-        var successCount = toolCallResults.Count(r =>
-            !r.Result.StartsWith("Error executing function:") && !r.Result.Contains("is not available")
-        );
-
-        _logger.LogInformation(
-            "Tool call processing completed: ToolCallCount={ToolCallCount}, SuccessCount={SuccessCount}, Duration={Duration}ms",
-            toolCallCount,
-            successCount,
-            duration
-        );
-
-        // Return a ToolsCallResultMessage with all results
-        return new ToolsCallResultMessage
-        {
-            ToolCallResults = [.. toolCallResults],
-            Role = Role.Tool,
-            FromAgent = string.Empty, // No Id property in IAgent
+            ToolCalls = toolCalls.ToImmutableList(),
+            Role = Role.Assistant,
+            FromAgent = string.Empty,
         };
+
+        // Delegate to ToolCallExecutor
+        return await ToolCallExecutor.ExecuteAsync(
+            toolsCallMessage,
+            _functionMap,
+            _resultCallback,
+            _logger,
+            cancellationToken
+        );
     }
 
-    // Method removed as it was replaced by ExecuteToolCallsAsync
+    /// <summary>
+    /// Execute a single tool call and return the result.
+    /// Helper method for streaming scenarios. Delegates to ToolCallExecutor.
+    /// </summary>
+    private async Task<ToolCallResult> ExecuteToolCallAsync(
+        ToolCall toolCall,
+        CancellationToken cancellationToken = default
+    )
+    {
+        // Create a ToolsCallMessage with a single tool call
+        var toolsCallMessage = new ToolsCallMessage
+        {
+            ToolCalls = [toolCall],
+            Role = Role.Assistant,
+            FromAgent = string.Empty,
+        };
+
+        // Execute using ToolCallExecutor
+        var result = await ToolCallExecutor.ExecuteAsync(
+            toolsCallMessage,
+            _functionMap,
+            _resultCallback,
+            _logger,
+            cancellationToken
+        );
+
+        // Return the first (and only) result
+        return result.ToolCallResults.First();
+    }
 
     /// <summary>
     /// Transform a stream of messages using a message builder for aggregation

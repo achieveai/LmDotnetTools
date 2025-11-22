@@ -42,6 +42,14 @@ public interface IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ThreadId => null;
 
+    /// <summary>
+    /// Order index of this message within its generation (same GenerationId)
+    /// Enables deterministic reconstruction of message order for KV cache optimization
+    /// Restarts at 0 for each new generation. Null for messages without ordering (e.g., user messages)
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx => null;
+
     public ImmutableDictionary<string, object?>? GetMetaTools()
     {
         return null;

@@ -94,7 +94,11 @@ public record ChatMessage
             else
             {
                 var toolCalls = ToolCalls
-                    .Select(tc => new ToolCall(tc.Function.Name, tc.Function.Arguments) { ToolCallId = tc.Id })
+                    .Select((tc, idx) => new ToolCall(tc.Function.Name, tc.Function.Arguments)
+                    {
+                        ToolCallId = tc.Id,
+                        ToolCallIdx = idx // Assign sequential tool call index
+                    })
                     .ToArray();
 
                 yield return new ToolsCallMessage

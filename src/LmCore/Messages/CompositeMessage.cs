@@ -24,6 +24,10 @@ public class CompositeMessage : IMessage
     [JsonPropertyName("runId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
+
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
 }
 
 public class CompositeMessageJsonConverter : ShadowPropertiesJsonConverter<CompositeMessage>
