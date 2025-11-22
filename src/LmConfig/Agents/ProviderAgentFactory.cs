@@ -1,4 +1,6 @@
 using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Agents;
+using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 using AchieveAi.LmDotnetTools.LmConfig.Http;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
@@ -29,6 +31,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
     {
         { "OpenAI", "OpenAI" },
         { "Anthropic", "Anthropic" },
+        { "ClaudeAgentSDK", "ClaudeAgentSDK" },
         { "OpenRouter", "OpenAI" },
         { "DeepInfra", "OpenAI" },
         { "Groq", "OpenAI" },
@@ -75,6 +78,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
         {
             "Anthropic" => CreateAnthropicAgent(resolution),
             "OpenAI" => CreateOpenAIAgent(resolution),
+            "ClaudeAgentSDK" => CreateClaudeAgentSdkAgent(resolution),
             "Replicate" => throw new NotSupportedException("Replicate provider is not yet supported"),
             _ => throw new NotSupportedException($"Provider compatibility type '{compatibilityType}' is not supported"),
         };
@@ -257,6 +261,43 @@ public class ProviderAgentFactory : IProviderAgentFactory
             _logger
         );
         return new OpenClient(httpClient, resolution.Connection.EndpointUrl);
+    }
+
+    private IAgent CreateClaudeAgentSdkAgent(ProviderResolution resolution)
+    {
+        try
+        {
+            // Create options for ClaudeAgentSDK
+            var options = new ClaudeAgentSdkOptions
+            {
+                ProjectRoot = Directory.GetCurrentDirectory(),
+                McpConfigPath = ".mcp.json"
+            };
+
+            // Create client and agent
+            var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();
+            var client = new ClaudeAgentSdkClient(options, clientLogger);
+
+            var agentName = $"{resolution.EffectiveProviderName}-{resolution.EffectiveModelName}";
+            var agentLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkAgent>();
+
+            _logger.LogDebug(
+                "Creating ClaudeAgentSDK agent: Provider={Provider}, Model={Model}, AgentType={AgentType}",
+                resolution.EffectiveProviderName,
+                resolution.EffectiveModelName,
+                "ClaudeAgentSdkAgent"
+            );
+
+            return new ClaudeAgentSdkAgent(agentName, client, options, agentLogger);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create ClaudeAgentSDK agent for {Provider}", resolution.EffectiveProviderName);
+            throw new InvalidOperationException(
+                $"Failed to create ClaudeAgentSDK agent for provider '{resolution.EffectiveProviderName}': {ex.Message}",
+                ex
+            );
+        }
     }
 
     /// <summary>
