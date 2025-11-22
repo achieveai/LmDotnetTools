@@ -45,12 +45,7 @@ public sealed class MessageRepository : IMessageRepository
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
-        if (await reader.ReadAsync(ct))
-        {
-            return MapMessageEntity(reader);
-        }
-
-        return null;
+        return await reader.ReadAsync(ct) ? MapMessageEntity(reader) : null;
     }
 
     /// <inheritdoc/>

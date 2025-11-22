@@ -38,11 +38,7 @@ public class HttpRetryHelperTests
             attemptCount++;
             Debug.WriteLine($"Operation attempt {attemptCount}");
 
-            if (attemptCount <= failureCount)
-            {
-                throw new HttpRequestException("Simulated network timeout");
-            }
-            return Task.FromResult("Success");
+            return attemptCount <= failureCount ? throw new HttpRequestException("Simulated network timeout") : Task.FromResult("Success");
         });
 
         // Act & Assert

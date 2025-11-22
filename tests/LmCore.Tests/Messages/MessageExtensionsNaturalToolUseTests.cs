@@ -52,7 +52,7 @@ public class MessageExtensionsNaturalToolUseTests
         IMessage nullMessage = null!;
 
         // Act & Assert
-        _ = Assert.Throws<ArgumentNullException>(() => nullMessage.ToNaturalToolUse());
+        _ = Assert.Throws<ArgumentNullException>(nullMessage.ToNaturalToolUse);
     }
 
     [Fact]

@@ -42,10 +42,10 @@ public class ProviderStatistics
         TotalRequests > 0 ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests) : TimeSpan.Zero;
 
     /// <summary>Success rate as percentage (all time)</summary>
-    public double SuccessRate => TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double SuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Retry rate as percentage (all time)</summary>
-    public double RetryRate => TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
+    public double RetryRate => TotalRequests > 0 ? RetriedRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Model-specific statistics</summary>
     public IReadOnlyDictionary<string, ModelStatistics> ModelStatistics
@@ -227,7 +227,7 @@ public class ModelStatistics
         TotalRequests > 0 ? TimeSpan.FromTicks(TotalProcessingTime.Ticks / TotalRequests) : TimeSpan.Zero;
 
     /// <summary>Success rate for this model</summary>
-    public double SuccessRate => TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double SuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Average tokens per request for this model</summary>
     public double AverageTokensPerRequest => TotalRequests > 0 ? (double)TotalTokens / TotalRequests : 0;

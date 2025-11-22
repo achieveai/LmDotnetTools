@@ -266,12 +266,7 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
             return "Anthropic";
         }
 
-        if (request.IsOpenAIRequest())
-        {
-            return "OpenAI";
-        }
-
-        return "OpenAI";
+        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
     }
 
     public void Dispose()
@@ -483,15 +478,10 @@ public static class RequestExtensions
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
 
-            if (
-                root.TryGetProperty("messages", out var messagesElement)
+            return root.TryGetProperty("messages", out var messagesElement)
                 && messagesElement.ValueKind == JsonValueKind.Array
-            )
-            {
-                return messagesElement.GetArrayLength();
-            }
-
-            return 0;
+                ? messagesElement.GetArrayLength()
+                : 0;
         }
         catch
         {
@@ -653,12 +643,7 @@ public class ConversationState
     public T GetValue<T>(string key, T defaultValue = default!)
         where T : struct
     {
-        if (_state.TryGetValue(key, out var value) && value is T typedValue)
-        {
-            return typedValue;
-        }
-
-        return defaultValue;
+        return _state.TryGetValue(key, out var value) && value is T typedValue ? typedValue : defaultValue;
     }
 
     public bool Has(string key)
@@ -1166,18 +1151,13 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
         // Preload file content if file exists
         if (File.Exists(_filePath))
         {
-            _cachedFileContent = _fileContentCache.GetOrAdd(_filePath, path => File.ReadAllText(path));
+            _cachedFileContent = _fileContentCache.GetOrAdd(_filePath, File.ReadAllText);
         }
     }
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
     {
-        if (_disposed)
-        {
-            throw new ObjectDisposedException(nameof(StreamingFileResponseProvider));
-        }
-
-        return true;
+        return _disposed ? throw new ObjectDisposedException(nameof(StreamingFileResponseProvider)) : true;
     }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
@@ -1196,7 +1176,7 @@ internal class StreamingFileResponseProvider : IResponseProvider, IDisposable
             }
 
             // Cache miss - load file content
-            _cachedFileContent = _fileContentCache.GetOrAdd(_filePath, path => File.ReadAllText(path));
+            _cachedFileContent = _fileContentCache.GetOrAdd(_filePath, File.ReadAllText);
         }
 
         // Create SSE stream from cached content
@@ -1283,12 +1263,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
     {
-        if (_disposed)
-        {
-            throw new ObjectDisposedException(nameof(StreamingSequenceResponseProvider));
-        }
-
-        return true;
+        return _disposed ? throw new ObjectDisposedException(nameof(StreamingSequenceResponseProvider)) : true;
     }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
@@ -1323,7 +1298,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
         try
         {
             // If the sequence is an array or enumerable, convert each item to an SSE event
-            if (sequence is System.Collections.IEnumerable enumerable && !(sequence is string))
+            if (sequence is System.Collections.IEnumerable enumerable and not string)
             {
                 foreach (var item in enumerable)
                 {
@@ -1410,12 +1385,7 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(StreamingMemoryStream));
-            }
-
-            return _innerStream.Read(buffer, offset, count);
+            return _disposed ? throw new ObjectDisposedException(nameof(StreamingMemoryStream)) : _innerStream.Read(buffer, offset, count);
         }
 
         public override void Flush() { }
@@ -1608,7 +1578,7 @@ public class EnhancedConditionalBuilder
 
         var innerProvider = new SimpleJsonResponseProvider(jsonResponse);
         var statefulProvider = new StatefulResponseProvider(_state, condition, innerProvider);
-        _multiProvider.AddCondition((req, idx) => statefulProvider.CanHandle(req, idx), statefulProvider);
+        _multiProvider.AddCondition(statefulProvider.CanHandle, statefulProvider);
         return this;
     }
 
@@ -1772,14 +1742,11 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
 
         var response = await _middlewarePipeline(request, requestIndex);
 
-        if (response == null)
-        {
-            throw new InvalidOperationException(
+        return response == null
+            ? throw new InvalidOperationException(
                 $"No middleware handled request #{requestIndex} to {request.RequestUri}"
-            );
-        }
-
-        return response;
+            )
+            : response;
     }
 
     private static Func<HttpRequestMessage, int, Task<HttpResponseMessage?>> BuildPipeline(
@@ -2124,7 +2091,7 @@ public class MockHttpHandlerBuilder
     /// </summary>
     public MockHttpHandlerBuilder WhenToolResults(string responseText)
     {
-        return When(req => RequestContainsToolResults(req)).ThenRespondWithAnthropicMessage(responseText);
+        return When(RequestContainsToolResults).ThenRespondWithAnthropicMessage(responseText);
     }
 
     /// <summary>
@@ -2588,7 +2555,7 @@ public class MockHttpHandlerBuilder
         }
 
         // Add all other middleware (excluding capture middleware to avoid duplicates)
-        var otherMiddlewares = _middlewares.Where(m => !(m is RequestCaptureMiddleware)).ToList();
+        var otherMiddlewares = _middlewares.Where(m => m is not RequestCaptureMiddleware).ToList();
         middlewares.AddRange(otherMiddlewares);
 
         return new MockHttpHandler(middlewares);
@@ -3011,12 +2978,7 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
 
     public bool CanHandle(HttpRequestMessage request, int requestIndex)
     {
-        if (_disposed)
-        {
-            throw new ObjectDisposedException(nameof(ApiForwardingProvider));
-        }
-
-        return true;
+        return _disposed ? throw new ObjectDisposedException(nameof(ApiForwardingProvider)) : true;
     }
 
     public async Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
@@ -3122,12 +3084,7 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
             return "Anthropic";
         }
 
-        if (request.IsOpenAIRequest())
-        {
-            return "OpenAI";
-        }
-
-        return "OpenAI";
+        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
     }
 
     public void Dispose()
@@ -3448,12 +3405,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
             return "Anthropic";
         }
 
-        if (request.IsOpenAIRequest())
-        {
-            return "OpenAI";
-        }
-
-        return "OpenAI";
+        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
     }
 
     private static bool IsServerSentEventsResponse(HttpResponseMessage response)

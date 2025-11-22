@@ -26,14 +26,7 @@ public static class AgUiServiceCollectionExtensions
     )
     {
         // Configure options
-        if (configureOptions != null)
-        {
-            _ = services.Configure(configureOptions);
-        }
-        else
-        {
-            _ = services.Configure<AgUiOptions>(_ => { });
-        }
+        _ = configureOptions != null ? services.Configure(configureOptions) : services.Configure<AgUiOptions>(_ => { });
 
         // Validate options on startup
         _ = services

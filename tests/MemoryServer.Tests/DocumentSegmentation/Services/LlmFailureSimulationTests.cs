@@ -651,7 +651,7 @@ public class LlmFailureSimulationTests
         // Health status should reflect mixed results
         var health = resilience.GetHealthStatus();
         Assert.True(
-            health.FallbackUsageRate > 0 && health.FallbackUsageRate < 100,
+            health.FallbackUsageRate is > 0 and < 100,
             "Fallback usage rate should be between 0 and 100%"
         );
     }

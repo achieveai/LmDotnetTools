@@ -638,7 +638,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         // Simple Levenshtein distance-based similarity
         var distance = LevenshteinDistance(str1.ToLowerInvariant(), str2.ToLowerInvariant());
         var maxLength = Math.Max(str1.Length, str2.Length);
-        return 1f - (float)distance / maxLength;
+        return 1f - ((float)distance / maxLength);
     }
 
     private static int LevenshteinDistance(string s1, string s2)
@@ -678,12 +678,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
             return true;
         }
 
-        if (existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown")
-        {
-            return true;
-        }
-
-        return false;
+        return existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown";
     }
 
     private static bool HasBetterData(Entity existing, Entity newEntity)
@@ -707,12 +702,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         // Check if new entity has more source memory IDs
         var existingSourceCount = existing.SourceMemoryIds?.Count ?? 0;
         var newSourceCount = newEntity.SourceMemoryIds?.Count ?? 0;
-        if (newSourceCount > existingSourceCount)
-        {
-            return true;
-        }
-
-        return false;
+        return newSourceCount > existingSourceCount;
     }
 
     private static Entity MergeEntities(Entity existing, Entity newEntity)
@@ -869,12 +859,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         // Check if new relationship has more metadata
         var existingMetadataCount = existing.Metadata?.Count ?? 0;
         var newMetadataCount = newRelationship.Metadata?.Count ?? 0;
-        if (newMetadataCount > existingMetadataCount)
-        {
-            return true;
-        }
-
-        return false;
+        return newMetadataCount > existingMetadataCount;
     }
 
     #endregion

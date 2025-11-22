@@ -94,9 +94,9 @@ public class EntityTests
         {
             Assert.True(string.IsNullOrWhiteSpace(entity.UserId), "UserId should be empty or whitespace");
         }
-        if (confidence < 0 || confidence > 1)
+        if (confidence is < 0 or > 1)
         {
-            Assert.True(entity.Confidence < 0 || entity.Confidence > 1, "Confidence should be out of valid range");
+            Assert.True(entity.Confidence is < 0 or > 1, "Confidence should be out of valid range");
         }
 
         Debug.WriteLine($"⚠️ Invalid entity handled: {expectedIssue}");

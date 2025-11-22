@@ -89,7 +89,7 @@ public static class EmbeddingTestDataGenerator
         var embedding = new float[size];
         for (var i = 0; i < size; i++)
         {
-            embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Range [-1, 1]
+            embedding[i] = (float)((random.NextDouble() * 2.0) - 1.0); // Range [-1, 1]
         }
         return embedding;
     }

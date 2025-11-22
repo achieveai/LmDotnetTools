@@ -289,13 +289,9 @@ public class DocumentSegmentRepositoryTests : IAsyncDisposable
 
     private static List<SegmentRelationship> CreateTestRelationships(List<DocumentSegment> segments)
     {
-        if (segments.Count < 2)
-        {
-            return [];
-        }
-
-        return
-        [
+        return segments.Count < 2
+            ? []
+            : [
             new()
             {
                 Id = Guid.NewGuid().ToString(),

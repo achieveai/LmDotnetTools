@@ -95,15 +95,13 @@ public class OpenClient : BaseHttpService, IOpenClient
         {
             return "Fireworks";
         }
-        else if (baseUrl.Contains("groq.com"))
-        {
-            return "Groq";
-        }
         else
         {
-            return baseUrl.Contains("cerebras.ai") ? "Cerebras"
-                : baseUrl.Contains("api.anthropic.com") ? "Anthropic"
-                : "Unknown";
+            return baseUrl.Contains("groq.com")
+                ? "Groq"
+                : baseUrl.Contains("cerebras.ai") ? "Cerebras"
+                            : baseUrl.Contains("api.anthropic.com") ? "Anthropic"
+                            : "Unknown";
         }
     }
 

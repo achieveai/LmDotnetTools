@@ -92,7 +92,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             var innerOptions = new JsonSerializerOptions(options);
 
             // Remove this converter to avoid infinite recursion
-            var convertersToKeep = innerOptions.Converters.Where(c => !(c is IMessageJsonConverter)).ToList();
+            var convertersToKeep = innerOptions.Converters.Where(c => c is not IMessageJsonConverter).ToList();
 
             innerOptions.Converters.Clear();
             foreach (var conv in convertersToKeep)
@@ -121,13 +121,13 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             return;
         }
 
-        Type valueType = value.GetType();
+        var valueType = value.GetType();
 
         // Create new options without this converter to avoid infinite recursion
         var innerOptions = new JsonSerializerOptions(options);
 
         // Remove this converter to avoid infinite recursion
-        var convertersToKeep = innerOptions.Converters.Where(c => !(c is IMessageJsonConverter)).ToList();
+        var convertersToKeep = innerOptions.Converters.Where(c => c is not IMessageJsonConverter).ToList();
 
         innerOptions.Converters.Clear();
         foreach (var conv in convertersToKeep)

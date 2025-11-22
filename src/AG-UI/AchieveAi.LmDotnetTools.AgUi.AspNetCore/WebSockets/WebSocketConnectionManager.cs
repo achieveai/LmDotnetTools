@@ -62,7 +62,7 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
             );
 
             // Dispose the WebSocket if it's still open
-            if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
+            if (webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
                 try
                 {
@@ -87,12 +87,7 @@ public sealed class WebSocketConnectionManager : IWebSocketConnectionManager
     /// <inheritdoc/>
     public WebSocket? GetConnection(string sessionId)
     {
-        if (string.IsNullOrEmpty(sessionId))
-        {
-            return null;
-        }
-
-        return _connections.TryGetValue(sessionId, out var webSocket) ? webSocket : null;
+        return string.IsNullOrEmpty(sessionId) ? null : _connections.TryGetValue(sessionId, out var webSocket) ? webSocket : null;
     }
 
     /// <inheritdoc/>

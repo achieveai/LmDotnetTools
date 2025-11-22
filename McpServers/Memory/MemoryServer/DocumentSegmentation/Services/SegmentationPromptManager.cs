@@ -16,7 +16,7 @@ public class SegmentationPromptManager : ISegmentationPromptManager
     private readonly ConcurrentDictionary<string, PromptTemplate> _promptCache;
     private readonly ConcurrentDictionary<string, string> _domainInstructionsCache;
     private DateTime _lastLoadTime;
-    private readonly object _loadLock = new();
+    private readonly Lock _loadLock = new();
 
     public SegmentationPromptManager(
         ILogger<SegmentationPromptManager> logger,

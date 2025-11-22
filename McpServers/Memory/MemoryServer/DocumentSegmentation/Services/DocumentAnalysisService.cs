@@ -65,7 +65,7 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
         var scores = new Dictionary<DocumentType, double>();
 
         // Initialize all scores
-        foreach (DocumentType type in Enum.GetValues<DocumentType>())
+        foreach (var type in Enum.GetValues<DocumentType>())
         {
             scores[type] = 0.0;
         }
@@ -278,7 +278,7 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
 
         // Look for short, informal messages
         var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        var shortLines = lines.Count(line => line.Trim().Length < 100 && line.Trim().Length > 5);
+        var shortLines = lines.Count(line => line.Trim().Length is < 100 and > 5);
         if (shortLines > lines.Length * 0.6 && lines.Length > 10)
         {
             characteristics.Add("Short, conversational messages");
@@ -500,18 +500,19 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
 
     private static DocumentFeatures AnalyzeDocumentFeatures(string content)
     {
-        var features = new DocumentFeatures();
+        var features = new DocumentFeatures
+        {
+            // Basic counts
+            WordCount = content.Split(separator, StringSplitOptions.RemoveEmptyEntries).Length,
+            ParagraphCount = content.Split(separatorArray, StringSplitOptions.RemoveEmptyEntries).Length,
 
-        // Basic counts
-        features.WordCount = content.Split(separator, StringSplitOptions.RemoveEmptyEntries).Length;
-        features.ParagraphCount = content.Split(separatorArray, StringSplitOptions.RemoveEmptyEntries).Length;
-
-        // Structural features
-        features.HeadingCount = HeadingPattern.Matches(content).Count;
-        features.ListItemCount = ListPattern.Matches(content).Count;
-        features.CodeBlockCount = CodeBlockPattern.Matches(content).Count;
-        features.TableCount = TablePattern.Matches(content).Count;
-        features.LinkCount = LinkPattern.Matches(content).Count;
+            // Structural features
+            HeadingCount = HeadingPattern.Matches(content).Count,
+            ListItemCount = ListPattern.Matches(content).Count,
+            CodeBlockCount = CodeBlockPattern.Matches(content).Count,
+            TableCount = TablePattern.Matches(content).Count,
+            LinkCount = LinkPattern.Matches(content).Count
+        };
 
         // Calculate heading depth
         var headingMatches = HeadingPattern.Matches(content);

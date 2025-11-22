@@ -212,11 +212,7 @@ public partial class ToolCallingAgent : IStreamingAgent
     {
         var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var cityIndex = Array.FindIndex(words, w => w.Contains("in") || w.Contains("for"));
-        if (cityIndex >= 0 && cityIndex < words.Length - 1)
-        {
-            return words[cityIndex + 1].Trim('?', '.', ',');
-        }
-        return null;
+        return cityIndex >= 0 && cityIndex < words.Length - 1 ? words[cityIndex + 1].Trim('?', '.', ',') : null;
     }
 
     private static (string operation, double a, double b) ExtractMathOperation(string text)

@@ -50,11 +50,7 @@ public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
     /// <inheritdoc/>
     public (string? ThreadId, string? RunId)? GetThreadInfo(string sessionId)
     {
-        if (_sessionToThreadMap.TryGetValue(sessionId, out var mapping))
-        {
-            return (mapping.ThreadId, mapping.RunId);
-        }
-        return null;
+        return _sessionToThreadMap.TryGetValue(sessionId, out var mapping) ? (mapping.ThreadId, mapping.RunId) : null;
     }
 
     /// <inheritdoc/>

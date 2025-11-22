@@ -13,23 +13,17 @@ public class ToolCallTracker : IToolCallTracker
     /// <inheritdoc/>
     public string GetOrCreateToolCallId(string? lmCoreToolCallId)
     {
-        if (string.IsNullOrEmpty(lmCoreToolCallId))
-        {
-            return Guid.NewGuid().ToString();
-        }
-
-        return _toolCallIdMap.GetOrAdd(lmCoreToolCallId, _ => Guid.NewGuid().ToString());
+        return string.IsNullOrEmpty(lmCoreToolCallId)
+            ? Guid.NewGuid().ToString()
+            : _toolCallIdMap.GetOrAdd(lmCoreToolCallId, _ => Guid.NewGuid().ToString());
     }
 
     /// <inheritdoc/>
     public string GetToolCallId(string? lmCoreToolCallId)
     {
-        if (string.IsNullOrEmpty(lmCoreToolCallId))
-        {
-            return Guid.NewGuid().ToString();
-        }
-
-        return _toolCallIdMap.TryGetValue(lmCoreToolCallId, out var agUiId) ? agUiId : lmCoreToolCallId;
+        return string.IsNullOrEmpty(lmCoreToolCallId)
+            ? Guid.NewGuid().ToString()
+            : _toolCallIdMap.TryGetValue(lmCoreToolCallId, out var agUiId) ? agUiId : lmCoreToolCallId;
     }
 
     /// <inheritdoc/>

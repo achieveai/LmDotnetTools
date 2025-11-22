@@ -120,7 +120,7 @@ public record LlmCacheOptions
         {
             CacheDirectory = !string.IsNullOrEmpty(cacheDirectory) ? cacheDirectory : GetDefaultCacheDirectory(),
             EnableCaching =
-                !string.IsNullOrEmpty(enableCaching) && bool.TryParse(enableCaching, out var enabled) ? enabled : true,
+                string.IsNullOrEmpty(enableCaching) || !bool.TryParse(enableCaching, out var enabled) || enabled,
             CacheExpiration =
                 !string.IsNullOrEmpty(expirationHours) && double.TryParse(expirationHours, out var hours) && hours > 0
                     ? TimeSpan.FromHours(hours)
@@ -133,8 +133,7 @@ public record LlmCacheOptions
                     : 1_073_741_824,
             CleanupOnStartup =
                 !string.IsNullOrEmpty(cleanupOnStartup) && bool.TryParse(cleanupOnStartup, out var cleanup)
-                    ? cleanup
-                    : false,
+                    && cleanup,
         };
     }
 }

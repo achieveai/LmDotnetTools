@@ -446,14 +446,11 @@ public class LmConfigService : ILmConfigService
 
         var config = JsonSerializer.Deserialize<AppConfig>(configJson, _jsonOptions);
 
-        if (config?.Models?.Any() != true)
-        {
-            throw new InvalidOperationException(
+        return config?.Models?.Any() != true
+            ? throw new InvalidOperationException(
                 "Invalid or empty embedded LmConfig resource. The configuration must contain at least one model."
-            );
-        }
-
-        return config;
+            )
+            : config;
     }
     #endregion
 }

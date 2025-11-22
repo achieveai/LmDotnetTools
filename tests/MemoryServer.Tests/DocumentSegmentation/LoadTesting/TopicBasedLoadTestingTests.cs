@@ -159,7 +159,7 @@ public class TopicBasedLoadTestingTests
         Debug.WriteLine($"Sustained load results:");
         Debug.WriteLine($"  Total time: {overallStopwatch.Elapsed.TotalMinutes:F1} minutes");
         Debug.WriteLine($"  Throughput: {documentsPerHour:F1} documents/hour");
-        Debug.WriteLine($"  Performance degradation: {((degradationRatio - 1) * 100):F1}%");
+        Debug.WriteLine($"  Performance degradation: {(degradationRatio - 1) * 100:F1}%");
     }
 
     #endregion
@@ -204,7 +204,7 @@ public class TopicBasedLoadTestingTests
                     {
                         // Simulate CPU usage reading
                         var random = new Random();
-                        cpuUsageReadings.Add(10 + random.NextDouble() * 20); // 10-30% range
+                        cpuUsageReadings.Add(10 + (random.NextDouble() * 20)); // 10-30% range
                         memoryUsageReadings.Add(GC.GetTotalMemory(false));
                     }
 
@@ -329,11 +329,9 @@ public class TopicBasedLoadTestingTests
             .Returns(() =>
             {
                 callCount++;
-                if (callCount % (100 / failureRate) == 0) // Fail at specified rate
-                {
-                    throw new InvalidOperationException("Simulated LLM service failure");
-                }
-                return Task.FromResult(
+                return callCount % (100 / failureRate) == 0
+                    ? throw new InvalidOperationException("Simulated LLM service failure")
+                    : Task.FromResult(
                     new StrategyRecommendation
                     {
                         Strategy = SegmentationStrategy.TopicBased,
@@ -430,11 +428,9 @@ public class TopicBasedLoadTestingTests
             .Returns(() =>
             {
                 attemptCount++;
-                if (attemptCount <= 2)
-                {
-                    throw new TaskCanceledException("Simulated network timeout");
-                }
-                return Task.FromResult(
+                return attemptCount <= 2
+                    ? throw new TaskCanceledException("Simulated network timeout")
+                    : Task.FromResult(
                     new StrategyRecommendation
                     {
                         Strategy = SegmentationStrategy.TopicBased,
@@ -507,7 +503,7 @@ public class TopicBasedLoadTestingTests
 
         // Validate connectivity testing
         var connectivityResult =
-            _mockLlmService?.Object != null ? await _mockLlmService.Object.TestConnectivityAsync() : true;
+            _mockLlmService?.Object == null || await _mockLlmService.Object.TestConnectivityAsync();
         validationResults["ConnectivityTesting"] = connectivityResult;
 
         // Assert all validations pass

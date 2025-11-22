@@ -64,7 +64,7 @@ public class OpenAIEmbeddingServiceHttpTests
             Debug.WriteLine($"Embedding {embedding.Index}: Vector length = {embedding.Vector.Length}");
             Assert.NotNull(embedding.Vector);
             Assert.True(embedding.Vector.Length > 0);
-            Assert.All(embedding.Vector, v => Assert.True(v >= -1.0f && v <= 1.0f));
+            Assert.All(embedding.Vector, v => Assert.True(v is >= (-1.0f) and <= 1.0f));
         }
 
         Debug.WriteLine("✓ All embeddings validated successfully");
@@ -352,7 +352,7 @@ public class OpenAIEmbeddingServiceHttpTests
         var embedding = new float[size];
         for (var i = 0; i < size; i++)
         {
-            embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Range [-1, 1]
+            embedding[i] = (float)((random.NextDouble() * 2.0) - 1.0); // Range [-1, 1]
         }
         return embedding;
     }

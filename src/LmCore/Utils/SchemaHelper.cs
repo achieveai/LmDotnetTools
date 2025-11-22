@@ -45,12 +45,12 @@ public static class SchemaHelper
                 return cached;
             }
 
-            JsonNode dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
-            JsonSchemaObject originalSchema = JsonSerializer.Deserialize<JsonSchemaObject>(
+            var dotnetSchema = JsonSerializerOptions.Default.GetJsonSchemaAsNode(type);
+            var originalSchema = JsonSerializer.Deserialize<JsonSchemaObject>(
                 dotnetSchema,
                 SchemaDeserializationOptions
             )!;
-            JsonSchemaObject transformedSchema = TransformSchemaUnions(originalSchema);
+            var transformedSchema = TransformSchemaUnions(originalSchema);
 
             _schemaCache[type] = transformedSchema;
 

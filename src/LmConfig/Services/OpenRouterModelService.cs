@@ -131,12 +131,9 @@ public class OpenRouterModelService
     /// </summary>
     private static DateTime? TryParseDateTime(string? dateTimeString)
     {
-        if (string.IsNullOrWhiteSpace(dateTimeString))
-        {
-            return null;
-        }
-
-        return DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime)
+        return string.IsNullOrWhiteSpace(dateTimeString)
+            ? null
+            : DateTime.TryParse(dateTimeString, null, DateTimeStyles.RoundtripKind, out var dateTime)
                 ? dateTime.ToUniversalTime()
             : DateTimeOffset.TryParse(dateTimeString, out var dateTimeOffset) ? dateTimeOffset.UtcDateTime
             : null;
@@ -1121,7 +1118,7 @@ public class OpenRouterModelService
 
                 if (!modelGroups.TryGetValue(slug, out var value))
                 {
-                    value = ([]);
+                    value = [];
                     modelGroups[slug] = value;
                 }
 
@@ -1773,12 +1770,9 @@ public class OpenRouterModelService
         var slug = GetStringValue(modelNode, "slug")?.ToLowerInvariant() ?? "";
         var author = GetStringValue(modelNode, "author")?.ToLowerInvariant() ?? "";
 
-        if (name.Contains("o1") || slug.Contains("o1") || author.Contains("openai"))
-        {
-            return ThinkingType.OpenAI;
-        }
-
-        return name.Contains("deepseek") || slug.Contains("deepseek") || author.Contains("deepseek")
+        return name.Contains("o1") || slug.Contains("o1") || author.Contains("openai")
+            ? ThinkingType.OpenAI
+            : name.Contains("deepseek") || slug.Contains("deepseek") || author.Contains("deepseek")
                 ? ThinkingType.DeepSeek
             : author.Contains("anthropic") ? ThinkingType.Anthropic
             : ThinkingType.Custom;

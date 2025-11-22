@@ -216,7 +216,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         _isNewMessage = true;
 
         // Check if last message is same type as current message
-        if (message is ToolsCallMessage || message is TextMessage)
+        if (message is ToolsCallMessage or TextMessage)
         {
             _toolsCallMessageBuilder = null; // Reset the tool call message builder
         }

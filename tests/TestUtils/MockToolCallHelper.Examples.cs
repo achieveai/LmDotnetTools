@@ -79,12 +79,9 @@ public static class MockToolCallHelperExamples
                 var a = args!["a"].GetDouble();
                 var b = args!["b"].GetDouble();
 
-                if (b == 0)
-                {
-                    return Task.FromResult(JsonSerializer.Serialize(new { error = "Cannot divide by zero" }));
-                }
-
-                return Task.FromResult((a / b).ToString());
+                return b == 0
+                    ? Task.FromResult(JsonSerializer.Serialize(new { error = "Cannot divide by zero" }))
+                    : Task.FromResult((a / b).ToString());
             },
         };
 

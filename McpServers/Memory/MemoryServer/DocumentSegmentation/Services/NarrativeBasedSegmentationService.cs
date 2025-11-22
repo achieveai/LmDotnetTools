@@ -308,25 +308,26 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
     {
         _logger.LogDebug("Analyzing logical flow for content of length {Length}", content.Length);
 
-        var analysis = new NarrativeFlowAnalysis();
+        var analysis = new NarrativeFlowAnalysis
+        {
+            // Analyze overall narrative type
+            OverallNarrativeType = DetermineNarrativeType(content),
 
-        // Analyze overall narrative type
-        analysis.OverallNarrativeType = DetermineNarrativeType(content);
+            // Analyze temporal progression
+            TemporalProgression = DetermineTemporalProgression(content),
 
-        // Analyze temporal progression
-        analysis.TemporalProgression = DetermineTemporalProgression(content);
+            // Detect causal chains
+            CausalChain = await DetectCausalRelationshipsAsync(content, cancellationToken),
 
-        // Detect causal chains
-        analysis.CausalChain = await DetectCausalRelationshipsAsync(content, cancellationToken);
+            // Identify narrative elements
+            NarrativeElements = await IdentifyNarrativeArcElementsAsync(
+                content,
+                cancellationToken: cancellationToken
+            ),
 
-        // Identify narrative elements
-        analysis.NarrativeElements = await IdentifyNarrativeArcElementsAsync(
-            content,
-            cancellationToken: cancellationToken
-        );
-
-        // Calculate quality scores
-        analysis.FlowCoherence = CalculateFlowCoherence(content);
+            // Calculate quality scores
+            FlowCoherence = CalculateFlowCoherence(content)
+        };
         analysis.LogicalConsistency = CalculateLogicalConsistency(content, analysis.CausalChain);
         analysis.TemporalConsistency = CalculateTemporalConsistency(content);
         analysis.NarrativeCompleteness = CalculateNarrativeCompleteness(content, analysis.NarrativeElements);
@@ -369,13 +370,13 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         validation.TransitionQuality = CalculateOverallTransitionQuality(segments);
 
         // Calculate overall quality as weighted average
-        validation.OverallQuality = (
-            validation.FlowCoherence * 0.3
-            + validation.LogicalConsistency * 0.25
-            + validation.TemporalConsistency * 0.2
-            + validation.NarrativeCompleteness * 0.15
-            + validation.TransitionQuality * 0.1
-        );
+        validation.OverallQuality = 
+            (validation.FlowCoherence * 0.3)
+            + (validation.LogicalConsistency * 0.25)
+            + (validation.TemporalConsistency * 0.2)
+            + (validation.NarrativeCompleteness * 0.15)
+            + (validation.TransitionQuality * 0.1)
+        ;
 
         // Identify issues and generate recommendations
         validation.Issues = IdentifyValidationIssues(validation);
@@ -1248,32 +1249,17 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
 
     private static double CalculateOverallFlowCoherence(List<DocumentSegment> segments, string originalContent)
     {
-        if (segments.Count == 0)
-        {
-            return 0;
-        }
-
-        return segments.Average(s => CalculateSegmentCoherence(s.Content));
+        return segments.Count == 0 ? 0 : segments.Average(s => CalculateSegmentCoherence(s.Content));
     }
 
     private static double CalculateOverallLogicalConsistency(List<DocumentSegment> segments)
     {
-        if (segments.Count == 0)
-        {
-            return 0;
-        }
-
-        return segments.Average(s => CalculateSegmentLogicalConsistency(s.Content));
+        return segments.Count == 0 ? 0 : segments.Average(s => CalculateSegmentLogicalConsistency(s.Content));
     }
 
     private static double CalculateOverallTemporalConsistency(List<DocumentSegment> segments)
     {
-        if (segments.Count == 0)
-        {
-            return 0;
-        }
-
-        return segments.Average(s => CalculateSegmentTemporalConsistency(s.Content));
+        return segments.Count == 0 ? 0 : segments.Average(s => CalculateSegmentTemporalConsistency(s.Content));
     }
 
     private static double CalculateOverallNarrativeCompleteness(List<DocumentSegment> segments, string originalContent)
@@ -1291,7 +1277,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
             NarrativeFunction.Development,
             NarrativeFunction.Resolution,
         };
-        var presentCount = essentialFunctions.Count(func => functions.Contains(func));
+        var presentCount = essentialFunctions.Count(functions.Contains);
 
         return (double)presentCount / essentialFunctions.Length;
     }

@@ -226,6 +226,42 @@ dotnet_diagnostic.IDE0011.severity = error
 # IDE0110: Remove unnecessary discard
 dotnet_diagnostic.IDE0110.severity = warning
 
+# IDE0046: Convert to conditional expression
+dotnet_diagnostic.IDE0046.severity = warning
+
+# IDE0075: Simplify conditional expression
+dotnet_diagnostic.IDE0075.severity = warning
+
+# RCS1194: Implement exception constructors
+dotnet_diagnostic.RCS1194.severity = none
+
+# IDE0078: Use pattern matching
+dotnet_diagnostic.IDE0078.severity = warning
+
+# IDE0017: Simplify object initialization
+dotnet_diagnostic.IDE0017.severity = warning
+
+# IDE0330: Use 'System.Threading.Lock'
+dotnet_diagnostic.IDE0330.severity = warning
+
+# IDE0042: Deconstruct variable declaration
+dotnet_diagnostic.IDE0042.severity = warning
+
+# IDE0047: Remove unnecessary parentheses
+dotnet_diagnostic.IDE0047.severity = warning
+
+# IDE0120: Simplify LINQ expression
+dotnet_diagnostic.IDE0120.severity = warning
+
+# IDE0200: Remove unnecessary lambda expression
+dotnet_diagnostic.IDE0200.severity = warning
+
+# IDE0048: Add parentheses for clarity
+dotnet_diagnostic.IDE0048.severity = warning
+
+# IDE0033: Use explicitly provided tuple name
+dotnet_diagnostic.IDE0033.severity = warning
+
 [*.{cs,vb}]
 
 # Naming rules

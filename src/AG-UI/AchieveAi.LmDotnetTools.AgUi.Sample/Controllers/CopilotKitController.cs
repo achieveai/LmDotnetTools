@@ -191,12 +191,9 @@ public class CopilotKitController : ControllerBase
 
     private static List<IMessage> ConvertMessages(List<CopilotKitMessage>? messages)
     {
-        if (messages == null || messages.Count == 0)
-        {
-            return [];
-        }
-
-        return [.. messages
+        return messages == null || messages.Count == 0
+            ? []
+            : [.. messages
             .Select(msg => new TextMessage
             {
                 Text = msg.Content,

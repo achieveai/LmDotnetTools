@@ -143,12 +143,7 @@ public static class PerformanceTestHelpers
             return false;
         }
 
-        if (metrics.Duration <= TimeSpan.Zero)
-        {
-            return false;
-        }
-
-        return true;
+        return metrics.Duration > TimeSpan.Zero;
     }
 
     /// <summary>
@@ -166,12 +161,8 @@ public static class PerformanceTestHelpers
         int expectedTotalTokens
     )
     {
-        if (usage == null)
-        {
-            return false;
-        }
-
-        return usage.PromptTokens == expectedPromptTokens
+        return usage != null
+            && usage.PromptTokens == expectedPromptTokens
             && usage.CompletionTokens == expectedCompletionTokens
             && usage.TotalTokens == expectedTotalTokens;
     }

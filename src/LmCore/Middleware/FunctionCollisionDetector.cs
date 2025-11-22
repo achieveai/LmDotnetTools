@@ -47,7 +47,7 @@ public partial class FunctionCollisionDetector
         foreach (var function in functions)
         {
             var baseName = function.Contract.Name;
-            if (!functionGroups.TryGetValue(baseName, out List<FunctionDescriptor>? value))
+            if (!functionGroups.TryGetValue(baseName, out var value))
             {
                 value = [];
                 functionGroups[baseName] = value;
@@ -197,7 +197,7 @@ public partial class FunctionCollisionDetector
         foreach (var function in functions)
         {
             var baseName = function.Contract.Name;
-            if (!functionGroups.TryGetValue(baseName, out List<FunctionDescriptor>? value))
+            if (!functionGroups.TryGetValue(baseName, out var value))
             {
                 value = [];
                 functionGroups[baseName] = value;

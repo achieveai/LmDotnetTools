@@ -159,12 +159,9 @@ public class ProviderTestDataManager
         };
 
         var directoryPath = Path.Combine(_dataDirectory, providerDir);
-        if (!Directory.Exists(directoryPath))
-        {
-            return Enumerable.Empty<string>();
-        }
-
-        return Directory
+        return !Directory.Exists(directoryPath)
+            ? Enumerable.Empty<string>()
+            : Directory
             .GetFiles(directoryPath, "*.LmCoreRequest.json")
             .Select(path => Path.GetFileName(path)!)
             .Select(f => f.Replace(".LmCoreRequest.json", string.Empty))

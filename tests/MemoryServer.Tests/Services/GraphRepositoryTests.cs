@@ -389,12 +389,9 @@ public class GraphRepositoryTests : IDisposable
 
         var completedTask = await Task.WhenAny(task, timeoutTask);
 
-        if (completedTask == timeoutTask)
-        {
-            throw new TimeoutException($"{operationName} timed out after {timeoutSeconds} seconds");
-        }
-
-        return await task;
+        return completedTask == timeoutTask
+            ? throw new TimeoutException($"{operationName} timed out after {timeoutSeconds} seconds")
+            : await task;
     }
 
     private static async Task WithTimeoutAsync(Task task, int timeoutSeconds, string operationName)
