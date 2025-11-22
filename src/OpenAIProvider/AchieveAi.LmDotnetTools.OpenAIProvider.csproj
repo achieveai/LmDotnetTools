@@ -7,10 +7,7 @@
     <PackageReference Include="JsonSchema.Net.Generation" Version="5.0.2" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.5" />
-    <PackageReference
-      Include="Microsoft.Extensions.DependencyInjection.Abstractions"
-      Version="9.0.5"
-    />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.5" />
     <PackageReference Include="System.Net.ServerSentEvents" Version="9.0.5" />
   </ItemGroup>
@@ -23,5 +20,6 @@
     <Description>OpenAI provider for the LmDotnetTools library, enabling integration with GPT models and OpenAI services.</Description>
     <PackageTags>$(PackageTags);openai;gpt;provider</PackageTags>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
 </Project>

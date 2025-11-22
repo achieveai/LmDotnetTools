@@ -8,6 +8,7 @@
     <VSTestLogger>trx</VSTestLogger>
     <VSTestResultsDirectory>$(MSBuildProjectDirectory)/TestResults</VSTestResultsDirectory>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4">
@@ -41,26 +42,10 @@
   </ItemGroup>
   <!-- Copy MemoryServer.exe to test output for integration tests -->
   <Target Name="CopyMemoryServer" AfterTargets="Build">
-    <Copy
-      SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.exe"
-      DestinationFolder="$(OutputPath)"
-      SkipUnchangedFiles="true"
-    />
-    <Copy
-      SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.dll"
-      DestinationFolder="$(OutputPath)"
-      SkipUnchangedFiles="true"
-    />
-    <Copy
-      SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.runtimeconfig.json"
-      DestinationFolder="$(OutputPath)"
-      SkipUnchangedFiles="true"
-    />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.exe" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\..\McpServers\Memory\MemoryServer\bin\$(Configuration)\net9.0\MemoryServer.runtimeconfig.json" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
     <!-- Copy prompt files needed for LLM services -->
-    <Copy
-      SourceFiles="$(MSBuildProjectDirectory)\Prompts\graph-extraction.yaml"
-      DestinationFolder="$(OutputPath)\Prompts"
-      SkipUnchangedFiles="true"
-    />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\Prompts\graph-extraction.yaml" DestinationFolder="$(OutputPath)\Prompts" SkipUnchangedFiles="true" />
   </Target>
 </Project>

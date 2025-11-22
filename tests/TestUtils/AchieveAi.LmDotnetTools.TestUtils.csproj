@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <IsTestProject>true</IsTestProject>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\AnthropicProvider\AchieveAi.LmDotnetTools.AnthropicProvider.csproj" />

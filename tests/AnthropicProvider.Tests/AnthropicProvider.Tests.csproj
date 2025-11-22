@@ -6,6 +6,7 @@
     <RootNamespace>AchieveAi.LmDotnetTools.AnthropicProvider.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4">

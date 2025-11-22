@@ -19,5 +19,6 @@
     <Description>Configuration management library for language models, providing flexible configuration loading and validation.</Description>
     <PackageTags>$(PackageTags);config;configuration;settings</PackageTags>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
 </Project>
