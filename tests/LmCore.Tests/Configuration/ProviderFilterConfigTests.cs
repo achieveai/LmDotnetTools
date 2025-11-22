@@ -1,6 +1,4 @@
-using System;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Configuration;
 
@@ -120,8 +118,8 @@ public class ProviderFilterConfigTests
         {
             Enabled = true,
             CustomPrefix = "valid_prefix",
-            AllowedFunctions = new System.Collections.Generic.List<string> { "func1", "func2" },
-            BlockedFunctions = new System.Collections.Generic.List<string> { "dangerous*" },
+            AllowedFunctions = ["func1", "func2"],
+            BlockedFunctions = ["dangerous*"],
         };
 
         // Act & Assert (should not throw)

@@ -1,8 +1,5 @@
-using System.Text.Json;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -90,10 +87,10 @@ public class HybridSegmentationService : IHybridSegmentationService
 
             // Step 3: Combine results using intelligent merging
             var structureSegments =
-                segmentationResults.Length > 0 ? segmentationResults[0] : new List<DocumentSegment>();
+                segmentationResults.Length > 0 ? segmentationResults[0] : [];
             var narrativeSegments =
-                segmentationResults.Length > 1 ? segmentationResults[1] : new List<DocumentSegment>();
-            var topicSegments = segmentationResults.Length > 2 ? segmentationResults[2] : new List<DocumentSegment>();
+                segmentationResults.Length > 1 ? segmentationResults[1] : [];
+            var topicSegments = segmentationResults.Length > 2 ? segmentationResults[2] : [];
 
             var combinedSegments = await CombineSegmentationResultsAsync(
                 structureSegments,
@@ -247,7 +244,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             // Step 4: Quality-based selection for remaining conflicts
             var finalSegments = ResolveSegmentConflicts(mergedSegments, weights);
 
-            return finalSegments.OrderBy(s => s.SequenceNumber).ToList();
+            return [.. finalSegments.OrderBy(s => s.SequenceNumber)];
         }
         catch (Exception ex)
         {
@@ -306,7 +303,7 @@ public class HybridSegmentationService : IHybridSegmentationService
                 new ValidationIssue
                 {
                     Type = ValidationIssueType.PoorCoherence,
-                    Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                    Severity = ValidationSeverity.Warning,
                     Description = "Validation failed due to processing error",
                 }
             );
@@ -402,7 +399,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to get structure-based segments");
-            return new List<DocumentSegment>();
+            return [];
         }
     }
 
@@ -422,7 +419,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to get narrative-based segments");
-            return new List<DocumentSegment>();
+            return [];
         }
     }
 
@@ -442,7 +439,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to get topic-based segments");
-            return new List<DocumentSegment>();
+            return [];
         }
     }
 
@@ -725,7 +722,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         var words = content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var segmentSize = Math.Max(100, words.Length / 5); // Aim for ~5 segments
 
-        for (int i = 0; i < words.Length; i += segmentSize)
+        for (var i = 0; i < words.Length; i += segmentSize)
         {
             var segmentWords = words.Skip(i).Take(segmentSize);
             var segmentContent = string.Join(" ", segmentWords);
@@ -768,7 +765,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     )
     {
         // Implementation would analyze where different strategies agree on boundaries
-        return new List<BoundaryConsensus>();
+        return [];
     }
 
     private static List<DocumentSegment> CreateSegmentsFromConsensus(
@@ -781,9 +778,15 @@ public class HybridSegmentationService : IHybridSegmentationService
     {
         // For now, return the strategy with highest weight
         if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
+        {
             return structureSegments;
+        }
+
         if (weights.NarrativeWeight >= weights.TopicWeight)
+        {
             return narrativeSegments;
+        }
+
         return topicSegments;
     }
 
@@ -814,9 +817,15 @@ public class HybridSegmentationService : IHybridSegmentationService
     )
     {
         if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
+        {
             return structureSegments;
+        }
+
         if (weights.NarrativeWeight >= weights.TopicWeight)
+        {
             return narrativeSegments;
+        }
+
         return topicSegments;
     }
 
@@ -836,17 +845,19 @@ public class HybridSegmentationService : IHybridSegmentationService
         HybridSegmentationOptions options
     )
     {
-        return segments
+        return [.. segments
             .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
-            .Take(options.MaxSegments)
-            .ToList();
+            .Take(options.MaxSegments)];
     }
 
     // Quality calculation methods
     private static double CalculateOverallQuality(List<DocumentSegment> segments)
     {
         if (segments.Count == 0)
+        {
             return 0.0;
+        }
+
         return segments.Average(s => s.Quality?.CoherenceScore ?? 0.5);
     }
 
@@ -902,7 +913,7 @@ public class HybridSegmentationService : IHybridSegmentationService
                 new ValidationIssue
                 {
                     Type = ValidationIssueType.PoorCoherence,
-                    Severity = MemoryServer.DocumentSegmentation.Models.ValidationSeverity.Warning,
+                    Severity = ValidationSeverity.Warning,
                     Description = $"Overall quality is below threshold: {validation.OverallQuality:F2}",
                 }
             );
@@ -946,9 +957,15 @@ public class HybridSegmentationService : IHybridSegmentationService
     private static SegmentationStrategy DeterminePrimaryStrategy(StrategyWeights weights)
     {
         if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
+        {
             return SegmentationStrategy.StructureBased;
+        }
+
         if (weights.NarrativeWeight >= weights.TopicWeight)
+        {
             return SegmentationStrategy.NarrativeBased;
+        }
+
         return SegmentationStrategy.TopicBased;
     }
 
@@ -1053,8 +1070,8 @@ public class HybridSegmentationService : IHybridSegmentationService
 
     private static int CountOccurrences(string content, string word)
     {
-        int count = 0;
-        int index = 0;
+        var count = 0;
+        var index = 0;
         while ((index = content.IndexOf(word, index, StringComparison.OrdinalIgnoreCase)) != -1)
         {
             count++;

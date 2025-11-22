@@ -4,7 +4,6 @@ using AchieveAi.LmDotnetTools.AgUi.DataObjects.DTOs;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Converters;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -15,6 +14,8 @@ namespace AchieveAi.LmDotnetTools.AgUi.Tests.Converters;
 public class AgUiToLmCoreConverterTests
 {
     private readonly AgUiToLmCoreConverter _converter;
+    private static readonly string[] value = ["END", "STOP"];
+    private static readonly string[] expectation = ["END", "STOP"];
 
     public AgUiToLmCoreConverterTests()
     {
@@ -31,19 +32,19 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-1",
             Role = "user",
-            Content = "Hello from user"
+            Content = "Hello from user",
         };
 
         // Act
         var result = _converter.ConvertMessage(agUiMessage);
 
         // Assert
-        result.Should().BeOfType<TextMessage>();
+        _ = result.Should().BeOfType<TextMessage>();
         var textMsg = (TextMessage)result;
-        textMsg.Text.Should().Be("Hello from user");
-        textMsg.Role.Should().Be(Role.User);
-        textMsg.GenerationId.Should().Be("msg-1");
-        textMsg.FromAgent.Should().BeNull();
+        _ = textMsg.Text.Should().Be("Hello from user");
+        _ = textMsg.Role.Should().Be(Role.User);
+        _ = textMsg.GenerationId.Should().Be("msg-1");
+        _ = textMsg.FromAgent.Should().BeNull();
     }
 
     [Fact]
@@ -54,17 +55,17 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-2",
             Role = "assistant",
-            Content = "Assistant response"
+            Content = "Assistant response",
         };
 
         // Act
         var result = _converter.ConvertMessage(agUiMessage);
 
         // Assert
-        result.Should().BeOfType<TextMessage>();
+        _ = result.Should().BeOfType<TextMessage>();
         var textMsg = (TextMessage)result;
-        textMsg.Text.Should().Be("Assistant response");
-        textMsg.Role.Should().Be(Role.Assistant);
+        _ = textMsg.Text.Should().Be("Assistant response");
+        _ = textMsg.Role.Should().Be(Role.Assistant);
     }
 
     [Fact]
@@ -76,7 +77,7 @@ public class AgUiToLmCoreConverterTests
             Id = "msg-3",
             Role = "assistant",
             Content = "Response",
-            Name = "MyAgent"
+            Name = "MyAgent",
         };
 
         // Act
@@ -84,7 +85,7 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var textMsg = (TextMessage)result;
-        textMsg.FromAgent.Should().Be("MyAgent");
+        _ = textMsg.FromAgent.Should().Be("MyAgent");
     }
 
     [Fact]
@@ -95,7 +96,7 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-4",
             Role = "user",
-            Content = null
+            Content = null,
         };
 
         // Act
@@ -103,7 +104,7 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var textMsg = (TextMessage)result;
-        textMsg.Text.Should().BeEmpty();
+        _ = textMsg.Text.Should().BeEmpty();
     }
 
     [Theory]
@@ -119,7 +120,7 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-role",
             Role = agUiRole,
-            Content = "Test"
+            Content = "Test",
         };
 
         // Act
@@ -127,7 +128,7 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var textMsg = (TextMessage)result;
-        textMsg.Role.Should().Be(expectedRole);
+        _ = textMsg.Role.Should().Be(expectedRole);
     }
 
     #endregion
@@ -142,34 +143,30 @@ public class AgUiToLmCoreConverterTests
         var toolCall = new AgUiToolCall
         {
             Id = "call-1",
-            Function = new FunctionCall
-            {
-                Name = "get_weather",
-                Arguments = arguments
-            }
+            Function = new FunctionCall { Name = "get_weather", Arguments = arguments },
         };
 
         var agUiMessage = new Message
         {
             Id = "msg-tools",
             Role = "assistant",
-            ToolCalls = ImmutableList.Create(toolCall)
+            ToolCalls = [toolCall],
         };
 
         // Act
         var result = _converter.ConvertMessage(agUiMessage);
 
         // Assert
-        result.Should().BeOfType<ToolsCallMessage>();
+        _ = result.Should().BeOfType<ToolsCallMessage>();
         var toolsMsg = (ToolsCallMessage)result;
-        toolsMsg.Role.Should().Be(Role.Assistant);
-        toolsMsg.GenerationId.Should().Be("msg-tools");
-        toolsMsg.ToolCalls.Should().HaveCount(1);
+        _ = toolsMsg.Role.Should().Be(Role.Assistant);
+        _ = toolsMsg.GenerationId.Should().Be("msg-tools");
+        _ = toolsMsg.ToolCalls.Should().HaveCount(1);
 
         var convertedCall = toolsMsg.ToolCalls[0];
-        convertedCall.ToolCallId.Should().Be("call-1");
-        convertedCall.FunctionName.Should().Be("get_weather");
-        convertedCall.FunctionArgs.Should().Contain("Boston");
+        _ = convertedCall.ToolCallId.Should().Be("call-1");
+        _ = convertedCall.FunctionName.Should().Be("get_weather");
+        _ = convertedCall.FunctionArgs.Should().Contain("Boston");
     }
 
     [Fact]
@@ -183,12 +180,12 @@ public class AgUiToLmCoreConverterTests
             new AgUiToolCall
             {
                 Id = "call-1",
-                Function = new FunctionCall { Name = "func1", Arguments = args1 }
+                Function = new FunctionCall { Name = "func1", Arguments = args1 },
             },
             new AgUiToolCall
             {
                 Id = "call-2",
-                Function = new FunctionCall { Name = "func2", Arguments = args2 }
+                Function = new FunctionCall { Name = "func2", Arguments = args2 },
             }
         );
 
@@ -196,7 +193,7 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-multi-tools",
             Role = "assistant",
-            ToolCalls = toolCalls
+            ToolCalls = toolCalls,
         };
 
         // Act
@@ -204,41 +201,41 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var toolsMsg = (ToolsCallMessage)result;
-        toolsMsg.ToolCalls.Should().HaveCount(2);
-        toolsMsg.ToolCalls[0].FunctionName.Should().Be("func1");
-        toolsMsg.ToolCalls[1].FunctionName.Should().Be("func2");
+        _ = toolsMsg.ToolCalls.Should().HaveCount(2);
+        _ = toolsMsg.ToolCalls[0].FunctionName.Should().Be("func1");
+        _ = toolsMsg.ToolCalls[1].FunctionName.Should().Be("func2");
     }
 
     [Fact]
     public void ConvertMessage_ToolCallWithComplexArguments_SerializesCorrectly()
     {
         // Arrange
-        var complexArgs = JsonDocument.Parse("""
-        {
-            "nested": {
-                "value": 123,
-                "array": [1, 2, 3],
-                "bool": true
-            },
-            "string": "test"
-        }
-        """).RootElement;
+        var complexArgs = JsonDocument
+            .Parse(
+                """
+                {
+                    "nested": {
+                        "value": 123,
+                        "array": [1, 2, 3],
+                        "bool": true
+                    },
+                    "string": "test"
+                }
+                """
+            )
+            .RootElement;
 
         var toolCall = new AgUiToolCall
         {
             Id = "call-complex",
-            Function = new FunctionCall
-            {
-                Name = "complex_func",
-                Arguments = complexArgs
-            }
+            Function = new FunctionCall { Name = "complex_func", Arguments = complexArgs },
         };
 
         var agUiMessage = new Message
         {
             Id = "msg-complex",
             Role = "assistant",
-            ToolCalls = ImmutableList.Create(toolCall)
+            ToolCalls = [toolCall],
         };
 
         // Act
@@ -250,9 +247,9 @@ public class AgUiToLmCoreConverterTests
 
         // Verify JSON is valid and contains expected data
         var parsed = JsonDocument.Parse(argsJson!);
-        parsed.RootElement.GetProperty("nested").GetProperty("value").GetInt32().Should().Be(123);
-        parsed.RootElement.GetProperty("nested").GetProperty("bool").GetBoolean().Should().BeTrue();
-        parsed.RootElement.GetProperty("string").GetString().Should().Be("test");
+        _ = parsed.RootElement.GetProperty("nested").GetProperty("value").GetInt32().Should().Be(123);
+        _ = parsed.RootElement.GetProperty("nested").GetProperty("bool").GetBoolean().Should().BeTrue();
+        _ = parsed.RootElement.GetProperty("string").GetString().Should().Be("test");
     }
 
     #endregion
@@ -268,22 +265,22 @@ public class AgUiToLmCoreConverterTests
             Id = "msg-result",
             Role = "tool",
             Content = "Function returned: 42",
-            ToolCallId = "call-123"
+            ToolCallId = "call-123",
         };
 
         // Act
         var result = _converter.ConvertMessage(agUiMessage);
 
         // Assert
-        result.Should().BeOfType<ToolsCallResultMessage>();
+        _ = result.Should().BeOfType<ToolsCallResultMessage>();
         var resultMsg = (ToolsCallResultMessage)result;
-        resultMsg.Role.Should().Be(Role.Tool);
-        resultMsg.GenerationId.Should().Be("msg-result");
-        resultMsg.ToolCallResults.Should().HaveCount(1);
+        _ = resultMsg.Role.Should().Be(Role.Tool);
+        _ = resultMsg.GenerationId.Should().Be("msg-result");
+        _ = resultMsg.ToolCallResults.Should().HaveCount(1);
 
         var toolResult = resultMsg.ToolCallResults[0];
-        toolResult.ToolCallId.Should().Be("call-123");
-        toolResult.Result.Should().Be("Function returned: 42");
+        _ = toolResult.ToolCallId.Should().Be("call-123");
+        _ = toolResult.Result.Should().Be("Function returned: 42");
     }
 
     [Fact]
@@ -295,7 +292,7 @@ public class AgUiToLmCoreConverterTests
             Id = "msg-result-null",
             Role = "tool",
             Content = null,
-            ToolCallId = "call-456"
+            ToolCallId = "call-456",
         };
 
         // Act
@@ -303,7 +300,7 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var resultMsg = (ToolsCallResultMessage)result;
-        resultMsg.ToolCallResults[0].Result.Should().BeEmpty();
+        _ = resultMsg.ToolCallResults[0].Result.Should().BeEmpty();
     }
 
     #endregion
@@ -315,22 +312,37 @@ public class AgUiToLmCoreConverterTests
     {
         // Arrange
         var messages = ImmutableList.Create(
-            new Message { Id = "1", Role = "user", Content = "Hello" },
-            new Message { Id = "2", Role = "assistant", Content = "Hi there" },
-            new Message { Id = "3", Role = "user", Content = "How are you?" }
+            new Message
+            {
+                Id = "1",
+                Role = "user",
+                Content = "Hello",
+            },
+            new Message
+            {
+                Id = "2",
+                Role = "assistant",
+                Content = "Hi there",
+            },
+            new Message
+            {
+                Id = "3",
+                Role = "user",
+                Content = "How are you?",
+            }
         );
 
         // Act
         var result = _converter.ConvertMessageHistory(messages);
 
         // Assert
-        result.Should().HaveCount(3);
-        result.Should().AllBeOfType<TextMessage>();
+        _ = result.Should().HaveCount(3);
+        _ = result.Should().AllBeOfType<TextMessage>();
 
         var textMessages = result.Cast<TextMessage>().ToList();
-        textMessages[0].Text.Should().Be("Hello");
-        textMessages[1].Text.Should().Be("Hi there");
-        textMessages[2].Text.Should().Be("How are you?");
+        _ = textMessages[0].Text.Should().Be("Hello");
+        _ = textMessages[1].Text.Should().Be("Hi there");
+        _ = textMessages[2].Text.Should().Be("How are you?");
     }
 
     [Fact]
@@ -343,7 +355,7 @@ public class AgUiToLmCoreConverterTests
         var result = _converter.ConvertMessageHistory(messages);
 
         // Assert
-        result.Should().BeEmpty();
+        _ = result.Should().BeEmpty();
     }
 
     #endregion
@@ -354,22 +366,19 @@ public class AgUiToLmCoreConverterTests
     public void ConvertRunAgentInput_WithoutHistory_CreatesUserMessage()
     {
         // Arrange
-        var input = new RunAgentInput
-        {
-            Message = "User's new message"
-        };
+        var input = new RunAgentInput { Message = "User's new message" };
 
         // Act
         var (messages, options) = _converter.ConvertRunAgentInput(input);
 
         // Assert
-        messages.Should().HaveCount(1);
+        _ = messages.Should().HaveCount(1);
         var userMsg = messages.First();
-        userMsg.Should().BeOfType<TextMessage>();
+        _ = userMsg.Should().BeOfType<TextMessage>();
         var textMsg = (TextMessage)userMsg;
-        textMsg.Text.Should().Be("User's new message");
-        textMsg.Role.Should().Be(Role.User);
-        textMsg.GenerationId.Should().NotBeNullOrEmpty();
+        _ = textMsg.Text.Should().Be("User's new message");
+        _ = textMsg.Role.Should().Be(Role.User);
+        _ = textMsg.GenerationId.Should().NotBeNullOrEmpty();
     }
 
     [Fact]
@@ -377,56 +386,56 @@ public class AgUiToLmCoreConverterTests
     {
         // Arrange
         var history = ImmutableList.Create(
-            new Message { Id = "h1", Role = "user", Content = "Previous question" },
-            new Message { Id = "h2", Role = "assistant", Content = "Previous answer" }
+            new Message
+            {
+                Id = "h1",
+                Role = "user",
+                Content = "Previous question",
+            },
+            new Message
+            {
+                Id = "h2",
+                Role = "assistant",
+                Content = "Previous answer",
+            }
         );
 
-        var input = new RunAgentInput
-        {
-            Message = "New question",
-            History = history
-        };
+        var input = new RunAgentInput { Message = "New question", History = history };
 
         // Act
         var (messages, options) = _converter.ConvertRunAgentInput(input);
 
         // Assert
-        messages.Should().HaveCount(3);
+        _ = messages.Should().HaveCount(3);
         var messageList = messages.ToList();
 
         var msg1 = (TextMessage)messageList[0];
-        msg1.Text.Should().Be("Previous question");
+        _ = msg1.Text.Should().Be("Previous question");
 
         var msg2 = (TextMessage)messageList[1];
-        msg2.Text.Should().Be("Previous answer");
+        _ = msg2.Text.Should().Be("Previous answer");
 
         var msg3 = (TextMessage)messageList[2];
-        msg3.Text.Should().Be("New question");
-        msg3.Role.Should().Be(Role.User);
+        _ = msg3.Text.Should().Be("New question");
+        _ = msg3.Role.Should().Be(Role.User);
     }
 
     [Fact]
     public void ConvertRunAgentInput_WithContext_MergesAsMetadata()
     {
         // Arrange
-        var context = ImmutableDictionary<string, object>.Empty
-            .Add("session_id", "abc123")
-            .Add("user_id", 42);
+        var context = ImmutableDictionary<string, object>.Empty.Add("session_id", "abc123").Add("user_id", 42);
 
-        var input = new RunAgentInput
-        {
-            Message = "Test",
-            Context = context
-        };
+        var input = new RunAgentInput { Message = "Test", Context = context };
 
         // Act
         var (messages, options) = _converter.ConvertRunAgentInput(input);
 
         // Assert
         var userMsg = (TextMessage)messages.First();
-        userMsg.Metadata.Should().NotBeNull();
-        userMsg.Metadata.Should().ContainKey("session_id");
-        userMsg.Metadata.Should().ContainKey("user_id");
+        _ = userMsg.Metadata.Should().NotBeNull();
+        _ = userMsg.Metadata.Should().ContainKey("session_id");
+        _ = userMsg.Metadata.Should().ContainKey("user_id");
     }
 
     [Fact]
@@ -437,23 +446,19 @@ public class AgUiToLmCoreConverterTests
         {
             Model = "gpt-4",
             Temperature = 0.7,
-            MaxTokens = 1000
+            MaxTokens = 1000,
         };
 
-        var input = new RunAgentInput
-        {
-            Message = "Test",
-            Configuration = config
-        };
+        var input = new RunAgentInput { Message = "Test", Configuration = config };
 
         // Act
         var (messages, options) = _converter.ConvertRunAgentInput(input);
 
         // Assert
-        options.Should().NotBeNull();
-        options.ModelId.Should().Be("gpt-4");
-        options.Temperature.Should().Be(0.7f);
-        options.MaxToken.Should().Be(1000);
+        _ = options.Should().NotBeNull();
+        _ = options.ModelId.Should().Be("gpt-4");
+        _ = options.Temperature.Should().Be(0.7f);
+        _ = options.MaxToken.Should().Be(1000);
     }
 
     [Fact]
@@ -462,31 +467,27 @@ public class AgUiToLmCoreConverterTests
         // Arrange
         var config = new RunConfiguration
         {
-            EnabledTools = new List<string> { "get_weather", "calculator" }
+            EnabledTools = ["get_weather", "calculator"],
         };
 
         var availableFunctions = new[]
         {
             new FunctionContract { Name = "get_weather", Description = "Get weather" },
             new FunctionContract { Name = "calculator", Description = "Calculate" },
-            new FunctionContract { Name = "search", Description = "Search web" }
+            new FunctionContract { Name = "search", Description = "Search web" },
         };
 
-        var input = new RunAgentInput
-        {
-            Message = "Test",
-            Configuration = config
-        };
+        var input = new RunAgentInput { Message = "Test", Configuration = config };
 
         // Act
         var (messages, options) = _converter.ConvertRunAgentInput(input, availableFunctions);
 
         // Assert
-        options.Functions.Should().NotBeNull();
-        options.Functions.Should().HaveCount(2);
-        options.Functions.Should().Contain(f => f.Name == "get_weather");
-        options.Functions.Should().Contain(f => f.Name == "calculator");
-        options.Functions.Should().NotContain(f => f.Name == "search");
+        _ = options.Functions.Should().NotBeNull();
+        _ = options.Functions.Should().HaveCount(2);
+        _ = options.Functions.Should().Contain(f => f.Name == "get_weather");
+        _ = options.Functions.Should().Contain(f => f.Name == "calculator");
+        _ = options.Functions.Should().NotContain(f => f.Name == "search");
     }
 
     [Fact]
@@ -497,49 +498,39 @@ public class AgUiToLmCoreConverterTests
         {
             { "top_p", 0.9 },
             { "seed", 12345 },
-            { "stop", new[] { "END", "STOP" } },
-            { "custom_param", "custom_value" }
+            { "stop", value },
+            { "custom_param", "custom_value" },
         };
 
-        var config = new RunConfiguration
-        {
-            ModelParameters = modelParams
-        };
+        var config = new RunConfiguration { ModelParameters = modelParams };
 
-        var input = new RunAgentInput
-        {
-            Message = "Test",
-            Configuration = config
-        };
+        var input = new RunAgentInput { Message = "Test", Configuration = config };
 
         // Act
         var (messages, options) = _converter.ConvertRunAgentInput(input);
 
         // Assert
-        options.TopP.Should().Be(0.9f);
-        options.RandomSeed.Should().Be(12345);
-        options.StopSequence.Should().BeEquivalentTo(new[] { "END", "STOP" });
-        options.ExtraProperties.Should().ContainKey("custom_param");
-        options.ExtraProperties!["custom_param"].Should().Be("custom_value");
+        _ = options.TopP.Should().Be(0.9f);
+        _ = options.RandomSeed.Should().Be(12345);
+        _ = options.StopSequence.Should().BeEquivalentTo(expectation);
+        _ = options.ExtraProperties.Should().ContainKey("custom_param");
+        _ = options.ExtraProperties!["custom_param"].Should().Be("custom_value");
     }
 
     [Fact]
     public void ConvertRunAgentInput_WithoutConfiguration_CreatesDefaultOptions()
     {
         // Arrange
-        var input = new RunAgentInput
-        {
-            Message = "Test"
-        };
+        var input = new RunAgentInput { Message = "Test" };
 
         // Act
         var (messages, options) = _converter.ConvertRunAgentInput(input);
 
         // Assert
-        options.Should().NotBeNull();
-        options.ModelId.Should().BeEmpty();
-        options.Temperature.Should().BeNull();
-        options.MaxToken.Should().BeNull();
+        _ = options.Should().NotBeNull();
+        _ = options.ModelId.Should().BeEmpty();
+        _ = options.Temperature.Should().BeNull();
+        _ = options.MaxToken.Should().BeNull();
     }
 
     #endregion
@@ -554,26 +545,22 @@ public class AgUiToLmCoreConverterTests
         var agUiToolCall = new AgUiToolCall
         {
             Id = "call-abc",
-            Function = new FunctionCall
-            {
-                Name = "my_function",
-                Arguments = arguments
-            }
+            Function = new FunctionCall { Name = "my_function", Arguments = arguments },
         };
 
         // Act
         var result = _converter.ConvertToolCall(agUiToolCall);
 
         // Assert
-        result.Should().NotBeNull();
-        result.ToolCallId.Should().Be("call-abc");
-        result.FunctionName.Should().Be("my_function");
-        result.FunctionArgs.Should().Contain("param");
-        result.FunctionArgs.Should().Contain("value");
+        _ = result.Should().NotBeNull();
+        _ = result.ToolCallId.Should().Be("call-abc");
+        _ = result.FunctionName.Should().Be("my_function");
+        _ = result.FunctionArgs.Should().Contain("param");
+        _ = result.FunctionArgs.Should().Contain("value");
 
         // Verify it's valid JSON
         var parsed = JsonDocument.Parse(result.FunctionArgs!);
-        parsed.RootElement.GetProperty("param").GetString().Should().Be("value");
+        _ = parsed.RootElement.GetProperty("param").GetString().Should().Be("value");
     }
 
     [Fact]
@@ -584,18 +571,14 @@ public class AgUiToLmCoreConverterTests
         var agUiToolCall = new AgUiToolCall
         {
             Id = "call-empty",
-            Function = new FunctionCall
-            {
-                Name = "no_args",
-                Arguments = arguments
-            }
+            Function = new FunctionCall { Name = "no_args", Arguments = arguments },
         };
 
         // Act
         var result = _converter.ConvertToolCall(agUiToolCall);
 
         // Assert
-        result.FunctionArgs.Should().Be("{}");
+        _ = result.FunctionArgs.Should().Be("{}");
     }
 
     [Fact]
@@ -603,7 +586,7 @@ public class AgUiToLmCoreConverterTests
     {
         // Act & Assert
         var action = () => _converter.ConvertToolCall(null!);
-        action.Should().Throw<ArgumentNullException>();
+        _ = action.Should().Throw<ArgumentNullException>();
     }
 
     #endregion
@@ -615,7 +598,7 @@ public class AgUiToLmCoreConverterTests
     {
         // Act & Assert
         var action = () => _converter.ConvertMessage(null!);
-        action.Should().Throw<ArgumentNullException>();
+        _ = action.Should().Throw<ArgumentNullException>();
     }
 
     [Fact]
@@ -623,7 +606,7 @@ public class AgUiToLmCoreConverterTests
     {
         // Act & Assert
         var action = () => _converter.ConvertMessageHistory(null!);
-        action.Should().Throw<ArgumentNullException>();
+        _ = action.Should().Throw<ArgumentNullException>();
     }
 
     [Fact]
@@ -631,7 +614,7 @@ public class AgUiToLmCoreConverterTests
     {
         // Act & Assert
         var action = () => _converter.ConvertRunAgentInput(null!);
-        action.Should().Throw<ArgumentNullException>();
+        _ = action.Should().Throw<ArgumentNullException>();
     }
 
     [Fact]
@@ -642,7 +625,7 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-special",
             Role = "user",
-            Content = "Special: <>&\"'éñ中文🎉"
+            Content = "Special: <>&\"'éñ中文🎉",
         };
 
         // Act
@@ -650,7 +633,7 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var textMsg = (TextMessage)result;
-        textMsg.Text.Should().Be("Special: <>&\"'éñ中文🎉");
+        _ = textMsg.Text.Should().Be("Special: <>&\"'éñ中文🎉");
     }
 
     [Fact]
@@ -661,7 +644,7 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-unicode",
             Role = "assistant",
-            Content = "Unicode: 你好 🌍 Привет"
+            Content = "Unicode: 你好 🌍 Привет",
         };
 
         // Act
@@ -669,7 +652,7 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var textMsg = (TextMessage)result;
-        textMsg.Text.Should().Be("Unicode: 你好 🌍 Привет");
+        _ = textMsg.Text.Should().Be("Unicode: 你好 🌍 Привет");
     }
 
     [Fact]
@@ -680,7 +663,7 @@ public class AgUiToLmCoreConverterTests
         {
             Id = "msg-unknown",
             Role = "unknown_role",
-            Content = "Test"
+            Content = "Test",
         };
 
         // Act
@@ -688,7 +671,7 @@ public class AgUiToLmCoreConverterTests
 
         // Assert
         var textMsg = (TextMessage)result;
-        textMsg.Role.Should().Be(Role.Assistant);
+        _ = textMsg.Role.Should().Be(Role.Assistant);
     }
 
     #endregion

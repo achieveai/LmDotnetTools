@@ -30,7 +30,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         var attributes = typeof(IMessage).GetCustomAttributes<JsonDerivedTypeAttribute>().ToList();
         foreach (var attr in attributes)
         {
-            string discriminator = IMessageJsonConverter.GetDiscriminator(attr);
+            var discriminator = GetDiscriminator(attr);
             _discriminatorToType[discriminator] = attr.DerivedType;
             _typeToDiscriminator[attr.DerivedType] = discriminator;
         }
@@ -73,7 +73,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             Type targetType;
             if (rootElement.TryGetProperty(TypeDiscriminatorPropertyName, out var typeProperty))
             {
-                string typeDiscriminator = typeProperty.GetString()!;
+                var typeDiscriminator = typeProperty.GetString()!;
                 // Use the new method to resolve the type from discriminator
                 targetType =
                     GetTypeFromDiscriminator(typeDiscriminator)
@@ -82,11 +82,11 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             else
             {
                 // If no type discriminator is present, try to infer the type from the properties
-                targetType = IMessageJsonConverter.InferTypeFromProperties(rootElement);
+                targetType = InferTypeFromProperties(rootElement);
             }
 
             // Get the json string of the object
-            string json = rootElement.GetRawText();
+            var json = rootElement.GetRawText();
 
             // Create new options without this converter to avoid infinite recursion
             var innerOptions = new JsonSerializerOptions(options);
@@ -151,7 +151,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         else
         {
             // Get a discriminator from the type name if not found in the dictionary
-            discriminator = IMessageJsonConverter.GetDiscriminatorFromType(valueType);
+            discriminator = GetDiscriminatorFromType(valueType);
         }
 
         writer.WriteString(TypeDiscriminatorPropertyName, discriminator);
@@ -226,7 +226,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         }
 
         // If not a known type, fallback to name conversion
-        string typeName = type.Name;
+        var typeName = type.Name;
 
         // If the type name ends with "Message", remove it
         if (typeName.EndsWith("Message", StringComparison.OrdinalIgnoreCase))
@@ -235,7 +235,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         }
 
         // Convert to snake_case
-        string snakeCase = string.Concat(
+        var snakeCase = string.Concat(
             typeName.Select((x, i) => i > 0 && char.IsUpper(x) ? "_" + char.ToLower(x) : char.ToLower(x).ToString())
         );
 
@@ -301,7 +301,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         }
 
         // Normalize the discriminator by removing "_message" suffix if present
-        string normalizedDiscriminator = typeDiscriminator;
+        var normalizedDiscriminator = typeDiscriminator;
         if (normalizedDiscriminator.EndsWith("_message", StringComparison.OrdinalIgnoreCase))
         {
             normalizedDiscriminator = normalizedDiscriminator.Substring(0, normalizedDiscriminator.Length - 8);

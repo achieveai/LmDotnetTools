@@ -16,7 +16,10 @@ public static class StandardWrappers
     public static Func<HttpMessageHandler, ILogger?, HttpMessageHandler> WithKvCache(
         IKvStore store,
         LlmCacheOptions options
-    ) => (inner, logger) => new CachingHttpMessageHandler(store, options, inner, logger);
+    )
+    {
+        return (inner, logger) => new CachingHttpMessageHandler(store, options, inner, logger);
+    }
 
     // Future: add a retry wrapper here or inside LmConfig depending on policy location.
 }

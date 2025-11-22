@@ -20,7 +20,9 @@ public class Program
         {
             var options = ParseArguments(args);
             if (options == null)
+            {
                 return 1;
+            }
 
             // Special handling for list families
             if (args.Contains("--list-families"))
@@ -61,21 +63,21 @@ public class Program
                 var host = Host.CreateDefaultBuilder()
                     .ConfigureLogging(logging =>
                     {
-                        logging.ClearProviders();
-                        logging.SetMinimumLevel(logLevel);
-                        logging.AddNLog("nlog.config");
+                        _ = logging.ClearProviders();
+                        _ = logging.SetMinimumLevel(logLevel);
+                        _ = logging.AddNLog("nlog.config");
                     })
                     .ConfigureServices(services =>
                     {
-                        services.AddHttpClient();
-                        services.AddTransient<OpenRouterModelService>(provider =>
+                        _ = services.AddHttpClient();
+                        _ = services.AddTransient<OpenRouterModelService>(provider =>
                         {
                             var httpClientFactory = provider.GetRequiredService<IHttpClientFactory>();
                             var httpClient = httpClientFactory.CreateClient();
                             var serviceLogger = provider.GetRequiredService<ILogger<OpenRouterModelService>>();
                             return new OpenRouterModelService(httpClient, serviceLogger);
                         });
-                        services.AddTransient<ModelConfigGeneratorService>();
+                        _ = services.AddTransient<ModelConfigGeneratorService>();
                     })
                     .Build();
 
@@ -119,7 +121,7 @@ public class Program
         var options = new GeneratorOptions();
         var families = new List<string>();
 
-        for (int i = 0; i < args.Length; i++)
+        for (var i = 0; i < args.Length; i++)
         {
             switch (args[i].ToLowerInvariant())
             {

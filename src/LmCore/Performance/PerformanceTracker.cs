@@ -109,7 +109,7 @@ public class PerformanceTracker : IPerformanceTracker
 
         lock (_lock)
         {
-            return _providerStats.Values.Select(stats => stats.GetProfileSince(sinceTime)).ToList();
+            return [.. _providerStats.Values.Select(stats => stats.GetProfileSince(sinceTime))];
         }
     }
 
@@ -168,7 +168,7 @@ public class PerformanceTracker : IPerformanceTracker
                 _ => allModels.OrderByDescending(m => m.Stats.TotalRequests),
             };
 
-            return ordered.Take(count).ToList();
+            return [.. ordered.Take(count)];
         }
     }
 

@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using LmEmbeddings.Tests.TestUtilities;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -381,15 +380,13 @@ public class PerformanceModelsTests
                         AverageRetries = 1.2,
                         SuccessRateAfterRetriesPercent = 98.5,
                     },
-                    Trends = ImmutableList.Create(
-                        new PerformanceTrend
+                    Trends = [new PerformanceTrend
                         {
                             Timestamp = DateTime.UtcNow,
                             Metric = "response_time",
                             Value = 250,
                             Trend = TrendDirection.Improving,
-                        }
-                    ),
+                        }],
                 },
                 1,
                 "Complete service performance profile",
@@ -545,8 +542,8 @@ public class PerformanceModelsTests
             new object[] { TrendDirection.Unknown, "Unknown", "Unknown trend" },
         };
 
-    private static readonly string[] item = new[] { "request_id", "service", "model", "success" };
-    private static readonly string[] itemArray = new[] { "request_id", "service", "error", "retry_count" };
+    private static readonly string[] item = ["request_id", "service", "model", "success"];
+    private static readonly string[] itemArray = ["request_id", "service", "error", "retry_count"];
 
     #endregion
 }

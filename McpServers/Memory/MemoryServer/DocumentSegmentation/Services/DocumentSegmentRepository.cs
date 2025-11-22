@@ -3,7 +3,6 @@ using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -30,9 +29,13 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments, nameof(segments));
+        ArgumentNullException.ThrowIfNull(sessionContext, nameof(sessionContext));
+        ArgumentNullException.ThrowIfNull(session, nameof(session));
+
         if (segments == null || segments.Count == 0)
         {
-            return new List<int>();
+            return [];
         }
 
         var segmentIds = new List<int>();
@@ -97,6 +100,9 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(session, nameof(session));
+        ArgumentNullException.ThrowIfNull(sessionContext, nameof(sessionContext));
+
         try
         {
             var segments = new List<DocumentSegment>();
@@ -118,10 +124,10 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
-                    command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
-                    command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
+                    _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                     using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -162,7 +168,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 try
                                 {
                                     segment.Metadata =
-                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? new();
+                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? [];
                                 }
                                 catch (JsonException ex)
                                 {
@@ -171,7 +177,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                         "Failed to parse segment metadata for segment {SegmentId}",
                                         segment.Id
                                     );
-                                    segment.Metadata = new Dictionary<string, object>();
+                                    segment.Metadata = [];
                                 }
                             }
                         }
@@ -266,6 +272,9 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(session, nameof(session));
+        ArgumentNullException.ThrowIfNull(sessionContext, nameof(sessionContext));
+
         try
         {
             var relationships = new List<SegmentRelationship>();
@@ -289,10 +298,10 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
-                    command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
-                    command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
+                    _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                     using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -322,7 +331,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 try
                                 {
                                     relationship.Metadata =
-                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? new();
+                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? [];
                                 }
                                 catch (JsonException ex)
                                 {
@@ -331,7 +340,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                         "Failed to parse relationship metadata for relationship {RelationshipId}",
                                         relationship.Id
                                     );
-                                    relationship.Metadata = new Dictionary<string, object>();
+                                    relationship.Metadata = [];
                                 }
                             }
                         }
@@ -370,6 +379,9 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(session, nameof(session));
+        ArgumentNullException.ThrowIfNull(sessionContext, nameof(sessionContext));
+
         try
         {
             var deletedCount = 0;
@@ -404,15 +416,15 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
                         using var deleteRelCmd = connection.CreateCommand();
                         deleteRelCmd.CommandText = deleteRelationshipsSql;
-                        deleteRelCmd.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
-                        deleteRelCmd.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                        deleteRelCmd.Parameters.AddWithValue(
+                        _ = deleteRelCmd.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
+                        _ = deleteRelCmd.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                        _ = deleteRelCmd.Parameters.AddWithValue(
                             "@agentId",
                             sessionContext.AgentId ?? (object)DBNull.Value
                         );
-                        deleteRelCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                        _ = deleteRelCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
-                        await deleteRelCmd.ExecuteNonQueryAsync(cancellationToken);
+                        _ = await deleteRelCmd.ExecuteNonQueryAsync(cancellationToken);
 
                         // Delete segments
                         const string deleteSegmentsSql =
@@ -425,13 +437,13 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
                         using var deleteSegCmd = connection.CreateCommand();
                         deleteSegCmd.CommandText = deleteSegmentsSql;
-                        deleteSegCmd.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
-                        deleteSegCmd.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                        deleteSegCmd.Parameters.AddWithValue(
+                        _ = deleteSegCmd.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
+                        _ = deleteSegCmd.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                        _ = deleteSegCmd.Parameters.AddWithValue(
                             "@agentId",
                             sessionContext.AgentId ?? (object)DBNull.Value
                         );
-                        deleteSegCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                        _ = deleteSegCmd.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
                         deletedCount = await deleteSegCmd.ExecuteNonQueryAsync(cancellationToken);
 
@@ -475,9 +487,13 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(session, nameof(session));
+        ArgumentNullException.ThrowIfNull(query, nameof(query));
+        ArgumentNullException.ThrowIfNull(sessionContext, nameof(sessionContext));
+
         if (string.IsNullOrWhiteSpace(query))
         {
-            return new List<DocumentSegment>();
+            return [];
         }
 
         try
@@ -493,7 +509,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                         // Try FTS search first
                         using var testCommand = connection.CreateCommand();
                         testCommand.CommandText = "SELECT 1 FROM document_segments_fts LIMIT 1";
-                        await testCommand.ExecuteScalarAsync(cancellationToken);
+                        _ = await testCommand.ExecuteScalarAsync(cancellationToken);
 
                         sql =
                             @"
@@ -537,17 +553,17 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
                     if (sql.Contains("@queryLike"))
                     {
-                        command.Parameters.AddWithValue("@queryLike", $"%{query}%");
+                        _ = command.Parameters.AddWithValue("@queryLike", $"%{query}%");
                     }
                     else
                     {
-                        command.Parameters.AddWithValue("@query", query);
+                        _ = command.Parameters.AddWithValue("@query", query);
                     }
 
-                    command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
-                    command.Parameters.AddWithValue("@limit", limit);
+                    _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@limit", limit);
 
                     using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -588,7 +604,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                 try
                                 {
                                     segment.Metadata =
-                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? new();
+                                        JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson) ?? [];
                                 }
                                 catch (JsonException ex)
                                 {
@@ -597,7 +613,7 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
                                         "Failed to parse segment metadata for segment {SegmentId}",
                                         segment.Id
                                     );
-                                    segment.Metadata = new Dictionary<string, object>();
+                                    segment.Metadata = [];
                                 }
                             }
                         }
@@ -646,22 +662,22 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
         using var command = connection.CreateCommand();
         command.CommandText = sql;
-        command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
-        command.Parameters.AddWithValue("@segmentId", segment.Id);
-        command.Parameters.AddWithValue("@sequenceNumber", segment.SequenceNumber);
-        command.Parameters.AddWithValue("@content", segment.Content);
-        command.Parameters.AddWithValue("@title", segment.Title ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("@summary", segment.Summary ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("@coherenceScore", segment.Quality.CoherenceScore);
-        command.Parameters.AddWithValue("@independenceScore", segment.Quality.IndependenceScore);
-        command.Parameters.AddWithValue("@topicConsistencyScore", segment.Quality.TopicConsistencyScore);
-        command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-        command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@parentDocumentId", parentDocumentId);
+        _ = command.Parameters.AddWithValue("@segmentId", segment.Id);
+        _ = command.Parameters.AddWithValue("@sequenceNumber", segment.SequenceNumber);
+        _ = command.Parameters.AddWithValue("@content", segment.Content);
+        _ = command.Parameters.AddWithValue("@title", segment.Title ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@summary", segment.Summary ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@coherenceScore", segment.Quality.CoherenceScore);
+        _ = command.Parameters.AddWithValue("@independenceScore", segment.Quality.IndependenceScore);
+        _ = command.Parameters.AddWithValue("@topicConsistencyScore", segment.Quality.TopicConsistencyScore);
+        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+        _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
         // Serialize metadata
         var metadataJson = segment.Metadata.Count != 0 ? JsonSerializer.Serialize(segment.Metadata) : null;
-        command.Parameters.AddWithValue("@metadata", metadataJson ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@metadata", metadataJson ?? (object)DBNull.Value);
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt32(result);
@@ -686,19 +702,19 @@ public class DocumentSegmentRepository : IDocumentSegmentRepository
 
         using var command = connection.CreateCommand();
         command.CommandText = sql;
-        command.Parameters.AddWithValue("@sourceSegmentId", relationship.SourceSegmentId);
-        command.Parameters.AddWithValue("@targetSegmentId", relationship.TargetSegmentId);
-        command.Parameters.AddWithValue("@relationshipType", relationship.RelationshipType.ToString());
-        command.Parameters.AddWithValue("@strength", relationship.Strength);
-        command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-        command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@sourceSegmentId", relationship.SourceSegmentId);
+        _ = command.Parameters.AddWithValue("@targetSegmentId", relationship.TargetSegmentId);
+        _ = command.Parameters.AddWithValue("@relationshipType", relationship.RelationshipType.ToString());
+        _ = command.Parameters.AddWithValue("@strength", relationship.Strength);
+        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+        _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId ?? (object)DBNull.Value);
 
         // Serialize metadata
         var metadataJson = relationship.Metadata.Count != 0 ? JsonSerializer.Serialize(relationship.Metadata) : null;
-        command.Parameters.AddWithValue("@metadata", metadataJson ?? (object)DBNull.Value);
+        _ = command.Parameters.AddWithValue("@metadata", metadataJson ?? (object)DBNull.Value);
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     #endregion

@@ -84,7 +84,7 @@ public record ChatMessage
                 yield return new ToolsCallUpdateMessage
                 {
                     Role = ToRole(role!.Value),
-                    ToolCallUpdates = toolCallUpdates.ToImmutableList(),
+                    ToolCallUpdates = [.. toolCallUpdates],
                     FromAgent = name,
                     GenerationId = Id,
                 };
@@ -100,7 +100,7 @@ public record ChatMessage
                 yield return new ToolsCallMessage
                 {
                     Role = ToRole(role!.Value),
-                    ToolCalls = toolCalls.ToImmutableList(),
+                    ToolCalls = [.. toolCalls],
                     FromAgent = name,
                     GenerationId = Id,
                 };
@@ -149,7 +149,7 @@ public record ChatMessage
                         Visibility = visibility,
                     };
 
-                processedReasoningTexts.Add(detailText);
+                _ = processedReasoningTexts.Add(detailText);
             }
         }
 
@@ -162,7 +162,7 @@ public record ChatMessage
                 Reasoning = Reasoning!,
                 FromAgent = name,
                 GenerationId = Id,
-                Visibility = AchieveAi.LmDotnetTools.LmCore.Messages.ReasoningVisibility.Plain,
+                Visibility = ReasoningVisibility.Plain,
             };
         }
 
@@ -323,7 +323,8 @@ public record FunctionContent(
 public record FunctionCall(
     [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("arguments")] string? Arguments
-) { }
+)
+{ }
 
 [JsonConverter(typeof(JsonPropertyNameEnumConverter<RoleEnum>))]
 public enum RoleEnum

@@ -1,5 +1,4 @@
 using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -60,12 +59,12 @@ public class DocumentTypeDetection
     /// <summary>
     /// Characteristics that led to this detection
     /// </summary>
-    public List<string> DetectedCharacteristics { get; set; } = new();
+    public List<string> DetectedCharacteristics { get; set; } = [];
 
     /// <summary>
     /// Alternative document types considered
     /// </summary>
-    public List<(DocumentType Type, double Confidence)> Alternatives { get; set; } = new();
+    public List<(DocumentType Type, double Confidence)> Alternatives { get; set; } = [];
 }
 
 /// <summary>
@@ -101,7 +100,7 @@ public class DocumentComplexityAnalysis
     /// <summary>
     /// Processing recommendations based on complexity
     /// </summary>
-    public List<string> Recommendations { get; set; } = new();
+    public List<string> Recommendations { get; set; } = [];
 }
 
 /// <summary>

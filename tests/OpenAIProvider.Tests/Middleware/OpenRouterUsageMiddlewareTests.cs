@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Net;
-using System.Net.Http;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Core;
@@ -11,7 +10,6 @@ using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Middleware;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
 using Microsoft.Extensions.Logging;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Middleware;
 
@@ -85,8 +83,8 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
             metadata = metadata.Add("inline_usage", usage);
         }
 
-        return new IMessage[]
-        {
+        return
+        [
             new TextMessage
             {
                 Role = Role.User,
@@ -100,7 +98,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
                 GenerationId = completionId,
                 Metadata = metadata,
             },
-        };
+        ];
     }
 
     /// <summary>
@@ -364,7 +362,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         Assert.Equal(5, result.Count); // 4 original + 1 UsageMessage
 
         // All 4 original messages should be unchanged (Requirement 13.4)
-        for (int i = 0; i < 4; i++)
+        for (var i = 0; i < 4; i++)
         {
             var originalMessage = messages[i] as TextMessage;
             var resultMessage = result[i] as TextMessage;
@@ -715,7 +713,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         Console.WriteLine($"Final UsageMessage PromptTokens: {finalUsageMessage.Usage.PromptTokens}");
         Console.WriteLine($"Final UsageMessage CompletionTokens: {finalUsageMessage.Usage.CompletionTokens}");
 
-        Assert.NotNull(finalUsageMessage.Usage.TotalCost);
+        _ = Assert.NotNull(finalUsageMessage.Usage.TotalCost);
         Assert.Equal(0.001425, finalUsageMessage.Usage.TotalCost);
         Assert.Equal(25, finalUsageMessage.Usage.PromptTokens);
         Assert.Equal(12, finalUsageMessage.Usage.CompletionTokens);

@@ -1,6 +1,5 @@
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
@@ -8,9 +7,6 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using AchieveAi.LmDotnetTools.TestUtils;
-using dotenv.net;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -18,20 +14,20 @@ public class OpenAiAgentTests
 {
     private static string EnvTestPath =>
         Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             ".env.test"
         );
 
-    private static readonly string[] fallbackKeys = new[] { "LLM_API_KEY" };
-    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_BASE_URL" };
+    private static readonly string[] fallbackKeys = ["LLM_API_KEY"];
+    private static readonly string[] fallbackKeysArray = ["LLM_API_BASE_URL"];
 
     [Fact]
     public async Task SimpleConversation_ShouldReturnResponse()
     {
         // Create HTTP client with record/playback functionality
-        string testCaseName = "SimpleConversation_ShouldReturnResponse";
+        var testCaseName = "SimpleConversation_ShouldReturnResponse";
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "OpenAIProvider.Tests",
             "TestData",
@@ -65,7 +61,7 @@ public class OpenAiAgentTests
         Assert.NotNull(response);
 
         // Verify it's a text message with content
-        Assert.IsType<ICanGetText>(response.First(), exactMatch: false);
+        _ = Assert.IsType<ICanGetText>(response.First(), exactMatch: false);
         var textMessage = (ICanGetText)response!.First();
         Assert.True(textMessage.CanGetText());
         Assert.NotNull(textMessage.GetText());
@@ -135,8 +131,8 @@ public class OpenAiAgentTests
         var options = new GenerateReplyOptions
         {
             ModelId = "gpt-4",
-            Functions = new[]
-            {
+            Functions =
+            [
                 new FunctionContract
                 {
                     Name = "getWeather",
@@ -159,12 +155,12 @@ public class OpenAiAgentTests
                         },
                     },
                 },
-            },
+            ],
         };
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "OpenAIProvider.Tests",
             "TestData",
@@ -193,7 +189,7 @@ public class OpenAiAgentTests
         if (response is ToolsCallMessage toolMessage)
         {
             Assert.NotNull(toolMessage.ToolCalls);
-            Assert.Single(toolMessage.ToolCalls);
+            _ = Assert.Single(toolMessage.ToolCalls);
             Assert.Equal("getWeather", toolMessage.ToolCalls[0].FunctionName);
         }
         else if (response is TextMessage textMessage)
@@ -221,8 +217,8 @@ public class OpenAiAgentTests
         var options = new GenerateReplyOptions
         {
             ModelId = "meta-llama/llama-4-maverick",
-            Functions = new[]
-            {
+            Functions =
+            [
                 new FunctionContract
                 {
                     Name = "getWeather",
@@ -245,12 +241,12 @@ public class OpenAiAgentTests
                         },
                     },
                 },
-            },
+            ],
         };
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "FunctionToolCall_ShouldReturnToolMessage_streaming.json"
@@ -290,7 +286,7 @@ public class OpenAiAgentTests
         if (firstResponse is ToolsCallMessage toolMessage)
         {
             Assert.NotNull(toolMessage.ToolCalls);
-            Assert.Single(toolMessage.ToolCalls);
+            _ = Assert.Single(toolMessage.ToolCalls);
             Assert.Equal("getWeather", toolMessage.ToolCalls[0].FunctionName);
         }
         else if (firstResponse is TextMessage textMessage)
@@ -318,8 +314,8 @@ public class OpenAiAgentTests
         var options = new GenerateReplyOptions
         {
             ModelId = "gpt-4",
-            Functions = new[]
-            {
+            Functions =
+            [
                 new FunctionContract
                 {
                     Name = "getWeather",
@@ -342,12 +338,12 @@ public class OpenAiAgentTests
                         },
                     },
                 },
-            },
+            ],
         };
 
         // Create HTTP client with record/playback functionality
         var testDataFilePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "OpenAIProvider.Tests",
             "TestData",
@@ -379,7 +375,7 @@ public class OpenAiAgentTests
         if (firstResponse is ToolsCallMessage toolMessage)
         {
             Assert.NotNull(toolMessage.ToolCalls);
-            Assert.Single(toolMessage.ToolCalls);
+            _ = Assert.Single(toolMessage.ToolCalls);
             Assert.Equal("getWeather", toolMessage.ToolCalls[0].FunctionName);
         }
         else if (firstResponse is TextMessage textMessage)

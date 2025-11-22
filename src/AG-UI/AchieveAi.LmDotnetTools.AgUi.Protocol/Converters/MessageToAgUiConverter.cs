@@ -16,31 +16,44 @@ public class MessageToAgUiConverter : IMessageConverter
 {
     private readonly IToolCallTracker _toolCallTracker;
     private readonly ILogger<MessageToAgUiConverter> _logger;
-    private readonly Dictionary<string, MessageState> _messageStates = new();
-    private readonly Dictionary<string, int> _chunkCounters = new();
+    private readonly Dictionary<string, MessageState> _messageStates = [];
+    private readonly Dictionary<string, int> _chunkCounters = [];
     private (string messageId, string messageType)? _activeMessageKey;
 
-    public MessageToAgUiConverter(
-        IToolCallTracker toolCallTracker,
-        ILogger<MessageToAgUiConverter>? logger = null)
+    public MessageToAgUiConverter(IToolCallTracker toolCallTracker, ILogger<MessageToAgUiConverter>? logger = null)
     {
         _toolCallTracker = toolCallTracker;
         _logger = logger ?? NullLogger<MessageToAgUiConverter>.Instance;
     }
 
     /// <inheritdoc/>
-    public IEnumerable<AgUiEventBase> ConvertToAgUiEvents(IMessage message, string sessionId, string? threadId = null, string? runId = null)
+    public IEnumerable<AgUiEventBase> ConvertToAgUiEvents(
+        IMessage message,
+        string sessionId,
+        string? threadId = null,
+        string? runId = null
+    )
     {
         return message switch
         {
             TextUpdateMessage textUpdate => ConvertTextUpdate(textUpdate, sessionId, threadId, runId),
             ToolsCallUpdateMessage toolUpdate => ConvertToolCallUpdate(toolUpdate, sessionId, threadId, runId),
-            ReasoningUpdateMessage reasoningUpdate => ConvertReasoningUpdate(reasoningUpdate, sessionId, threadId, runId),
+            ReasoningUpdateMessage reasoningUpdate => ConvertReasoningUpdate(
+                reasoningUpdate,
+                sessionId,
+                threadId,
+                runId
+            ),
             TextMessage textMessage => ConvertTextMessage(textMessage, sessionId, threadId, runId),
-            ToolsCallAggregateMessage aggregate => ConvertToolsCallAggregateMessage(aggregate, sessionId, threadId, runId),
+            ToolsCallAggregateMessage aggregate => ConvertToolsCallAggregateMessage(
+                aggregate,
+                sessionId,
+                threadId,
+                runId
+            ),
             ReasoningMessage reasoningMessage => [], // ConvertReasoningMessage(reasoningMessage, sessionId, threadId, runId),
             ToolsCallMessage toolsCallMessage => ConvertToolsCallMessage(toolsCallMessage, sessionId, threadId, runId),
-            _ => HandleUnknown(sessionId, threadId, runId)
+            _ => HandleUnknown(sessionId, threadId, runId),
         };
     }
 
@@ -70,7 +83,12 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertTextUpdate(TextUpdateMessage update, string sessionId, string? threadId, string? runId)
+    private IEnumerable<AgUiEventBase> ConvertTextUpdate(
+        TextUpdateMessage update,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         var messageType = update.IsThinking ? "Thinking" : "Text";
         var messageId = GetOrCreateMessageId(update.GenerationId);
@@ -92,8 +110,8 @@ public class MessageToAgUiConverter : IMessageConverter
         if (!state.Started)
         {
             state.Started = true;
-            state.Type = MessageType.Text;  // Mark as text message
-            _activeMessageKey = currentKey;  // Track as active message
+            state.Type = MessageType.Text; // Mark as text message
+            _activeMessageKey = currentKey; // Track as active message
 
             yield return new TextMessageStartEvent
             {
@@ -101,7 +119,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 ThreadId = threadId,
                 RunId = runId,
                 MessageId = messageId,
-                Role = ConvertRole(update.Role)
+                Role = ConvertRole(update.Role),
             };
         }
 
@@ -123,7 +141,12 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertToolCallUpdate(ToolsCallUpdateMessage update, string sessionId, string? threadId, string? runId)
+    private IEnumerable<AgUiEventBase> ConvertToolCallUpdate(
+        ToolsCallUpdateMessage update,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         foreach (var toolCallUpdate in update.ToolCallUpdates)
         {
@@ -145,7 +168,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 }
 
                 _toolCallTracker.StartToolCall(toolCallId, toolCallUpdate.FunctionName);
-                _activeMessageKey = currentKey;  // Track as active message
+                _activeMessageKey = currentKey; // Track as active message
 
                 yield return new ToolCallStartEvent
                 {
@@ -153,7 +176,7 @@ public class MessageToAgUiConverter : IMessageConverter
                     ThreadId = threadId,
                     RunId = runId,
                     ToolCallId = toolCallId,
-                    ToolName = toolCallUpdate.FunctionName
+                    ToolName = toolCallUpdate.FunctionName,
                 };
             }
 
@@ -172,7 +195,7 @@ public class MessageToAgUiConverter : IMessageConverter
                     RunId = runId,
                     ToolCallId = toolCallId,
                     Delta = toolCallUpdate.FunctionArgs,
-                    JsonFragmentUpdates = fragmentUpdates
+                    JsonFragmentUpdates = fragmentUpdates,
                 };
 
                 // If complete, emit end event
@@ -185,7 +208,7 @@ public class MessageToAgUiConverter : IMessageConverter
                         ThreadId = threadId,
                         RunId = runId,
                         ToolCallId = toolCallId,
-                        Duration = duration
+                        Duration = duration,
                     };
 
                     // Clear active message tracking since this message properly ended
@@ -198,7 +221,12 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertTextMessage(TextMessage textMessage, string sessionId, string? threadId, string? runId)
+    private static IEnumerable<AgUiEventBase> ConvertTextMessage(
+        TextMessage textMessage,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         var messageId = GetOrCreateMessageId(textMessage.GenerationId);
 
@@ -209,7 +237,7 @@ public class MessageToAgUiConverter : IMessageConverter
             ThreadId = threadId,
             RunId = runId,
             MessageId = messageId,
-            Role = ConvertRole(textMessage.Role)
+            Role = ConvertRole(textMessage.Role),
         };
 
         // Emit content event with the full text
@@ -222,7 +250,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 RunId = runId,
                 MessageId = messageId,
                 Delta = textMessage.Text,
-                ChunkIndex = 0
+                ChunkIndex = 0,
             };
         }
 
@@ -234,14 +262,24 @@ public class MessageToAgUiConverter : IMessageConverter
             RunId = runId,
             MessageId = messageId,
             TotalChunks = string.IsNullOrEmpty(textMessage.Text) ? 0 : 1,
-            TotalLength = textMessage.Text?.Length ?? 0
+            TotalLength = textMessage.Text?.Length ?? 0,
         };
     }
 
-    private IEnumerable<AgUiEventBase> ConvertToolsCallMessage(ToolsCallMessage toolsCallMessage, string sessionId, string? threadId, string? runId)
+    private IEnumerable<AgUiEventBase> ConvertToolsCallMessage(
+        ToolsCallMessage toolsCallMessage,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         foreach (var toolCall in toolsCallMessage.ToolCalls)
         {
+            if (string.IsNullOrEmpty(toolCall.FunctionName))
+            {
+                continue; // Skip tool calls without a function name
+            }
+
             var toolCallId = _toolCallTracker.GetOrCreateToolCallId(toolCall.ToolCallId);
 
             // Start the tool call
@@ -253,7 +291,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 ThreadId = threadId,
                 RunId = runId,
                 ToolCallId = toolCallId,
-                ToolName = toolCall.FunctionName
+                ToolName = toolCall.FunctionName,
             };
 
             // Emit arguments event with the full arguments
@@ -266,7 +304,7 @@ public class MessageToAgUiConverter : IMessageConverter
                     RunId = runId,
                     ToolCallId = toolCallId,
                     Delta = toolCall.FunctionArgs,
-                    JsonFragmentUpdates = null
+                    JsonFragmentUpdates = null,
                 };
             }
 
@@ -278,12 +316,17 @@ public class MessageToAgUiConverter : IMessageConverter
                 ThreadId = threadId,
                 RunId = runId,
                 ToolCallId = toolCallId,
-                Duration = duration
+                Duration = duration,
             };
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertToolsCallAggregateMessage(ToolsCallAggregateMessage aggregate, string sessionId, string? threadId, string? runId)
+    private IEnumerable<AgUiEventBase> ConvertToolsCallAggregateMessage(
+        ToolsCallAggregateMessage aggregate,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         // First, emit events for the tool call request
         foreach (var evt in ConvertToolsCallMessage(aggregate.ToolsCallMessage, sessionId, threadId, runId))
@@ -304,13 +347,18 @@ public class MessageToAgUiConverter : IMessageConverter
                     ThreadId = threadId,
                     RunId = runId,
                     ToolCallId = toolCallId,
-                    Content = result.Result
+                    Content = result.Result,
                 };
             }
         }
     }
 
-    private IEnumerable<AgUiEventBase> ConvertReasoningMessage(ReasoningMessage reasoningMessage, string sessionId, string? threadId, string? runId)
+    private IEnumerable<AgUiEventBase> ConvertReasoningMessage(
+        ReasoningMessage reasoningMessage,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         // Check if we're switching to a different message - close the previous one
         if (_activeMessageKey.HasValue)
@@ -331,9 +379,8 @@ public class MessageToAgUiConverter : IMessageConverter
             SessionId = sessionId,
             ThreadId = threadId,
             RunId = runId,
-            EncryptedReasoning = reasoningMessage.Visibility == ReasoningVisibility.Encrypted
-                ? reasoningMessage.Reasoning
-                : null
+            EncryptedReasoning =
+                reasoningMessage.Visibility == ReasoningVisibility.Encrypted ? reasoningMessage.Reasoning : null,
         };
         yield return reasoningStartEvent;
 
@@ -347,7 +394,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 ThreadId = threadId,
                 RunId = runId,
                 MessageId = messageId,
-                Visibility = visibilityString
+                Visibility = visibilityString,
             };
 
             // Emit REASONING_MESSAGE_CONTENT with full text
@@ -360,7 +407,7 @@ public class MessageToAgUiConverter : IMessageConverter
                     RunId = runId,
                     MessageId = messageId,
                     Delta = reasoningMessage.Reasoning,
-                    ChunkIndex = 0
+                    ChunkIndex = 0,
                 };
             }
 
@@ -372,7 +419,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 RunId = runId,
                 MessageId = messageId,
                 TotalChunks = string.IsNullOrEmpty(reasoningMessage.Reasoning) ? 0 : 1,
-                TotalLength = reasoningMessage.Reasoning?.Length ?? 0
+                TotalLength = reasoningMessage.Reasoning?.Length ?? 0,
             };
         }
 
@@ -382,14 +429,17 @@ public class MessageToAgUiConverter : IMessageConverter
             SessionId = sessionId,
             ThreadId = threadId,
             RunId = runId,
-            Summary = reasoningMessage.Visibility == ReasoningVisibility.Summary
-                ? reasoningMessage.Reasoning
-                : null
+            Summary = reasoningMessage.Visibility == ReasoningVisibility.Summary ? reasoningMessage.Reasoning : null,
         };
         yield return reasoningEndEvent;
     }
 
-    private IEnumerable<AgUiEventBase> ConvertReasoningUpdate(ReasoningUpdateMessage update, string sessionId, string? threadId, string? runId)
+    private IEnumerable<AgUiEventBase> ConvertReasoningUpdate(
+        ReasoningUpdateMessage update,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         const string messageType = "reasoning";
         var messageId = GetOrCreateMessageId(update.GenerationId);
@@ -412,8 +462,8 @@ public class MessageToAgUiConverter : IMessageConverter
         if (!state.Started)
         {
             state.Started = true;
-            state.Type = MessageType.Reasoning;  // Mark as reasoning message
-            _activeMessageKey = currentKey;      // Track as active message
+            state.Type = MessageType.Reasoning; // Mark as reasoning message
+            _activeMessageKey = currentKey; // Track as active message
 
             // Emit REASONING_START (no encrypted content for streaming)
             yield return new ReasoningStartEvent
@@ -421,7 +471,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 SessionId = sessionId,
                 ThreadId = threadId,
                 RunId = runId,
-                EncryptedReasoning = null
+                EncryptedReasoning = null,
             };
 
             // Emit REASONING_MESSAGE_START
@@ -431,7 +481,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 ThreadId = threadId,
                 RunId = runId,
                 MessageId = messageId,
-                Visibility = visibilityString
+                Visibility = visibilityString,
             };
         }
 
@@ -446,14 +496,14 @@ public class MessageToAgUiConverter : IMessageConverter
                 RunId = runId,
                 MessageId = messageId,
                 Delta = update.Reasoning,
-                ChunkIndex = chunkIndex
+                ChunkIndex = chunkIndex,
             };
 
             state.TotalLength += update.Reasoning.Length;
         }
 
         // Check if this appears to be the final update
-        if (update.IsUpdate == false || update.Reasoning?.EndsWith("</s>") == true)
+        if (!update.IsUpdate || update.Reasoning?.EndsWith("</s>") == true)
         {
             var totalChunks = GetChunkCounter(messageId, messageType);
 
@@ -465,7 +515,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 RunId = runId,
                 MessageId = messageId,
                 TotalChunks = totalChunks,
-                TotalLength = state.TotalLength
+                TotalLength = state.TotalLength,
             };
 
             // Emit REASONING_END
@@ -474,7 +524,7 @@ public class MessageToAgUiConverter : IMessageConverter
                 SessionId = sessionId,
                 ThreadId = threadId,
                 RunId = runId,
-                Summary = null  // Summary would come from a separate message
+                Summary = null, // Summary would come from a separate message
             };
 
             CleanupMessageState(messageId, messageType);
@@ -487,31 +537,37 @@ public class MessageToAgUiConverter : IMessageConverter
         }
     }
 
-    private string? ConvertReasoningVisibility(ReasoningVisibility visibility)
+    private static string? ConvertReasoningVisibility(ReasoningVisibility visibility)
     {
         return visibility switch
         {
             ReasoningVisibility.Plain => "plain",
             ReasoningVisibility.Summary => "summary",
             ReasoningVisibility.Encrypted => "encrypted",
-            _ => null
+            _ => null,
         };
     }
 
     /// <summary>
     /// Closes an orphaned message by emitting appropriate END events
     /// </summary>
-    private IEnumerable<AgUiEventBase> CloseOrphanedMessage(string messageId, string messageType, string sessionId, string? threadId, string? runId)
+    private IEnumerable<AgUiEventBase> CloseOrphanedMessage(
+        string messageId,
+        string messageType,
+        string sessionId,
+        string? threadId,
+        string? runId
+    )
     {
         var key = $"{messageId}_{messageType}";
         if (!_messageStates.TryGetValue(key, out var state))
         {
-            yield break;  // No state means message was never started
+            yield break; // No state means message was never started
         }
 
         if (!state.Started)
         {
-            yield break;  // Message never started, nothing to close
+            yield break; // Message never started, nothing to close
         }
 
         var totalChunks = GetChunkCounter(messageId, messageType);
@@ -527,7 +583,7 @@ public class MessageToAgUiConverter : IMessageConverter
                     RunId = runId,
                     MessageId = messageId,
                     TotalChunks = totalChunks,
-                    TotalLength = state.TotalLength
+                    TotalLength = state.TotalLength,
                 };
                 break;
 
@@ -540,14 +596,14 @@ public class MessageToAgUiConverter : IMessageConverter
                     RunId = runId,
                     MessageId = messageId,
                     TotalChunks = totalChunks,
-                    TotalLength = state.TotalLength
+                    TotalLength = state.TotalLength,
                 };
                 yield return new ReasoningEndEvent
                 {
                     SessionId = sessionId,
                     ThreadId = threadId,
                     RunId = runId,
-                    Summary = null
+                    Summary = null,
                 };
                 break;
 
@@ -560,16 +616,17 @@ public class MessageToAgUiConverter : IMessageConverter
                     SessionId = sessionId,
                     ThreadId = threadId,
                     RunId = runId,
-                    ToolCallId = messageId
+                    ToolCallId = messageId,
                 };
+                break;
+            default:
                 break;
         }
 
         CleanupMessageState(messageId, messageType);
     }
 
-
-    private MessageRole ConvertRole(Role lmCoreRole)
+    private static MessageRole ConvertRole(Role lmCoreRole)
     {
         return lmCoreRole switch
         {
@@ -577,12 +634,14 @@ public class MessageToAgUiConverter : IMessageConverter
             Role.User => MessageRole.User,
             Role.Assistant => MessageRole.Assistant,
             Role.Tool => MessageRole.Tool,
-            _ => MessageRole.Assistant
+            _ => MessageRole.Assistant,
         };
     }
 
-    private string GetOrCreateMessageId(string? generationId)
-        => string.IsNullOrEmpty(generationId) ? Guid.NewGuid().ToString() : generationId;
+    private static string GetOrCreateMessageId(string? generationId)
+    {
+        return string.IsNullOrEmpty(generationId) ? Guid.NewGuid().ToString() : generationId;
+    }
 
     private MessageState GetMessageState(string messageId, string messageType)
     {
@@ -632,6 +691,6 @@ public class MessageToAgUiConverter : IMessageConverter
     {
         Text,
         Reasoning,
-        ToolCall
+        ToolCall,
     }
 }

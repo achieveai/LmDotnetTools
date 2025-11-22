@@ -48,7 +48,7 @@ public class SessionManager : ISessionManager
         _logger.LogInformation("Found session context in environment variables: {SessionDefaults}", sessionDefaults);
 
         // Store in database for persistence
-        await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
+        _ = await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
 
         return sessionDefaults;
     }
@@ -88,7 +88,7 @@ public class SessionManager : ISessionManager
         _logger.LogInformation("Found session context in URL parameters: {SessionDefaults}", sessionDefaults);
 
         // Store in database for persistence
-        await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
+        _ = await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
 
         return sessionDefaults;
     }
@@ -128,7 +128,7 @@ public class SessionManager : ISessionManager
         _logger.LogInformation("Found session context in HTTP headers: {SessionDefaults}", sessionDefaults);
 
         // Store in database for persistence
-        await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
+        _ = await StoreSessionDefaultsAsync(sessionDefaults, cancellationToken);
 
         return sessionDefaults;
     }
@@ -240,13 +240,13 @@ public class SessionManager : ISessionManager
                 {
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
-                    command.Parameters.AddWithValue("@connectionId", sessionDefaults.ConnectionId);
-                    command.Parameters.AddWithValue("@userId", sessionDefaults.UserId ?? (object)DBNull.Value);
-                    command.Parameters.AddWithValue("@agentId", sessionDefaults.AgentId ?? (object)DBNull.Value);
-                    command.Parameters.AddWithValue("@runId", sessionDefaults.RunId ?? (object)DBNull.Value);
-                    command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(sessionDefaults.Metadata));
-                    command.Parameters.AddWithValue("@source", (int)sessionDefaults.Source);
-                    command.Parameters.AddWithValue("@createdAt", sessionDefaults.CreatedAt.ToString("O"));
+                    _ = command.Parameters.AddWithValue("@connectionId", sessionDefaults.ConnectionId);
+                    _ = command.Parameters.AddWithValue("@userId", sessionDefaults.UserId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionDefaults.AgentId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@runId", sessionDefaults.RunId ?? (object)DBNull.Value);
+                    _ = command.Parameters.AddWithValue("@metadata", JsonSerializer.Serialize(sessionDefaults.Metadata));
+                    _ = command.Parameters.AddWithValue("@source", (int)sessionDefaults.Source);
+                    _ = command.Parameters.AddWithValue("@createdAt", sessionDefaults.CreatedAt.ToString("O"));
 
                     return await command.ExecuteNonQueryAsync(cancellationToken);
                 },
@@ -301,7 +301,7 @@ public class SessionManager : ISessionManager
                 {
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
-                    command.Parameters.AddWithValue("@connectionId", connectionId);
+                    _ = command.Parameters.AddWithValue("@connectionId", connectionId);
 
                     using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -312,9 +312,9 @@ public class SessionManager : ISessionManager
                             ? string.Empty
                             : reader.GetString(metadataOrdinal);
                         var metadata = string.IsNullOrEmpty(metadataJson)
-                            ? new Dictionary<string, object>()
+                            ? []
                             : JsonSerializer.Deserialize<Dictionary<string, object>>(metadataJson)
-                                ?? new Dictionary<string, object>();
+                                ?? [];
 
                         // Handle source column gracefully - it might not exist in older schemas
                         var source = SessionDefaultsSource.SystemDefaults;
@@ -342,7 +342,7 @@ public class SessionManager : ISessionManager
                                 var createdAtValue = reader.GetValue(createdAtOrdinal);
                                 if (createdAtValue is string createdAtString)
                                 {
-                                    DateTime.TryParse(createdAtString, out createdAt);
+                                    _ = DateTime.TryParse(createdAtString, out createdAt);
                                 }
                                 else if (createdAtValue is DateTime createdAtDateTime)
                                 {
@@ -425,7 +425,7 @@ public class SessionManager : ISessionManager
                 {
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
-                    command.Parameters.AddWithValue("@connectionId", connectionId);
+                    _ = command.Parameters.AddWithValue("@connectionId", connectionId);
 
                     return await command.ExecuteNonQueryAsync(cancellationToken);
                 },
@@ -464,7 +464,7 @@ public class SessionManager : ISessionManager
                 {
                     using var command = connection.CreateCommand();
                     command.CommandText = sql;
-                    command.Parameters.AddWithValue("@cutoffTime", cutoffTime.ToString("O"));
+                    _ = command.Parameters.AddWithValue("@cutoffTime", cutoffTime.ToString("O"));
 
                     return await command.ExecuteNonQueryAsync(cancellationToken);
                 },

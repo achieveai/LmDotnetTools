@@ -34,7 +34,7 @@ public class FileKvStore : IKvStore, IDisposable
         _semaphore = new SemaphoreSlim(1, 1);
 
         // Ensure the cache directory exists
-        Directory.CreateDirectory(CacheDirectory);
+        _ = Directory.CreateDirectory(CacheDirectory);
     }
 
     /// <summary>
@@ -80,7 +80,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
         finally
         {
-            _semaphore.Release();
+            _ = _semaphore.Release();
         }
     }
 
@@ -100,7 +100,7 @@ public class FileKvStore : IKvStore, IDisposable
         try
         {
             // Ensure directory exists (in case it was deleted)
-            Directory.CreateDirectory(CacheDirectory);
+            _ = Directory.CreateDirectory(CacheDirectory);
 
             // Write to temporary file first, then move to final location
             // This ensures atomic writes and prevents corruption
@@ -110,7 +110,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
         finally
         {
-            _semaphore.Release();
+            _ = _semaphore.Release();
         }
     }
 
@@ -149,7 +149,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
         finally
         {
-            _semaphore.Release();
+            _ = _semaphore.Release();
         }
     }
 
@@ -186,7 +186,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
         finally
         {
-            _semaphore.Release();
+            _ = _semaphore.Release();
         }
     }
 
@@ -206,7 +206,7 @@ public class FileKvStore : IKvStore, IDisposable
         }
         finally
         {
-            _semaphore.Release();
+            _ = _semaphore.Release();
         }
     }
 

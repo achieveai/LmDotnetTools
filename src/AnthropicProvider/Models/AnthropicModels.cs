@@ -56,8 +56,9 @@ public static class AnthropicModelNames
     /// </summary>
     /// <param name="modelType">The model type to get the name for.</param>
     /// <returns>The model name used in API requests.</returns>
-    public static string GetModelName(AnthropicModelType modelType) =>
-        modelType switch
+    public static string GetModelName(AnthropicModelType modelType)
+    {
+        return modelType switch
         {
             AnthropicModelType.Claude3Opus => Claude3Opus,
             AnthropicModelType.Claude3Sonnet => Claude3Sonnet,
@@ -65,4 +66,5 @@ public static class AnthropicModelNames
             AnthropicModelType.Claude37Sonnet => Claude37Sonnet,
             _ => Claude3Sonnet, // Default to Claude 3 Sonnet
         };
+    }
 }

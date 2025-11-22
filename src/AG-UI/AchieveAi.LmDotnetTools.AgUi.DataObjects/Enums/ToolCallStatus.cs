@@ -31,5 +31,5 @@ public enum ToolCallStatus
     /// Tool call failed with an error
     /// Serialized as: "failed"
     /// </summary>
-    Failed
+    Failed,
 }

@@ -39,7 +39,7 @@ public class MemoryIdGeneratorTests : IDisposable
 
         using var command = _connection.CreateCommand();
         command.CommandText = createTableSql;
-        command.ExecuteNonQuery();
+        _ = command.ExecuteNonQuery();
 
         Debug.WriteLine("✅ Schema initialized directly");
     }
@@ -49,7 +49,7 @@ public class MemoryIdGeneratorTests : IDisposable
         using var command = _connection.CreateCommand();
         command.CommandText =
             "DELETE FROM memory_id_sequence; DELETE FROM sqlite_sequence WHERE name='memory_id_sequence';";
-        command.ExecuteNonQuery();
+        _ = command.ExecuteNonQuery();
         Debug.WriteLine("🔄 Reset ID sequence");
     }
 
@@ -81,7 +81,7 @@ public class MemoryIdGeneratorTests : IDisposable
         var generatedIds = new List<int>();
 
         // Act
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             var id = await _idGenerator.GenerateNextIdAsync();
             generatedIds.Add(id);
@@ -92,7 +92,7 @@ public class MemoryIdGeneratorTests : IDisposable
         Assert.Equal(count, generatedIds.Count);
 
         // Verify IDs are sequential starting from 1
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             Assert.Equal(i + 1, generatedIds[i]);
         }
@@ -113,7 +113,7 @@ public class MemoryIdGeneratorTests : IDisposable
         var tasks = new List<Task<int>>();
 
         // Act
-        for (int i = 0; i < taskCount; i++)
+        for (var i = 0; i < taskCount; i++)
         {
             tasks.Add(_idGenerator.GenerateNextIdAsync());
         }
@@ -199,7 +199,7 @@ internal class TestMemoryIdGenerator
         }
         finally
         {
-            _generationSemaphore.Release();
+            _ = _generationSemaphore.Release();
         }
     }
 }

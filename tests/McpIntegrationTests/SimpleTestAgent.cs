@@ -10,14 +10,14 @@ namespace AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 public class SimpleTestAgent : IAgent
 {
     private IMessage? _injectedMessage = null;
-    private List<IMessage> _receivedMessages = new();
+    private List<IMessage> _receivedMessages = [];
 
     public static string Id => "test-agent";
     public static string? Name => "Test Agent";
     public static string? Description => "A test agent for MCP middleware";
     public static string? ModelId => "test-model";
     public static Dictionary<string, object>? ModelParameters => null;
-    public static IList<IMessage> History => new List<IMessage>();
+    public static IList<IMessage> History => [];
 
     /// <summary>
     /// Gets the messages that were received by this agent

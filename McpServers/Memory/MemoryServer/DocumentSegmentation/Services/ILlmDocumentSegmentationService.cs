@@ -1,5 +1,4 @@
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -81,10 +80,10 @@ public class StrategyRecommendation
     /// <summary>
     /// Alternative strategies considered
     /// </summary>
-    public List<SegmentationStrategy> Alternatives { get; set; } = new();
+    public List<SegmentationStrategy> Alternatives { get; set; } = [];
 
     /// <summary>
     /// Additional metadata from LLM analysis
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 }

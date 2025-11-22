@@ -31,5 +31,5 @@ public enum MessageRole
     /// Message from a tool/function execution
     /// Serialized as: "tool"
     /// </summary>
-    Tool
+    Tool,
 }

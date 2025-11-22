@@ -19,9 +19,7 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
     {
         var type = typeof(T);
         // Get all properties with JsonPropertyName attribute
-        _jsonProperties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null)
-            .ToArray();
+        _jsonProperties = [.. type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetCustomAttribute<JsonPropertyNameAttribute>() != null)];
 
         // Find JsonObject property marked as metadata storage
         _metadataProperty = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -54,8 +52,8 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
                 throw new JsonException($"Expected {JsonTokenType.PropertyName} but got {reader.TokenType}");
             }
 
-            string propertyName = reader.GetString()!;
-            reader.Read();
+            var propertyName = reader.GetString()!;
+            _ = reader.Read();
 
             // Try to handle via the virtual method first
             var (customHandled, customInstance) = ReadProperty(ref reader, instance, propertyName, options);

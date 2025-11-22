@@ -1,14 +1,9 @@
-using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using LmConfigLogEventIds = AchieveAi.LmDotnetTools.LmConfig.Logging.LogEventIds;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
@@ -33,10 +28,10 @@ public class LoggingIntegrationTests : IDisposable
 
         // Create a service collection with logging
         var services = new ServiceCollection();
-        services.AddLogging(builder =>
+        _ = services.AddLogging(builder =>
         {
-            builder.SetMinimumLevel(LogLevel.Trace);
-            builder.AddProvider(new TestLoggerProvider());
+            _ = builder.SetMinimumLevel(LogLevel.Trace);
+            _ = builder.AddProvider(new TestLoggerProvider());
         });
 
         // Create logger factory
@@ -154,12 +149,12 @@ public class LoggingIntegrationTests : IDisposable
         var toolCall = new ToolCall("TestFunction", "{\"input\":\"test\"}");
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(toolCall),
+            ToolCalls = [toolCall],
             Role = Role.Assistant,
             FromAgent = "test-agent",
         };
 
-        mockAgent
+        _ = mockAgent
             .Setup(x =>
                 x.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -185,12 +180,12 @@ public class LoggingIntegrationTests : IDisposable
 
         // Verify middleware processing started
         var processingStartedLogs = logs.Where(log => log.Message.Contains("Middleware processing started")).ToList();
-        Assert.Single(processingStartedLogs);
+        _ = Assert.Single(processingStartedLogs);
         Assert.Contains("TestMiddleware", processingStartedLogs.First().Message);
 
         // Verify function execution logging
         var functionExecutionLogs = logs.Where(log => log.Message.Contains("Function executed")).ToList();
-        Assert.Single(functionExecutionLogs);
+        _ = Assert.Single(functionExecutionLogs);
 
         var functionLog = functionExecutionLogs.First();
         Assert.Contains("TestFunction", functionLog.Message);
@@ -199,12 +194,12 @@ public class LoggingIntegrationTests : IDisposable
         // Verify middleware processing completed
         var processingCompletedLogs = logs.Where(log => log.Message.Contains("Middleware processing completed"))
             .ToList();
-        Assert.Single(processingCompletedLogs);
+        _ = Assert.Single(processingCompletedLogs);
 
         // Verify the result contains the expected aggregate message
         var resultList = result.ToList();
-        Assert.Single(resultList);
-        Assert.IsType<ToolsCallAggregateMessage>(resultList.First());
+        _ = Assert.Single(resultList);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(resultList.First());
     }
 
     /* [Fact] // Disabled: Test relies on mocking non-virtual properties which is not supported
@@ -335,15 +330,15 @@ public class LoggingIntegrationTests : IDisposable
     {
         // Arrange
         var services = new ServiceCollection();
-        services.AddLogging(builder =>
+        _ = services.AddLogging(builder =>
         {
-            builder.SetMinimumLevel(LogLevel.Debug);
-            builder.AddProvider(new TestLoggerProvider());
+            _ = builder.SetMinimumLevel(LogLevel.Debug);
+            _ = builder.AddProvider(new TestLoggerProvider());
         });
 
         // Register components with logger factory
-        services.AddSingleton<ILoggerFactory>(provider => _loggerFactory);
-        services.AddTransient<UnifiedAgent>(provider => new UnifiedAgent(
+        _ = services.AddSingleton<ILoggerFactory>(provider => _loggerFactory);
+        _ = services.AddTransient<UnifiedAgent>(provider => new UnifiedAgent(
             Mock.Of<IModelResolver>(),
             Mock.Of<IProviderAgentFactory>(),
             provider.GetService<ILogger<UnifiedAgent>>()
@@ -359,7 +354,7 @@ public class LoggingIntegrationTests : IDisposable
 
         // Verify that the logger was injected by checking if logging works
         var mockModelResolver = new Mock<IModelResolver>();
-        mockModelResolver
+        _ = mockModelResolver
             .Setup(x =>
                 x.ResolveProviderAsync(
                     It.IsAny<string>(),
@@ -379,7 +374,7 @@ public class LoggingIntegrationTests : IDisposable
         try
         {
             // We expect this to fail, but we want to verify logging occurs
-            await unifiedAgent.GenerateReplyAsync(messages, options);
+            _ = await unifiedAgent.GenerateReplyAsync(messages, options);
         }
         catch
         {
@@ -507,7 +502,7 @@ public class LoggingIntegrationTests : IDisposable
 /// </summary>
 public class TestLoggerFactory : ILoggerFactory
 {
-    private readonly Dictionary<string, ILogger> _loggers = new();
+    private readonly Dictionary<string, ILogger> _loggers = [];
 
     public void AddLogger<T>(TestLogger<T> logger)
     {
@@ -526,18 +521,27 @@ public class TestLoggerFactory : ILoggerFactory
 
 public class TestLoggerProvider : ILoggerProvider
 {
-    public ILogger CreateLogger(string categoryName) => new TestLogger();
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new TestLogger();
+    }
 
     public void Dispose() { }
 }
 
 public class TestLogger : ILogger
 {
-    public List<LogEntry> LogEntries { get; } = new();
+    public List<LogEntry> LogEntries { get; } = [];
 
-    IDisposable ILogger.BeginScope<TState>(TState state) => new TestScope();
+    IDisposable ILogger.BeginScope<TState>(TState state)
+    {
+        return new TestScope();
+    }
 
-    public bool IsEnabled(LogLevel logLevel) => true;
+    public bool IsEnabled(LogLevel logLevel)
+    {
+        return true;
+    }
 
     public void Log<TState>(
         LogLevel logLevel,

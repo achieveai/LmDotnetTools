@@ -128,7 +128,7 @@ public record CostComparison
     public IReadOnlyDictionary<string, IReadOnlyList<CostOption>> ByReliability =>
         Options
             .GroupBy(o => o.ReliabilityTier ?? "Unknown")
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<CostOption>)g.OrderBy(o => o.TotalCost).ToList());
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<CostOption>)[.. g.OrderBy(o => o.TotalCost)]);
 }
 
 /// <summary>
@@ -155,13 +155,18 @@ public record CostOption
     /// <summary>
     /// Cost savings compared to a reference cost.
     /// </summary>
-    public decimal CalculateSavings(decimal referenceCost) => referenceCost - TotalCost;
+    public decimal CalculateSavings(decimal referenceCost)
+    {
+        return referenceCost - TotalCost;
+    }
 
     /// <summary>
     /// Percentage savings compared to a reference cost.
     /// </summary>
-    public double CalculateSavingsPercentage(decimal referenceCost) =>
-        referenceCost > 0 ? (double)((referenceCost - TotalCost) / referenceCost * 100) : 0;
+    public double CalculateSavingsPercentage(decimal referenceCost)
+    {
+        return referenceCost > 0 ? (double)((referenceCost - TotalCost) / referenceCost * 100) : 0;
+    }
 }
 
 /// <summary>

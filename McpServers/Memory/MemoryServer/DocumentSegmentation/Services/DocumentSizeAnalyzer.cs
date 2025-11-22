@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.DocumentSegmentation.Services;

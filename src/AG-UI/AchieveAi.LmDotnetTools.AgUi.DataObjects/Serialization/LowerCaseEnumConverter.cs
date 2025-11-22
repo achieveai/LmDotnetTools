@@ -1,4 +1,3 @@
-using System;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -8,7 +7,8 @@ namespace AchieveAi.LmDotnetTools.AgUi.DataObjects.Serialization;
 /// JSON converter that serializes enum values to lowercase strings
 /// </summary>
 /// <typeparam name="TEnum">The enum type to convert</typeparam>
-public class LowerCaseEnumConverter<TEnum> : JsonConverter<TEnum> where TEnum : struct, Enum
+public class LowerCaseEnumConverter<TEnum> : JsonConverter<TEnum>
+    where TEnum : struct, Enum
 {
     public override TEnum Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
@@ -29,6 +29,8 @@ public class LowerCaseEnumConverter<TEnum> : JsonConverter<TEnum> where TEnum : 
 
     public override void Write(Utf8JsonWriter writer, TEnum value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer, nameof(writer));
+
         // Write enum value as lowercase
         writer.WriteStringValue(value.ToString().ToLowerInvariant());
     }

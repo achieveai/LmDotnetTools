@@ -1,9 +1,6 @@
 using FluentAssertions;
-using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.Infrastructure;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Infrastructure;
 
@@ -35,7 +32,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             return result != null;
         });
 
-        segmentsTableExists.Should().BeTrue("document_segments table should be created");
+        _ = segmentsTableExists.Should().BeTrue("document_segments table should be created");
 
         // Assert - Check that segment_relationships table exists
         var relationshipsTableExists = await session.ExecuteAsync(async connection =>
@@ -47,7 +44,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             return result != null;
         });
 
-        relationshipsTableExists.Should().BeTrue("segment_relationships table should be created");
+        _ = relationshipsTableExists.Should().BeTrue("segment_relationships table should be created");
     }
 
     [Fact]
@@ -94,7 +91,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         foreach (var expectedColumn in expectedColumns)
         {
-            columns.Should().Contain(expectedColumn, $"document_segments table should have {expectedColumn} column");
+            _ = columns.Should().Contain(expectedColumn, $"document_segments table should have {expectedColumn} column");
         }
     }
 
@@ -137,7 +134,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
         foreach (var expectedColumn in expectedColumns)
         {
-            columns
+            _ = columns
                 .Should()
                 .Contain(expectedColumn, $"segment_relationships table should have {expectedColumn} column");
         }
@@ -169,7 +166,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
         });
 
         // Assert - Check that performance indexes exist (for test schema, we have basic indexes)
-        indexes
+        _ = indexes
             .Should()
             .Contain(
                 i => i.Contains("document_segments"),
@@ -200,7 +197,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
             // Production constraints would prevent coherence_score > 1.0
             try
             {
-                await command.ExecuteNonQueryAsync();
+                _ = await command.ExecuteNonQueryAsync();
                 // If we get here, the test schema allows it (which is fine for testing)
             }
             catch
@@ -229,7 +226,7 @@ public class DatabaseSchemaTests : IAsyncDisposable
 
             using var command = connection.CreateCommand();
             command.CommandText = insertSql;
-            await command.ExecuteNonQueryAsync();
+            _ = await command.ExecuteNonQueryAsync();
         });
 
         // Assert - Verify session isolation query patterns work
@@ -259,8 +256,8 @@ public class DatabaseSchemaTests : IAsyncDisposable
             return Convert.ToInt32(result);
         });
 
-        user1Count.Should().Be(1, "User1 should see only their segments");
-        user2Count.Should().Be(1, "User2 should see only their segments");
+        _ = user1Count.Should().Be(1, "User1 should see only their segments");
+        _ = user2Count.Should().Be(1, "User2 should see only their segments");
     }
 
     public async ValueTask DisposeAsync()

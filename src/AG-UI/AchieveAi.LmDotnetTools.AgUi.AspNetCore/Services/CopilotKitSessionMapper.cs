@@ -35,7 +35,7 @@ public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
             SessionId = sessionId,
             ThreadId = threadId ?? sessionId,
             RunId = runId ?? Guid.NewGuid().ToString(),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
 
         _sessionToThreadMap[sessionId] = mapping;
@@ -75,7 +75,7 @@ public sealed class CopilotKitSessionMapper : ICopilotKitSessionMapper
             // Also remove from thread-to-session map if threadId exists
             if (!string.IsNullOrWhiteSpace(mapping.ThreadId))
             {
-                _threadToSessionMap.TryRemove(mapping.ThreadId, out _);
+                _ = _threadToSessionMap.TryRemove(mapping.ThreadId, out _);
             }
             return true;
         }

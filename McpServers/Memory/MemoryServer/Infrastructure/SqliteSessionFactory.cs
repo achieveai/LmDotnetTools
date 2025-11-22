@@ -21,8 +21,8 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     private bool _isInitialized;
     private int _totalSessionsCreated;
     private int _failedSessionCreations;
-    private readonly List<double> _sessionCreationTimes = new();
-    private readonly List<double> _sessionLifetimes = new();
+    private readonly List<double> _sessionCreationTimes = [];
+    private readonly List<double> _sessionLifetimes = [];
 
     public SqliteSessionFactory(IOptions<DatabaseOptions> options, ILoggerFactory loggerFactory)
     {
@@ -94,7 +94,9 @@ public class SqliteSessionFactory : ISqliteSessionFactory
     )
     {
         if (string.IsNullOrEmpty(connectionString))
+        {
             throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
+        }
 
         var stopwatch = Stopwatch.StartNew();
 
@@ -149,7 +151,9 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         try
         {
             if (_isInitialized)
+            {
                 return;
+            }
 
             _logger.LogInformation("Initializing database schema...");
 
@@ -179,7 +183,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         }
         finally
         {
-            _initializationSemaphore.Release();
+            _ = _initializationSemaphore.Release();
         }
     }
 
@@ -275,7 +279,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
         {
             using var command = connection.CreateCommand();
             command.CommandText = script;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            _ = await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
         _logger.LogDebug("Schema scripts executed successfully");
@@ -283,8 +287,8 @@ public class SqliteSessionFactory : ISqliteSessionFactory
 
     private static string[] GetSchemaScripts()
     {
-        return new[]
-        {
+        return
+        [
             // ID sequence table for generating unique integers
             @"CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
@@ -440,7 +444,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
             @"CREATE TRIGGER IF NOT EXISTS document_segments_fts_delete AFTER DELETE ON document_segments BEGIN
                 DELETE FROM document_segments_fts WHERE rowid = old.id;
             END",
-        };
+        ];
     }
 
     private static string MaskConnectionString(string connectionString)
@@ -478,25 +482,39 @@ internal class TrackedSqliteSession : ISqliteSession
     public Task<T> ExecuteAsync<T>(
         Func<Microsoft.Data.Sqlite.SqliteConnection, Task<T>> operation,
         CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
+    )
+    {
+        return _innerSession.ExecuteAsync(operation, cancellationToken);
+    }
 
     public Task<T> ExecuteInTransactionAsync<T>(
         Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task<T>> operation,
         CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    )
+    {
+        return _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    }
 
     public Task ExecuteAsync(
         Func<Microsoft.Data.Sqlite.SqliteConnection, Task> operation,
         CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
+    )
+    {
+        return _innerSession.ExecuteAsync(operation, cancellationToken);
+    }
 
     public Task ExecuteInTransactionAsync(
         Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, Task> operation,
         CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    )
+    {
+        return _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    }
 
-    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default) =>
-        _innerSession.GetHealthAsync(cancellationToken);
+    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
+    {
+        return _innerSession.GetHealthAsync(cancellationToken);
+    }
 
     public async ValueTask DisposeAsync()
     {

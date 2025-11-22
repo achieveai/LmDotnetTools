@@ -2,9 +2,6 @@ using System.CommandLine;
 using MemoryServer.Configuration;
 using MemoryServer.Services;
 using MemoryServer.Utils;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Tools;
@@ -37,10 +34,7 @@ public static class TokenGeneratorCommand
         };
 
         command.SetHandler(
-            async (userId, agentId) =>
-            {
-                await GenerateTokenAsync(userId, agentId);
-            },
+            async (userId, agentId) => await GenerateTokenAsync(userId, agentId),
             userIdOption,
             agentIdOption
         );
@@ -75,16 +69,13 @@ public static class TokenGeneratorCommand
             var services = new ServiceCollection();
 
             // Configure JWT options
-            services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
+            _ = services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
 
             // Add logging
-            services.AddLogging(builder =>
-            {
-                builder.AddConsole();
-            });
+            _ = services.AddLogging(builder => builder.AddConsole());
 
             // Add token service
-            services.AddScoped<ITokenService, TokenService>();
+            _ = services.AddScoped<ITokenService, TokenService>();
 
             var serviceProvider = services.BuildServiceProvider();
 

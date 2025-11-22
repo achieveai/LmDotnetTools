@@ -89,14 +89,14 @@ public static class JsonStringUtils
         try
         {
             // Try to parse the JSON - if it succeeds, it's likely complete
-            JsonDocument.Parse(jsonFragment);
+            _ = JsonDocument.Parse(jsonFragment);
             return true;
         }
         catch
         {
             // Simple heuristic: Check for balanced braces
-            int openBraces = jsonFragment.Count(c => c == '{');
-            int closeBraces = jsonFragment.Count(c => c == '}');
+            var openBraces = jsonFragment.Count(c => c == '{');
+            var closeBraces = jsonFragment.Count(c => c == '}');
 
             // Check for object completeness (balanced braces and ends with closing brace)
             if (openBraces > 0 && openBraces == closeBraces && jsonFragment.TrimEnd().EndsWith("}"))
@@ -105,8 +105,8 @@ public static class JsonStringUtils
             }
 
             // Check for array completeness
-            int openBrackets = jsonFragment.Count(c => c == '[');
-            int closeBrackets = jsonFragment.Count(c => c == ']');
+            var openBrackets = jsonFragment.Count(c => c == '[');
+            var closeBrackets = jsonFragment.Count(c => c == ']');
 
             if (openBrackets > 0 && openBrackets == closeBrackets && jsonFragment.TrimEnd().EndsWith("]"))
             {

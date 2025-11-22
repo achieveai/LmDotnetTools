@@ -2,7 +2,6 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
@@ -14,13 +13,13 @@ public class SearchTool : IFunctionProvider
 {
     private readonly ILogger<SearchTool> _logger;
     private static readonly string[] MockTitles =
-    {
+    [
         "Understanding AG-UI Protocol",
         "Building Real-time WebSocket Applications",
         "LmCore Agent Framework Guide",
         "Tool Calling in AI Agents",
-        "Streaming Event Systems"
-    };
+        "Streaming Event Systems",
+    ];
 
     public SearchTool(ILogger<SearchTool> logger)
     {
@@ -37,30 +36,30 @@ public class SearchTool : IFunctionProvider
         {
             Name = "search",
             Description = "Search for information on a given query",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "query",
                     ParameterType = new JsonSchemaObject { Type = "string" },
                     Description = "The search query",
-                    IsRequired = true
+                    IsRequired = true,
                 },
                 new FunctionParameterContract
                 {
                     Name = "max_results",
                     ParameterType = new JsonSchemaObject { Type = "integer" },
                     Description = "Maximum number of results to return (default: 5)",
-                    IsRequired = false
-                }
-            }.ToList()
+                    IsRequired = false,
+                },
+            ],
         };
 
         yield return new FunctionDescriptor
         {
             Contract = contract,
             Handler = ExecuteAsync,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 
@@ -87,13 +86,14 @@ public class SearchTool : IFunctionProvider
             await Task.Delay(Random.Shared.Next(200, 500));
 
             // Generate mock search results
-            var results = Enumerable.Range(0, maxResults)
+            var results = Enumerable
+                .Range(0, maxResults)
                 .Select(i => new
                 {
                     title = MockTitles[i % MockTitles.Length],
                     url = $"https://example.com/result-{i + 1}",
                     snippet = $"Mock search result for query '{args.Query}'. This is result #{i + 1} containing relevant information about {args.Query}.",
-                    relevance = Random.Shared.NextDouble()
+                    relevance = Random.Shared.NextDouble(),
                 })
                 .OrderByDescending(r => r.relevance)
                 .ToList();
@@ -103,11 +103,15 @@ public class SearchTool : IFunctionProvider
                 query = args.Query,
                 totalResults = results.Count,
                 results = results,
-                timestamp = DateTime.UtcNow.ToString("o")
+                timestamp = DateTime.UtcNow.ToString("o"),
             };
 
             var json = JsonSerializer.Serialize(response);
-            _logger.LogInformation("SearchTool returning {Count} results for query: {Query}", results.Count, args.Query);
+            _logger.LogInformation(
+                "SearchTool returning {Count} results for query: {Query}",
+                results.Count,
+                args.Query
+            );
 
             return json;
         }

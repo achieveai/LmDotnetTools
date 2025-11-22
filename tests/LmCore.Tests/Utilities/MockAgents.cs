@@ -120,53 +120,43 @@ public class ToolCallStreamingAgent : IStreamingAgent
 
         return new ToolsCallMessage
         {
-            ToolCalls = System.Collections.Immutable.ImmutableList.Create(
-                new ToolCall("get_weather", jsonArgs) { ToolCallId = "tool-123" }
-            ),
+            ToolCalls = [new ToolCall("get_weather", jsonArgs) { ToolCallId = "tool-123" }],
         };
     }
 
     private static List<IMessage> CreateToolCallUpdateSequence()
     {
-        return new List<IMessage>
-        {
+        return
+        [
             // First update: Just the function name
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-                    new ToolCallUpdate { FunctionName = "get_weather" }
-                ),
+                ToolCallUpdates = [new ToolCallUpdate { FunctionName = "get_weather" }],
             },
             // Second update: With partial args
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-                    new ToolCallUpdate { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"San" }
-                ),
+                ToolCallUpdates = [new ToolCallUpdate { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"San" }],
             },
             // Third update: More complete args
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-                    new ToolCallUpdate
+                ToolCallUpdates = [new ToolCallUpdate
                     {
                         FunctionName = "get_weather",
                         FunctionArgs = "{\"location\":\"San Francisco\"",
-                    }
-                ),
+                    }],
             },
             // Final update: Complete args
             new ToolsCallUpdateMessage
             {
-                ToolCallUpdates = System.Collections.Immutable.ImmutableList.Create(
-                    new ToolCallUpdate
+                ToolCallUpdates = [new ToolCallUpdate
                     {
                         FunctionName = "get_weather",
                         FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}",
-                    }
-                ),
+                    }],
             },
-        };
+        ];
     }
 }
 
@@ -206,20 +196,20 @@ public class TextStreamingAgent : IStreamingAgent
     )
     {
         // Break the full text into word chunks (keeping spaces with the following word)
-        List<string> parts = new();
-        string[] words = _fullText.Split(' ');
+        List<string> parts = [];
+        var words = _fullText.Split(' ');
 
         // First word has no space prefix
         parts.Add(words[0]);
 
         // Remaining words have space prefixes
-        for (int i = 1; i < words.Length; i++)
+        for (var i = 1; i < words.Length; i++)
         {
             parts.Add(" " + words[i]);
         }
 
         // Stream the updates
-        string accumulated = "";
+        var accumulated = "";
         foreach (var part in parts)
         {
             accumulated += part;

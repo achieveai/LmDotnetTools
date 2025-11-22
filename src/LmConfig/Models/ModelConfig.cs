@@ -70,9 +70,8 @@ public record ModelConfig
         var tags = requiredTags.ToList();
         return tags.Count == 0
             ? Providers
-            : Providers
+            : [.. Providers
                 .Where(p => tags.All(tag => p.Tags?.Contains(tag) == true))
-                .OrderByDescending(p => p.Priority)
-                .ToList();
+                .OrderByDescending(p => p.Priority)];
     }
 }

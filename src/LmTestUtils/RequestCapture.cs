@@ -13,17 +13,26 @@ public class RequestCapture<TRequest, TResponse> : RequestCaptureBase
     /// <summary>
     /// Gets the most recent request as the specified request type
     /// </summary>
-    public TRequest? GetRequest() => GetRequestAs<TRequest>();
+    public TRequest? GetRequest()
+    {
+        return GetRequestAs<TRequest>();
+    }
 
     /// <summary>
     /// Gets the most recent response as the specified response type (for non-streaming)
     /// </summary>
-    public TResponse? GetResponse() => GetResponseAs<TResponse>();
+    public TResponse? GetResponse()
+    {
+        return GetResponseAs<TResponse>();
+    }
 
     /// <summary>
     /// Gets all responses as the specified response type (for streaming)
     /// </summary>
-    public IEnumerable<TResponse> GetResponses() => GetResponsesAs<TResponse>();
+    public IEnumerable<TResponse> GetResponses()
+    {
+        return GetResponsesAs<TResponse>();
+    }
 
     /// <summary>
     /// Sets a response for the most recent request
@@ -55,7 +64,9 @@ public class RequestCapture : RequestCaptureBase
     {
         var body = LastRequestBody;
         if (string.IsNullOrEmpty(body))
+        {
             return null;
+        }
 
         try
         {
@@ -75,7 +86,9 @@ public class RequestCapture : RequestCaptureBase
     {
         var body = LastRequestBody;
         if (string.IsNullOrEmpty(body))
+        {
             return null;
+        }
 
         try
         {

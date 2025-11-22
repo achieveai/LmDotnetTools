@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.5.2.0
+# Visual Studio Version 18
+VisualStudioVersion = 18.0.11205.157 d18.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
@@ -94,6 +94,11 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AchieveAi.LmDotnetTools.AgUi.Tests", "tests\AG-UI.Tests\AchieveAi.LmDotnetTools.AgUi.Tests.csproj", "{34E1D6EE-B8DF-406E-AEDC-3B3B00917F0D}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AchieveAi.LmDotnetTools.AgUi.Persistence", "src\AG-UI\AchieveAi.LmDotnetTools.AgUi.Persistence\AchieveAi.LmDotnetTools.AgUi.Persistence.csproj", "{99BAA55B-9989-44DE-BC0F-78B7C263E759}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{C9FFAEBB-7C2F-45E9-8D08-85ECA258009E}"
+	ProjectSection(SolutionItems) = preProject
+		.editorconfig = .editorconfig
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

@@ -44,12 +44,18 @@ public abstract class McpTransportTestBase : IDisposable
     /// For STDIO: might start a server process
     /// For SSE: might start an HTTP server
     /// </summary>
-    protected virtual Task SetupServerAsync() => Task.CompletedTask;
+    protected virtual Task SetupServerAsync()
+    {
+        return Task.CompletedTask;
+    }
 
     /// <summary>
     /// Performs any transport-specific server teardown if needed.
     /// </summary>
-    protected virtual Task TeardownServerAsync() => Task.CompletedTask;
+    protected virtual Task TeardownServerAsync()
+    {
+        return Task.CompletedTask;
+    }
 
     #endregion
 
@@ -72,7 +78,10 @@ public abstract class McpTransportTestBase : IDisposable
     /// <summary>
     /// Generates a unique user ID for test isolation.
     /// </summary>
-    protected string GenerateTestUserId(string prefix) => $"{prefix}_user_{Guid.NewGuid():N}";
+    protected static string GenerateTestUserId(string prefix)
+    {
+        return $"{prefix}_user_{Guid.NewGuid():N}";
+    }
 
     #endregion
 
@@ -361,10 +370,7 @@ public abstract class McpTransportTestBase : IDisposable
         _output.WriteLine($"🚫 Testing error handling for invalid tool name via {GetTransportName()}");
 
         // Act & Assert - Expect ModelContextProtocol.McpException which is what 0.2.x actually throws
-        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(async () =>
-        {
-            await client.CallToolAsync("invalid_tool_name", new Dictionary<string, object?>());
-        });
+        _ = await Assert.ThrowsAsync<ModelContextProtocol.McpException>(async () => await client.CallToolAsync("invalid_tool_name", new Dictionary<string, object?>()));
 
         _output.WriteLine($"✅ {GetTransportName()}: Invalid tool name error handling works correctly");
     }

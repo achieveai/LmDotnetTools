@@ -5,7 +5,6 @@ using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -16,16 +15,18 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 public class DataDrivenMultiTurnReasoningTests
 {
     private readonly ProviderTestDataManager _dm = new();
-    private static readonly string[] fallbackKeys = new[] { "LLM_API_BASE_URL" };
-    private static readonly string[] fallbackKeysArray = new[] { "LLM_API_KEY" };
-    private static readonly string[] fallbackKeysArray0 = new[] { "LLM_API_BASE_URL" };
+    private static readonly string[] fallbackKeys = ["LLM_API_BASE_URL"];
+    private static readonly string[] fallbackKeysArray = ["LLM_API_KEY"];
+    private static readonly string[] fallbackKeysArray0 = ["LLM_API_BASE_URL"];
 
-    public static IEnumerable<object[]> GetProviders() =>
-        new[]
+    public static IEnumerable<object[]> GetProviders()
+    {
+        return new[]
         {
             new object[] { "DeepSeekMultiTurn", "deepseek/deepseek-r1-0528:free" },
-            new object[] { "O4MiniMultiTurn", "o4-mini" },
+            ["O4MiniMultiTurn", "o4-mini"],
         };
+    }
 
     [Theory]
     [MemberData(nameof(GetProviders))]
@@ -44,7 +45,7 @@ public class DataDrivenMultiTurnReasoningTests
 
         // prepare playback handler
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -107,12 +108,12 @@ public class DataDrivenMultiTurnReasoningTests
         _dm.SaveLmCoreRequest(
             testName + "_Turn1",
             ProviderType.OpenAI,
-            turn1Msgs.OfType<TextMessage>().ToArray(),
+            [.. turn1Msgs.OfType<TextMessage>()],
             opts
         );
 
         var cassettePath = Path.Combine(
-            AchieveAi.LmDotnetTools.TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
+            TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
             "tests",
             "TestData",
             "OpenAI",
@@ -141,7 +142,9 @@ public class DataDrivenMultiTurnReasoningTests
 
         var turn1Resp = (await agent.GenerateReplyAsync(turn1Msgs, opts)).ToList();
         if (!turn1Resp.OfType<ReasoningMessage>().Any())
+        {
             throw new InvalidOperationException("Provider did not return reasoning, cannot record multi-turn test.");
+        }
 
         _dm.SaveFinalResponse(testName + "_Turn1", ProviderType.OpenAI, turn1Resp);
 
@@ -154,7 +157,7 @@ public class DataDrivenMultiTurnReasoningTests
         _dm.SaveLmCoreRequest(
             testName + "_Turn2",
             ProviderType.OpenAI,
-            turn2Prompt.OfType<TextMessage>().ToArray(),
+            [.. turn2Prompt.OfType<TextMessage>()],
             opts
         );
 

@@ -1,6 +1,4 @@
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -118,7 +116,7 @@ public class TemporalSequence
     /// <summary>
     /// Temporal markers that indicate this sequence.
     /// </summary>
-    public List<string> TemporalMarkers { get; set; } = new List<string>();
+    public List<string> TemporalMarkers { get; set; } = [];
 
     /// <summary>
     /// Confidence score for this temporal sequence (0.0 to 1.0).

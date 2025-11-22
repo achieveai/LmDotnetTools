@@ -38,10 +38,14 @@ public class TokenService : ITokenService
     public string GenerateToken(string userId, string agentId)
     {
         if (string.IsNullOrEmpty(userId))
+        {
             throw new ArgumentException("UserId cannot be null or empty", nameof(userId));
+        }
 
         if (string.IsNullOrEmpty(agentId))
+        {
             throw new ArgumentException("AgentId cannot be null or empty", nameof(agentId));
+        }
 
         var tokenHandler = new JwtSecurityTokenHandler();
         var credentials = new SigningCredentials(_signingKey, SecurityAlgorithms.HmacSha256);
@@ -84,7 +88,9 @@ public class TokenService : ITokenService
     public bool ValidateToken(string token)
     {
         if (string.IsNullOrEmpty(token))
+        {
             return false;
+        }
 
         try
         {
@@ -101,7 +107,7 @@ public class TokenService : ITokenService
                 ClockSkew = TimeSpan.Zero,
             };
 
-            tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
+            _ = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
             return true;
         }
         catch (Exception ex)

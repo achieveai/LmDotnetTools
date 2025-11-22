@@ -27,7 +27,7 @@ public static class ToolsCallAggregateTransformer
         var toolResults = aggregateMessage.ToolsCallResult.ToolCallResults;
 
         // Process each tool call with its corresponding result
-        for (int i = 0; i < toolCalls.Count; i++)
+        for (var i = 0; i < toolCalls.Count; i++)
         {
             var toolCall = toolCalls[i];
 
@@ -59,12 +59,12 @@ public static class ToolsCallAggregateTransformer
             // Add separator between multiple tool calls
             if (i > 0)
             {
-                contentBuilder.AppendLine("---");
+                _ = contentBuilder.AppendLine("---");
             }
 
             // Format this tool call and response pair
             var formattedToolPair = FormatToolCallAndResponse(toolCall, toolResult.Value);
-            contentBuilder.Append(formattedToolPair);
+            _ = contentBuilder.Append(formattedToolPair);
         }
 
         // Create the result TextMessage with preserved metadata
@@ -103,7 +103,7 @@ public static class ToolsCallAggregateTransformer
         foreach (var message in messages)
         {
             // Extract text content based on message type
-            string messageText = message switch
+            var messageText = message switch
             {
                 TextMessage textMsg => textMsg.Text,
                 ToolsCallAggregateMessage aggregateMsg => TransformToNaturalFormat(aggregateMsg).Text,
@@ -114,9 +114,9 @@ public static class ToolsCallAggregateTransformer
             // Append the content
             if (contentBuilder.Length > 0 && !string.IsNullOrWhiteSpace(messageText))
             {
-                contentBuilder.AppendLine(); // Add spacing between messages
+                _ = contentBuilder.AppendLine(); // Add spacing between messages
             }
-            contentBuilder.Append(messageText);
+            _ = contentBuilder.Append(messageText);
 
             // Merge metadata from this message
             if (message.Metadata != null)
@@ -155,14 +155,14 @@ public static class ToolsCallAggregateTransformer
         var result = new StringBuilder();
 
         // Format tool call
-        result.AppendLine($"<tool_call name=\"{functionName}\">");
-        result.AppendLine(formattedArgs);
-        result.AppendLine("</tool_call>");
+        _ = result.AppendLine($"<tool_call name=\"{functionName}\">");
+        _ = result.AppendLine(formattedArgs);
+        _ = result.AppendLine("</tool_call>");
 
         // Format tool response
-        result.AppendLine($"<tool_response name=\"{functionName}\">");
-        result.AppendLine(formattedResponse);
-        result.Append("</tool_response>");
+        _ = result.AppendLine($"<tool_response name=\"{functionName}\">");
+        _ = result.AppendLine(formattedResponse);
+        _ = result.Append("</tool_response>");
 
         return result.ToString();
     }

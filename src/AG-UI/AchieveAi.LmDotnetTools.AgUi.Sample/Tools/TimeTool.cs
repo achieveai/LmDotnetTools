@@ -2,7 +2,6 @@ using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Tools;
 
@@ -23,40 +22,38 @@ public class TimeTool : IFunctionProvider
     public string ProviderName => "TimeProvider";
     public int Priority => 100;
 
+    private static readonly string[] sourceArray = ["iso", "friendly", "unix"];
+
     public IEnumerable<FunctionDescriptor> GetFunctions()
     {
         var contract = new FunctionContract
         {
             Name = "get_current_time",
             Description = "Get the current date and time, optionally for a specific timezone",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "timezone",
                     ParameterType = new JsonSchemaObject { Type = "string" },
                     Description = "Timezone identifier (e.g., 'UTC', 'America/New_York'). Default is UTC.",
-                    IsRequired = false
+                    IsRequired = false,
                 },
                 new FunctionParameterContract
                 {
                     Name = "format",
-                    ParameterType = new JsonSchemaObject
-                    {
-                        Type = "string",
-                        Enum = new[] { "iso", "friendly", "unix" }
-                    },
+                    ParameterType = new JsonSchemaObject { Type = "string", Enum = sourceArray },
                     Description = "Output format (iso, friendly, or unix timestamp)",
-                    IsRequired = false
-                }
-            }.ToList()
+                    IsRequired = false,
+                },
+            ],
         };
 
         yield return new FunctionDescriptor
         {
             Contract = contract,
             Handler = ExecuteAsync,
-            ProviderName = ProviderName
+            ProviderName = ProviderName,
         };
     }
 
@@ -96,7 +93,7 @@ public class TimeTool : IFunctionProvider
             {
                 "friendly" => now.ToString("dddd, MMMM dd, yyyy 'at' hh:mm:ss tt"),
                 "unix" => new DateTimeOffset(now).ToUnixTimeSeconds().ToString(),
-                _ => now.ToString("o")
+                _ => now.ToString("o"),
             };
 
             var result = new
@@ -107,7 +104,7 @@ public class TimeTool : IFunctionProvider
                 iso = now.ToString("o"),
                 unix = new DateTimeOffset(now).ToUnixTimeSeconds(),
                 dayOfWeek = now.DayOfWeek.ToString(),
-                utcOffset = timeZone.GetUtcOffset(now).ToString()
+                utcOffset = timeZone.GetUtcOffset(now).ToString(),
             };
 
             var json = JsonSerializer.Serialize(result);

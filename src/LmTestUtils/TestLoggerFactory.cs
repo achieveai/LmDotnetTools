@@ -54,9 +54,15 @@ public static class TestLoggerFactory
         }
 
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
+            where TState : notnull
+        {
+            return null;
+        }
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
 
         public void Log<TState>(
             LogLevel logLevel,
@@ -78,9 +84,15 @@ public static class TestLoggerFactory
     private class SilentTestLogger<T> : ILogger<T>
     {
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
+            where TState : notnull
+        {
+            return null;
+        }
 
-        public bool IsEnabled(LogLevel logLevel) => false;
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return false;
+        }
 
         public void Log<TState>(
             LogLevel logLevel,

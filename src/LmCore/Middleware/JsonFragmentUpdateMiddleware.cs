@@ -51,7 +51,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
             Role = message.Role,
             Metadata = message.Metadata,
             GenerationId = message.GenerationId,
-            ToolCallUpdates = updatedToolCallUpdates.ToImmutableList(),
+            ToolCallUpdates = [.. updatedToolCallUpdates],
         };
     }
 

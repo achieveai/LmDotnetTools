@@ -178,6 +178,6 @@ public record ModelCapabilities
             capabilities.AddRange(CustomCapabilities.Keys);
         }
 
-        return capabilities.Distinct().ToList();
+        return [.. capabilities.Distinct()];
     }
 }

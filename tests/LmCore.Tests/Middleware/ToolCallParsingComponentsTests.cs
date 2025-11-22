@@ -1,6 +1,4 @@
 using System.Text;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -20,7 +18,7 @@ public class ToolCallParsingComponentsTests
         var result = ToolCallTextParser.Parse(text);
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         var chunk = Assert.IsType<TextChunk>(result[0]);
         Assert.Equal(text, chunk.Text);
     }
@@ -36,7 +34,7 @@ public class ToolCallParsingComponentsTests
         var result = ToolCallTextParser.Parse(text);
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         var chunk = Assert.IsType<ToolCallChunk>(result[0]);
         Assert.Equal("GetWeather", chunk.ToolName);
         Assert.Contains("San Francisco", chunk.Content);
@@ -394,7 +392,7 @@ public class ToolCallParsingComponentsTests
         // Process each chunk as it would arrive in streaming
         foreach (var chunk in chunks)
         {
-            buffer.Append(chunk);
+            _ = buffer.Append(chunk);
             var currentText = buffer.ToString();
 
             var safeResult = SafeTextExtractor.ExtractSafeText(currentText);
@@ -417,8 +415,8 @@ public class ToolCallParsingComponentsTests
                 }
 
                 // Update buffer
-                buffer.Clear();
-                buffer.Append(safeResult.RemainingBuffer);
+                _ = buffer.Clear();
+                _ = buffer.Append(safeResult.RemainingBuffer);
             }
         }
 
@@ -440,7 +438,7 @@ public class ToolCallParsingComponentsTests
         }
 
         // Verify results
-        Assert.Single(detectedToolCalls); // Should detect exactly one tool call
+        _ = Assert.Single(detectedToolCalls); // Should detect exactly one tool call
         var toolCall = detectedToolCalls[0];
         Assert.Equal("GetWeather", toolCall.ToolName);
         Assert.Contains("San Francisco", toolCall.Content);

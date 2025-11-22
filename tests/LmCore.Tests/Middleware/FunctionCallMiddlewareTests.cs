@@ -1,24 +1,10 @@
-using System;
-using System.Collections.Generic;
-using System.Collections.Immutable;
-using System.IO;
-using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.LmCore.Core;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.LmCore.Tests.Utilities;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using AchieveAi.LmDotnetTools.McpSampleServer;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using AchieveAi.LmDotnetTools.TestUtils;
-using dotenv.net;
-using Xunit;
 using static AchieveAi.LmDotnetTools.LmTestUtils.ChatCompletionTestData;
 using static AchieveAi.LmDotnetTools.LmTestUtils.FakeHttpMessageHandler;
 
@@ -146,8 +132,8 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.Single(result);
-        Assert.IsType<ToolsCallResultMessage>(result.First());
+        _ = Assert.Single(result);
+        _ = Assert.IsType<ToolsCallResultMessage>(result.First());
 
         var resultMessage = (ToolsCallResultMessage)result.First();
         Assert.NotEmpty(resultMessage.ToolCallResults);
@@ -181,8 +167,8 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.Single(result);
-        Assert.IsType<ToolsCallResultMessage>(result.First());
+        _ = Assert.Single(result);
+        _ = Assert.IsType<ToolsCallResultMessage>(result.First());
 
         var resultMessage = (ToolsCallResultMessage)result.First();
         Assert.NotEmpty(resultMessage.ToolCallResults);
@@ -213,7 +199,7 @@ public class FunctionCallMiddlewareTests
         var mockAgent = new Mock<IAgent>();
         GenerateReplyOptions? capturedOptions = null;
 
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -232,7 +218,7 @@ public class FunctionCallMiddlewareTests
             );
 
         // Act
-        await middleware.InvokeAsync(context, mockAgent.Object);
+        _ = await middleware.InvokeAsync(context, mockAgent.Object);
 
         // Assert
         Assert.NotNull(capturedOptions);
@@ -267,8 +253,8 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.Single(result);
-        Assert.IsType<ToolsCallResultMessage>(result.First());
+        _ = Assert.Single(result);
+        _ = Assert.IsType<ToolsCallResultMessage>(result.First());
 
         var resultMessage = (ToolsCallResultMessage)result.First();
         Assert.NotEmpty(resultMessage.ToolCallResults);
@@ -314,7 +300,7 @@ public class FunctionCallMiddlewareTests
 
         // Check that there is a valid response message
         var lastMessage = results.Last();
-        Assert.IsType<ToolsCallResultMessage>(lastMessage);
+        _ = Assert.IsType<ToolsCallResultMessage>(lastMessage);
 
         var resultMessage = (ToolsCallResultMessage)lastMessage;
         Assert.NotEmpty(resultMessage.ToolCallResults);
@@ -484,9 +470,7 @@ public class FunctionCallMiddlewareTests
 
         return new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(
-                new ToolCall(functionName, jsonArgs) { ToolCallId = Guid.NewGuid().ToString() }
-            ),
+            ToolCalls = [new ToolCall(functionName, jsonArgs) { ToolCallId = Guid.NewGuid().ToString() }],
             Role = Role.Assistant,
         };
     }
@@ -508,9 +492,9 @@ public class FunctionCallMiddlewareTests
             }
 
             var unitNode = argsNode["unit"];
-            string unit = unitNode != null ? unitNode.GetValue<string>().ToLower() : "celsius";
-            int temperature = unit == "celsius" ? 23 : 73;
-            string condition = "Sunny";
+            var unit = unitNode != null ? unitNode.GetValue<string>().ToLower() : "celsius";
+            var temperature = unit == "celsius" ? 23 : 73;
+            var condition = "Sunny";
 
             return $"Weather in {location}: {temperature}°{unit.Substring(0, 1).ToUpper()}, {condition}. Unit: {unit}";
         }
@@ -542,7 +526,7 @@ public class FunctionCallMiddlewareTests
                 return "Error: Days must be greater than 0";
             }
 
-            int days = daysNode.GetValue<int>();
+            var days = daysNode.GetValue<int>();
 
             // Ensure we have the exact phrase "weather history" for the test to pass
             return $"Weather history for {location} (last {days} days):\n"
@@ -574,9 +558,9 @@ public class FunctionCallMiddlewareTests
                 return "Error: Both a and b parameters are required";
             }
 
-            double a = aNode.GetValue<double>();
-            double b = bNode.GetValue<double>();
-            double result = a + b;
+            var a = aNode.GetValue<double>();
+            var b = bNode.GetValue<double>();
+            var result = a + b;
 
             return $"{a} + {b} = {result}";
         }
@@ -604,9 +588,9 @@ public class FunctionCallMiddlewareTests
                 return "Error: Both a and b parameters are required";
             }
 
-            double a = aNode.GetValue<double>();
-            double b = bNode.GetValue<double>();
-            double result = a - b;
+            var a = aNode.GetValue<double>();
+            var b = bNode.GetValue<double>();
+            var result = a - b;
 
             return $"{a} - {b} = {result}";
         }
@@ -634,9 +618,9 @@ public class FunctionCallMiddlewareTests
                 return "Error: Both a and b parameters are required";
             }
 
-            double a = aNode.GetValue<double>();
-            double b = bNode.GetValue<double>();
-            double result = a * b;
+            var a = aNode.GetValue<double>();
+            var b = bNode.GetValue<double>();
+            var result = a * b;
 
             return $"{a} × {b} = {result}";
         }
@@ -664,15 +648,15 @@ public class FunctionCallMiddlewareTests
                 return "Error: Both a and b parameters are required";
             }
 
-            double a = aNode.GetValue<double>();
-            double b = bNode.GetValue<double>();
+            var a = aNode.GetValue<double>();
+            var b = bNode.GetValue<double>();
 
             if (Math.Abs(b) < 0.0001)
             {
                 return "Error: Cannot divide by zero";
             }
 
-            double result = a / b;
+            var result = a / b;
             return $"{a} ÷ {b} = {result}";
         }
         catch (Exception ex)
@@ -800,7 +784,7 @@ public class FunctionCallMiddlewareTests
 
         var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
         Assert.NotNull(lastMessage);
-        Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
 
         var aggregate = (ToolsCallAggregateMessage)lastMessage;
         Assert.NotEmpty(aggregate.ToolsCallMessage.GetToolCalls()!);
@@ -990,7 +974,7 @@ public class FunctionCallMiddlewareTests
 
         // Create HTTP client with streaming response that includes multiple tool calls (replaces record/playback)
         var streamingResponse = CreateMultipleToolCallStreamingResponse();
-        var handler = FakeHttpMessageHandler.CreateRetryHandler(
+        var handler = CreateRetryHandler(
             failureCount: 0, // No failures, just success
             successResponse: streamingResponse
         );
@@ -1020,7 +1004,7 @@ public class FunctionCallMiddlewareTests
 
         var lastMessage = responses.LastOrDefault(m => m is ToolsCallAggregateMessage);
         Assert.NotNull(lastMessage);
-        Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(lastMessage);
 
         var aggregate = (ToolsCallAggregateMessage)lastMessage;
         var toolCalls = aggregate.ToolsCallMessage.GetToolCalls();
@@ -1046,22 +1030,20 @@ public class FunctionCallMiddlewareTests
         var middleware = new FunctionCallMiddleware(functions, functionMap, "McpCalculatorTest");
 
         // Create large numbers to test with
-        double firstNumber = 9876543210.123;
-        double secondNumber = 1234567890.987;
-        double expectedSum = firstNumber + secondNumber; // 11111111101.11
+        var firstNumber = 9876543210.123;
+        var secondNumber = 1234567890.987;
+        var expectedSum = firstNumber + secondNumber; // 11111111101.11
 
         // Set up a fixed tool call ID for testing
-        string toolCallId = Guid.NewGuid().ToString();
+        var toolCallId = Guid.NewGuid().ToString();
 
         // Create a tool call message with the calculator add function and our large numbers
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(
-                new ToolCall("CalculatorTool-Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
+            ToolCalls = [new ToolCall("CalculatorTool-Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
                 {
                     ToolCallId = toolCallId,
-                }
-            ),
+                }],
             Role = Role.Assistant,
         };
 
@@ -1077,11 +1059,11 @@ public class FunctionCallMiddlewareTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.Single(result);
-        Assert.IsType<ToolsCallResultMessage>(result.First());
+        _ = Assert.Single(result);
+        _ = Assert.IsType<ToolsCallResultMessage>(result.First());
 
         var toolsCallResultMessage = (ToolsCallResultMessage)result.First();
-        Assert.Single(toolsCallResultMessage.ToolCallResults);
+        _ = Assert.Single(toolsCallResultMessage.ToolCallResults);
         var resultJson = toolsCallResultMessage
             .ToolCallResults.FirstOrDefault(tr => tr.ToolCallId == toolCallId)
             .Result!;
@@ -1143,7 +1125,7 @@ public class FunctionCallMiddlewareTests
 
             // Use the exact same pattern as the working OpenAI streaming test
             var streamingResponse = CreateStreamingResponse();
-            var fakeHandler = FakeHttpMessageHandler.CreateRetryHandler(
+            var fakeHandler = CreateRetryHandler(
                 failureCount: 0, // No failures, just success
                 successResponse: streamingResponse
             );
@@ -1161,8 +1143,8 @@ public class FunctionCallMiddlewareTests
             var options = new GenerateReplyOptions
             {
                 ModelId = "gpt-4",
-                Functions = new[]
-                {
+                Functions =
+                [
                     new FunctionContract
                     {
                         Name = "getWeather",
@@ -1178,7 +1160,7 @@ public class FunctionCallMiddlewareTests
                             },
                         },
                     },
-                },
+                ],
             };
 
             System.Diagnostics.Debug.WriteLine("Calling agent.GenerateReplyStreamingAsync...");
@@ -1213,7 +1195,7 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiKeyFromEnv()
     {
-        string[] fallbackKeys = new[] { "LLM_API_KEY" };
+        string[] fallbackKeys = ["LLM_API_KEY"];
         return EnvironmentHelper.GetApiKeyFromEnv("OPENAI_API_KEY", fallbackKeys, "test-api-key");
     }
 
@@ -1222,7 +1204,7 @@ public class FunctionCallMiddlewareTests
     /// </summary>
     private static string GetApiBaseUrlFromEnv()
     {
-        string[] fallbackKeys = new[] { "LLM_API_BASE_URL" };
+        string[] fallbackKeys = ["LLM_API_BASE_URL"];
         return EnvironmentHelper.GetApiBaseUrlFromEnv("OPENAI_API_URL", fallbackKeys, "https://api.openai.com/v1");
     }
 

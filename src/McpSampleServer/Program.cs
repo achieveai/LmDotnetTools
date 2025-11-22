@@ -11,13 +11,11 @@ class Program
     static async Task Main(string[] args)
     {
         var builder = Host.CreateApplicationBuilder(args);
-        builder.Logging.AddConsole(consoleLogOptions =>
-        {
+        _ = builder.Logging.AddConsole(consoleLogOptions =>
             // Configure all logs to go to stderr
-            consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
-        });
+            consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace);
 
-        builder.Services.AddMcpServer().WithStdioServerTransport().WithToolsFromAssembly();
+        _ = builder.Services.AddMcpServer().WithStdioServerTransport().WithToolsFromAssembly();
 
         await builder.Build().RunAsync();
     }
@@ -72,19 +70,28 @@ public static class CalculatorTool
         ),
         Description("Adds two numbers")
     ]
-    public static double Add(double a, double b) => a + b;
+    public static double Add(double a, double b)
+    {
+        return a + b;
+    }
 
     /// <summary>
     /// Subtracts the second number from the first
     /// </summary>
     [McpServerTool, Description("Subtracts the second number from the first")]
-    public static double Subtract(double a, double b) => a - b;
+    public static double Subtract(double a, double b)
+    {
+        return a - b;
+    }
 
     /// <summary>
     /// Multiplies two numbers
     /// </summary>
     [McpServerTool, Description("Multiplies two numbers")]
-    public static double Multiply(double a, double b) => a * b;
+    public static double Multiply(double a, double b)
+    {
+        return a * b;
+    }
 
     /// <summary>
     /// Divides the first number by the second
@@ -103,19 +110,28 @@ public static class CalculatorTool
     /// Calculates the sine of an angle in degrees
     /// </summary>
     [McpServerTool, Description("Calculates the sine of an angle in degrees")]
-    public static double Sin(double degrees) => Math.Sin(DegreesToRadians(degrees));
+    public static double Sin(double degrees)
+    {
+        return Math.Sin(DegreesToRadians(degrees));
+    }
 
     /// <summary>
     /// Calculates the cosine of an angle in degrees
     /// </summary>
     [McpServerTool, Description("Calculates the cosine of an angle in degrees")]
-    public static double Cos(double degrees) => Math.Cos(DegreesToRadians(degrees));
+    public static double Cos(double degrees)
+    {
+        return Math.Cos(DegreesToRadians(degrees));
+    }
 
     /// <summary>
     /// Calculates the tangent of an angle in degrees
     /// </summary>
     [McpServerTool, Description("Calculates the tangent of an angle in degrees")]
-    public static double Tan(double degrees) => Math.Tan(DegreesToRadians(degrees));
+    public static double Tan(double degrees)
+    {
+        return Math.Tan(DegreesToRadians(degrees));
+    }
 
     /// <summary>
     /// Calculates the square root of a number
@@ -134,10 +150,16 @@ public static class CalculatorTool
     /// Raises a number to a power
     /// </summary>
     [McpServerTool, Description("Raises a number to a power")]
-    public static double Power(double x, double y) => Math.Pow(x, y);
+    public static double Power(double x, double y)
+    {
+        return Math.Pow(x, y);
+    }
 
     /// <summary>
     /// Converts degrees to radians
     /// </summary>
-    private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180.0;
+    private static double DegreesToRadians(double degrees)
+    {
+        return degrees * Math.PI / 180.0;
+    }
 }

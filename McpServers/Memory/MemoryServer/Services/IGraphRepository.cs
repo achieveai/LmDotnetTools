@@ -349,12 +349,12 @@ public class GraphStatistics
     /// <summary>
     /// Most common relationship types with their counts.
     /// </summary>
-    public Dictionary<string, int> TopRelationshipTypes { get; set; } = new();
+    public Dictionary<string, int> TopRelationshipTypes { get; set; } = [];
 
     /// <summary>
     /// Entities with the most connections.
     /// </summary>
-    public Dictionary<string, int> TopConnectedEntities { get; set; } = new();
+    public Dictionary<string, int> TopConnectedEntities { get; set; } = [];
 }
 
 /// <summary>

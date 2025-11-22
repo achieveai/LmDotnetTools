@@ -1,9 +1,6 @@
 using System.Text.RegularExpressions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 
@@ -160,7 +157,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                 originalCount
             );
 
-            return boundaries.OrderBy(b => b.Position).ToList();
+            return [.. boundaries.OrderBy(b => b.Position)];
         }
         catch (Exception ex)
         {
@@ -270,7 +267,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
             validation.OverallQuality = CalculateOverallStructuralQuality(validation);
 
             // Step 4: Aggregate issues from individual segment results
-            validation.Issues = segmentResults.SelectMany(r => r.Issues).ToList();
+            validation.Issues = [.. segmentResults.SelectMany(r => r.Issues)];
 
             // Step 5: Add overall validation issues
             var overallIssues = IdentifyStructuralValidationIssues(segmentResults);
@@ -334,7 +331,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                     ElementText = title,
                     HierarchicalLevel = level,
                     IsMajorSection = level <= 2,
-                    FormattingIndicators = new List<string> { "markdown_heading", $"level_{level}" },
+                    FormattingIndicators = ["markdown_heading", $"level_{level}"],
                 }
             );
         }
@@ -354,18 +351,20 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                     ElementText = match.Value,
                     HierarchicalLevel = 1,
                     IsMajorSection = true,
-                    FormattingIndicators = new List<string> { "section_break", "separator" },
+                    FormattingIndicators = ["section_break", "separator"],
                 }
             );
         }
 
         // 3. Detect strong formatting patterns that suggest structure
         var lines = content.Split('\n');
-        for (int i = 0; i < lines.Length; i++)
+        for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i].Trim();
             if (string.IsNullOrEmpty(line))
+            {
                 continue;
+            }
 
             // Check for structural keywords in formatted text
             if (ContainsStructuralKeywords(line) && IsLikelyStructuralHeading(line))
@@ -380,7 +379,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                         ElementText = line,
                         HierarchicalLevel = 2,
                         IsMajorSection = false,
-                        FormattingIndicators = new List<string> { "structural_keyword", "formatted_text" },
+                        FormattingIndicators = ["structural_keyword", "formatted_text"],
                     }
                 );
             }
@@ -458,10 +457,10 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
             return segments;
         }
 
-        int segmentIndex = 0;
+        var segmentIndex = 0;
 
         // Create segments starting from each boundary
-        for (int i = 0; i < sortedBoundaries.Count; i++)
+        for (var i = 0; i < sortedBoundaries.Count; i++)
         {
             var currentBoundary = sortedBoundaries[i];
             var startPosition = currentBoundary.Position;
@@ -529,12 +528,17 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         {
             segment.Metadata["structural_element_type"] = boundary.ElementType.ToString();
             if (boundary.HeadingLevel.HasValue)
+            {
                 segment.Metadata["heading_level"] = boundary.HeadingLevel.Value;
+            }
+
             segment.Metadata["hierarchical_level"] = boundary.HierarchicalLevel;
             segment.Metadata["is_major_section"] = boundary.IsMajorSection;
             segment.Metadata["confidence"] = boundary.Confidence;
             if (boundary.ParentSectionId != null)
+            {
                 segment.Metadata["parent_section_id"] = boundary.ParentSectionId;
+            }
         }
 
         return segment;
@@ -587,13 +591,21 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         var hasList = ListPattern.IsMatch(content);
         var hasStructuralKeywords = ContainsStructuralKeywords(content);
 
-        double clarityScore = 0.6; // Base score
+        var clarityScore = 0.6; // Base score
         if (hasHeadings)
+        {
             clarityScore += 0.2;
+        }
+
         if (hasList)
+        {
             clarityScore += 0.1;
+        }
+
         if (hasStructuralKeywords)
+        {
             clarityScore += 0.1;
+        }
 
         return new StructuralClarityAnalysis
         {
@@ -628,8 +640,8 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
     private static int GetLinePosition(string content, int lineIndex)
     {
         var lines = content.Split('\n');
-        int position = 0;
-        for (int i = 0; i < lineIndex && i < lines.Length; i++)
+        var position = 0;
+        for (var i = 0; i < lineIndex && i < lines.Length; i++)
         {
             position += lines[i].Length + 1; // +1 for newline
         }
@@ -755,7 +767,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         _logger.LogDebug("Input segments count: {Count}", segments.Count);
         _logger.LogDebug("MinSectionSizeForMerging: {MinSize}", options.MinSectionSizeForMerging);
 
-        for (int i = 0; i < segments.Count; i++)
+        for (var i = 0; i < segments.Count; i++)
         {
             _logger.LogDebug(
                 "Segment {Index}: Length={Length}, Title='{Title}'",
@@ -849,9 +861,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         StructureSegmentationOptions options
     )
     {
-        return segments
-            .Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)
-            .ToList();
+        return [.. segments.Where(s => s.Content.Length >= options.MinSegmentSize && s.Content.Length <= options.MaxSegmentSize)];
     }
 
     private static List<string> AnalyzeStructuralPatterns(string content)
@@ -859,19 +869,29 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         var patterns = new List<string>();
 
         if (MarkdownHeadingPattern.IsMatch(content))
+        {
             patterns.Add("markdown_headings");
+        }
 
         if (ListPattern.IsMatch(content))
+        {
             patterns.Add("structured_lists");
+        }
 
         if (TablePattern.IsMatch(content))
+        {
             patterns.Add("tabular_data");
+        }
 
         if (CodeBlockPattern.IsMatch(content))
+        {
             patterns.Add("code_blocks");
+        }
 
         if (SectionBreakPattern.IsMatch(content))
+        {
             patterns.Add("section_breaks");
+        }
 
         return patterns;
     }
@@ -879,7 +899,9 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
     private static double CalculateStructuralComplexity(string content, List<StructuralOutlineItem> outline)
     {
         if (outline.Count == 0)
+        {
             return 0.2;
+        }
 
         var maxDepth = outline.Max(o => o.Level);
         var headingDiversity = outline.GroupBy(o => o.Level).Count();
@@ -896,15 +918,19 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
     private static double CalculateHierarchyConsistency(List<StructuralOutlineItem> outline)
     {
         if (outline.Count == 0)
+        {
             return 0.0;
+        }
 
         // Check for logical progression of heading levels
         var inconsistencies = 0;
-        for (int i = 1; i < outline.Count; i++)
+        for (var i = 1; i < outline.Count; i++)
         {
             var levelJump = outline[i].Level - outline[i - 1].Level;
             if (levelJump > 1) // Skipping levels is inconsistent
+            {
                 inconsistencies++;
+            }
         }
 
         return Math.Max(0.0, 1.0 - (double)inconsistencies / outline.Count);
@@ -913,7 +939,9 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
     private static double CalculateOrganizationQuality(string content, List<StructuralOutlineItem> outline)
     {
         if (outline.Count == 0)
+        {
             return 0.3;
+        }
 
         var hasIntroduction = outline.Any(o =>
             o.Title.Contains("introduction", StringComparison.OrdinalIgnoreCase)
@@ -927,11 +955,19 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
 
         var baseScore = 0.5;
         if (hasIntroduction)
+        {
             baseScore += 0.2;
+        }
+
         if (hasConclusion)
+        {
             baseScore += 0.2;
+        }
+
         if (outline.Count >= 3)
+        {
             baseScore += 0.1; // Multiple sections
+        }
 
         return Math.Min(baseScore, 1.0);
     }
@@ -959,7 +995,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                 new StructureValidationIssue
                 {
                     Type = StructureValidationIssueType.PoorOrganization,
-                    Severity = Models.ValidationSeverity.Warning,
+                    Severity = ValidationSeverity.Warning,
                     Description = $"Low structural clarity: {result.StructuralClarity:F2}",
                 }
             );
@@ -971,7 +1007,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                 new StructureValidationIssue
                 {
                     Type = StructureValidationIssueType.IncompleteSection,
-                    Severity = Models.ValidationSeverity.Warning,
+                    Severity = ValidationSeverity.Warning,
                     Description = $"Incomplete section: {result.SectionCompleteness:F2}",
                 }
             );
@@ -993,15 +1029,26 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         var reasonableLength = content.Length > 200;
         var endsCompletely = content.TrimEnd().EndsWith('.') || content.TrimEnd().EndsWith('!');
 
-        double score = 0.4; // Base score
+        var score = 0.4; // Base score
         if (hasHeading)
+        {
             score += 0.2;
+        }
+
         if (hasConclusion)
+        {
             score += 0.2;
+        }
+
         if (reasonableLength)
+        {
             score += 0.1;
+        }
+
         if (endsCompletely)
+        {
             score += 0.1;
+        }
 
         return Math.Min(score, 1.0);
     }
@@ -1011,17 +1058,21 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         // Check for consistent heading levels within the segment
         var headingMatches = MarkdownHeadingPattern.Matches(segment.Content);
         if (headingMatches.Count <= 1)
+        {
             return 1.0; // Single or no heading is consistent
+        }
 
         var levels = headingMatches.Cast<Match>().Select(m => m.Groups[1].Value.Length).ToList();
 
         // Check for logical progression
         var inconsistencies = 0;
-        for (int i = 1; i < levels.Count; i++)
+        for (var i = 1; i < levels.Count; i++)
         {
             var jump = levels[i] - levels[i - 1];
             if (jump > 1)
+            {
                 inconsistencies++;
+            }
         }
 
         return Math.Max(0.0, 1.0 - (double)inconsistencies / levels.Count);
@@ -1057,7 +1108,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                     new StructureValidationIssue
                     {
                         Type = StructureValidationIssueType.PoorOrganization,
-                        Severity = Models.ValidationSeverity.Warning,
+                        Severity = ValidationSeverity.Warning,
                         Description =
                             $"Segment {result.SegmentId} has poor structural organization: {result.StructuralClarity:F2}",
                     }
@@ -1070,7 +1121,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                     new StructureValidationIssue
                     {
                         Type = StructureValidationIssueType.InconsistentHeadingLevels,
-                        Severity = Models.ValidationSeverity.Warning,
+                        Severity = ValidationSeverity.Warning,
                         Description =
                             $"Segment {result.SegmentId} has inconsistent hierarchy: {result.HierarchyConsistency:F2}",
                     }
@@ -1107,22 +1158,31 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
     {
         // Analyze content to determine section type
         if (content.Contains("introduction", StringComparison.OrdinalIgnoreCase))
+        {
             return "introduction";
+        }
+
         if (content.Contains("conclusion", StringComparison.OrdinalIgnoreCase))
+        {
             return "conclusion";
+        }
+
         if (content.Contains("methodology", StringComparison.OrdinalIgnoreCase))
+        {
             return "methodology";
+        }
+
         if (content.Contains("results", StringComparison.OrdinalIgnoreCase))
+        {
             return "results";
+        }
 
         return "content";
     }
 
     private static List<string> ExtractStructuralKeywords(string content)
     {
-        return StructuralKeywords
-            .Where(keyword => content.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        return [.. StructuralKeywords.Where(keyword => content.Contains(keyword, StringComparison.OrdinalIgnoreCase))];
     }
 
     // Placeholder methods for LLM integration
@@ -1150,7 +1210,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
     private static List<StructureBoundary> ParseStructuralBoundariesFromLlmResponse(string response)
     {
         // Parse LLM response to extract structural boundaries
-        return new List<StructureBoundary>(); // Placeholder
+        return []; // Placeholder
     }
 
     [GeneratedRegex(@"^#{1,6}\s+.+$|^[A-Z][A-Z\s\d\.\)]{2,50}$", RegexOptions.Multiline | RegexOptions.Compiled)]
@@ -1190,5 +1250,5 @@ public class StructuralClarityAnalysis
     public double StructuralClarity { get; set; }
     public double OrganizationQuality { get; set; }
     public string SectionType { get; set; } = string.Empty;
-    public List<string> StructuralKeywords { get; set; } = new();
+    public List<string> StructuralKeywords { get; set; } = [];
 }

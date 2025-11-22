@@ -36,13 +36,25 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParentRunId { get; init; }
 
-    public IEnumerable<ToolCall>? GetToolCalls() => ToolCalls.Count > 0 ? ToolCalls : null;
+    public IEnumerable<ToolCall>? GetToolCalls()
+    {
+        return ToolCalls.Count > 0 ? ToolCalls : null;
+    }
 
-    public static string? GetText() => null;
+    public static string? GetText()
+    {
+        return null;
+    }
 
-    public static BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
 
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 public class ToolsCallMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallMessage>
@@ -139,7 +151,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
         foreach (var update in streamingMessageUpdate.ToolCallUpdates)
         {
             // Check if this update completes a current tool call based on Id or Index
-            bool isNewToolCall = false;
+            var isNewToolCall = false;
 
             // Rule 0: If we have both IDs (non-null) and they're different, it's a new tool call
             if (CurrentToolCallId != null && update.ToolCallId != null && CurrentToolCallId != update.ToolCallId)

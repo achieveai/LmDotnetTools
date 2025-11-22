@@ -1,4 +1,3 @@
-using System;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
@@ -59,7 +58,7 @@ public class AgUiEventConverter : JsonConverter<AgUiEventBase>
             "state-delta" => JsonSerializer.Deserialize<StateDeltaEvent>(root.GetRawText(), options),
             "error" => JsonSerializer.Deserialize<ErrorEvent>(root.GetRawText(), options),
 
-            _ => throw new JsonException($"Unknown AG-UI event type: {type}")
+            _ => throw new JsonException($"Unknown AG-UI event type: {type}"),
         };
     }
 
@@ -68,6 +67,9 @@ public class AgUiEventConverter : JsonConverter<AgUiEventBase>
     /// </summary>
     public override void Write(Utf8JsonWriter writer, AgUiEventBase value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer, nameof(writer));
+        ArgumentNullException.ThrowIfNull(value, nameof(value));
+
         // Serialize the concrete type to preserve all properties
         JsonSerializer.Serialize(writer, value, value.GetType(), options);
     }

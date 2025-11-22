@@ -379,10 +379,10 @@ public class JsonFragmentAccumulatorTests
             new object[] { "test_tool", itemArray1, "Simple string should emit JsonComplete event when closed" },
         };
 
-    private static readonly string[] item = new[] { "{\"key\":", " \"value\"}" };
-    private static readonly string[] itemArray = new[] { "[1,", " 2, 3]" };
-    private static readonly string[] itemArray0 = new[] { "{\"outer\": {\"inner\":", " \"value\"}}" };
-    private static readonly string[] itemArray1 = new[] { "\"simple", "_string\"" };
+    private static readonly string[] item = ["{\"key\":", " \"value\"}"];
+    private static readonly string[] itemArray = ["[1,", " 2, 3]"];
+    private static readonly string[] itemArray0 = ["{\"outer\": {\"inner\":", " \"value\"}}"];
+    private static readonly string[] itemArray1 = ["\"simple", "_string\""];
 
     [Theory]
     [MemberData(nameof(JsonCompletionTestCases))]
@@ -411,7 +411,7 @@ public class JsonFragmentAccumulatorTests
 
         // Verify that we got exactly one JsonComplete event
         var completionEvents = allUpdates.Where(u => u.Kind == JsonFragmentKind.JsonComplete).ToList();
-        Assert.Single(completionEvents);
+        _ = Assert.Single(completionEvents);
 
         var completionEvent = completionEvents.First();
         Assert.Equal("root", completionEvent.Path);
@@ -478,7 +478,7 @@ public class JsonFragmentAccumulatorTests
 
         foreach (var update in updates)
         {
-            output.WriteLine($"{update.Kind, -15}: Path='{update.Path, -30}' Value='{update.TextValue ?? "null"}'");
+            output.WriteLine($"{update.Kind,-15}: Path='{update.Path,-30}' Value='{update.TextValue ?? "null"}'");
         }
     }
 

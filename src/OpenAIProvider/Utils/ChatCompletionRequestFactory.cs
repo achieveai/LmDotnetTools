@@ -22,7 +22,7 @@ public static class ChatCompletionRequestFactory
     public static ChatCompletionRequest Create(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
     {
         // Check if we're explicitly using OpenRouter
-        bool isOpenRouter = IsOpenRouterRequest(options);
+        var isOpenRouter = IsOpenRouterRequest(options);
 
         if (isOpenRouter)
         {
@@ -42,7 +42,7 @@ public static class ChatCompletionRequestFactory
     )
     {
         // Get model name with fallback
-        string modelName = GetModelName(options);
+        var modelName = GetModelName(options);
 
         // Extract basic parameters
         var temperature = options?.Temperature ?? 0.7f;
@@ -132,7 +132,7 @@ public static class ChatCompletionRequestFactory
 
     private static List<ChatMessage> ConvertMessagesToChat(IEnumerable<IMessage> messages)
     {
-        return messages
+        return [.. messages
             .Select(message =>
             {
                 // Map role
@@ -175,8 +175,7 @@ public static class ChatCompletionRequestFactory
                 }
 
                 return chatMessage;
-            })
-            .ToList();
+            })];
     }
 
     private static ChatCompletionRequest ApplyStandardOptions(
@@ -190,25 +189,25 @@ public static class ChatCompletionRequestFactory
         }
 
         // Prepare properties for the new request instance
-        float? topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
-        string[]? stop = options.StopSequence ?? request.Stop;
+        var topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
+        var stop = options.StopSequence ?? request.Stop;
         bool? stream =
             options.ExtraProperties.TryGetValue("stream", out var streamObj) && streamObj is bool streamBool
                 ? streamBool
                 : request.Stream;
-        bool? safePrompt =
+        var safePrompt =
             options.ExtraProperties.TryGetValue("safe_prompt", out var safePromptObj)
             && safePromptObj is bool safePromptBool
                 ? safePromptBool
                 : request.SafePrompt;
-        int? randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
+        var randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
 
         // Prepare tools if functions are provided
         List<FunctionTool>? tools = request.Tools;
 
         if (options.Functions != null && options.Functions.Length > 0)
         {
-            tools = options.Functions.Select(f => new FunctionTool(f.ToOpenFunctionDefinition())).ToList();
+            tools = [.. options.Functions.Select(f => new FunctionTool(f.ToOpenFunctionDefinition()))];
         }
 
         // Check for response format
@@ -312,6 +311,8 @@ public static class ChatCompletionRequestFactory
                         }
                         jsonObject["http_headers"] = headersObj;
                     }
+                    break;
+                default:
                     break;
             }
         }

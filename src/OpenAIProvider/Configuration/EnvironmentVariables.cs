@@ -163,7 +163,7 @@ public static class EnvironmentVariablesServiceExtensions
     )
     {
         // Register configuration values as singleton
-        services.AddSingleton<IOpenRouterUsageConfiguration>(provider => new OpenRouterUsageConfiguration(
+        _ = services.AddSingleton<IOpenRouterUsageConfiguration>(provider => new OpenRouterUsageConfiguration(
             configuration
         ));
 

@@ -1,14 +1,6 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using AchieveAi.LmDotnetTools.LmCore.Models;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
-using Moq;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -18,15 +10,15 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 public class FunctionRegistryFilteringTests
 {
     private readonly Mock<ILogger> _mockLogger;
-    private static readonly string[] expectation = new[]
-    {
+    private static readonly string[] expectation =
+    [
         "read_file",
         "list_directory",
         "list_repos",
         "list_tables",
         "get_file",
-    };
-    private static readonly string[] expectationArray = new[] { "func1", "func2" };
+    ];
+    private static readonly string[] expectationArray = ["func1", "func2"];
 
     public FunctionRegistryFilteringTests()
     {
@@ -43,7 +35,7 @@ public class FunctionRegistryFilteringTests
         public TestFunctionProvider(string providerName, params string[] functionNames)
         {
             _providerName = providerName;
-            _functions = functionNames
+            _functions = [.. functionNames
                 .Select(name => new FunctionDescriptor
                 {
                     Contract = new FunctionContract
@@ -53,8 +45,7 @@ public class FunctionRegistryFilteringTests
                     },
                     Handler = _ => Task.FromResult($"Result from {name}"),
                     ProviderName = _providerName,
-                })
-                .ToList();
+                })];
         }
 
         public string ProviderName => _providerName;
@@ -70,15 +61,15 @@ public class FunctionRegistryFilteringTests
     {
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
-        registry.AddProvider(
+        _ = registry.AddProvider(
             new TestFunctionProvider("GitHub", "search_repositories", "create_issue", "get_file", "list_repos")
         );
 
-        registry.AddProvider(
+        _ = registry.AddProvider(
             new TestFunctionProvider("FileSystem", "read_file", "write_file", "list_directory", "search")
         );
 
-        registry.AddProvider(
+        _ = registry.AddProvider(
             new TestFunctionProvider("Database", "execute_query", "list_tables", "search", "create_table")
         );
 
@@ -99,12 +90,12 @@ public class FunctionRegistryFilteringTests
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        contracts.Should().HaveCount(12);
-        handlers.Should().HaveCount(12);
+        _ = contracts.Should().HaveCount(12);
+        _ = handlers.Should().HaveCount(12);
 
         // Verify collision handling - "search" function should have prefixes
-        handlers.Keys.Should().Contain("FileSystem-search");
-        handlers.Keys.Should().Contain("Database-search");
+        _ = handlers.Keys.Should().Contain("FileSystem-search");
+        _ = handlers.Keys.Should().Contain("Database-search");
     }
 
     [Fact]
@@ -115,16 +106,16 @@ public class FunctionRegistryFilteringTests
         var filterConfig = new FunctionFilterConfig
         {
             EnableFiltering = false,
-            GlobalBlockedFunctions = new List<string> { "*" }, // Should be ignored
+            GlobalBlockedFunctions = ["*"], // Should be ignored
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        contracts.Should().HaveCount(12);
-        handlers.Should().HaveCount(12);
+        _ = contracts.Should().HaveCount(12);
+        _ = handlers.Should().HaveCount(12);
     }
 
     #endregion
@@ -139,9 +130,9 @@ public class FunctionRegistryFilteringTests
         var filterConfig = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "*search*", "create_*" },
+            GlobalBlockedFunctions = ["*search*", "create_*"],
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
@@ -149,11 +140,11 @@ public class FunctionRegistryFilteringTests
         // Assert
         // Should filter out: search_repositories, search (x2), create_issue, create_table = 5 functions
         // Remaining: 12 - 5 = 7
-        contracts.Should().HaveCount(7);
-        handlers.Should().HaveCount(7);
+        _ = contracts.Should().HaveCount(7);
+        _ = handlers.Should().HaveCount(7);
 
-        handlers.Keys.Should().NotContain(key => key.Contains("search"));
-        handlers.Keys.Should().NotContain(key => key.StartsWith("create"));
+        _ = handlers.Keys.Should().NotContain(key => key.Contains("search"));
+        _ = handlers.Keys.Should().NotContain(key => key.StartsWith("create"));
     }
 
     [Fact]
@@ -164,17 +155,17 @@ public class FunctionRegistryFilteringTests
         var filterConfig = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalAllowedFunctions = new List<string> { "read_*", "list_*", "get_*" },
+            GlobalAllowedFunctions = ["read_*", "list_*", "get_*"],
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
 
         // Assert
         // Should include: read_file, list_directory, list_repos, list_tables, get_file = 5
-        contracts.Should().HaveCount(5);
-        handlers.Keys.Should().BeEquivalentTo(expectation);
+        _ = contracts.Should().HaveCount(5);
+        _ = handlers.Keys.Should().BeEquivalentTo(expectation);
     }
 
     #endregion
@@ -194,17 +185,17 @@ public class FunctionRegistryFilteringTests
                 ["Database"] = new ProviderFilterConfig { Enabled = false },
             },
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
 
         // Assert
         // Database provider has 4 functions, so we should have 12 - 4 = 8
-        contracts.Should().HaveCount(8);
-        handlers.Keys.Should().NotContain(key => key.Contains("execute_query"));
-        handlers.Keys.Should().NotContain(key => key.Contains("list_tables"));
-        handlers.Keys.Should().NotContain(key => key.Contains("create_table"));
+        _ = contracts.Should().HaveCount(8);
+        _ = handlers.Keys.Should().NotContain(key => key.Contains("execute_query"));
+        _ = handlers.Keys.Should().NotContain(key => key.Contains("list_tables"));
+        _ = handlers.Keys.Should().NotContain(key => key.Contains("create_table"));
     }
 
     [Fact]
@@ -220,16 +211,16 @@ public class FunctionRegistryFilteringTests
                 ["GitHub"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    AllowedFunctions = new List<string> { "search_repositories", "list_repos" },
+                    AllowedFunctions = ["search_repositories", "list_repos"],
                 },
                 ["FileSystem"] = new ProviderFilterConfig
                 {
                     Enabled = true,
-                    BlockedFunctions = new List<string> { "write_file" },
+                    BlockedFunctions = ["write_file"],
                 },
             },
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
@@ -239,14 +230,14 @@ public class FunctionRegistryFilteringTests
         // FileSystem: 3 functions (4 - 1 blocked)
         // Database: all 4 functions
         // Total: 2 + 3 + 4 = 9
-        contracts.Should().HaveCount(9);
+        _ = contracts.Should().HaveCount(9);
 
         // Verify specific functions
-        handlers.Keys.Should().Contain("search_repositories");
-        handlers.Keys.Should().Contain("list_repos");
-        handlers.Keys.Should().NotContain("create_issue");
-        handlers.Keys.Should().NotContain("get_file");
-        handlers.Keys.Should().NotContain("write_file");
+        _ = handlers.Keys.Should().Contain("search_repositories");
+        _ = handlers.Keys.Should().Contain("list_repos");
+        _ = handlers.Keys.Should().NotContain("create_issue");
+        _ = handlers.Keys.Should().NotContain("get_file");
+        _ = handlers.Keys.Should().NotContain("write_file");
     }
 
     #endregion
@@ -260,15 +251,15 @@ public class FunctionRegistryFilteringTests
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
         // Add providers with colliding function names
-        registry.AddProvider(new TestFunctionProvider("Provider1", "commonFunc", "unique1", "filtered"));
-        registry.AddProvider(new TestFunctionProvider("Provider2", "commonFunc", "unique2", "filtered"));
+        _ = registry.AddProvider(new TestFunctionProvider("Provider1", "commonFunc", "unique1", "filtered"));
+        _ = registry.AddProvider(new TestFunctionProvider("Provider2", "commonFunc", "unique2", "filtered"));
 
         var filterConfig = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "filtered" },
+            GlobalBlockedFunctions = ["filtered"],
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
@@ -276,19 +267,19 @@ public class FunctionRegistryFilteringTests
         // Assert
         // Should have 4 functions total (2 commonFunc with prefixes, 2 unique)
         // But "filtered" is blocked, so only 2 remain
-        contracts.Should().HaveCount(4);
-        handlers.Should().HaveCount(4);
+        _ = contracts.Should().HaveCount(4);
+        _ = handlers.Should().HaveCount(4);
 
         // CommonFunc should have prefixes due to collision
-        handlers.Keys.Should().Contain("Provider1-commonFunc");
-        handlers.Keys.Should().Contain("Provider2-commonFunc");
+        _ = handlers.Keys.Should().Contain("Provider1-commonFunc");
+        _ = handlers.Keys.Should().Contain("Provider2-commonFunc");
 
         // Unique functions should not have prefixes
-        handlers.Keys.Should().Contain("unique1");
-        handlers.Keys.Should().Contain("unique2");
+        _ = handlers.Keys.Should().Contain("unique1");
+        _ = handlers.Keys.Should().Contain("unique2");
 
         // Filtered functions should not be present
-        handlers.Keys.Should().NotContain(key => key.Contains("filtered"));
+        _ = handlers.Keys.Should().NotContain(key => key.Contains("filtered"));
     }
 
     [Fact]
@@ -297,13 +288,13 @@ public class FunctionRegistryFilteringTests
         // Arrange
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
-        registry.AddProvider(new TestFunctionProvider("VeryLongProviderName", "func1", "func2", "blockedFunc"));
-        registry.AddProvider(new TestFunctionProvider("AnotherLongName", "func1", "func3", "blockedFunc"));
+        _ = registry.AddProvider(new TestFunctionProvider("VeryLongProviderName", "func1", "func2", "blockedFunc"));
+        _ = registry.AddProvider(new TestFunctionProvider("AnotherLongName", "func1", "func3", "blockedFunc"));
 
         var filterConfig = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "blockedFunc" },
+            GlobalBlockedFunctions = ["blockedFunc"],
             UsePrefixOnlyForCollisions = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
@@ -311,24 +302,24 @@ public class FunctionRegistryFilteringTests
                 ["AnotherLongName"] = new ProviderFilterConfig { CustomPrefix = "ALN" },
             },
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        contracts.Should().HaveCount(4); // 6 total - 2 blocked
+        _ = contracts.Should().HaveCount(4); // 6 total - 2 blocked
 
         // func1 has collision, should use custom prefixes
-        handlers.Keys.Should().Contain("VLP-func1");
-        handlers.Keys.Should().Contain("ALN-func1");
+        _ = handlers.Keys.Should().Contain("VLP-func1");
+        _ = handlers.Keys.Should().Contain("ALN-func1");
 
         // func2 and func3 have no collision
-        handlers.Keys.Should().Contain("func2");
-        handlers.Keys.Should().Contain("func3");
+        _ = handlers.Keys.Should().Contain("func2");
+        _ = handlers.Keys.Should().Contain("func3");
 
         // blockedFunc should be filtered out
-        handlers.Keys.Should().NotContain(key => key.Contains("blockedFunc"));
+        _ = handlers.Keys.Should().NotContain(key => key.Contains("blockedFunc"));
     }
 
     #endregion
@@ -348,15 +339,15 @@ public class FunctionRegistryFilteringTests
                 new FunctionFilterConfig
                 {
                     EnableFiltering = true,
-                    GlobalBlockedFunctions = new List<string> { "func3" },
+                    GlobalBlockedFunctions = ["func3"],
                 }
             )
             .Build();
 
         // Assert
-        contracts.Should().HaveCount(2);
-        handlers.Should().HaveCount(2);
-        handlers.Keys.Should().BeEquivalentTo(expectationArray);
+        _ = contracts.Should().HaveCount(2);
+        _ = handlers.Should().HaveCount(2);
+        _ = handlers.Keys.Should().BeEquivalentTo(expectationArray);
     }
 
     [Fact]
@@ -376,9 +367,9 @@ public class FunctionRegistryFilteringTests
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        contracts.Should().HaveCount(2);
+        _ = contracts.Should().HaveCount(2);
         var func1Contract = contracts.First(c => c.Name == "func1");
-        func1Contract.Description.Should().Be("Override");
+        _ = func1Contract.Description.Should().Be("Override");
     }
 
     #endregion
@@ -390,14 +381,14 @@ public class FunctionRegistryFilteringTests
     {
         // Arrange
         var registry = new FunctionRegistry();
-        registry.AddProvider(new TestFunctionProvider("Provider", "func1", "func2"));
+        _ = registry.AddProvider(new TestFunctionProvider("Provider", "func1", "func2"));
 
         // Act
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        contracts.Should().HaveCount(2);
-        handlers.Should().HaveCount(2);
+        _ = contracts.Should().HaveCount(2);
+        _ = handlers.Should().HaveCount(2);
         // Should work exactly as before without any filtering
     }
 
@@ -411,8 +402,8 @@ public class FunctionRegistryFilteringTests
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        contracts.Should().HaveCount(12);
-        handlers.Should().HaveCount(12);
+        _ = contracts.Should().HaveCount(12);
+        _ = handlers.Should().HaveCount(12);
     }
 
     #endregion
@@ -426,7 +417,7 @@ public class FunctionRegistryFilteringTests
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
         // Add multiple MCP servers
-        registry.AddProvider(
+        _ = registry.AddProvider(
             new TestFunctionProvider(
                 "github",
                 "search_repositories",
@@ -440,7 +431,7 @@ public class FunctionRegistryFilteringTests
             )
         );
 
-        registry.AddProvider(
+        _ = registry.AddProvider(
             new TestFunctionProvider(
                 "filesystem",
                 "read_file",
@@ -454,7 +445,7 @@ public class FunctionRegistryFilteringTests
             )
         );
 
-        registry.AddProvider(
+        _ = registry.AddProvider(
             new TestFunctionProvider(
                 "database",
                 "execute_query",
@@ -468,7 +459,7 @@ public class FunctionRegistryFilteringTests
             )
         );
 
-        registry.AddProvider(
+        _ = registry.AddProvider(
             new TestFunctionProvider(
                 "memory",
                 "store_memory",
@@ -486,10 +477,10 @@ public class FunctionRegistryFilteringTests
         {
             EnableFiltering = true,
             // Block all delete/drop operations globally
-            GlobalBlockedFunctions = new List<string> { "delete_*", "drop_*", "*_dangerous" },
+            GlobalBlockedFunctions = ["delete_*", "drop_*", "*_dangerous"],
             // Only allow read operations by default
-            GlobalAllowedFunctions = new List<string>
-            {
+            GlobalAllowedFunctions =
+            [
                 "read_*",
                 "list_*",
                 "describe_*",
@@ -501,7 +492,7 @@ public class FunctionRegistryFilteringTests
                 "store_*",
                 "trigger_*",
                 "merge_*",
-            },
+            ],
             UsePrefixOnlyForCollisions = true,
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
@@ -510,33 +501,33 @@ public class FunctionRegistryFilteringTests
                     Enabled = true,
                     CustomPrefix = "gh",
                     // GitHub can have more permissions
-                    AllowedFunctions = new List<string> { "*" },
-                    BlockedFunctions = new List<string> { }, // Override global blocks for GitHub
+                    AllowedFunctions = ["*"],
+                    BlockedFunctions = [], // Override global blocks for GitHub
                 },
                 ["filesystem"] = new ProviderFilterConfig
                 {
                     Enabled = true,
                     CustomPrefix = "fs",
                     // Filesystem is more restricted
-                    BlockedFunctions = new List<string> { "write_*", "move_*", "copy_*" },
+                    BlockedFunctions = ["write_*", "move_*", "copy_*"],
                 },
                 ["database"] = new ProviderFilterConfig
                 {
                     Enabled = true,
                     CustomPrefix = "db",
                     // Database operations are restricted
-                    AllowedFunctions = new List<string> { "execute_query", "list_*", "describe_*", "search" },
+                    AllowedFunctions = ["execute_query", "list_*", "describe_*", "search"],
                 },
                 ["memory"] = new ProviderFilterConfig
                 {
                     Enabled = true,
                     // No custom prefix for memory
-                    AllowedFunctions = new List<string> { "*" }, // Memory operations are allowed
+                    AllowedFunctions = ["*"], // Memory operations are allowed
                 },
             },
         };
 
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var (contracts, handlers) = registry.Build();
@@ -550,29 +541,29 @@ public class FunctionRegistryFilteringTests
         // Total: 8 + 3 + 4 + 6 = 21
 
         // But search has collisions, so we need to account for prefixes
-        handlers.Keys.Should().Contain("fs-search");
-        handlers.Keys.Should().Contain("db-search");
-        handlers.Keys.Should().Contain("memory-search");
+        _ = handlers.Keys.Should().Contain("fs-search");
+        _ = handlers.Keys.Should().Contain("db-search");
+        _ = handlers.Keys.Should().Contain("memory-search");
 
         // GitHub functions should not be blocked
-        handlers.Keys.Should().Contain("close_issue"); // Even though it could match a delete pattern
+        _ = handlers.Keys.Should().Contain("close_issue"); // Even though it could match a delete pattern
 
         // Filesystem write operations should be blocked
-        handlers.Keys.Should().NotContain("write_file");
-        handlers.Keys.Should().NotContain("move_file");
+        _ = handlers.Keys.Should().NotContain("write_file");
+        _ = handlers.Keys.Should().NotContain("move_file");
 
         // Database dangerous operations should be blocked
-        handlers.Keys.Should().NotContain(k => k.Contains("drop_table"));
-        handlers.Keys.Should().NotContain(k => k.Contains("backup_database"));
+        _ = handlers.Keys.Should().NotContain(k => k.Contains("drop_table"));
+        _ = handlers.Keys.Should().NotContain(k => k.Contains("backup_database"));
 
         // Memory delete should be blocked by global rule
-        handlers.Keys.Should().NotContain("delete_memory");
+        _ = handlers.Keys.Should().NotContain("delete_memory");
 
         // Verify custom prefixes are used for collisions
         var searchFunctions = handlers.Keys.Where(k => k.Contains("search")).ToList();
-        searchFunctions.Should().Contain("fs-search");
-        searchFunctions.Should().Contain("db-search");
-        searchFunctions.Should().Contain("memory-search");
+        _ = searchFunctions.Should().Contain("fs-search");
+        _ = searchFunctions.Should().Contain("db-search");
+        _ = searchFunctions.Should().Contain("memory-search");
     }
 
     #endregion
@@ -586,18 +577,18 @@ public class FunctionRegistryFilteringTests
         var registry = new FunctionRegistry().WithLogger(_mockLogger.Object);
 
         // Add 50 providers with 20 functions each = 1000 functions
-        for (int i = 0; i < 50; i++)
+        for (var i = 0; i < 50; i++)
         {
             var functions = Enumerable.Range(0, 20).Select(j => $"func_{i}_{j}").ToArray();
-            registry.AddProvider(new TestFunctionProvider($"Provider{i}", functions));
+            _ = registry.AddProvider(new TestFunctionProvider($"Provider{i}", functions));
         }
 
         var filterConfig = new FunctionFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "*_5", "*_10", "*_15" }, // Block some
+            GlobalBlockedFunctions = ["*_5", "*_10", "*_15"], // Block some
         };
-        registry.WithFilterConfig(filterConfig);
+        _ = registry.WithFilterConfig(filterConfig);
 
         // Act
         var startTime = DateTime.UtcNow;
@@ -605,9 +596,9 @@ public class FunctionRegistryFilteringTests
         var elapsed = DateTime.UtcNow - startTime;
 
         // Assert
-        elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2), "Build should be fast even with many functions");
-        contracts.Should().HaveCount(850); // 1000 - 150 blocked (3 per provider * 50)
-        handlers.Should().HaveCount(850);
+        _ = elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2), "Build should be fast even with many functions");
+        _ = contracts.Should().HaveCount(850); // 1000 - 150 blocked (3 per provider * 50)
+        _ = handlers.Should().HaveCount(850);
     }
 
     #endregion

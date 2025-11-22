@@ -67,7 +67,7 @@ public partial class FunctionCollisionDetector
 
         foreach (var (baseName, descriptors) in functionGroups)
         {
-            bool hasCollision = descriptors.Count > 1;
+            var hasCollision = descriptors.Count > 1;
 
             if (hasCollision)
             {
@@ -82,7 +82,7 @@ public partial class FunctionCollisionDetector
 
             foreach (var descriptor in descriptors)
             {
-                var registeredName = FunctionCollisionDetector.DetermineRegisteredName(
+                var registeredName = DetermineRegisteredName(
                     descriptor,
                     hasCollision,
                     usePrefixOnlyForCollisions,
@@ -131,7 +131,7 @@ public partial class FunctionCollisionDetector
         }
 
         // Determine if we need to prefix this function
-        bool needsPrefix = hasCollision || !usePrefixOnlyForCollisions;
+        var needsPrefix = hasCollision || !usePrefixOnlyForCollisions;
 
         if (needsPrefix)
         {
@@ -215,7 +215,7 @@ public partial class FunctionCollisionDetector
                 var collision = new CollisionInfo
                 {
                     FunctionName = functionName,
-                    Providers = descriptors.Select(d => d.ProviderName).Distinct().ToList(),
+                    Providers = [.. descriptors.Select(d => d.ProviderName).Distinct()],
                     Count = descriptors.Count,
                 };
                 report.Collisions.Add(collision);

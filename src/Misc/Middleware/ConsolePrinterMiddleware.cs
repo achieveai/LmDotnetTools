@@ -60,7 +60,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     {
         _colors = colors;
         _toolFormatterFactory =
-            toolFormatterFactory ?? ConsolePrinterHelperMiddleware.CreateDefaultToolFormatterFactory();
+            toolFormatterFactory ?? CreateDefaultToolFormatterFactory();
         Name = name ?? nameof(ConsolePrinterHelperMiddleware);
     }
 
@@ -129,11 +129,11 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         switch (message)
         {
             case TextMessage textMessage:
-                ConsolePrinterHelperMiddleware.WriteColoredText(textMessage.Text, _colors.TextMessageColor);
+                WriteColoredText(textMessage.Text, _colors.TextMessageColor);
                 break;
 
             case TextUpdateMessage textUpdateMessage:
-                ConsolePrinterHelperMiddleware.WriteColoredText(
+                WriteColoredText(
                     textUpdateMessage.Text,
                     _colors.TextMessageColor,
                     isLine: false
@@ -143,14 +143,14 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
             case ReasoningMessage reasoningMessage:
                 if (reasoningMessage.Visibility == ReasoningVisibility.Encrypted)
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText(
+                    WriteColoredText(
                         "Reasoning is encrypted",
                         _colors.ReasoningMessageColor
                     );
                 }
                 else
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText(
+                    WriteColoredText(
                         reasoningMessage.Reasoning,
                         _colors.ReasoningMessageColor
                     );
@@ -160,7 +160,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
             case ReasoningUpdateMessage reasoningMessage:
                 if (reasoningMessage.Visibility == ReasoningVisibility.Encrypted)
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText(
+                    WriteColoredText(
                         "Reasoning is encrypted",
                         _colors.ReasoningMessageColor,
                         isLine: false
@@ -168,7 +168,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
                 }
                 else
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText(
+                    WriteColoredText(
                         reasoningMessage.Reasoning,
                         _colors.ReasoningMessageColor,
                         isLine: false
@@ -177,15 +177,15 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
                 break;
 
             case UsageMessage usageMessage1:
-                ConsolePrinterHelperMiddleware.WriteColoredText(
+                WriteColoredText(
                     $"Prompt tokens: {usageMessage1.Usage.PromptTokens}",
                     _colors.UsageMessageColor
                 );
-                ConsolePrinterHelperMiddleware.WriteColoredText(
+                WriteColoredText(
                     $"Completion tokens: {usageMessage1.Usage.CompletionTokens}",
                     _colors.UsageMessageColor
                 );
-                ConsolePrinterHelperMiddleware.WriteColoredText(
+                WriteColoredText(
                     $"Total tokens: {usageMessage1.Usage.TotalTokens}",
                     _colors.UsageMessageColor
                 );
@@ -238,7 +238,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
                     FromAgent = toolsCallUpdateMessage.FromAgent,
                     Role = toolsCallUpdateMessage.Role,
                     GenerationId = toolsCallUpdateMessage.GenerationId,
-                    ToolCallUpdates = toolsCallUpdateMessage
+                    ToolCallUpdates = [.. toolsCallUpdateMessage
                         .ToolCallUpdates.Select(tc => new ToolCallUpdate
                         {
                             FunctionName = _toolsCallMessageBuilder.CurrentFunctionName,
@@ -246,8 +246,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
                             ToolCallId = _toolsCallMessageBuilder.CurrentToolCallId,
                             Index = _toolsCallMessageBuilder.CurrentIndex,
                             JsonFragmentUpdates = tc.JsonFragmentUpdates,
-                        })
-                        .ToImmutableList(),
+                        })],
                 };
             }
         }
@@ -273,7 +272,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         {
             if (message is TextUpdateMessage || message is ToolsCallUpdateMessage toolsCallMessage)
             {
-                ConsolePrinterHelperMiddleware.WriteColoredText(string.Empty, new ConsoleColorPair(), true);
+                WriteColoredText(string.Empty, new ConsoleColorPair(), true);
             }
 
             PrintHorizontalLine();
@@ -309,7 +308,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         // Write the tool call header
         var idDisplay = toolCall.ToolCallId != null ? $" (ID: {toolCall.ToolCallId})" : "";
         var indexDisplay = toolCall.Index.HasValue ? $" [#{toolCall.Index.Value}]" : "";
-        ConsolePrinterHelperMiddleware.WriteColoredText(
+        WriteColoredText(
             $"Tool call{indexDisplay}{idDisplay}:",
             _colors.ToolUseMessageColor
         );
@@ -321,7 +320,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         var headerParts = _formatter(toolCall.FunctionName ?? "unknown", []);
         foreach (var (color, text) in headerParts)
         {
-            ConsolePrinterHelperMiddleware.WriteColoredText(text, color, isLine: false);
+            WriteColoredText(text, color, isLine: false);
         }
 
         if (string.IsNullOrEmpty(toolCall.FunctionArgs))
@@ -330,7 +329,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         }
 
         // Generate fragment updates from the function args and format them
-        var fragmentUpdates = ConsolePrinterHelperMiddleware.CreateFragmentUpdatesFromRawJson(
+        var fragmentUpdates = CreateFragmentUpdatesFromRawJson(
             toolCall.FunctionName ?? "unknown",
             toolCall.FunctionArgs ?? ""
         );
@@ -338,7 +337,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
 
         foreach (var (color, text) in formattedParts)
         {
-            ConsolePrinterHelperMiddleware.WriteColoredText(text, color, isLine: false);
+            WriteColoredText(text, color, isLine: false);
         }
     }
 
@@ -347,7 +346,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     /// </summary>
     private void PrintHorizontalLine()
     {
-        ConsolePrinterHelperMiddleware.WriteColoredText(
+        WriteColoredText(
             new string('-', Console.WindowWidth > 0 ? Console.WindowWidth - 1 : 80),
             _colors.HorizontalLineColor
         );
@@ -358,7 +357,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     /// </summary>
     private void PrintCompletionLine()
     {
-        ConsolePrinterHelperMiddleware.WriteColoredText(
+        WriteColoredText(
             new string('=', Console.WindowWidth > 0 ? Console.WindowWidth - 1 : 80),
             _colors.CompletionLineColor
         );
@@ -467,8 +466,8 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
     private void ProcessToolCallUpdate(ToolCallUpdate update)
     {
         // Generate a key for tracking this tool call
-        string? toolCallKey = update.ToolCallId;
-        int? indexKey = update.Index;
+        var toolCallKey = update.ToolCallId;
+        var indexKey = update.Index;
 
         if (_isNewMessage)
         {
@@ -506,14 +505,14 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
 
                 foreach (var (color, text) in formattedParts)
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText(text, color, isLine: false);
+                    WriteColoredText(text, color, isLine: false);
                 }
             }
             else
             {
                 // Fallback: create fragment updates from raw FunctionArgs
                 // This ensures backward compatibility when JsonFragmentUpdateMiddleware is not in the chain
-                var fragmentUpdates = ConsolePrinterHelperMiddleware.CreateFragmentUpdatesFromRawJson(
+                var fragmentUpdates = CreateFragmentUpdatesFromRawJson(
                     update.FunctionName ?? "unknown",
                     update.FunctionArgs ?? ""
                 );
@@ -521,7 +520,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
 
                 foreach (var (color, text) in formattedParts)
                 {
-                    ConsolePrinterHelperMiddleware.WriteColoredText(text, color, isLine: false);
+                    WriteColoredText(text, color, isLine: false);
                 }
             }
 

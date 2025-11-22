@@ -1,17 +1,13 @@
-using AchieveAi.LmDotnetTools.LmConfig.Agents;
-using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -31,10 +27,7 @@ public class TopicBasedSegmentationServiceTests
         _mockPromptManager = new Mock<ISegmentationPromptManager>();
 
         // Create logger with console output and debug level
-        var loggerFactory = LoggerFactory.Create(builder =>
-        {
-            builder.AddConsole().SetMinimumLevel(LogLevel.Debug);
-        });
+        var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
         _logger = loggerFactory.CreateLogger<TopicBasedSegmentationService>();
 
         _service = new TopicBasedSegmentationService(_mockLlmService.Object, _mockPromptManager.Object, _logger);
@@ -60,15 +53,15 @@ public class TopicBasedSegmentationServiceTests
         var result = await _service.SegmentByTopicsAsync(content, DocumentType.Generic, options);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Should().NotBeEmpty();
-        result.Should().HaveCountLessOrEqualTo(options.MaxSegments);
+        _ = result.Should().NotBeNull();
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().HaveCountLessOrEqualTo(options.MaxSegments);
 
         foreach (var segment in result)
         {
-            segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
-            segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.TopicBased.ToString());
+            _ = segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
+            _ = segment.Metadata.Should().ContainKey("segmentation_strategy");
+            _ = segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.TopicBased.ToString());
         }
     }
 
@@ -83,12 +76,12 @@ public class TopicBasedSegmentationServiceTests
         {
             CoherenceScore = 0.85,
             PrimaryTopic = "Technology Discussion",
-            TopicKeywords = new List<string> { "technology", "innovation", "development" },
-            KeyConcepts = new List<string> { "AI", "machine learning", "software" },
+            TopicKeywords = ["technology", "innovation", "development"],
+            KeyConcepts = ["AI", "machine learning", "software"],
         };
 
         // Mock LLM enhancement calls
-        _mockLlmService
+        _ = _mockLlmService
             .Setup(x =>
                 x.AnalyzeOptimalStrategyAsync(
                     It.IsAny<string>(),
@@ -102,13 +95,13 @@ public class TopicBasedSegmentationServiceTests
         var result = await _service.SegmentByTopicsAsync(content, DocumentType.Technical, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Verify LLM enhancement was used
         foreach (var segment in result)
         {
-            segment.Metadata.Should().ContainKey("topic_based");
-            segment.Metadata["topic_based"].Should().Be(true);
+            _ = segment.Metadata.Should().ContainKey("topic_based");
+            _ = segment.Metadata["topic_based"].Should().Be(true);
         }
     }
 
@@ -128,9 +121,9 @@ public class TopicBasedSegmentationServiceTests
         var result = await _service.SegmentByTopicsAsync(content, DocumentType.Generic, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
         // With similar topic merging, we should have fewer segments
-        result.Should().HaveCountLessThan(5);
+        _ = result.Should().HaveCountLessThan(5);
     }
 
     #endregion
@@ -142,33 +135,33 @@ public class TopicBasedSegmentationServiceTests
     {
         // Arrange
         var content = CreateMultiTopicDocument();
-        System.Diagnostics.Debug.WriteLine($"Test content: {content}");
+        Debug.WriteLine($"Test content: {content}");
 
         // Act
         var result = await _service.DetectTopicBoundariesAsync(content, DocumentType.Generic);
-        System.Diagnostics.Debug.WriteLine($"Boundary detection result count: {result.Count}");
+        Debug.WriteLine($"Boundary detection result count: {result.Count}");
 
         foreach (var boundary in result)
         {
-            System.Diagnostics.Debug.WriteLine(
+            Debug.WriteLine(
                 $"Boundary at position {boundary.Position} with confidence {boundary.Confidence}"
             );
         }
 
         // Assert
-        result.Should().NotBeNull();
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.Should().NotBeEmpty();
 
         foreach (var boundary in result)
         {
-            boundary.Position.Should().BeGreaterOrEqualTo(0);
-            boundary.Position.Should().BeLessThan(content.Length);
-            boundary.Confidence.Should().BeInRange(0.0, 1.0);
+            _ = boundary.Position.Should().BeGreaterOrEqualTo(0);
+            _ = boundary.Position.Should().BeLessThan(content.Length);
+            _ = boundary.Confidence.Should().BeInRange(0.0, 1.0);
         }
 
         // Boundaries should be ordered by position
         var positions = result.Select(b => b.Position).ToList();
-        positions.Should().BeInAscendingOrder();
+        _ = positions.Should().BeInAscendingOrder();
     }
 
     [Fact]
@@ -182,29 +175,29 @@ However, environmental concerns are rising. Climate change affects everyone.
 
 Furthermore, economic implications must be considered. Market volatility is increasing.";
 
-        System.Diagnostics.Debug.WriteLine($"Transition test content: {content}");
+        Debug.WriteLine($"Transition test content: {content}");
 
         // Act
         var result = await _service.DetectTopicBoundariesAsync(content, DocumentType.Generic);
 
-        System.Diagnostics.Debug.WriteLine($"Transition test result count: {result.Count}");
+        Debug.WriteLine($"Transition test result count: {result.Count}");
         foreach (var boundary in result)
         {
-            System.Diagnostics.Debug.WriteLine(
+            Debug.WriteLine(
                 $"Boundary at position {boundary.Position}, confidence {boundary.Confidence}, keywords: [{string.Join(", ", boundary.TransitionKeywords)}]"
             );
         }
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Should detect boundaries where transition words indicate topic changes
-        var boundariesWithTransitions = result.Where(b => b.TransitionKeywords.Any()).ToList();
-        boundariesWithTransitions.Should().NotBeEmpty();
+        var boundariesWithTransitions = result.Where(b => b.TransitionKeywords.Count != 0).ToList();
+        _ = boundariesWithTransitions.Should().NotBeEmpty();
 
         // Check for expected transition words
         var allTransitionKeywords = result.SelectMany(b => b.TransitionKeywords).ToList();
-        allTransitionKeywords
+        _ = allTransitionKeywords
             .Should()
             .Contain(word =>
                 word.Equals("however", StringComparison.OrdinalIgnoreCase)
@@ -232,14 +225,14 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var result = await _service.AnalyzeThematicCoherenceAsync(coherentContent);
 
         // Assert
-        result.Should().NotBeNull();
-        result.CoherenceScore.Should().BeInRange(0.0, 1.0);
-        result.SemanticUnity.Should().BeInRange(0.0, 1.0);
-        result.TopicConsistency.Should().BeInRange(0.0, 1.0);
-        result.PrimaryTopic.Should().NotBeNullOrEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.CoherenceScore.Should().BeInRange(0.0, 1.0);
+        _ = result.SemanticUnity.Should().BeInRange(0.0, 1.0);
+        _ = result.TopicConsistency.Should().BeInRange(0.0, 1.0);
+        _ = result.PrimaryTopic.Should().NotBeNullOrEmpty();
 
         // For coherent content about a single topic, scores should be reasonably high
-        result.CoherenceScore.Should().BeGreaterThan(0.5);
+        _ = result.CoherenceScore.Should().BeGreaterThan(0.5);
     }
 
     [Fact]
@@ -257,11 +250,11 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var result = await _service.AnalyzeThematicCoherenceAsync(incoherentContent);
 
         // Assert
-        result.Should().NotBeNull();
-        result.CoherenceScore.Should().BeInRange(0.0, 1.0);
+        _ = result.Should().NotBeNull();
+        _ = result.CoherenceScore.Should().BeInRange(0.0, 1.0);
 
         // For incoherent content mixing unrelated topics, score should be lower
-        result.CoherenceScore.Should().BeLessThan(0.8);
+        _ = result.CoherenceScore.Should().BeLessThan(0.8);
     }
 
     #endregion
@@ -279,21 +272,21 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var result = await _service.ValidateTopicSegmentsAsync(segments, originalContent);
 
         // Assert
-        result.Should().NotBeNull();
-        result.OverallQuality.Should().BeInRange(0.0, 1.0);
-        result.AverageTopicCoherence.Should().BeInRange(0.0, 1.0);
-        result.BoundaryAccuracy.Should().BeInRange(0.0, 1.0);
-        result.SegmentIndependence.Should().BeInRange(0.0, 1.0);
-        result.TopicCoverage.Should().BeInRange(0.0, 1.0);
+        _ = result.Should().NotBeNull();
+        _ = result.OverallQuality.Should().BeInRange(0.0, 1.0);
+        _ = result.AverageTopicCoherence.Should().BeInRange(0.0, 1.0);
+        _ = result.BoundaryAccuracy.Should().BeInRange(0.0, 1.0);
+        _ = result.SegmentIndependence.Should().BeInRange(0.0, 1.0);
+        _ = result.TopicCoverage.Should().BeInRange(0.0, 1.0);
 
-        result.SegmentResults.Should().HaveCount(segments.Count);
+        _ = result.SegmentResults.Should().HaveCount(segments.Count);
 
         foreach (var segmentResult in result.SegmentResults)
         {
-            segmentResult.SegmentId.Should().NotBeNullOrEmpty();
-            segmentResult.TopicCoherence.Should().BeInRange(0.0, 1.0);
-            segmentResult.Independence.Should().BeInRange(0.0, 1.0);
-            segmentResult.TopicClarity.Should().BeInRange(0.0, 1.0);
+            _ = segmentResult.SegmentId.Should().NotBeNullOrEmpty();
+            _ = segmentResult.TopicCoherence.Should().BeInRange(0.0, 1.0);
+            _ = segmentResult.Independence.Should().BeInRange(0.0, 1.0);
+            _ = segmentResult.TopicClarity.Should().BeInRange(0.0, 1.0);
         }
     }
 
@@ -324,14 +317,14 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var result = await _service.ValidateTopicSegmentsAsync(poorSegments, originalContent);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Issues.Should().NotBeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.Issues.Should().NotBeEmpty();
 
         // Should identify coherence issues
         var coherenceIssues = result.Issues.Where(i => i.Type == ValidationIssueType.PoorCoherence).ToList();
-        coherenceIssues.Should().NotBeEmpty();
+        _ = coherenceIssues.Should().NotBeEmpty();
 
-        result.Recommendations.Should().NotBeEmpty();
+        _ = result.Recommendations.Should().NotBeEmpty();
     }
 
     #endregion
@@ -348,8 +341,8 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var result = await _service.SegmentByTopicsAsync(emptyContent);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Should().BeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.Should().BeEmpty();
     }
 
     [Fact]
@@ -363,7 +356,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var result = await _service.SegmentByTopicsAsync(shortContent, DocumentType.Generic, options);
 
         // Assert
-        result.Should().NotBeNull();
+        _ = result.Should().NotBeNull();
         // May be empty if content is too short to meet minimum segment size
     }
 
@@ -383,9 +376,9 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var result = await _service.DetectTopicBoundariesAsync(singleTopicContent, DocumentType.Generic);
 
         // Assert
-        result.Should().NotBeNull();
+        _ = result.Should().NotBeNull();
         // Single topic content should have few or no topic boundaries
-        result.Should().HaveCountLessOrEqualTo(2);
+        _ = result.Should().HaveCountLessOrEqualTo(2);
     }
 
     #endregion
@@ -395,7 +388,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
     private void SetupDefaultMocks()
     {
         // Setup default prompt manager response
-        _mockPromptManager
+        _ = _mockPromptManager
             .Setup(x =>
                 x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
@@ -414,10 +407,10 @@ Furthermore, economic implications must be considered. Market volatility is incr
             );
 
         // Setup default LLM service responses
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _ = _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
-    private string CreateMultiTopicDocument()
+    private static string CreateMultiTopicDocument()
     {
         return @"
         Technology has revolutionized the way we communicate and work. Modern smartphones
@@ -438,7 +431,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         ";
     }
 
-    private string CreateDocumentWithSimilarTopics()
+    private static string CreateDocumentWithSimilarTopics()
     {
         return @"
         Software development requires careful planning and execution. Programming languages
@@ -452,7 +445,7 @@ Furthermore, economic implications must be considered. Market volatility is incr
         ";
     }
 
-    private string CreateIncoherentContent()
+    private static string CreateIncoherentContent()
     {
         return @"
         The weather is sunny today. Database indexing improves query performance.
@@ -532,24 +525,24 @@ public class TopicBasedSegmentationServiceIntegrationTests
         );
 
         // Assert - Verify quality segmentation
-        result.Should().NotBeNull();
-        result.Should().NotBeEmpty();
-        result.Should().HaveCountGreaterThan(2); // Should identify multiple topic boundaries
+        _ = result.Should().NotBeNull();
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().HaveCountGreaterThan(2); // Should identify multiple topic boundaries
 
         // Verify segments have proper content
-        result.All(s => !string.IsNullOrWhiteSpace(s.Content)).Should().BeTrue();
-        result.All(s => s.Content.Length >= 50).Should().BeTrue(); // Reasonable minimum length
+        _ = result.All(s => !string.IsNullOrWhiteSpace(s.Content)).Should().BeTrue();
+        _ = result.All(s => s.Content.Length >= 50).Should().BeTrue(); // Reasonable minimum length
 
         // Verify sequence numbers are correct
         var sequenceNumbers = result.Select(s => s.SequenceNumber).ToList();
-        sequenceNumbers.Should().BeInAscendingOrder();
+        _ = sequenceNumbers.Should().BeInAscendingOrder();
 
         // Verify segments cover the full content (no gaps)
         var totalLength = result.Sum(s => s.Content.Length);
-        totalLength.Should().BeGreaterThan((int)(testContent.Length * 0.8)); // Allow for some overlap/trimming
+        _ = totalLength.Should().BeGreaterThan((int)(testContent.Length * 0.8)); // Allow for some overlap/trimming
 
         // Verify quality metrics (may be 0.0 if LLM quality assessment is disabled)
-        result.All(s => s.Quality != null).Should().BeTrue();
+        _ = result.All(s => s.Quality != null).Should().BeTrue();
         var avgCoherence = result.Average(s => s.Quality!.CoherenceScore);
         Console.WriteLine($"Average coherence score: {avgCoherence}");
 
@@ -557,7 +550,7 @@ public class TopicBasedSegmentationServiceIntegrationTests
         // The main test is that segmentation works and produces reasonable segments
         if (avgCoherence > 0)
         {
-            avgCoherence.Should().BeGreaterThan(0.5);
+            _ = avgCoherence.Should().BeGreaterThan(0.5);
         }
 
         // Log results for debugging
@@ -574,23 +567,23 @@ public class TopicBasedSegmentationServiceIntegrationTests
     private static void ConfigureIntegrationServices(ServiceCollection services, HttpClient httpClient)
     {
         // Add logging
-        services.AddLogging(builder => builder.AddConsole());
+        _ = services.AddLogging(builder => builder.AddConsole());
 
         // Add configuration
         var configuration = new ConfigurationBuilder().AddEnvironmentVariables().Build();
-        services.AddSingleton<IConfiguration>(configuration);
+        _ = services.AddSingleton<IConfiguration>(configuration);
 
         // Add LmConfig services with custom HttpClient
-        services.AddLmConfig(configuration);
+        _ = services.AddLmConfig(configuration);
 
         // Configure HttpClient for LmConfig (if needed)
         // services.ConfigureHttpClient(() => httpClient);
 
         // Add MemoryServer document segmentation services
-        services.AddSingleton<ITopicBasedSegmentationService, TopicBasedSegmentationService>();
-        services.AddSingleton<ILlmProviderIntegrationService, LlmProviderIntegrationService>();
-        services.AddSingleton<ISegmentationPromptManager, SegmentationPromptManager>();
-        services.AddSingleton<IDocumentAnalysisService, DocumentAnalysisService>();
+        _ = services.AddSingleton<ITopicBasedSegmentationService, TopicBasedSegmentationService>();
+        _ = services.AddSingleton<ILlmProviderIntegrationService, LlmProviderIntegrationService>();
+        _ = services.AddSingleton<ISegmentationPromptManager, SegmentationPromptManager>();
+        _ = services.AddSingleton<IDocumentAnalysisService, DocumentAnalysisService>();
 
         // Configure LLM provider
         var llmConfig = new LlmProviderConfiguration
@@ -605,6 +598,6 @@ public class TopicBasedSegmentationServiceIntegrationTests
             Temperature = 0.1,
             MaxRetries = 3,
         };
-        services.AddSingleton(llmConfig);
+        _ = services.AddSingleton(llmConfig);
     }
 }

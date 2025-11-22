@@ -42,7 +42,10 @@ public class TypeFunctionProvider : IFunctionProvider
     public string ProviderName { get; }
     public int Priority { get; }
 
-    public IEnumerable<FunctionDescriptor> GetFunctions() => _functions;
+    public IEnumerable<FunctionDescriptor> GetFunctions()
+    {
+        return _functions;
+    }
 
     private List<FunctionDescriptor> ExtractFunctions()
     {
@@ -154,7 +157,7 @@ public class TypeFunctionProvider : IFunctionProvider
             Name = parameter.Name!,
             Description = description,
             ParameterType = SchemaHelper.CreateJsonSchemaFromType(parameter.ParameterType),
-            IsRequired = !parameter.HasDefaultValue && !TypeFunctionProvider.IsNullable(parameter),
+            IsRequired = !parameter.HasDefaultValue && !IsNullable(parameter),
         };
     }
 
@@ -212,7 +215,7 @@ public class TypeFunctionProvider : IFunctionProvider
             try
             {
                 // Get the instance to invoke on
-                object? target = method.IsStatic ? null : _instance;
+                var target = method.IsStatic ? null : _instance;
 
                 if (!method.IsStatic && target == null)
                 {
@@ -223,13 +226,13 @@ public class TypeFunctionProvider : IFunctionProvider
 
                 // Parse and prepare arguments
                 var parameters = method.GetParameters();
-                object?[] paramValues = new object?[parameters.Length];
+                var paramValues = new object?[parameters.Length];
 
                 if (!string.IsNullOrEmpty(argsJson) && parameters.Length > 0)
                 {
                     var argsDict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson);
 
-                    for (int i = 0; i < parameters.Length; i++)
+                    for (var i = 0; i < parameters.Length; i++)
                     {
                         var param = parameters[i];
 
@@ -263,7 +266,7 @@ public class TypeFunctionProvider : IFunctionProvider
                 // Invoke the method
                 object? result;
 
-                if (TypeFunctionProvider.IsAsyncMethod(method))
+                if (IsAsyncMethod(method))
                 {
                     // Handle async methods
                     var task = method.Invoke(target, paramValues);
@@ -386,7 +389,7 @@ public static class FunctionRegistryTypeExtensions
     {
         foreach (var type in types)
         {
-            registry.AddFunctionsFromType(type, type.Name, priority);
+            _ = registry.AddFunctionsFromType(type, type.Name, priority);
         }
         return registry;
     }

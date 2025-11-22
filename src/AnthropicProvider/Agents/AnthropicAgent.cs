@@ -85,7 +85,8 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
             );
 
             // Convert to messages using the Models namespace extension
-            var resultMessages = Models.AnthropicExtensions.ToMessages(response, Name)
+            var resultMessages =
+                AnthropicExtensions.ToMessages(response, Name)
                 .Select(m => m.WithIds(options))
                 .ToList();
 
@@ -242,17 +243,11 @@ public class AnthropicAgent : IStreamingAgent, IDisposable
                 }
                 else if (message is TextUpdateMessage textUpdateMessage)
                 {
-                    yield return (textUpdateMessage with
-                    {
-                        FromAgent = Name,
-                    }).WithIds(options);
+                    yield return (textUpdateMessage with { FromAgent = Name }).WithIds(options);
                 }
                 else if (message is ToolsCallUpdateMessage toolsCallMessage)
                 {
-                    yield return (toolsCallMessage with
-                    {
-                        FromAgent = Name,
-                    }).WithIds(options);
+                    yield return (toolsCallMessage with { FromAgent = Name }).WithIds(options);
                 }
                 else if (message is ToolsCallMessage) { }
                 else

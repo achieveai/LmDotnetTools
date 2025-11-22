@@ -2,7 +2,6 @@ using System.Collections.Immutable;
 using System.Net.Sockets;
 using System.Text.Json;
 using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 

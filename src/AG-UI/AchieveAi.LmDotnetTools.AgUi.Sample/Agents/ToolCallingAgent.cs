@@ -1,10 +1,8 @@
-using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 
@@ -12,14 +10,12 @@ namespace AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 /// Agent that demonstrates tool calling capabilities
 /// Analyzes user messages and calls appropriate tools (weather, calculator, search, etc.)
 /// </summary>
-public class ToolCallingAgent : IStreamingAgent
+public partial class ToolCallingAgent : IStreamingAgent
 {
     private readonly ILogger<ToolCallingAgent> _logger;
     private readonly IEnumerable<IFunctionProvider> _tools;
 
-    public ToolCallingAgent(
-        ILogger<ToolCallingAgent> logger,
-        IEnumerable<IFunctionProvider> tools)
+    public ToolCallingAgent(ILogger<ToolCallingAgent> logger, IEnumerable<IFunctionProvider> tools)
     {
         _logger = logger;
         _tools = tools;
@@ -33,7 +29,8 @@ public class ToolCallingAgent : IStreamingAgent
     public async Task<IEnumerable<IMessage>> GenerateReplyAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         var sessionId = Guid.NewGuid().ToString();
         _logger.LogInformation("ToolCallingAgent starting non-streaming execution for session {SessionId}", sessionId);
@@ -51,7 +48,8 @@ public class ToolCallingAgent : IStreamingAgent
     public async Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default
+    )
     {
         var sessionId = Guid.NewGuid().ToString();
         _logger.LogInformation("ToolCallingAgent starting streaming execution for session {SessionId}", sessionId);
@@ -62,7 +60,8 @@ public class ToolCallingAgent : IStreamingAgent
     private async IAsyncEnumerable<IMessage> StreamResponseAsync(
         IEnumerable<IMessage> messages,
         string sessionId,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken
+    )
     {
         var lastMessage = messages.LastOrDefault();
         if (lastMessage is not TextMessage textMessage)
@@ -73,7 +72,7 @@ public class ToolCallingAgent : IStreamingAgent
                 Text = "I can only process text messages.",
                 FromAgent = Name,
                 Role = Role.Assistant,
-                GenerationId = Guid.NewGuid().ToString()
+                GenerationId = Guid.NewGuid().ToString(),
             };
             yield break;
         }
@@ -94,10 +93,11 @@ public class ToolCallingAgent : IStreamingAgent
             _logger.LogDebug("No tool call needed, providing direct response");
             yield return new TextMessage
             {
-                Text = "I can help you with weather information, calculations, searches, time, or counter operations. What would you like to know?",
+                Text =
+                    "I can help you with weather information, calculations, searches, time, or counter operations. What would you like to know?",
                 FromAgent = Name,
                 Role = Role.Assistant,
-                GenerationId = generationId
+                GenerationId = generationId,
             };
             yield break;
         }
@@ -111,7 +111,7 @@ public class ToolCallingAgent : IStreamingAgent
             FromAgent = Name,
             Role = Role.Assistant,
             GenerationId = generationId,
-            IsThinking = true
+            IsThinking = true,
         };
 
         await Task.Delay(200, cancellationToken);
@@ -119,22 +119,22 @@ public class ToolCallingAgent : IStreamingAgent
         // Yield tool call
         yield return new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(new ToolCall
-            {
-                FunctionName = toolToCall,
-                FunctionArgs = arguments,
-                ToolCallId = Guid.NewGuid().ToString(),
-                Index = 0
-            }),
+            ToolCalls = [new ToolCall
+                {
+                    FunctionName = toolToCall,
+                    FunctionArgs = arguments,
+                    ToolCallId = Guid.NewGuid().ToString(),
+                    Index = 0,
+                }],
             FromAgent = Name,
             Role = Role.Assistant,
-            GenerationId = generationId
+            GenerationId = generationId,
         };
 
         _logger.LogInformation("ToolCallingAgent completed for session {SessionId}", sessionId);
     }
 
-    private (string? toolName, string arguments) DetermineToolCall(string messageText)
+    private static (string? toolName, string arguments) DetermineToolCall(string messageText)
     {
         // Weather queries
         if (messageText.Contains("weather") || messageText.Contains("temperature") || messageText.Contains("forecast"))
@@ -145,12 +145,24 @@ public class ToolCallingAgent : IStreamingAgent
         }
 
         // Calculator queries
-        if (messageText.Contains("calculate") || messageText.Contains("add") || messageText.Contains("multiply") ||
-            messageText.Contains("subtract") || messageText.Contains("divide") ||
-            System.Text.RegularExpressions.Regex.IsMatch(messageText, @"\d+\s*[\+\-\*\/]\s*\d+"))
+        if (
+            messageText.Contains("calculate")
+            || messageText.Contains("add")
+            || messageText.Contains("multiply")
+            || messageText.Contains("subtract")
+            || messageText.Contains("divide")
+            || MyRegex().IsMatch(messageText)
+        )
         {
             var (operation, a, b) = ExtractMathOperation(messageText);
-            var args = JsonSerializer.Serialize(new { operation, a, b });
+            var args = JsonSerializer.Serialize(
+                new
+                {
+                    operation,
+                    a,
+                    b,
+                }
+            );
             return ("calculate", args);
         }
 
@@ -170,19 +182,33 @@ public class ToolCallingAgent : IStreamingAgent
         }
 
         // Counter queries
-        if (messageText.Contains("counter") || messageText.Contains("count") || messageText.Contains("increment") || messageText.Contains("decrement"))
+        if (
+            messageText.Contains("counter")
+            || messageText.Contains("count")
+            || messageText.Contains("increment")
+            || messageText.Contains("decrement")
+        )
         {
-            var operation = messageText.Contains("increment") ? "increment" :
-                           messageText.Contains("decrement") ? "decrement" :
-                           messageText.Contains("reset") ? "reset" : "get";
-            var args = JsonSerializer.Serialize(new { operation, name = "default", amount = 1 });
+            var operation =
+                messageText.Contains("increment") ? "increment"
+                : messageText.Contains("decrement") ? "decrement"
+                : messageText.Contains("reset") ? "reset"
+                : "get";
+            var args = JsonSerializer.Serialize(
+                new
+                {
+                    operation,
+                    name = "default",
+                    amount = 1,
+                }
+            );
             return ("counter", args);
         }
 
         return (null, "{}");
     }
 
-    private string? ExtractCity(string text)
+    private static string? ExtractCity(string text)
     {
         var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var cityIndex = Array.FindIndex(words, w => w.Contains("in") || w.Contains("for"));
@@ -193,10 +219,10 @@ public class ToolCallingAgent : IStreamingAgent
         return null;
     }
 
-    private (string operation, double a, double b) ExtractMathOperation(string text)
+    private static (string operation, double a, double b) ExtractMathOperation(string text)
     {
         // Simple extraction - in real implementation, use proper parsing
-        var match = System.Text.RegularExpressions.Regex.Match(text, @"(\d+(?:\.\d+)?)\s*([\+\-\*\/])\s*(\d+(?:\.\d+)?)");
+        var match = MyRegex1().Match(text);
         if (match.Success)
         {
             var a = double.Parse(match.Groups[1].Value);
@@ -207,7 +233,7 @@ public class ToolCallingAgent : IStreamingAgent
                 "-" => "subtract",
                 "*" => "multiply",
                 "/" => "divide",
-                _ => "add"
+                _ => "add",
             };
             return (op, a, b);
         }
@@ -215,7 +241,7 @@ public class ToolCallingAgent : IStreamingAgent
         return ("add", 10, 5); // Default
     }
 
-    private string ExtractSearchQuery(string text)
+    private static string ExtractSearchQuery(string text)
     {
         var searchKeywords = new[] { "search", "find", "look up" };
         foreach (var keyword in searchKeywords)
@@ -230,13 +256,22 @@ public class ToolCallingAgent : IStreamingAgent
         return "AG-UI protocol";
     }
 
-    private string GetToolAction(string toolName) => toolName switch
+    private static string GetToolAction(string toolName)
     {
-        "get_weather" => "check the weather",
-        "calculate" => "perform that calculation",
-        "search" => "search for information",
-        "get_current_time" => "get the current time",
-        "counter" => "manage the counter",
-        _ => "help"
-    };
+        return toolName switch
+        {
+            "get_weather" => "check the weather",
+            "calculate" => "perform that calculation",
+            "search" => "search for information",
+            "get_current_time" => "get the current time",
+            "counter" => "manage the counter",
+            _ => "help",
+        };
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\d+\s*[\+\-\*\/]\s*\d+")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex();
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"(\d+(?:\.\d+)?)\s*([\+\-\*\/])\s*(\d+(?:\.\d+)?)")]
+    private static partial System.Text.RegularExpressions.Regex MyRegex1();
 }

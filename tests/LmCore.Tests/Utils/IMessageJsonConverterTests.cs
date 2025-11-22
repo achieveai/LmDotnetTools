@@ -36,7 +36,7 @@ public class IMessageJsonConverterTests
         var options = GetOptionsWithConverter();
 
         // Act
-        string json = JsonSerializer.Serialize(message, options);
+        var json = JsonSerializer.Serialize(message, options);
         Console.WriteLine(json);
 
         // Assert
@@ -52,7 +52,7 @@ public class IMessageJsonConverterTests
     public void Deserialize_TextMessage_WithTypeDiscriminator_ReturnsCorrectType()
     {
         // Arrange
-        string json =
+        var json =
             @"{
             ""$type"": ""text"",
             ""text"": ""Hello world"",
@@ -68,7 +68,7 @@ public class IMessageJsonConverterTests
 
         // Assert
         Assert.NotNull(message);
-        Assert.IsType<TextMessage>(message);
+        _ = Assert.IsType<TextMessage>(message);
 
         var textMessage = (TextMessage)message;
         Assert.Equal("Hello world", textMessage.Text);
@@ -81,7 +81,7 @@ public class IMessageJsonConverterTests
     public void Deserialize_TextMessage_WithoutTypeDiscriminator_ReturnsCorrectType()
     {
         // Arrange
-        string json =
+        var json =
             @"{
             ""text"": ""Hello world"",
             ""role"": ""assistant"",
@@ -96,7 +96,7 @@ public class IMessageJsonConverterTests
 
         // Assert
         Assert.NotNull(message);
-        Assert.IsType<TextMessage>(message);
+        _ = Assert.IsType<TextMessage>(message);
 
         var textMessage = (TextMessage)message;
         Assert.Equal("Hello world", textMessage.Text);
@@ -116,7 +116,7 @@ public class IMessageJsonConverterTests
 
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = ImmutableList.Create(toolCall),
+            ToolCalls = [toolCall],
             Role = Role.Assistant,
             FromAgent = "assistant-agent",
             GenerationId = "gen-1",
@@ -125,7 +125,7 @@ public class IMessageJsonConverterTests
 
         var toolCallResult = new ToolsCallResultMessage
         {
-            ToolCallResults = ImmutableList.Create(new ToolCallResult("tool-1", "function result")),
+            ToolCallResults = [new ToolCallResult("tool-1", "function result")],
             Role = Role.User,
             FromAgent = "user-agent",
             Metadata = ImmutableDictionary<string, object>.Empty.Add("source", "tool-result"),
@@ -136,14 +136,14 @@ public class IMessageJsonConverterTests
         var options = GetOptionsWithConverter();
 
         // Act
-        string json = JsonSerializer.Serialize(originalMessage, options);
+        var json = JsonSerializer.Serialize(originalMessage, options);
         Console.WriteLine(json);
 
         var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
 
         // Assert
         Assert.NotNull(deserializedMessage);
-        Assert.IsType<ToolsCallAggregateMessage>(deserializedMessage);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(deserializedMessage);
 
         var aggregateMessage = (ToolsCallAggregateMessage)deserializedMessage;
         Assert.Equal("combined-agent", aggregateMessage.FromAgent);
@@ -170,7 +170,7 @@ public class IMessageJsonConverterTests
     public void Deserialize_WithTypeDiscriminator_ReturnsCorrectType(string typeDiscriminator, Type expectedType)
     {
         // Arrange
-        string json =
+        var json =
             $@"{{
             ""$type"": ""{typeDiscriminator}"",
             ""role"": ""assistant""
@@ -214,7 +214,7 @@ public class IMessageJsonConverterTests
             new ImageMessage { ImageData = BinaryData.FromString("fake-image-data"), Role = Role.Assistant },
             new ToolsCallMessage
             {
-                ToolCalls = ImmutableList.Create(new ToolCall("test_function", "{}") { ToolCallId = "id1" }),
+                ToolCalls = [new ToolCall("test_function", "{}") { ToolCallId = "id1" }],
                 Role = Role.Assistant,
             },
         };
@@ -224,7 +224,7 @@ public class IMessageJsonConverterTests
         foreach (var originalMessage in messages)
         {
             // Act
-            string json = JsonSerializer.Serialize(originalMessage, options);
+            var json = JsonSerializer.Serialize(originalMessage, options);
             Console.WriteLine($"Serialized {originalMessage.GetType().Name}: {json}");
 
             var deserializedMessage = JsonSerializer.Deserialize<IMessage>(json, options);
@@ -249,7 +249,7 @@ public class IMessageJsonConverterTests
         var options = GetOptionsWithConverter();
 
         // Act - Verify the message goes through our converter
-        string json = JsonSerializer.Serialize<IMessage>(originalMessage, options);
+        var json = JsonSerializer.Serialize<IMessage>(originalMessage, options);
         Console.WriteLine(json);
 
         // Verify the type discriminator was added
@@ -261,7 +261,7 @@ public class IMessageJsonConverterTests
 
         // Assert
         Assert.NotNull(deserializedMessage);
-        Assert.IsType<TextMessage>(deserializedMessage);
+        _ = Assert.IsType<TextMessage>(deserializedMessage);
 
         var textMessage = (TextMessage)deserializedMessage;
         Assert.Equal(originalMessage.Text, textMessage.Text);

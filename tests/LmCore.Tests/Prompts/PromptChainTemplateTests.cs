@@ -158,6 +158,6 @@ public class PromptChainTemplateTests
         var promptChain = _promptReader.GetPromptChain(promptName);
 
         // Act & Assert
-        Assert.Throws<NotSupportedException>(() => promptChain.PromptText());
+        _ = Assert.Throws<NotSupportedException>(() => promptChain.PromptText());
     }
 }

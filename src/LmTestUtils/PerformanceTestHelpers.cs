@@ -1,6 +1,5 @@
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.LmTestUtils;
 
@@ -109,29 +108,45 @@ public static class PerformanceTestHelpers
     )
     {
         if (metrics.Provider != expectedProvider)
+        {
             return false;
+        }
 
         if (metrics.Model != expectedModel)
+        {
             return false;
+        }
 
         if (metrics.Operation != expectedOperation)
+        {
             return false;
+        }
 
         if (expectedStatusCode.HasValue && metrics.StatusCode != expectedStatusCode.Value)
+        {
             return false;
+        }
 
         if (expectedSuccess.HasValue && metrics.IsSuccess != expectedSuccess.Value)
+        {
             return false;
+        }
 
         // Validate timing
         if (metrics.StartTime == default)
+        {
             return false;
+        }
 
         if (metrics.EndTime == default)
+        {
             return false;
+        }
 
         if (metrics.Duration <= TimeSpan.Zero)
+        {
             return false;
+        }
 
         return true;
     }
@@ -152,7 +167,9 @@ public static class PerformanceTestHelpers
     )
     {
         if (usage == null)
+        {
             return false;
+        }
 
         return usage.PromptTokens == expectedPromptTokens
             && usage.CompletionTokens == expectedCompletionTokens

@@ -108,14 +108,12 @@ public record PerformanceProfile
         // Filter by provider and model if specified
         if (!string.IsNullOrEmpty(provider))
         {
-            metricsList = metricsList
-                .Where(m => m.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            metricsList = [.. metricsList.Where(m => m.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase))];
         }
 
         if (!string.IsNullOrEmpty(model))
         {
-            metricsList = metricsList.Where(m => m.Model.Equals(model, StringComparison.OrdinalIgnoreCase)).ToList();
+            metricsList = [.. metricsList.Where(m => m.Model.Equals(model, StringComparison.OrdinalIgnoreCase))];
         }
 
         var successfulRequests = metricsList.Where(m => m.IsSuccess).ToList();

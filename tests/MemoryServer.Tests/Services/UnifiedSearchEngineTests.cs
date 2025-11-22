@@ -1,11 +1,7 @@
 using MemoryServer.Models;
 using MemoryServer.Services;
-using MemoryServer.Tests.Mocks;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Moq;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace MemoryServer.Tests.Services;
@@ -38,7 +34,7 @@ public class UnifiedSearchEngineTests
         _mockLogger = new Mock<ILogger<UnifiedSearchEngine>>();
 
         // Setup default reranking behavior to return original results
-        _mockRerankingEngine
+        _ = _mockRerankingEngine
             .Setup(x =>
                 x.RerankResultsAsync(
                     It.IsAny<string>(),
@@ -65,7 +61,7 @@ public class UnifiedSearchEngineTests
             );
 
         // Setup default deduplication behavior to return original results
-        _mockDeduplicationEngine
+        _ = _mockDeduplicationEngine
             .Setup(x =>
                 x.DeduplicateResultsAsync(
                     It.IsAny<List<UnifiedSearchResult>>(),
@@ -84,7 +80,7 @@ public class UnifiedSearchEngineTests
             );
 
         // Setup default enrichment behavior to return original results
-        _mockResultEnricher
+        _ = _mockResultEnricher
             .Setup(x =>
                 x.EnrichResultsAsync(
                     It.IsAny<List<UnifiedSearchResult>>(),
@@ -102,7 +98,7 @@ public class UnifiedSearchEngineTests
                 ) =>
                     new EnrichmentResults
                     {
-                        Results = results
+                        Results = [.. results
                             .Select(r => new EnrichedSearchResult
                             {
                                 Type = r.Type,
@@ -117,10 +113,9 @@ public class UnifiedSearchEngineTests
                                 OriginalMemory = r.OriginalMemory,
                                 OriginalEntity = r.OriginalEntity,
                                 OriginalRelationship = r.OriginalRelationship,
-                                RelatedEntities = new List<RelatedItem>(),
-                                RelatedRelationships = new List<RelatedItem>(),
-                            })
-                            .ToList(),
+                                RelatedEntities = [],
+                                RelatedRelationships = [],
+                            })],
                         Metrics = new EnrichmentMetrics(),
                     }
             );
@@ -161,15 +156,15 @@ public class UnifiedSearchEngineTests
         var sessionContext = CreateTestSessionContext();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(() =>
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
             _unifiedSearchEngine.SearchAllSourcesAsync("", sessionContext)
         );
 
-        await Assert.ThrowsAsync<ArgumentException>(() =>
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
             _unifiedSearchEngine.SearchAllSourcesAsync("   ", sessionContext)
         );
 
-        await Assert.ThrowsAsync<ArgumentException>(() =>
+        _ = await Assert.ThrowsAsync<ArgumentException>(() =>
             _unifiedSearchEngine.SearchAllSourcesAsync(null!, sessionContext)
         );
     }
@@ -218,7 +213,7 @@ public class UnifiedSearchEngineTests
             },
         };
 
-        _mockMemoryRepository
+        _ = _mockMemoryRepository
             .Setup(x =>
                 x.SearchAsync(
                     It.IsAny<string>(),
@@ -230,7 +225,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(mockMemories);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchEntitiesAsync(
                     It.IsAny<string>(),
@@ -241,7 +236,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(mockEntities);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchRelationshipsAsync(
                     It.IsAny<string>(),
@@ -253,7 +248,7 @@ public class UnifiedSearchEngineTests
             .ReturnsAsync(mockRelationships);
 
         // Setup embedding manager to return null (no vector search)
-        _mockEmbeddingManager
+        _ = _mockEmbeddingManager
             .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Embedding generation disabled for this test"));
 
@@ -297,7 +292,7 @@ public class UnifiedSearchEngineTests
         var mockEmbedding = new float[] { 0.1f, 0.2f, 0.3f };
 
         // Setup mock responses for FTS searches
-        _mockMemoryRepository
+        _ = _mockMemoryRepository
             .Setup(x =>
                 x.SearchAsync(
                     It.IsAny<string>(),
@@ -307,9 +302,9 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Memory>());
+            .ReturnsAsync([]);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchEntitiesAsync(
                     It.IsAny<string>(),
@@ -320,7 +315,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(new List<Entity>());
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchRelationshipsAsync(
                     It.IsAny<string>(),
@@ -332,7 +327,7 @@ public class UnifiedSearchEngineTests
             .ReturnsAsync(new List<Relationship>());
 
         // Setup mock responses for vector searches
-        _mockMemoryRepository
+        _ = _mockMemoryRepository
             .Setup(x =>
                 x.SearchVectorAsync(
                     It.IsAny<float[]>(),
@@ -342,9 +337,9 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<VectorSearchResult>());
+            .ReturnsAsync([]);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchEntitiesVectorAsync(
                     It.IsAny<float[]>(),
@@ -354,9 +349,9 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<EntityVectorSearchResult>());
+            .ReturnsAsync([]);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchRelationshipsVectorAsync(
                     It.IsAny<float[]>(),
@@ -366,9 +361,9 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<RelationshipVectorSearchResult>());
+            .ReturnsAsync([]);
 
-        _mockEmbeddingManager
+        _ = _mockEmbeddingManager
             .Setup(x => x.GenerateEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockEmbedding);
 
@@ -427,7 +422,7 @@ public class UnifiedSearchEngineTests
         var preGeneratedEmbedding = new float[] { 0.1f, 0.2f, 0.3f };
 
         // Setup mock responses
-        _mockMemoryRepository
+        _ = _mockMemoryRepository
             .Setup(x =>
                 x.SearchAsync(
                     It.IsAny<string>(),
@@ -437,9 +432,9 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Memory>());
+            .ReturnsAsync([]);
 
-        _mockMemoryRepository
+        _ = _mockMemoryRepository
             .Setup(x =>
                 x.SearchVectorAsync(
                     It.IsAny<float[]>(),
@@ -449,9 +444,9 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<VectorSearchResult>());
+            .ReturnsAsync([]);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchEntitiesAsync(
                     It.IsAny<string>(),
@@ -462,7 +457,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(new List<Entity>());
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchEntitiesVectorAsync(
                     It.IsAny<float[]>(),
@@ -472,9 +467,9 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<EntityVectorSearchResult>());
+            .ReturnsAsync([]);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchRelationshipsAsync(
                     It.IsAny<string>(),
@@ -485,7 +480,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(new List<Relationship>());
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchRelationshipsVectorAsync(
                     It.IsAny<float[]>(),
@@ -495,7 +490,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<RelationshipVectorSearchResult>());
+            .ReturnsAsync([]);
 
         var options = new UnifiedSearchOptions { EnableVectorSearch = true, EnableFtsSearch = true };
 
@@ -653,7 +648,7 @@ public class UnifiedSearchEngineTests
             },
         };
 
-        _mockMemoryRepository
+        _ = _mockMemoryRepository
             .Setup(x =>
                 x.SearchAsync(
                     It.IsAny<string>(),
@@ -665,7 +660,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(mockMemories);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchEntitiesAsync(
                     It.IsAny<string>(),
@@ -676,7 +671,7 @@ public class UnifiedSearchEngineTests
             )
             .ReturnsAsync(mockEntities);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(x =>
                 x.SearchRelationshipsAsync(
                     It.IsAny<string>(),
@@ -728,7 +723,7 @@ public class UnifiedSearchEngineTests
         _output.WriteLine($"Type weights applied: {results.TotalResults} results with proper weighting");
     }
 
-    private SessionContext CreateTestSessionContext()
+    private static SessionContext CreateTestSessionContext()
     {
         return new SessionContext
         {

@@ -259,7 +259,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         {
             logger.LogInformation("Applying function filtering with configuration");
             var filter = new FunctionFilter(_filterConfig, logger);
-            allDescriptors = filter.FilterFunctions(allDescriptors).ToList();
+            allDescriptors = [.. filter.FilterFunctions(allDescriptors)];
         }
 
         // Step 3: Group functions by key for conflict resolution
@@ -376,9 +376,15 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
             };
     }
 
-    private static bool IsMcpProvider(FunctionDescriptor descriptor) => descriptor.Contract.ClassName != null; // MCP functions have class names
+    private static bool IsMcpProvider(FunctionDescriptor descriptor)
+    {
+        return descriptor.Contract.ClassName != null; // MCP functions have class names
+    }
 
-    private static bool IsNaturalProvider(FunctionDescriptor descriptor) => descriptor.Contract.ClassName == null; // Natural functions typically don't
+    private static bool IsNaturalProvider(FunctionDescriptor descriptor)
+    {
+        return descriptor.Contract.ClassName == null; // Natural functions typically don't
+    }
 
     /// <summary>
     /// Generate markdown documentation for all registered functions and providers
@@ -427,8 +433,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         }
 
         // Generate markdown documentation
-        sb.AppendLine("# Function Registry Documentation");
-        sb.AppendLine();
+        _ = sb.AppendLine("# Function Registry Documentation");
+        _ = sb.AppendLine();
 
         // Summary section
         GenerateSummarySection(sb, resolvedFunctions);
@@ -437,7 +443,7 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         GenerateProvidersSection(sb, resolvedFunctions);
 
         // Functions section
-        FunctionRegistry.GenerateFunctionsSection(sb, resolvedFunctions);
+        GenerateFunctionsSection(sb, resolvedFunctions);
 
         return sb.ToString();
     }
@@ -447,16 +453,16 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         var totalFunctions = resolvedFunctions.Count;
         var totalProviders = resolvedFunctions.Values.Select(f => f.ProviderName).Distinct().Count();
 
-        sb.AppendLine("## Summary");
-        sb.AppendLine($"- **Total Functions:** {totalFunctions}");
-        sb.AppendLine($"- **Total Providers:** {totalProviders}");
-        sb.AppendLine($"- **Conflict Resolution:** {_conflictResolution}");
-        sb.AppendLine();
+        _ = sb.AppendLine("## Summary");
+        _ = sb.AppendLine($"- **Total Functions:** {totalFunctions}");
+        _ = sb.AppendLine($"- **Total Providers:** {totalProviders}");
+        _ = sb.AppendLine($"- **Conflict Resolution:** {_conflictResolution}");
+        _ = sb.AppendLine();
     }
 
     private void GenerateProvidersSection(StringBuilder sb, Dictionary<string, FunctionDescriptor> resolvedFunctions)
     {
-        sb.AppendLine("## Providers");
+        _ = sb.AppendLine("## Providers");
 
         var providerStats = resolvedFunctions
             .Values.GroupBy(f => f.ProviderName)
@@ -472,11 +478,11 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         foreach (var provider in providerStats)
         {
             var priorityText = provider.Priority >= 0 ? $" (Priority: {provider.Priority})" : "";
-            sb.AppendLine(
+            _ = sb.AppendLine(
                 $"- **{provider.Name}**{priorityText}: {provider.Count} function{(provider.Count == 1 ? "" : "s")}"
             );
         }
-        sb.AppendLine();
+        _ = sb.AppendLine();
     }
 
     private static void GenerateFunctionsSection(
@@ -484,8 +490,8 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
         Dictionary<string, FunctionDescriptor> resolvedFunctions
     )
     {
-        sb.AppendLine("## Functions");
-        sb.AppendLine();
+        _ = sb.AppendLine("## Functions");
+        _ = sb.AppendLine();
 
         var sortedFunctions = resolvedFunctions.Values.OrderBy(f => f.ProviderName).ThenBy(f => f.DisplayName);
 
@@ -498,69 +504,69 @@ public class FunctionRegistry : IFunctionRegistryBuilder, IFunctionRegistryWithP
     private static void GenerateFunctionDocumentation(StringBuilder sb, FunctionDescriptor function)
     {
         // Function header
-        sb.AppendLine($"### {function.DisplayName}");
-        sb.AppendLine();
+        _ = sb.AppendLine($"### {function.DisplayName}");
+        _ = sb.AppendLine();
 
         if (!string.IsNullOrWhiteSpace(function.Contract.Description))
         {
-            sb.AppendLine(function.Contract.Description);
-            sb.AppendLine();
+            _ = sb.AppendLine(function.Contract.Description);
+            _ = sb.AppendLine();
         }
 
         // Function metadata
-        sb.AppendLine("Function details:");
-        sb.AppendLine($"- **Provider:** {function.ProviderName}");
-        sb.AppendLine($"- **Key:** `{function.Key}`");
+        _ = sb.AppendLine("Function details:");
+        _ = sb.AppendLine($"- **Provider:** {function.ProviderName}");
+        _ = sb.AppendLine($"- **Key:** `{function.Key}`");
 
         if (!string.IsNullOrWhiteSpace(function.Contract.Namespace))
         {
-            sb.AppendLine($"- **Namespace:** {function.Contract.Namespace}");
+            _ = sb.AppendLine($"- **Namespace:** {function.Contract.Namespace}");
         }
 
-        sb.AppendLine();
+        _ = sb.AppendLine();
 
         // Parameters section
         if (function.Contract.Parameters?.Any() == true)
         {
-            sb.AppendLine("Parameters:");
+            _ = sb.AppendLine("Parameters:");
             foreach (var param in function.Contract.Parameters)
             {
                 var paramType = FormatParameterType(param.ParameterType);
                 var requiredText = param.IsRequired ? " (required)" : " (optional)";
                 var defaultText = param.DefaultValue != null ? $", default: {param.DefaultValue}" : "";
 
-                sb.AppendLine($"- **{param.Name}** ({paramType}{requiredText}{defaultText})");
+                _ = sb.AppendLine($"- **{param.Name}** ({paramType}{requiredText}{defaultText})");
                 if (!string.IsNullOrWhiteSpace(param.Description))
                 {
-                    sb.AppendLine($"  {param.Description}");
+                    _ = sb.AppendLine($"  {param.Description}");
                 }
             }
-            sb.AppendLine();
+            _ = sb.AppendLine();
         }
         else
         {
-            sb.AppendLine("Parameters:");
-            sb.AppendLine("- *No parameters required*");
-            sb.AppendLine();
+            _ = sb.AppendLine("Parameters:");
+            _ = sb.AppendLine("- *No parameters required*");
+            _ = sb.AppendLine();
         }
 
         // Return section
         if (function.Contract.ReturnType != null || !string.IsNullOrWhiteSpace(function.Contract.ReturnDescription))
         {
-            sb.AppendLine("Returns:");
+            _ = sb.AppendLine("Returns:");
             if (function.Contract.ReturnType != null)
             {
-                sb.AppendLine($"- **Type:** `{function.Contract.ReturnType.Name}`");
+                _ = sb.AppendLine($"- **Type:** `{function.Contract.ReturnType.Name}`");
             }
             if (!string.IsNullOrWhiteSpace(function.Contract.ReturnDescription))
             {
-                sb.AppendLine($"- **Description:** {function.Contract.ReturnDescription}");
+                _ = sb.AppendLine($"- **Description:** {function.Contract.ReturnDescription}");
             }
-            sb.AppendLine();
+            _ = sb.AppendLine();
         }
 
-        sb.AppendLine("---");
-        sb.AppendLine();
+        _ = sb.AppendLine("---");
+        _ = sb.AppendLine();
     }
 
     private static string FormatParameterType(object parameterType)

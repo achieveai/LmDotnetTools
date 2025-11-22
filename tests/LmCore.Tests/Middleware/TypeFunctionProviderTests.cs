@@ -1,8 +1,5 @@
 using System.ComponentModel;
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -13,11 +10,17 @@ public class TypeFunctionProviderTests
     public class TestHandlerWithFunctionAttribute
     {
         [Function("add", "Adds two numbers")]
-        public static int Add(int a, int b) => a + b;
+        public static int Add(int a, int b)
+        {
+            return a + b;
+        }
 
         [Function("multiply")]
         [Description("Multiplies two numbers")]
-        public static int Multiply([Description("First number")] int x, [Description("Second number")] int y) => x * y;
+        public static int Multiply([Description("First number")] int x, [Description("Second number")] int y)
+        {
+            return x * y;
+        }
 
         [Function]
         public static async Task<string> AsyncMethod(string input)
@@ -27,19 +30,31 @@ public class TypeFunctionProviderTests
         }
 
         // Should not be included (no attribute)
-        public static int Subtract(int a, int b) => a - b;
+        public static int Subtract(int a, int b)
+        {
+            return a - b;
+        }
     }
 
     public class TestHandlerWithDescriptionAttribute
     {
         [Description("Concatenates two strings")]
-        public static string Concat(string a, string b) => a + b;
+        public static string Concat(string a, string b)
+        {
+            return a + b;
+        }
 
         [Description("Gets the length of a string")]
-        public static int GetLength(string text) => text?.Length ?? 0;
+        public static int GetLength(string text)
+        {
+            return text?.Length ?? 0;
+        }
 
         // Should not be included
-        public static string NoAttribute(string input) => input;
+        public static string NoAttribute(string input)
+        {
+            return input;
+        }
     }
 
     public class TestHandlerMixed
@@ -71,7 +86,10 @@ public class TypeFunctionProviderTests
         public static double Divide(double a, double b)
         {
             if (b == 0)
+            {
                 throw new ArgumentException("Cannot divide by zero");
+            }
+
             return a / b;
         }
 
@@ -95,7 +113,7 @@ public class TypeFunctionProviderTests
         var functions = provider.GetFunctions().ToList();
 
         // Assert
-        Assert.Single(functions);
+        _ = Assert.Single(functions);
         var multiplyFunc = functions.First(f => f.Contract.Name == "multiply");
         Assert.NotNull(multiplyFunc);
         Assert.Equal("Multiplies two numbers", multiplyFunc.Contract.Description);
@@ -128,7 +146,7 @@ public class TypeFunctionProviderTests
         var functions = provider.GetFunctions().ToList();
 
         // Assert
-        Assert.Single(functions); // Only static GetLength
+        _ = Assert.Single(functions); // Only static GetLength
         var getLengthFunc = functions.First();
         Assert.Equal("GetLength", getLengthFunc.Contract.Name);
         Assert.Equal("Gets the length of a string", getLengthFunc.Contract.Description);
@@ -145,7 +163,7 @@ public class TypeFunctionProviderTests
         var functions = provider.GetFunctions().ToList();
 
         // Assert
-        Assert.Single(functions); // Only instance Concat
+        _ = Assert.Single(functions); // Only instance Concat
         var concatFunc = functions.First();
         Assert.Equal("Concat", concatFunc.Contract.Name);
         Assert.Equal("Concatenates two strings", concatFunc.Contract.Description);
@@ -299,12 +317,12 @@ public class TypeFunctionProviderTests
         var registry = new FunctionRegistry();
 
         // Act
-        registry.AddFunctionsFromType(typeof(TestHandlerWithFunctionAttribute));
+        _ = registry.AddFunctionsFromType(typeof(TestHandlerWithFunctionAttribute));
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        Assert.Single(contracts);
-        Assert.Single(handlers);
+        _ = Assert.Single(contracts);
+        _ = Assert.Single(handlers);
         Assert.Contains(contracts, c => c.Name == "multiply");
     }
 
@@ -316,7 +334,7 @@ public class TypeFunctionProviderTests
         var instance = new TestHandlerWithFunctionAttribute();
 
         // Act
-        registry.AddFunctionsFromObject(instance);
+        _ = registry.AddFunctionsFromObject(instance);
         var (contracts, handlers) = registry.Build();
 
         // Assert - Only instance methods (add, AsyncMethod), not static (multiply)
@@ -335,7 +353,7 @@ public class TypeFunctionProviderTests
         var types = new[] { typeof(TestHandlerWithFunctionAttribute), typeof(TestHandlerWithDescriptionAttribute) };
 
         // Act
-        registry.AddFunctionsFromTypes(types);
+        _ = registry.AddFunctionsFromTypes(types);
         var (contracts, handlers) = registry.Build();
 
         // Assert
@@ -350,7 +368,7 @@ public class TypeFunctionProviderTests
         var registry = new FunctionRegistry();
         var instance = new TestHandlerMixed();
 
-        registry.AddFunctionsFromObject(instance);
+        _ = registry.AddFunctionsFromObject(instance);
         var middleware = registry.BuildMiddleware("TestMiddleware");
 
         // Act - verify middleware was created with functions

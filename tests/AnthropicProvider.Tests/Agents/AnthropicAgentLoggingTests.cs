@@ -1,8 +1,5 @@
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Logging;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AnthropicProvider.Tests.Agents;
 
@@ -31,18 +28,26 @@ public class AnthropicAgentLoggingTests
         public void Dispose()
         {
             if (ThrowOnDispose)
+            {
                 throw new InvalidOperationException("Test disposal error");
+            }
         }
     }
 
     private class TestLogger : ILogger<AnthropicAgent>
     {
-        public List<LogEntry> LogEntries { get; } = new();
+        public List<LogEntry> LogEntries { get; } = [];
 
         public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
+            where TState : notnull
+        {
+            return null;
+        }
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
 
         public void Log<TState>(
             LogLevel logLevel,

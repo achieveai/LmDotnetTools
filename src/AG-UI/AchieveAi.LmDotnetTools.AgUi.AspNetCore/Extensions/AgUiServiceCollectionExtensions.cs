@@ -22,32 +22,37 @@ public static class AgUiServiceCollectionExtensions
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddAgUi(
         this IServiceCollection services,
-        Action<AgUiOptions>? configureOptions = null)
+        Action<AgUiOptions>? configureOptions = null
+    )
     {
         // Configure options
         if (configureOptions != null)
         {
-            services.Configure(configureOptions);
+            _ = services.Configure(configureOptions);
         }
         else
         {
-            services.Configure<AgUiOptions>(_ => { });
+            _ = services.Configure<AgUiOptions>(_ => { });
         }
 
         // Validate options on startup
-        services.AddOptions<AgUiOptions>()
-            .Validate(options =>
-            {
-                try
+        _ = services
+            .AddOptions<AgUiOptions>()
+            .Validate(
+                options =>
                 {
-                    options.Validate();
-                    return true;
-                }
-                catch
-                {
-                    return false;
-                }
-            }, "AG-UI options validation failed");
+                    try
+                    {
+                        options.Validate();
+                        return true;
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                },
+                "AG-UI options validation failed"
+            );
 
         // Register core AG-UI Protocol services
         RegisterProtocolServices(services);
@@ -78,7 +83,8 @@ public static class AgUiServiceCollectionExtensions
         services.TryAddSingleton<IMessageConverter>(provider =>
         {
             var toolCallTracker = provider.GetRequiredService<Protocol.Tracking.IToolCallTracker>();
-            var logger = provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Protocol.Converters.MessageToAgUiConverter>>();
+            var logger =
+                provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<Protocol.Converters.MessageToAgUiConverter>>();
             return new Protocol.Converters.MessageToAgUiConverter(toolCallTracker, logger);
         });
 
@@ -100,7 +106,8 @@ public static class AgUiServiceCollectionExtensions
         // WebSocket connection manager (singleton)
         services.TryAddSingleton<IWebSocketConnectionManager>(provider =>
         {
-            var logger = provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebSocketConnectionManager>>();
+            var logger =
+                provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebSocketConnectionManager>>();
             return new WebSocketConnectionManager(logger);
         });
 
@@ -113,6 +120,8 @@ public static class AgUiServiceCollectionExtensions
     /// </summary>
     private static void RegisterPersistenceServices(IServiceCollection services)
     {
+#pragma warning disable CS8621 // Nullability of reference types in return type doesn't match the target delegate
+#pragma warning disable CS8634 // The type cannot be used as type parameter. Nullability doesn't match 'class' constraint
         // Register persistence services only if enabled
         services.TryAddSingleton(provider =>
         {
@@ -174,5 +183,7 @@ public static class AgUiServiceCollectionExtensions
             var logger = provider.GetService<Microsoft.Extensions.Logging.ILogger<DatabaseInitializer>>();
             return new DatabaseInitializer(factory, logger);
         });
+#pragma warning restore CS8634
+#pragma warning restore CS8621
     }
 }

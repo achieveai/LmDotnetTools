@@ -182,7 +182,7 @@ public record GenerateReplyOptions
         {
             var elementType = array.GetType().GetElementType();
             var clonedArray = Array.CreateInstance(elementType!, array.Length);
-            for (int i = 0; i < array.Length; i++)
+            for (var i = 0; i < array.Length; i++)
             {
                 var element = array.GetValue(i);
                 clonedArray.SetValue(CloneExtraPropertyValue(element), i);

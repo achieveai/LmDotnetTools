@@ -1,15 +1,8 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.McpMiddleware;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
-using Moq;
-using Xunit;
 using McpServerFilterConfig = AchieveAi.LmDotnetTools.McpMiddleware.McpServerFilterConfig;
 using McpToolFilterConfig = AchieveAi.LmDotnetTools.McpMiddleware.McpToolFilterConfig;
 
@@ -40,7 +33,7 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Assert
-        filter.Should().NotBeNull();
+        _ = filter.Should().NotBeNull();
     }
 
     [Fact]
@@ -51,7 +44,7 @@ public class McpMiddlewareTests
         var globalConfig = new McpToolFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "dangerous_function" },
+            GlobalBlockedFunctions = ["dangerous_function"],
         };
         var serverConfigs = new Dictionary<string, McpServerFilterConfig>();
 
@@ -62,7 +55,7 @@ public class McpMiddlewareTests
         var shouldFilter = filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function");
 
         // Assert
-        shouldFilter.Should().BeTrue();
+        _ = shouldFilter.Should().BeTrue();
     }
 
     [Fact]
@@ -83,7 +76,7 @@ public class McpMiddlewareTests
         var shouldFilter = filter.ShouldFilterTool("blockedServer", "anyFunction", "anyFunction");
 
         // Assert
-        shouldFilter.Should().BeTrue();
+        _ = shouldFilter.Should().BeTrue();
     }
 
     [Fact]
@@ -95,15 +88,15 @@ public class McpMiddlewareTests
         var config = new McpToolFilterConfig
         {
             EnableFiltering = true,
-            GlobalAllowedFunctions = new List<string> { "allowed_*" },
-            GlobalBlockedFunctions = new List<string> { "blocked_*" },
+            GlobalAllowedFunctions = ["allowed_*"],
+            GlobalBlockedFunctions = ["blocked_*"],
         };
 
         var serverConfig = new McpServerFilterConfig
         {
             Enabled = true,
             // Remove AllowedFunctions to let global allow list take effect
-            BlockedFunctions = new List<string> { "server_blocked" },
+            BlockedFunctions = ["server_blocked"],
         };
 
         var serverConfigs = new Dictionary<string, McpServerFilterConfig> { ["testServer"] = serverConfig };
@@ -112,10 +105,10 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Act & Assert - Test various scenarios
-        filter.ShouldFilterTool("testServer", "allowed_function", "allowed_function").Should().BeFalse();
-        filter.ShouldFilterTool("testServer", "blocked_function", "blocked_function").Should().BeTrue();
-        filter.ShouldFilterTool("testServer", "server_blocked", "server_blocked").Should().BeTrue();
-        filter.ShouldFilterTool("testServer", "random_function", "random_function").Should().BeTrue(); // Not in allow list
+        _ = filter.ShouldFilterTool("testServer", "allowed_function", "allowed_function").Should().BeFalse();
+        _ = filter.ShouldFilterTool("testServer", "blocked_function", "blocked_function").Should().BeTrue();
+        _ = filter.ShouldFilterTool("testServer", "server_blocked", "server_blocked").Should().BeTrue();
+        _ = filter.ShouldFilterTool("testServer", "random_function", "random_function").Should().BeTrue(); // Not in allow list
     }
 
     [Fact]
@@ -127,15 +120,15 @@ public class McpMiddlewareTests
         {
             EnableFiltering = true,
             UsePrefixOnlyForCollisions = false,
-            GlobalAllowedFunctions = new List<string> { "test" },
+            GlobalAllowedFunctions = ["test"],
         };
 #pragma warning restore CS0618
 
         // Act & Assert - Verify it's actually a FunctionFilterConfig
-        config.Should().BeAssignableTo<FunctionFilterConfig>();
-        config.EnableFiltering.Should().BeTrue();
-        config.UsePrefixOnlyForCollisions.Should().BeFalse();
-        config.GlobalAllowedFunctions.Should().ContainSingle("test");
+        _ = config.Should().BeAssignableTo<FunctionFilterConfig>();
+        _ = config.EnableFiltering.Should().BeTrue();
+        _ = config.UsePrefixOnlyForCollisions.Should().BeFalse();
+        _ = config.GlobalAllowedFunctions.Should().ContainSingle("test");
     }
 
     [Fact]
@@ -147,15 +140,15 @@ public class McpMiddlewareTests
         {
             Enabled = true,
             CustomPrefix = "mcp",
-            AllowedFunctions = new List<string> { "func1" },
+            AllowedFunctions = ["func1"],
         };
 #pragma warning restore CS0618
 
         // Act & Assert - Verify it's actually a ProviderFilterConfig
-        config.Should().BeAssignableTo<ProviderFilterConfig>();
-        config.Enabled.Should().BeTrue();
-        config.CustomPrefix.Should().Be("mcp");
-        config.AllowedFunctions.Should().ContainSingle("func1");
+        _ = config.Should().BeAssignableTo<ProviderFilterConfig>();
+        _ = config.Enabled.Should().BeTrue();
+        _ = config.CustomPrefix.Should().Be("mcp");
+        _ = config.AllowedFunctions.Should().ContainSingle("func1");
     }
 
     #endregion
@@ -171,7 +164,7 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Assert
-        detector.Should().NotBeNull();
+        _ = detector.Should().NotBeNull();
     }
 
     [Fact]
@@ -187,7 +180,7 @@ public class McpMiddlewareTests
         var result = detector.DetectAndResolveCollisions(toolsByServer, true);
 
         // Assert
-        result.Should().BeEmpty();
+        _ = result.Should().BeEmpty();
     }
 
     [Fact]
@@ -209,7 +202,7 @@ public class McpMiddlewareTests
         var result = detector.DetectAndResolveCollisions(toolsByServer, true);
 
         // Assert
-        result.Should().BeEmpty();
+        _ = result.Should().BeEmpty();
     }
 
     [Fact]
@@ -230,7 +223,7 @@ public class McpMiddlewareTests
         var result = detector.DetectAndResolveCollisions(toolsByServer, true);
 
         // Assert - The wrapper should handle empty input correctly
-        result.Should().BeEmpty();
+        _ = result.Should().BeEmpty();
     }
 
     [Fact]
@@ -250,8 +243,8 @@ public class McpMiddlewareTests
         var resultWithPrefixForAll = detector.DetectAndResolveCollisions(toolsByServer, false);
 
         // Assert
-        resultWithPrefixForCollisions.Should().BeEmpty();
-        resultWithPrefixForAll.Should().BeEmpty();
+        _ = resultWithPrefixForCollisions.Should().BeEmpty();
+        _ = resultWithPrefixForAll.Should().BeEmpty();
     }
 
     [Fact]
@@ -272,8 +265,8 @@ public class McpMiddlewareTests
         var result = detector.DetectAndResolveCollisions(emptyToolsByServer, true);
 
         // Assert - The wrapper should handle edge cases gracefully
-        result.Should().NotBeNull();
-        result.Should().BeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.Should().BeEmpty();
     }
 
     #endregion
@@ -293,22 +286,22 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Assert
-        mcpToolFilterType
+        _ = mcpToolFilterType
             .GetCustomAttributes(typeof(ObsoleteAttribute), false)
             .Should()
             .HaveCount(1, "McpToolFilter should be marked as obsolete");
 
-        mcpToolFilterConfigType
+        _ = mcpToolFilterConfigType
             .GetCustomAttributes(typeof(ObsoleteAttribute), false)
             .Should()
             .HaveCount(1, "McpToolFilterConfig should be marked as obsolete");
 
-        mcpServerFilterConfigType
+        _ = mcpServerFilterConfigType
             .GetCustomAttributes(typeof(ObsoleteAttribute), false)
             .Should()
             .HaveCount(1, "McpServerFilterConfig should be marked as obsolete");
 
-        mcpToolCollisionDetectorType
+        _ = mcpToolCollisionDetectorType
             .GetCustomAttributes(typeof(ObsoleteAttribute), false)
             .Should()
             .HaveCount(1, "McpToolCollisionDetector should be marked as obsolete");
@@ -330,8 +323,8 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Assert
-        mcpToolFilterAttr?.Message.Should().Contain("FunctionFilter");
-        mcpToolFilterConfigAttr?.Message.Should().Contain("FunctionFilterConfig");
+        _ = (mcpToolFilterAttr?.Message.Should().Contain("FunctionFilter"));
+        _ = (mcpToolFilterConfigAttr?.Message.Should().Contain("FunctionFilterConfig"));
     }
 
     #endregion
@@ -349,7 +342,7 @@ public class McpMiddlewareTests
         var mcpConfig = new McpToolFilterConfig
         {
             EnableFiltering = true,
-            GlobalBlockedFunctions = new List<string> { "dangerous_*" },
+            GlobalBlockedFunctions = ["dangerous_*"],
             ProviderConfigs = new Dictionary<string, ProviderFilterConfig>
             {
                 ["testServer"] = new McpServerFilterConfig { Enabled = true, CustomPrefix = "ts" },
@@ -361,7 +354,7 @@ public class McpMiddlewareTests
             ["testServer"] = new McpServerFilterConfig
             {
                 Enabled = true,
-                BlockedFunctions = new List<string> { "specific_blocked" },
+                BlockedFunctions = ["specific_blocked"],
             },
         };
 
@@ -369,10 +362,10 @@ public class McpMiddlewareTests
 #pragma warning restore CS0618
 
         // Act & Assert
-        filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function").Should().BeTrue();
-        filter.ShouldFilterTool("testServer", "specific_blocked", "specific_blocked").Should().BeTrue();
-        filter.ShouldFilterTool("testServer", "safe_function", "safe_function").Should().BeFalse();
-        filter.ShouldFilterTool("unknownServer", "any_function", "any_function").Should().BeFalse();
+        _ = filter.ShouldFilterTool("testServer", "dangerous_function", "dangerous_function").Should().BeTrue();
+        _ = filter.ShouldFilterTool("testServer", "specific_blocked", "specific_blocked").Should().BeTrue();
+        _ = filter.ShouldFilterTool("testServer", "safe_function", "safe_function").Should().BeFalse();
+        _ = filter.ShouldFilterTool("unknownServer", "any_function", "any_function").Should().BeFalse();
     }
 
     #endregion

@@ -1,16 +1,11 @@
-using System.Reflection;
 using System.Text.Json;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Core;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Providers.OpenAI;
-using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using MemoryServer.Models;
 using MemoryServer.Utils;
 using Microsoft.Extensions.Options;
@@ -75,9 +70,7 @@ public class LmConfigService : ILmConfigService
         if (_memoryOptions.LmConfig?.CostOptimization?.Enabled == true)
         {
             var maxCost = _memoryOptions.LmConfig.CostOptimization.MaxCostPerRequest;
-            modelsWithCapability = modelsWithCapability
-                .Where(m => (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000)
-                .ToList();
+            modelsWithCapability = [.. modelsWithCapability.Where(m => (decimal)m.GetPrimaryProvider().Pricing.PromptPerMillion <= maxCost * 1_000_000)];
         }
 
         // Select based on fallback strategy

@@ -1,5 +1,4 @@
 using MemoryServer.DocumentSegmentation.Models;
-using Microsoft.Extensions.Logging;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 

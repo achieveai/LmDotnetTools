@@ -2,8 +2,6 @@ using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
 using MemoryServer.Infrastructure;
 using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace MemoryServer.DocumentSegmentation.Utils;
 
@@ -201,7 +199,7 @@ public class DocumentSegmentationSessionIntegration
         var words = content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var targetSegmentSize = 300; // words per segment for demo
 
-        for (int i = 0; i < words.Length; i += targetSegmentSize)
+        for (var i = 0; i < words.Length; i += targetSegmentSize)
         {
             var segmentWords = words.Skip(i).Take(targetSegmentSize).ToArray();
             var segmentContent = string.Join(" ", segmentWords);
@@ -239,7 +237,7 @@ public class DocumentSegmentationSessionIntegration
         var relationships = new List<SegmentRelationship>();
 
         // Create sequential relationships between adjacent segments
-        for (int i = 0; i < segments.Count - 1; i++)
+        for (var i = 0; i < segments.Count - 1; i++)
         {
             var relationship = new SegmentRelationship
             {
@@ -288,14 +286,14 @@ public class DocumentSegmentationWorkflowResult
     public DocumentStatistics DocumentStatistics { get; set; } = new();
     public bool ShouldSegment { get; set; }
     public bool PromptsValid { get; set; }
-    public Dictionary<SegmentationStrategy, PromptTemplate> AvailablePrompts { get; set; } = new();
+    public Dictionary<SegmentationStrategy, PromptTemplate> AvailablePrompts { get; set; } = [];
     public string DomainInstructions { get; set; } = string.Empty;
-    public List<DocumentSegment> Segments { get; set; } = new();
-    public List<SegmentRelationship> Relationships { get; set; } = new();
-    public List<int> StoredSegmentIds { get; set; } = new();
+    public List<DocumentSegment> Segments { get; set; } = [];
+    public List<SegmentRelationship> Relationships { get; set; } = [];
+    public List<int> StoredSegmentIds { get; set; } = [];
     public int StoredRelationshipCount { get; set; }
     public bool VerificationSuccessful { get; set; }
     public bool IsComplete { get; set; }
-    public List<string> Warnings { get; set; } = new();
+    public List<string> Warnings { get; set; } = [];
     public string? Error { get; set; }
 }

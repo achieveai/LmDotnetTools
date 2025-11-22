@@ -49,7 +49,7 @@ public class JsonFragmentUpdateMiddlewareTests
         var result = ProcessMessagesSync(middleware, messages);
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         Assert.Same(textMessage, result[0]);
 
         System.Diagnostics.Debug.WriteLine("✓ Non-ToolsCallUpdateMessage passed through unchanged");
@@ -77,7 +77,7 @@ public class JsonFragmentUpdateMiddlewareTests
         var toolsCallUpdateMessage = new ToolsCallUpdateMessage
         {
             Role = Role.Assistant,
-            ToolCallUpdates = ImmutableList.Create(toolCallUpdate),
+            ToolCallUpdates = [toolCallUpdate],
         };
 
         var messages = new List<IMessage> { toolsCallUpdateMessage };
@@ -88,9 +88,9 @@ public class JsonFragmentUpdateMiddlewareTests
         System.Diagnostics.Debug.WriteLine($"Result count: {result.Count}");
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         var processedMessage = Assert.IsType<ToolsCallUpdateMessage>(result[0]);
-        Assert.Single(processedMessage.ToolCallUpdates);
+        _ = Assert.Single(processedMessage.ToolCallUpdates);
 
         var processedUpdate = processedMessage.ToolCallUpdates[0];
         Assert.Equal(toolCallId, processedUpdate.ToolCallId);
@@ -150,9 +150,9 @@ public class JsonFragmentUpdateMiddlewareTests
 
         var messages = new List<IMessage>
         {
-            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = ImmutableList.Create(update1) },
-            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = ImmutableList.Create(update2) },
-            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = ImmutableList.Create(update3) },
+            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = [update1] },
+            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = [update2] },
+            new ToolsCallUpdateMessage { Role = Role.Assistant, ToolCallUpdates = [update3] },
         };
 
         // Act
@@ -165,7 +165,7 @@ public class JsonFragmentUpdateMiddlewareTests
         foreach (var message in result)
         {
             var processedMessage = Assert.IsType<ToolsCallUpdateMessage>(message);
-            Assert.Single(processedMessage.ToolCallUpdates);
+            _ = Assert.Single(processedMessage.ToolCallUpdates);
 
             var processedUpdate = processedMessage.ToolCallUpdates[0];
             Assert.NotNull(processedUpdate.JsonFragmentUpdates);
@@ -199,7 +199,7 @@ public class JsonFragmentUpdateMiddlewareTests
         var toolsCallUpdateMessage = new ToolsCallUpdateMessage
         {
             Role = Role.Assistant,
-            ToolCallUpdates = ImmutableList.Create(toolCallUpdate),
+            ToolCallUpdates = [toolCallUpdate],
         };
 
         var messages = new List<IMessage> { toolsCallUpdateMessage };
@@ -208,7 +208,7 @@ public class JsonFragmentUpdateMiddlewareTests
         var result = ProcessMessagesSync(middleware, messages);
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         var processedMessage = Assert.IsType<ToolsCallUpdateMessage>(result[0]);
         var processedUpdate = processedMessage.ToolCallUpdates[0];
 
@@ -238,7 +238,7 @@ public class JsonFragmentUpdateMiddlewareTests
         var toolsCallUpdateMessage = new ToolsCallUpdateMessage
         {
             Role = Role.Assistant,
-            ToolCallUpdates = ImmutableList.Create(toolCallUpdate),
+            ToolCallUpdates = [toolCallUpdate],
         };
 
         var messages = new List<IMessage> { toolsCallUpdateMessage };
@@ -247,7 +247,7 @@ public class JsonFragmentUpdateMiddlewareTests
         var result = ProcessMessagesSync(middleware, messages);
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         var processedMessage = Assert.IsType<ToolsCallUpdateMessage>(result[0]);
         var processedUpdate = processedMessage.ToolCallUpdates[0];
 
@@ -294,7 +294,7 @@ public class JsonFragmentUpdateMiddlewareTests
         var result = ProcessMessagesSync(middleware, messages);
 
         // Assert
-        Assert.Single(result);
+        _ = Assert.Single(result);
         var processedMessage = Assert.IsType<ToolsCallUpdateMessage>(result[0]);
         Assert.Equal(2, processedMessage.ToolCallUpdates.Count);
 
@@ -330,13 +330,13 @@ public class JsonFragmentUpdateMiddlewareTests
         var toolsCallUpdateMessage = new ToolsCallUpdateMessage
         {
             Role = Role.Assistant,
-            ToolCallUpdates = ImmutableList.Create(toolCallUpdate),
+            ToolCallUpdates = [toolCallUpdate],
         };
 
         var messages = new List<IMessage> { toolsCallUpdateMessage };
 
         // Process once to create generators
-        ProcessMessagesSync(middleware, messages);
+        _ = ProcessMessagesSync(middleware, messages);
 
         // Act
         middleware.ClearGenerators();
@@ -344,7 +344,7 @@ public class JsonFragmentUpdateMiddlewareTests
         // Assert
         // Processing the same message again should work (no state corruption)
         var result = ProcessMessagesSync(middleware, messages);
-        Assert.Single(result);
+        _ = Assert.Single(result);
 
         var processedMessage = Assert.IsType<ToolsCallUpdateMessage>(result[0]);
         var processedUpdate = processedMessage.ToolCallUpdates[0];
@@ -374,13 +374,13 @@ public class JsonFragmentUpdateMiddlewareTests
         var message = new ToolsCallUpdateMessage
         {
             Role = Role.Assistant,
-            ToolCallUpdates = ImmutableList.Create(toolCallUpdate),
+            ToolCallUpdates = [toolCallUpdate],
         };
 
         var messages = new[] { message };
         var result = ProcessMessagesSync(middleware, messages);
 
-        Assert.Single(result);
+        _ = Assert.Single(result);
         var processedMessage = Assert.IsType<ToolsCallUpdateMessage>(result[0]);
         var processedToolCall = processedMessage.ToolCallUpdates[0];
 
@@ -393,7 +393,7 @@ public class JsonFragmentUpdateMiddlewareTests
             .JsonFragmentUpdates.Where(u => u.Kind == JsonFragmentKind.JsonComplete)
             .ToList();
 
-        Assert.Single(jsonCompleteUpdates);
+        _ = Assert.Single(jsonCompleteUpdates);
 
         var completeEvent = jsonCompleteUpdates.First();
         Assert.Equal("root", completeEvent.Path);

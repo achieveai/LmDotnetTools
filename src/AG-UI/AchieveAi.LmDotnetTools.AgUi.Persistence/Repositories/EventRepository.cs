@@ -23,9 +23,7 @@ public sealed class EventRepository : IEventRepository
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
-    public EventRepository(
-        IDbConnectionFactory connectionFactory,
-        ILogger<EventRepository>? logger = null)
+    public EventRepository(IDbConnectionFactory connectionFactory, ILogger<EventRepository>? logger = null)
     {
         _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         _logger = logger ?? NullLogger<EventRepository>.Instance;
@@ -37,12 +35,13 @@ public sealed class EventRepository : IEventRepository
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT Id, SessionId, EventJson, Timestamp, EventType
             FROM Events
             WHERE Id = @Id";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", id));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", id));
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
@@ -55,20 +54,19 @@ public sealed class EventRepository : IEventRepository
     }
 
     /// <inheritdoc/>
-    public async Task<IReadOnlyList<EventEntity>> GetBySessionIdAsync(
-        string sessionId,
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<EventEntity>> GetBySessionIdAsync(string sessionId, CancellationToken ct = default)
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT Id, SessionId, EventJson, Timestamp, EventType
             FROM Events
             WHERE SessionId = @SessionId
             ORDER BY Timestamp ASC";
 
-        cmd.Parameters.Add(new SqliteParameter("@SessionId", sessionId));
+        _ = cmd.Parameters.Add(new SqliteParameter("@SessionId", sessionId));
 
         var events = new List<EventEntity>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -86,31 +84,30 @@ public sealed class EventRepository : IEventRepository
     /// <inheritdoc/>
     public async Task CreateAsync(EventEntity evt, CancellationToken ct = default)
     {
-        if (evt == null)
-        {
-            throw new ArgumentNullException(nameof(evt));
-        }
+        ArgumentNullException.ThrowIfNull(evt);
 
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             INSERT INTO Events (Id, SessionId, EventJson, Timestamp, EventType)
             VALUES (@Id, @SessionId, @EventJson, @Timestamp, @EventType)";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", evt.Id));
-        cmd.Parameters.Add(new SqliteParameter("@SessionId", evt.SessionId));
-        cmd.Parameters.Add(new SqliteParameter("@EventJson", evt.EventJson));
-        cmd.Parameters.Add(new SqliteParameter("@Timestamp", evt.Timestamp));
-        cmd.Parameters.Add(new SqliteParameter("@EventType", evt.EventType));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", evt.Id));
+        _ = cmd.Parameters.Add(new SqliteParameter("@SessionId", evt.SessionId));
+        _ = cmd.Parameters.Add(new SqliteParameter("@EventJson", evt.EventJson));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Timestamp", evt.Timestamp));
+        _ = cmd.Parameters.Add(new SqliteParameter("@EventType", evt.EventType));
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        _ = await cmd.ExecuteNonQueryAsync(ct);
 
         _logger.LogTrace(
             "Created event {EventId} for session {SessionId} (type: {EventType})",
             evt.Id,
             evt.SessionId,
-            evt.EventType);
+            evt.EventType
+        );
     }
 
     /// <summary>
@@ -124,7 +121,7 @@ public sealed class EventRepository : IEventRepository
             SessionId = reader.GetString(1),
             EventJson = reader.GetString(2),
             Timestamp = reader.GetInt64(3),
-            EventType = reader.GetString(4)
+            EventType = reader.GetString(4),
         };
     }
 }

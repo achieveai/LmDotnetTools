@@ -15,7 +15,9 @@ public static class MessageExtensions
     public static string? GetText(this IMessage? message)
     {
         if (message == null)
+        {
             return null;
+        }
 
         return message switch
         {

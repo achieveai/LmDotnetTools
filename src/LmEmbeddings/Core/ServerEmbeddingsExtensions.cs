@@ -55,7 +55,7 @@ public static class ServerEmbeddingsExtensions
             // Create embedding request using the service's configured model
             var request = new EmbeddingRequest
             {
-                Inputs = textList.ToArray(),
+                Inputs = [.. textList],
                 Model = "nomic-embed-text-v1.5", // Use the configured model
                 ApiType = EmbeddingApiType.Default,
             };
@@ -67,8 +67,8 @@ public static class ServerEmbeddingsExtensions
 
             // Convert embeddings to the expected format
             var embeddings =
-                response.Embeddings?.Select(e => e.Vector?.ToList() ?? new List<float>()).ToList()
-                ?? new List<List<float>>();
+                response.Embeddings?.Select(e => e.Vector?.ToList() ?? []).ToList()
+                ?? [];
 
             // Create performance metrics
             var metrics = new RequestMetrics
@@ -160,7 +160,7 @@ public static class ServerEmbeddingsExtensions
                 Service = "ServerEmbeddings",
                 Status = overallStatus,
                 ResponseTimeMs = stopwatch.Elapsed.TotalMilliseconds,
-                Checks = checks.ToImmutableList(),
+                Checks = [.. checks],
             };
         }
         catch (Exception ex)
@@ -173,7 +173,7 @@ public static class ServerEmbeddingsExtensions
                 Status = HealthStatus.Unhealthy,
                 ResponseTimeMs = stopwatch.Elapsed.TotalMilliseconds,
                 Error = ex.Message,
-                Checks = checks.ToImmutableList(),
+                Checks = [.. checks],
             };
         }
     }
@@ -257,7 +257,9 @@ public static class ServerEmbeddingsExtensions
     {
         var valueList = values.ToList();
         if (valueList.Count == 0)
+        {
             return 0;
+        }
 
         var average = valueList.Average();
         var sumOfSquares = valueList.Sum(v => Math.Pow(v - average, 2));

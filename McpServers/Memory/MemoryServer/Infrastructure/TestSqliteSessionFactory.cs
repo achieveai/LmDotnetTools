@@ -20,8 +20,8 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
 
     private int _totalSessionsCreated;
     private int _failedSessionCreations;
-    private readonly List<double> _sessionCreationTimes = new();
-    private readonly List<double> _sessionLifetimes = new();
+    private readonly List<double> _sessionCreationTimes = [];
+    private readonly List<double> _sessionLifetimes = [];
 
     public TestSqliteSessionFactory(ILoggerFactory loggerFactory)
     {
@@ -36,7 +36,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
         _sharedConnectionString = $"Data Source={_sharedDatabasePath};Mode=ReadWriteCreate;Cache=Shared;";
 
         // Ensure test directory exists
-        Directory.CreateDirectory(_testDirectory);
+        _ = Directory.CreateDirectory(_testDirectory);
 
         _logger.LogDebug(
             "Test SQLite session factory created with shared database: {SharedDatabasePath}",
@@ -105,7 +105,9 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
     )
     {
         if (string.IsNullOrEmpty(connectionString))
+        {
             throw new ArgumentException("Connection string cannot be null or empty", nameof(connectionString));
+        }
 
         var stopwatch = Stopwatch.StartNew();
 
@@ -304,10 +306,7 @@ public class TestSqliteSession : ISqliteSession
         await EnsureConnectionAsync(cancellationToken);
 
         await ExecuteAsync(
-            async connection =>
-            {
-                await ExecuteSchemaScriptsAsync(connection, cancellationToken);
-            },
+            async connection => await ExecuteSchemaScriptsAsync(connection, cancellationToken),
             cancellationToken
         );
 
@@ -407,7 +406,7 @@ public class TestSqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        await ExecuteAsync(
+        _ = await ExecuteAsync(
             async conn =>
             {
                 await operation(conn);
@@ -422,7 +421,7 @@ public class TestSqliteSession : ISqliteSession
         CancellationToken cancellationToken = default
     )
     {
-        await ExecuteInTransactionAsync(
+        _ = await ExecuteInTransactionAsync(
             async (conn, trans) =>
             {
                 await operation(conn, trans);
@@ -458,7 +457,9 @@ public class TestSqliteSession : ISqliteSession
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
+        {
             return;
+        }
 
         _logger.LogDebug(
             "Disposing test SQLite session {SessionId} after {ElapsedMs}ms with {OperationCount} operations",
@@ -476,7 +477,7 @@ public class TestSqliteSession : ISqliteSession
                 {
                     using var cmd = _connection.CreateCommand();
                     cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
-                    await cmd.ExecuteNonQueryAsync();
+                    _ = await cmd.ExecuteNonQueryAsync();
                     _logger.LogDebug("WAL checkpoint completed for test session {SessionId}", SessionId);
                 }
                 catch (Exception ex)
@@ -516,7 +517,9 @@ public class TestSqliteSession : ISqliteSession
     private async Task EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         if (_disposed)
+        {
             throw new ObjectDisposedException(nameof(TestSqliteSession), $"Test session {SessionId} is disposed");
+        }
 
         if (_connection == null)
         {
@@ -563,7 +566,7 @@ public class TestSqliteSession : ISqliteSession
             {
                 using var cmd = connection.CreateCommand();
                 cmd.CommandText = pragma;
-                await cmd.ExecuteNonQueryAsync(cancellationToken);
+                _ = await cmd.ExecuteNonQueryAsync(cancellationToken);
             }
             catch (Exception ex)
             {
@@ -623,7 +626,7 @@ public class TestSqliteSession : ISqliteSession
         {
             using var command = connection.CreateCommand();
             command.CommandText = script;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            _ = await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
         _logger.LogDebug("Test schema scripts executed successfully for session {SessionId}", SessionId);
@@ -632,8 +635,8 @@ public class TestSqliteSession : ISqliteSession
     private static string[] GetTestSchemaScripts()
     {
         // Same schema as production but without some optimizations that aren't needed for tests
-        return new[]
-        {
+        return
+        [
             @"CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
             )",
@@ -759,7 +762,7 @@ public class TestSqliteSession : ISqliteSession
             @"CREATE INDEX IF NOT EXISTS idx_test_document_segments_parent ON document_segments(parent_document_id)",
             @"CREATE INDEX IF NOT EXISTS idx_test_document_segments_session ON document_segments(user_id, agent_id, run_id)",
             @"CREATE INDEX IF NOT EXISTS idx_test_segment_relationships_session ON segment_relationships(user_id, agent_id, run_id)",
-        };
+        ];
     }
 }
 
@@ -784,23 +787,36 @@ internal class TrackedTestSqliteSession : ISqliteSession
     public Task<T> ExecuteAsync<T>(
         Func<SqliteConnection, Task<T>> operation,
         CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteAsync(operation, cancellationToken);
+    )
+    {
+        return _innerSession.ExecuteAsync(operation, cancellationToken);
+    }
 
     public Task<T> ExecuteInTransactionAsync<T>(
         Func<SqliteConnection, SqliteTransaction, Task<T>> operation,
         CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    )
+    {
+        return _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    }
 
-    public Task ExecuteAsync(Func<SqliteConnection, Task> operation, CancellationToken cancellationToken = default) =>
-        _innerSession.ExecuteAsync(operation, cancellationToken);
+    public Task ExecuteAsync(Func<SqliteConnection, Task> operation, CancellationToken cancellationToken = default)
+    {
+        return _innerSession.ExecuteAsync(operation, cancellationToken);
+    }
 
     public Task ExecuteInTransactionAsync(
         Func<SqliteConnection, SqliteTransaction, Task> operation,
         CancellationToken cancellationToken = default
-    ) => _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    )
+    {
+        return _innerSession.ExecuteInTransactionAsync(operation, cancellationToken);
+    }
 
-    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default) =>
-        _innerSession.GetHealthAsync(cancellationToken);
+    public Task<SessionHealthStatus> GetHealthAsync(CancellationToken cancellationToken = default)
+    {
+        return _innerSession.GetHealthAsync(cancellationToken);
+    }
 
     public async ValueTask DisposeAsync()
     {

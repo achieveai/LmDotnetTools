@@ -5,7 +5,6 @@ using MemoryServer.DocumentSegmentation.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Moq.Protected;
-using Xunit;
 
 namespace MemoryServer.Tests.DocumentSegmentation.Services;
 
@@ -58,7 +57,7 @@ public class LlmFailureSimulationTests
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -68,7 +67,7 @@ public class LlmFailureSimulationTests
             .ThrowsAsync(new TaskCanceledException("Network timeout"));
 
         var resilience = CreateResilienceService(mockHandler.Object);
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
@@ -103,7 +102,7 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -161,7 +160,7 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -209,7 +208,7 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -258,7 +257,7 @@ public class LlmFailureSimulationTests
         var mockHandler = CreateMockHttpHandler();
         var callCount = 0;
 
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -303,7 +302,7 @@ public class LlmFailureSimulationTests
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -340,7 +339,7 @@ public class LlmFailureSimulationTests
     {
         // Arrange
         var mockHandler = CreateMockHttpHandler();
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -359,9 +358,9 @@ public class LlmFailureSimulationTests
         // Act - Execute enough failures to open circuit breaker
         var results = new List<ResilienceOperationResult<string>>();
 
-        for (int i = 0; i < _circuitBreakerConfig.FailureThreshold + 2; i++)
+        for (var i = 0; i < _circuitBreakerConfig.FailureThreshold + 2; i++)
         {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var stopwatch = Stopwatch.StartNew();
 
             var result = await resilience.ExecuteWithResilienceAsync<string>(
                 () => SimulateLlmCall(mockHandler.Object, $"failure-{i}"),
@@ -424,7 +423,7 @@ public class LlmFailureSimulationTests
         ConfigureMockForErrorType(mockHandler, errorType);
 
         var resilience = CreateResilienceService(mockHandler.Object);
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
 
         // Act
         var result = await resilience.ExecuteWithResilienceAsync<string>(
@@ -445,7 +444,7 @@ public class LlmFailureSimulationTests
 
     #region Helper Methods
 
-    private Mock<HttpMessageHandler> CreateMockHttpHandler()
+    private static Mock<HttpMessageHandler> CreateMockHttpHandler()
     {
         return new Mock<HttpMessageHandler>();
     }
@@ -461,7 +460,7 @@ public class LlmFailureSimulationTests
         return new ResilienceService(circuitBreaker, retryPolicy, _degradationConfig, _mockLogger.Object);
     }
 
-    private async Task<string> SimulateLlmCall(HttpMessageHandler handler, string operationId)
+    private static async Task<string> SimulateLlmCall(HttpMessageHandler handler, string operationId)
     {
         using var client = new HttpClient(handler);
         var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
@@ -475,7 +474,7 @@ public class LlmFailureSimulationTests
         return content;
     }
 
-    private async Task<string> SimulateLlmCallWithParsing(HttpMessageHandler handler, string operationId)
+    private static async Task<string> SimulateLlmCallWithParsing(HttpMessageHandler handler, string operationId)
     {
         using var client = new HttpClient(handler);
         var response = await client.GetAsync($"https://api.example.com/llm/{operationId}");
@@ -499,9 +498,9 @@ public class LlmFailureSimulationTests
         }
     }
 
-    private void ConfigureMockForErrorType(Mock<HttpMessageHandler> mockHandler, string errorType)
+    private static void ConfigureMockForErrorType(Mock<HttpMessageHandler> mockHandler, string errorType)
     {
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -569,7 +568,7 @@ public class LlmFailureSimulationTests
         // Track which scenario we're on
         var currentScenarioIndex = 0;
 
-        mockHandler
+        _ = mockHandler
             .Protected()
             .Setup<Task<HttpResponseMessage>>(
                 "SendAsync",
@@ -600,7 +599,7 @@ public class LlmFailureSimulationTests
             });
 
         // Act - Execute all scenarios
-        for (int i = 0; i < scenarios.Length; i++)
+        for (var i = 0; i < scenarios.Length; i++)
         {
             var (scenarioName, scenarioType) = scenarios[i];
             currentScenarioIndex = i; // Set the scenario index before each operation
@@ -629,7 +628,7 @@ public class LlmFailureSimulationTests
         var fallbackOps = results.Where(r => r.DegradedMode).ToList();
 
         // Debug information
-        for (int i = 0; i < results.Count; i++)
+        for (var i = 0; i < results.Count; i++)
         {
             var result = results[i];
             var scenario = scenarios[i];
@@ -664,5 +663,8 @@ public class LlmFailureSimulationTests
 public static class TestExtensions
 {
     public static Type GetExceptionType<T>()
-        where T : Exception => typeof(T);
+        where T : Exception
+    {
+        return typeof(T);
+    }
 }

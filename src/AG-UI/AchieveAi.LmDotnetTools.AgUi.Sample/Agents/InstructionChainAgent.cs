@@ -1,11 +1,8 @@
-using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils.TestMode;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
-using Microsoft.Extensions.Logging;
 
 namespace AchieveAi.LmDotnetTools.AgUi.Sample.Agents;
 
@@ -29,15 +26,12 @@ public sealed class InstructionChainAgent : IStreamingAgent
             LoggerFactory.Create(builder => builder.AddConsole()).CreateLogger<TestSseMessageHandler>()
         )
         {
-            WordsPerChunk = 5,  // 5 words per SSE chunk
-            ChunkDelayMs = 100  // 100ms delay between chunks
+            WordsPerChunk = 5, // 5 words per SSE chunk
+            ChunkDelayMs = 100, // 100ms delay between chunks
         };
 
         // Create HttpClient with test handler
-        var httpClient = new HttpClient(testHandler)
-        {
-            BaseAddress = new Uri("https://api.test.local")
-        };
+        var httpClient = new HttpClient(testHandler) { BaseAddress = new Uri("https://api.test.local") };
 
         // Create OpenClient with custom HTTP client
         var openClient = new OpenClient(
@@ -75,10 +69,7 @@ public sealed class InstructionChainAgent : IStreamingAgent
             messagesList.Add(msg);
         }
 
-        _logger.LogInformation(
-            "InstructionChainAgent completed execution for session {SessionId}",
-            sessionId
-        );
+        _logger.LogInformation("InstructionChainAgent completed execution for session {SessionId}", sessionId);
         return messagesList;
     }
 
@@ -89,10 +80,7 @@ public sealed class InstructionChainAgent : IStreamingAgent
     )
     {
         var sessionId = Guid.NewGuid().ToString();
-        _logger.LogInformation(
-            "InstructionChainAgent starting streaming execution for session {SessionId}",
-            sessionId
-        );
+        _logger.LogInformation("InstructionChainAgent starting streaming execution for session {SessionId}", sessionId);
 
         return await Task.FromResult(StreamResponseAsync(messages, sessionId, options, cancellationToken));
     }
@@ -111,10 +99,7 @@ public sealed class InstructionChainAgent : IStreamingAgent
         if (latestMessage is TextMessage textMsg)
         {
             var hasInstructionChain = textMsg.Text.Contains("<|instruction_start|>");
-            _logger.LogInformation(
-                "Message contains instruction chain: {HasChain}",
-                hasInstructionChain
-            );
+            _logger.LogInformation("Message contains instruction chain: {HasChain}", hasInstructionChain);
         }
 
         // Use OpenClientAgent to call the test API with TestSseMessageHandler
@@ -122,10 +107,7 @@ public sealed class InstructionChainAgent : IStreamingAgent
 
         await foreach (var message in streamEnumerable.ConfigureAwait(false))
         {
-            _logger.LogDebug(
-                "InstructionChainAgent produced message of type {MessageType}",
-                message.GetType().Name
-            );
+            _logger.LogDebug("InstructionChainAgent produced message of type {MessageType}", message.GetType().Name);
             yield return message;
         }
 

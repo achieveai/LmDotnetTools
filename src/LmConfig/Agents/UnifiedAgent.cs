@@ -175,7 +175,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
 
         var resolution = await ResolveProviderAsync(options, cancellationToken);
         var agent = await ResolveAgentAsync(options, cancellationToken);
-        var updatedOptions = UnifiedAgent.CreateUpdatedOptions(options, resolution);
+        var updatedOptions = CreateUpdatedOptions(options, resolution);
 
         return (messageList, resolution, agent, updatedOptions);
     }
@@ -244,8 +244,8 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
     {
         var resolution = await ResolveProviderAsync(options, cancellationToken);
         var cacheKey = isStreaming
-            ? UnifiedAgent.GetStreamingCacheKey(resolution)
-            : UnifiedAgent.GetCacheKey(resolution);
+            ? GetStreamingCacheKey(resolution)
+            : GetCacheKey(resolution);
 
         if (!_agentCache.TryGetValue(cacheKey, out var agent))
         {
@@ -450,7 +450,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
             && preferredProviders is IEnumerable<string> providers
         )
         {
-            criteria = criteria with { IncludeOnlyProviders = providers.ToList() };
+            criteria = criteria with { IncludeOnlyProviders = [.. providers] };
         }
 
         if (
@@ -458,7 +458,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
             && excludedProviders is IEnumerable<string> excluded
         )
         {
-            criteria = criteria with { ExcludeProviders = excluded.ToList() };
+            criteria = criteria with { ExcludeProviders = [.. excluded] };
         }
 
         if (
@@ -482,7 +482,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
             && reqTags is IEnumerable<string> requiredTags
         )
         {
-            criteria = criteria with { RequiredTags = requiredTags.ToList() };
+            criteria = criteria with { RequiredTags = [.. requiredTags] };
         }
 
         if (
@@ -490,7 +490,7 @@ public class UnifiedAgent : IStreamingAgent, IDisposable
             && prefTags is IEnumerable<string> preferredTags
         )
         {
-            criteria = criteria with { PreferredTags = preferredTags.ToList() };
+            criteria = criteria with { PreferredTags = [.. preferredTags] };
         }
 
         return criteria;

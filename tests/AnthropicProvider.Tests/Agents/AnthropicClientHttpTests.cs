@@ -1,8 +1,4 @@
 using System.Net;
-using System.Text.Json;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using Microsoft.Extensions.Logging;
@@ -42,17 +38,17 @@ public class AnthropicClientHttpTests
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
+            Messages =
+            [
                 new()
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
+                    Content =
+                    [
                         new AnthropicContent { Type = "text", Text = "Hello Claude" },
-                    },
+                    ],
                 },
-            },
+            ],
         };
 
         // Act
@@ -94,11 +90,11 @@ public class AnthropicClientHttpTests
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>(), // Empty messages
+            Messages = [], // Empty messages
         };
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(() => client.CreateChatCompletionsAsync(request));
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => client.CreateChatCompletionsAsync(request));
     }
 
     [Theory]
@@ -119,17 +115,17 @@ public class AnthropicClientHttpTests
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
+            Messages =
+            [
                 new()
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
+                    Content =
+                    [
                         new AnthropicContent { Type = "text", Text = "Test" },
-                    },
+                    ],
                 },
-            },
+            ],
         };
 
         // Act & Assert
@@ -140,7 +136,7 @@ public class AnthropicClientHttpTests
         }
         else
         {
-            await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.CreateChatCompletionsAsync(request));
+            _ = await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.CreateChatCompletionsAsync(request));
         }
 
         // Verify performance tracking captured the metrics
@@ -163,17 +159,17 @@ public class AnthropicClientHttpTests
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
+            Messages =
+            [
                 new()
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
+                    Content =
+                    [
                         new AnthropicContent { Type = "text", Text = "Hello" },
-                    },
+                    ],
                 },
-            },
+            ],
         };
 
         // Act
@@ -211,17 +207,17 @@ public class AnthropicClientHttpTests
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
             Stream = true,
-            Messages = new List<AnthropicMessage>
-            {
+            Messages =
+            [
                 new()
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
+                    Content =
+                    [
                         new AnthropicContent { Type = "text", Text = "Hello" },
-                    },
+                    ],
                 },
-            },
+            ],
         };
 
         // Act
@@ -257,17 +253,17 @@ public class AnthropicClientHttpTests
         {
             Model = "claude-3-sonnet-20240229",
             MaxTokens = 1000,
-            Messages = new List<AnthropicMessage>
-            {
+            Messages =
+            [
                 new()
                 {
                     Role = "user",
-                    Content = new List<AnthropicContent>
-                    {
+                    Content =
+                    [
                         new AnthropicContent { Type = "text", Text = "Complex reasoning task" },
-                    },
+                    ],
                 },
-            },
+            ],
         };
 
         // Act
@@ -297,10 +293,10 @@ public class AnthropicClientHttpTests
             Type = "message",
             Role = "assistant",
             Model = "claude-3-sonnet-20240229",
-            Content = new List<AnthropicResponseContent>
-            {
+            Content =
+            [
                 new AnthropicResponseTextContent { Type = "text", Text = "Test response from Claude" },
-            },
+            ],
             Usage = new AnthropicUsage { InputTokens = 10, OutputTokens = 5 },
         };
     }
@@ -313,10 +309,10 @@ public class AnthropicClientHttpTests
             Type = "message",
             Role = "assistant",
             Model = "claude-3-sonnet-20240229",
-            Content = new List<AnthropicResponseContent>
-            {
+            Content =
+            [
                 new AnthropicResponseTextContent { Type = "text", Text = "Test response with specific usage" },
-            },
+            ],
             Usage = new AnthropicUsage { InputTokens = inputTokens, OutputTokens = outputTokens },
         };
     }
@@ -396,7 +392,7 @@ public class AnthropicClientHttpTests
             usage = new { input_tokens = 10, output_tokens = 20 },
         };
 
-        return System.Text.Json.JsonSerializer.Serialize(response);
+        return JsonSerializer.Serialize(response);
     }
 
     /// <summary>
@@ -423,6 +419,6 @@ public class AnthropicClientHttpTests
             usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
         };
 
-        return System.Text.Json.JsonSerializer.Serialize(response);
+        return JsonSerializer.Serialize(response);
     }
 }

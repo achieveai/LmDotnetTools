@@ -1,8 +1,5 @@
-using System.Collections.Generic;
-using System.Linq;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
 
@@ -24,8 +21,8 @@ public class ReasoningMessageTests
 
         // Assert ordering and types
         Assert.Equal(2, coreMessages.Length);
-        Assert.IsType<ReasoningMessage>(coreMessages[0]);
-        Assert.IsType<TextMessage>(coreMessages[1]);
+        _ = Assert.IsType<ReasoningMessage>(coreMessages[0]);
+        _ = Assert.IsType<TextMessage>(coreMessages[1]);
 
         var reasoning = (ReasoningMessage)coreMessages[0];
         Assert.Equal("I compare 9.11 and 9.9; 9.9 has a greater tenths digit.", reasoning.Reasoning);
@@ -42,10 +39,10 @@ public class ReasoningMessageTests
         var chatMessage = new ChatMessage
         {
             Role = RoleEnum.Assistant,
-            ReasoningDetails = new List<ChatMessage.ReasoningDetail>
-            {
+            ReasoningDetails =
+            [
                 new() { Type = "reasoning.encrypted", Data = "ciphertext123" },
-            },
+            ],
             Content = ChatMessage.CreateContent("Answer without chain-of-thought"),
         };
 

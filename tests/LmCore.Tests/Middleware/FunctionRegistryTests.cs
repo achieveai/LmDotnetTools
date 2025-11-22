@@ -1,8 +1,4 @@
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using AchieveAi.LmDotnetTools.LmCore.Utils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -26,12 +22,12 @@ public class FunctionRegistryTests
     public void Build_WithSingleProvider_ReturnsProviderFunctions()
     {
         // Arrange
-        string[] stringArray = new[] { "func1", "func2" };
+        string[] stringArray = ["func1", "func2"];
         var registry = new FunctionRegistry();
         var provider = CreateTestProvider("test", stringArray);
 
         // Act
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         var (contracts, handlers) = registry.Build();
 
         // Assert
@@ -45,20 +41,20 @@ public class FunctionRegistryTests
     public async Task Build_WithExplicitFunction_OverridesProvider()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var provider = CreateTestProvider("test", stringArray);
         var explicitContract = CreateTestContract("func1");
         var explicitHandler = CreateTestHandler("explicit-result");
 
         // Act
-        registry.AddProvider(provider);
-        registry.AddFunction(explicitContract, explicitHandler);
+        _ = registry.AddProvider(provider);
+        _ = registry.AddFunction(explicitContract, explicitHandler);
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        Assert.Single(contracts);
-        Assert.Single(handlers);
+        _ = Assert.Single(contracts);
+        _ = Assert.Single(handlers);
 
         var result = await handlers["func1"]("{}");
         Assert.Equal("explicit-result", result);
@@ -68,14 +64,14 @@ public class FunctionRegistryTests
     public void Build_WithConflictingProviders_ThrowsException()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var provider1 = CreateTestProvider("provider1", stringArray);
         var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act & Assert
-        registry.AddProvider(provider1);
-        registry.AddProvider(provider2);
+        _ = registry.AddProvider(provider1);
+        _ = registry.AddProvider(provider2);
 
         var exception = Assert.Throws<InvalidOperationException>(() => registry.Build());
         Assert.Contains("func1", exception.Message);
@@ -87,20 +83,20 @@ public class FunctionRegistryTests
     public async Task Build_WithTakeFirstConflictResolution_UsesPriorityOrder()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var provider1 = CreateTestProvider("provider1", stringArray, priority: 200);
         var provider2 = CreateTestProvider("provider2", stringArray, priority: 100);
 
         // Act
-        registry.AddProvider(provider1);
-        registry.AddProvider(provider2);
-        registry.WithConflictResolution(ConflictResolution.TakeFirst);
+        _ = registry.AddProvider(provider1);
+        _ = registry.AddProvider(provider2);
+        _ = registry.WithConflictResolution(ConflictResolution.TakeFirst);
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        Assert.Single(contracts);
-        Assert.Single(handlers);
+        _ = Assert.Single(contracts);
+        _ = Assert.Single(handlers);
 
         var result = await handlers["func1"]("{}");
         Assert.Equal("provider2-result", result); // provider2 has lower priority (100 < 200)
@@ -110,20 +106,20 @@ public class FunctionRegistryTests
     public async Task Build_WithTakeLastConflictResolution_UsesLastProvider()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var provider1 = CreateTestProvider("provider1", stringArray);
         var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act
-        registry.AddProvider(provider1);
-        registry.AddProvider(provider2);
-        registry.WithConflictResolution(ConflictResolution.TakeLast);
+        _ = registry.AddProvider(provider1);
+        _ = registry.AddProvider(provider2);
+        _ = registry.WithConflictResolution(ConflictResolution.TakeLast);
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        Assert.Single(contracts);
-        Assert.Single(handlers);
+        _ = Assert.Single(contracts);
+        _ = Assert.Single(handlers);
 
         var result = await handlers["func1"]("{}");
         Assert.Equal("provider2-result", result);
@@ -134,15 +130,15 @@ public class FunctionRegistryTests
     {
         // Arrange - Note: MCP and natural functions will have different keys due to class name
         // So this test validates the preference logic when keys do conflict
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var naturalProvider = CreateTestProvider("natural", stringArray, isMcp: false);
         var mcpProvider = CreateTestProvider("mcp", stringArray, isMcp: true);
 
         // Act
-        registry.AddProvider(naturalProvider);
-        registry.AddProvider(mcpProvider);
-        registry.WithConflictResolution(ConflictResolution.PreferMcp);
+        _ = registry.AddProvider(naturalProvider);
+        _ = registry.AddProvider(mcpProvider);
+        _ = registry.WithConflictResolution(ConflictResolution.PreferMcp);
         var (contracts, handlers) = registry.Build();
 
         // Assert - Since keys are different, both functions should be present
@@ -169,9 +165,9 @@ public class FunctionRegistryTests
         var mcpProvider = new TestFunctionProviderForConflict("mcp", "func1", true);
 
         // Act
-        registry.AddProvider(naturalProvider);
-        registry.AddProvider(mcpProvider);
-        registry.WithConflictResolution(ConflictResolution.PreferMcp);
+        _ = registry.AddProvider(naturalProvider);
+        _ = registry.AddProvider(mcpProvider);
+        _ = registry.WithConflictResolution(ConflictResolution.PreferMcp);
         var (contracts, handlers) = registry.Build();
 
         // Assert - No conflict, so both functions present
@@ -191,21 +187,21 @@ public class FunctionRegistryTests
     public async Task Build_WithCustomConflictHandler_UsesCustomLogic()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var provider1 = CreateTestProvider("provider1", stringArray);
         var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act
-        registry.AddProvider(provider1);
-        registry.AddProvider(provider2);
-        registry.WithConflictHandler((key, candidates) => candidates.First(c => c.ProviderName == "provider1"));
+        _ = registry.AddProvider(provider1);
+        _ = registry.AddProvider(provider2);
+        _ = registry.WithConflictHandler((key, candidates) => candidates.First(c => c.ProviderName == "provider1"));
 
         var (contracts, handlers) = registry.Build();
 
         // Assert
-        Assert.Single(contracts);
-        Assert.Single(handlers);
+        _ = Assert.Single(contracts);
+        _ = Assert.Single(handlers);
 
         var result = await handlers["func1"]("{}");
         Assert.Equal("provider1-result", result);
@@ -215,12 +211,12 @@ public class FunctionRegistryTests
     public void BuildMiddleware_CreatesWorkingMiddleware()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var provider = CreateTestProvider("test", stringArray);
 
         // Act
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         var middleware = registry.BuildMiddleware("TestMiddleware");
 
         // Assert
@@ -249,12 +245,12 @@ public class FunctionRegistryTests
     public void GetMarkdownDocumentation_WithSingleProvider_ReturnsFormattedMarkdown()
     {
         // Arrange
-        string[] stringArray = new[] { "func1", "func2" };
+        string[] stringArray = ["func1", "func2"];
         var registry = new FunctionRegistry();
         var provider = CreateTestProvider("TestProvider", stringArray, priority: 100);
 
         // Act
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         var markdown = registry.GetMarkdownDocumentation();
 
         // Assert
@@ -281,7 +277,7 @@ public class FunctionRegistryTests
         var explicitHandler = CreateTestHandler("explicit-result");
 
         // Act
-        registry.AddFunction(explicitContract, explicitHandler, "ExplicitProvider");
+        _ = registry.AddFunction(explicitContract, explicitHandler, "ExplicitProvider");
         var markdown = registry.GetMarkdownDocumentation();
 
         // Assert
@@ -296,12 +292,12 @@ public class FunctionRegistryTests
     public void GetMarkdownDocumentation_WithMcpFunction_ShowsCorrectKeyFormat()
     {
         // Arrange
-        string[] stringArray = new[] { "mcpFunc" };
+        string[] stringArray = ["mcpFunc"];
         var registry = new FunctionRegistry();
         var provider = CreateTestProvider("McpProvider", stringArray, isMcp: true);
 
         // Act
-        registry.AddProvider(provider);
+        _ = registry.AddProvider(provider);
         var markdown = registry.GetMarkdownDocumentation();
 
         // Assert
@@ -314,15 +310,15 @@ public class FunctionRegistryTests
     public void GetMarkdownDocumentation_WithConflictResolution_ShowsResolutionStrategy()
     {
         // Arrange
-        string[] stringArray = new[] { "func1" };
+        string[] stringArray = ["func1"];
         var registry = new FunctionRegistry();
         var provider1 = CreateTestProvider("provider1", stringArray);
         var provider2 = CreateTestProvider("provider2", stringArray);
 
         // Act
-        registry.AddProvider(provider1);
-        registry.AddProvider(provider2);
-        registry.WithConflictResolution(ConflictResolution.TakeFirst);
+        _ = registry.AddProvider(provider1);
+        _ = registry.AddProvider(provider2);
+        _ = registry.WithConflictResolution(ConflictResolution.TakeFirst);
         var markdown = registry.GetMarkdownDocumentation();
 
         // Assert
@@ -339,7 +335,7 @@ public class FunctionRegistryTests
         var handler = CreateTestHandler("result");
 
         // Act
-        registry.AddFunction(contract, handler, "TestProvider");
+        _ = registry.AddFunction(contract, handler, "TestProvider");
         var markdown = registry.GetMarkdownDocumentation();
 
         // Assert
@@ -359,7 +355,7 @@ public class FunctionRegistryTests
         var handler = CreateTestHandler("result");
 
         // Act
-        registry.AddFunction(contract, handler, "TestProvider");
+        _ = registry.AddFunction(contract, handler, "TestProvider");
         var markdown = registry.GetMarkdownDocumentation();
 
         // Assert
@@ -377,7 +373,7 @@ public class FunctionRegistryTests
         var handler = CreateTestHandler("result");
 
         // Act
-        registry.AddFunction(contract, handler, "TestProvider");
+        _ = registry.AddFunction(contract, handler, "TestProvider");
         var markdown = registry.GetMarkdownDocumentation();
 
         // Assert

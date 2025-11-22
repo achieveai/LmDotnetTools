@@ -1,5 +1,4 @@
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.Models;
 
 namespace MemoryServer.DocumentSegmentation.Services;
 

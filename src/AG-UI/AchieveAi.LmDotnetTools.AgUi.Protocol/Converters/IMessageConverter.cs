@@ -16,7 +16,12 @@ public interface IMessageConverter
     /// <param name="threadId">Optional thread ID for conversation continuity</param>
     /// <param name="runId">Optional run ID for this specific execution</param>
     /// <returns>Enumerable of AG-UI events</returns>
-    IEnumerable<AgUiEventBase> ConvertToAgUiEvents(IMessage message, string sessionId, string? threadId = null, string? runId = null);
+    IEnumerable<AgUiEventBase> ConvertToAgUiEvents(
+        IMessage message,
+        string sessionId,
+        string? threadId = null,
+        string? runId = null
+    );
 
     IEnumerable<AgUiEventBase> Flush(string sessionId, string? threadId = null, string? runId = null);
 }

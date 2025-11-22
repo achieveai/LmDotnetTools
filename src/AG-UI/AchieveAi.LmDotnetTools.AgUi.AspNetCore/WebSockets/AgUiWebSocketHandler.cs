@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Services;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects;
-using AchieveAi.LmDotnetTools.AgUi.DataObjects.DTOs;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Events;
 using AchieveAi.LmDotnetTools.AgUi.DataObjects.Serialization;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
@@ -28,7 +27,8 @@ public sealed class AgUiWebSocketHandler
         IWebSocketConnectionManager connectionManager,
         IEventPublisher eventPublisher,
         ILogger<AgUiWebSocketHandler> logger,
-        ICopilotKitSessionMapper? sessionMapper = null)
+        ICopilotKitSessionMapper? sessionMapper = null
+    )
     {
         _connectionManager = connectionManager;
         _eventPublisher = eventPublisher;
@@ -43,6 +43,8 @@ public sealed class AgUiWebSocketHandler
     /// <param name="cancellationToken">Cancellation token</param>
     public async Task HandleWebSocketAsync(HttpContext context, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(context, nameof(context));
+
         if (!context.WebSockets.IsWebSocketRequest)
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -62,8 +64,12 @@ public sealed class AgUiWebSocketHandler
             // Generate session ID (or retrieve from query parameters if provided)
             var sessionIdFromQuery = context.Request.Query["sessionId"].FirstOrDefault();
             sessionId = sessionIdFromQuery ?? Guid.NewGuid().ToString();
-            _logger.LogInformation("[DEBUG] WebSocket session ID from query: {QuerySessionId}, Final session ID: {SessionId}, Generated new: {Generated}",
-                sessionIdFromQuery ?? "NULL", sessionId, sessionIdFromQuery == null);
+            _logger.LogInformation(
+                "[DEBUG] WebSocket session ID from query: {QuerySessionId}, Final session ID: {SessionId}, Generated new: {Generated}",
+                sessionIdFromQuery ?? "NULL",
+                sessionId,
+                sessionIdFromQuery == null
+            );
 
             // Register the connection
             _connectionManager.AddConnection(sessionId, webSocket);
@@ -79,10 +85,15 @@ public sealed class AgUiWebSocketHandler
             var messageReceivingTask = ReceiveMessagesFromClientAsync(webSocket, sessionId, cancellationToken);
 
             // Wait for either task to complete
-            await Task.WhenAny(eventStreamingTask, messageReceivingTask);
+            _ = await Task.WhenAny(eventStreamingTask, messageReceivingTask);
 
             // Clean shutdown
-            await CloseWebSocketAsync(webSocket, WebSocketCloseStatus.NormalClosure, "Session ended", cancellationToken);
+            await CloseWebSocketAsync(
+                webSocket,
+                WebSocketCloseStatus.NormalClosure,
+                "Session ended",
+                cancellationToken
+            );
         }
         catch (WebSocketException ex)
         {
@@ -98,7 +109,12 @@ public sealed class AgUiWebSocketHandler
 
             if (webSocket != null && webSocket.State == WebSocketState.Open)
             {
-                await CloseWebSocketAsync(webSocket, WebSocketCloseStatus.InternalServerError, "Server error", cancellationToken);
+                await CloseWebSocketAsync(
+                    webSocket,
+                    WebSocketCloseStatus.InternalServerError,
+                    "Server error",
+                    cancellationToken
+                );
             }
         }
         finally
@@ -106,7 +122,7 @@ public sealed class AgUiWebSocketHandler
             // Clean up connection
             if (sessionId != null)
             {
-                _connectionManager.RemoveConnection(sessionId);
+                _ = _connectionManager.RemoveConnection(sessionId);
                 _eventPublisher.Unsubscribe(sessionId);
             }
 
@@ -117,13 +133,13 @@ public sealed class AgUiWebSocketHandler
     /// <summary>
     /// Sends the session-started event to the client
     /// </summary>
-    private async Task SendSessionStartedEventAsync(WebSocket webSocket, string sessionId, CancellationToken cancellationToken)
+    private async Task SendSessionStartedEventAsync(
+        WebSocket webSocket,
+        string sessionId,
+        CancellationToken cancellationToken
+    )
     {
-        var sessionStartedEvent = new SessionStartedEvent
-        {
-            SessionId = sessionId,
-            StartedAt = DateTime.UtcNow
-        };
+        var sessionStartedEvent = new SessionStartedEvent { SessionId = sessionId, StartedAt = DateTime.UtcNow };
 
         await SendEventAsync(webSocket, sessionStartedEvent, cancellationToken);
     }
@@ -131,7 +147,11 @@ public sealed class AgUiWebSocketHandler
     /// <summary>
     /// Streams AG-UI events to the WebSocket client
     /// </summary>
-    private async Task StreamEventsToClientAsync(WebSocket webSocket, string sessionId, CancellationToken cancellationToken)
+    private async Task StreamEventsToClientAsync(
+        WebSocket webSocket,
+        string sessionId,
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -160,7 +180,11 @@ public sealed class AgUiWebSocketHandler
     /// <summary>
     /// Receives messages from the WebSocket client
     /// </summary>
-    private async Task ReceiveMessagesFromClientAsync(WebSocket webSocket, string sessionId, CancellationToken cancellationToken)
+    private async Task ReceiveMessagesFromClientAsync(
+        WebSocket webSocket,
+        string sessionId,
+        CancellationToken cancellationToken
+    )
     {
         var buffer = ArrayPool<byte>.Shared.Rent(4096);
         try
@@ -183,10 +207,9 @@ public sealed class AgUiWebSocketHandler
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
                         var messageChunk = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                        messageBuilder.Append(messageChunk);
+                        _ = messageBuilder.Append(messageChunk);
                     }
-                }
-                while (!result.EndOfMessage);
+                } while (!result.EndOfMessage);
 
                 if (messageBuilder.Length > 0)
                 {
@@ -217,7 +240,12 @@ public sealed class AgUiWebSocketHandler
     /// <summary>
     /// Processes a message received from the client
     /// </summary>
-    private async Task ProcessClientMessageAsync(WebSocket webSocket, string sessionId, string message, CancellationToken cancellationToken)
+    private async Task ProcessClientMessageAsync(
+        WebSocket webSocket,
+        string sessionId,
+        string message,
+        CancellationToken cancellationToken
+    )
     {
         try
         {
@@ -237,7 +265,7 @@ public sealed class AgUiWebSocketHandler
                 SessionId = sessionId,
                 ErrorCode = "INVALID_JSON",
                 Message = "Invalid JSON format",
-                Recoverable = true
+                Recoverable = true,
             };
 
             await SendEventAsync(webSocket, errorEvent, cancellationToken);
@@ -251,7 +279,7 @@ public sealed class AgUiWebSocketHandler
                 SessionId = sessionId,
                 ErrorCode = "PROCESSING_ERROR",
                 Message = "Failed to process message",
-                Recoverable = false
+                Recoverable = false,
             };
 
             await SendEventAsync(webSocket, errorEvent, cancellationToken);
@@ -280,7 +308,7 @@ public sealed class AgUiWebSocketHandler
         return evt with
         {
             ThreadId = threadInfo.Value.ThreadId,
-            RunId = threadInfo.Value.RunId
+            RunId = threadInfo.Value.RunId,
         };
     }
 
@@ -308,21 +336,32 @@ public sealed class AgUiWebSocketHandler
                 new ArraySegment<byte>(bytes),
                 WebSocketMessageType.Text,
                 endOfMessage: true,
-                cancellationToken);
+                cancellationToken
+            );
 
-            _logger.LogDebug("Sent event {EventType} for session {SessionId} (ThreadId: {ThreadId}, RunId: {RunId})",
-                enrichedEvent.Type, enrichedEvent.SessionId, enrichedEvent.ThreadId, enrichedEvent.RunId);
+            _logger.LogDebug(
+                "Sent event {EventType} for session {SessionId} (ThreadId: {ThreadId}, RunId: {RunId})",
+                enrichedEvent.Type,
+                enrichedEvent.SessionId,
+                enrichedEvent.ThreadId,
+                enrichedEvent.RunId
+            );
         }
         finally
         {
-            _sendSemaphore.Release();
+            _ = _sendSemaphore.Release();
         }
     }
 
     /// <summary>
     /// Closes the WebSocket connection gracefully
     /// </summary>
-    private async Task CloseWebSocketAsync(WebSocket webSocket, WebSocketCloseStatus status, string description, CancellationToken cancellationToken)
+    private async Task CloseWebSocketAsync(
+        WebSocket webSocket,
+        WebSocketCloseStatus status,
+        string description,
+        CancellationToken cancellationToken
+    )
     {
         if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
         {

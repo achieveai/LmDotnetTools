@@ -7,9 +7,9 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
 {
     public class OpenRouterCompletionRequestConverterTests
     {
-        private static readonly string[] sourceArray = new[] { "trim" };
+        private static readonly string[] sourceArray = ["trim"];
 
-        private static readonly string[] sourceArray2 = new[] { "openai/gpt-4-turbo", "anthropic/claude-3-opus" };
+        private static readonly string[] sourceArray2 = ["openai/gpt-4-turbo", "anthropic/claude-3-opus"];
 
         [Fact]
         public void Create_WithOpenRouterProviders_DetectsModelCorrectly()

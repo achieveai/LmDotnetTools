@@ -6,7 +6,7 @@ public class AnthropicResponseToolUseTests
     public void Deserialize_ToolUseResponse_ShouldPopulateCorrectly()
     {
         // Arrange
-        string json =
+        var json =
             @"{
             ""id"": ""msg_014fBvULMGnEoN6yXutiqiQx"",
             ""type"": ""message"",
@@ -56,7 +56,7 @@ public class AnthropicResponseToolUseTests
         // Validate text content
         var textContent = response.Content[0];
         Assert.Equal("text", textContent.Type);
-        Assert.IsType<AnthropicResponseTextContent>(textContent);
+        _ = Assert.IsType<AnthropicResponseTextContent>(textContent);
         var typedTextContent = (AnthropicResponseTextContent)textContent;
         Assert.Equal(
             "I'll help you list the files in the root and \"code\" directories. Let me use the appropriate tool to do that.",
@@ -66,7 +66,7 @@ public class AnthropicResponseToolUseTests
         // Validate tool_use content
         var toolContent = response.Content[1];
         Assert.Equal("tool_use", toolContent.Type);
-        Assert.IsType<AnthropicResponseToolUseContent>(toolContent);
+        _ = Assert.IsType<AnthropicResponseToolUseContent>(toolContent);
         var typedToolContent = (AnthropicResponseToolUseContent)toolContent;
         Assert.Equal("toolu_01LhLY6M7AhrzHAjo9FBzXH6", typedToolContent.Id);
         Assert.Equal("python_mcp-list_directory", typedToolContent.Name);

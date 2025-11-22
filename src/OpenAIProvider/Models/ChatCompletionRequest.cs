@@ -31,7 +31,7 @@ public record ChatCompletionRequest
     )
     {
         Model = model;
-        Messages = messages.ToList();
+        Messages = [.. messages];
         Temperature = temperature;
         MaxTokens = maxTokens;
 
@@ -112,7 +112,7 @@ public record ChatCompletionRequest
     )
     {
         // Translate with reasoning merge logic
-        messages = messages
+        messages = [.. messages
             .Select(m =>
                 m switch
                 {
@@ -120,16 +120,15 @@ public record ChatCompletionRequest
                         ? new CompositeMessage
                         {
                             Role = cm.Role,
-                            Messages = cm.Messages.Where(mm => mm is not UsageMessage).ToImmutableList(),
+                            Messages = [.. cm.Messages.Where(mm => mm is not UsageMessage)],
                         }
                         : m,
-                    UsageMessage _ => null, // skip usage messages
+                    UsageMessage => null, // skip usage messages
                     _ => m,
                 }
             )
             .Where(m => m is not null)
-            .Select(m => m!)
-            .ToList();
+            .Select(m => m!)];
 
         var chatMessages = MergeReasoningIntoAssistant(messages).ToList();
         return options != null
@@ -181,7 +180,7 @@ public record ChatCompletionRequest
                         {
                             Role = ChatMessage.ToRoleEnum(compositeMsg.Role),
                             Content = new Union<string, Union<TextContent, ImageContent>[]>(
-                                compositeMsg
+                                [.. compositeMsg
                                     .Messages.Where(m => m is not ReasoningMessage)
                                     .Select(m =>
                                         m switch
@@ -194,8 +193,7 @@ public record ChatCompletionRequest
                                             ),
                                             _ => throw new ArgumentException("Unsupported message type"),
                                         }
-                                    )
-                                    .ToArray()
+                                    )]
                             ),
                         },
                     ];
@@ -266,40 +264,40 @@ public record ChatCompletionRequest
                 return FromMessage(toolCallAggregateMessage.ToolsCallMessage)
                     .Concat(FromMessage(toolCallAggregateMessage.ToolsCallResult));
             case ICanGetText textMessage:
-            {
-                var cm = new ChatMessage
                 {
-                    Role = ChatMessage.ToRoleEnum(textMessage.Role),
-                    Content =
-                        textMessage.GetText() != null
-                            ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
-                            : null,
-                };
+                    var cm = new ChatMessage
+                    {
+                        Role = ChatMessage.ToRoleEnum(textMessage.Role),
+                        Content =
+                            textMessage.GetText() != null
+                                ? new Union<string, Union<TextContent, ImageContent>[]>(textMessage.GetText()!)
+                                : null,
+                    };
 
-                if (
-                    textMessage.Metadata != null
-                    && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
-                    && rVal is string rStr
-                )
-                {
-                    cm.Reasoning = rStr;
-                }
-                else if (
-                    textMessage.Metadata != null
-                    && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
-                    && dVal is List<ChatMessage.ReasoningDetail> details
-                )
-                {
-                    cm.ReasoningDetails = details;
-                }
+                    if (
+                        textMessage.Metadata != null
+                        && textMessage.Metadata.TryGetValue("reasoning", out var rVal)
+                        && rVal is string rStr
+                    )
+                    {
+                        cm.Reasoning = rStr;
+                    }
+                    else if (
+                        textMessage.Metadata != null
+                        && textMessage.Metadata.TryGetValue("reasoning_details", out var dVal)
+                        && dVal is List<ChatMessage.ReasoningDetail> details
+                    )
+                    {
+                        cm.ReasoningDetails = details;
+                    }
 
-                return [cm];
-            }
+                    return [cm];
+                }
             case ICanGetToolCalls toolCallMessage:
                 var toolChat = new ChatMessage
                 {
                     Role = RoleEnum.Assistant,
-                    ToolCalls = toolCallMessage
+                    ToolCalls = [.. toolCallMessage
                         .GetToolCalls()!
                         .Select(tc => new FunctionContent(
                             tc.ToolCallId ?? "call_" + $"tool_{tc.FunctionName}_{tc.FunctionArgs}".GetHashCode(),
@@ -307,8 +305,7 @@ public record ChatCompletionRequest
                         )
                         {
                             Index = tc.Index,
-                        })
-                        .ToList(),
+                        })],
                 };
 
                 if (
@@ -329,7 +326,7 @@ public record ChatCompletionRequest
                 }
 
                 return [toolChat];
-            case UsageMessage _:
+            case UsageMessage:
                 return [];
             default:
                 throw new ArgumentException("Unsupported message type");
@@ -363,15 +360,15 @@ public record ChatCompletionRequest
                 case TextMessage txt:
                 case ToolsCallMessage tc:
                 case ToolsCallAggregateMessage agg:
-                {
-                    var produced = FromMessage(m).ToList();
-                    foreach (var ch in produced)
                     {
-                        MergeReasoning(reasoningBuffer, ch);
-                        yield return ch;
+                        var produced = FromMessage(m).ToList();
+                        foreach (var ch in produced)
+                        {
+                            MergeReasoning(reasoningBuffer, ch);
+                            yield return ch;
+                        }
+                        break;
                     }
-                    break;
-                }
 
                 default:
                     // For other message types (system/user/tool etc.) just forward conversion without merging
@@ -415,15 +412,15 @@ public record ChatCompletionRequest
             List<ReasoningMessage> selected;
             if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted))
             {
-                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted).ToList();
+                selected = [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted)];
             }
             else if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary))
             {
-                selected = reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary).ToList();
+                selected = [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary)];
             }
             else
             {
-                selected = reasoningBuffer.ToList();
+                selected = [.. reasoningBuffer];
             }
 
             if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)
@@ -434,7 +431,7 @@ public record ChatCompletionRequest
             else
             {
                 // Multiple or encrypted ⇒ use reasoning_details array
-                ch.ReasoningDetails = selected
+                ch.ReasoningDetails = [.. selected
                     .Select(p => new ChatMessage.ReasoningDetail
                     {
                         Type =
@@ -442,8 +439,7 @@ public record ChatCompletionRequest
                             : p.Visibility == ReasoningVisibility.Summary ? "reasoning.summary"
                             : "reasoning",
                         Data = p.Reasoning ?? string.Empty,
-                    })
-                    .ToList();
+                    })];
             }
             reasoningBuffer.Clear();
         }
@@ -452,8 +448,8 @@ public record ChatCompletionRequest
     private static Dictionary<string, object>? CreateAdditionalParameters(GenerateReplyOptions options)
     {
         // Only create JsonObject if there are actual parameters to add
-        bool hasExtraProperties = options.ExtraProperties.Count > 0;
-        bool hasProviders =
+        var hasExtraProperties = options.ExtraProperties.Count > 0;
+        var hasProviders =
             options.ExtraProperties.TryGetValue("providers", out var providers)
             && providers is IEnumerable<string> providerList
             && providerList.Any();
@@ -469,7 +465,7 @@ public record ChatCompletionRequest
         {
             parameters["provider"] = new JsonObject
             {
-                ["order"] = new JsonArray(((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p)).ToArray()),
+                ["order"] = new JsonArray([.. ((IEnumerable<string>)providers!).Select(p => JsonValue.Create(p))]),
                 ["allow_fallbacks"] = false,
             };
         }

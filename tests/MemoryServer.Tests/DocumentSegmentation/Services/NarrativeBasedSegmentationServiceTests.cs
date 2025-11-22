@@ -2,10 +2,8 @@ using FluentAssertions;
 using MemoryServer.DocumentSegmentation.Integration;
 using MemoryServer.DocumentSegmentation.Models;
 using MemoryServer.DocumentSegmentation.Services;
-using MemoryServer.Models;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.DocumentSegmentation.Tests.Services;
 
@@ -33,7 +31,7 @@ public class NarrativeBasedSegmentationServiceTests
     private void SetupDefaultMocks()
     {
         // Setup default prompt manager response
-        _mockPromptManager
+        _ = _mockPromptManager
             .Setup(x =>
                 x.GetPromptAsync(It.IsAny<SegmentationStrategy>(), It.IsAny<string>(), It.IsAny<CancellationToken>())
             )
@@ -52,7 +50,7 @@ public class NarrativeBasedSegmentationServiceTests
             );
 
         // Setup default LLM service responses
-        _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _ = _mockLlmService.Setup(x => x.TestConnectivityAsync(It.IsAny<CancellationToken>())).ReturnsAsync(true);
     }
 
     #region SegmentByNarrativeAsync Tests
@@ -72,14 +70,14 @@ public class NarrativeBasedSegmentationServiceTests
         var result = await _service.SegmentByNarrativeAsync(content, DocumentType.Generic, options);
 
         // Assert
-        result.Should().NotBeNull();
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeNull();
+        _ = result.Should().NotBeEmpty();
 
         foreach (var segment in result)
         {
-            segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
-            segment.Metadata.Should().ContainKey("segmentation_strategy");
-            segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.NarrativeBased.ToString());
+            _ = segment.Content.Length.Should().BeGreaterOrEqualTo(options.MinSegmentSize);
+            _ = segment.Metadata.Should().ContainKey("segmentation_strategy");
+            _ = segment.Metadata["segmentation_strategy"].Should().Be(SegmentationStrategy.NarrativeBased.ToString());
         }
     }
 
@@ -102,14 +100,14 @@ Finally, we implemented a solution. The fix involved updating the connection str
         var result = await _service.SegmentByNarrativeAsync(content, DocumentType.Documentation, options);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().HaveCountGreaterOrEqualTo(2); // Should detect temporal progression
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().HaveCountGreaterOrEqualTo(2); // Should detect temporal progression
 
         // Check that segments have appropriate narrative metadata
         foreach (var segment in result)
         {
-            segment.Metadata.Should().ContainKey("narrative_based");
-            segment.Metadata["narrative_based"].Should().Be(true);
+            _ = segment.Metadata.Should().ContainKey("narrative_based");
+            _ = segment.Metadata["narrative_based"].Should().Be(true);
         }
     }
 
@@ -134,14 +132,14 @@ Consequently, the performance improved significantly after the changes.
         var result = await _service.SegmentByNarrativeAsync(content, DocumentType.Documentation, options);
 
         // Assert
-        result.Should().NotBeEmpty();
+        _ = result.Should().NotBeEmpty();
 
         // Check for causal relationship metadata
         var segmentWithCausal = result.FirstOrDefault(s =>
             s.Metadata.ContainsKey("transition_type") && s.Metadata["transition_type"].ToString() == "Causal"
         );
 
-        segmentWithCausal.Should().NotBeNull();
+        _ = segmentWithCausal.Should().NotBeNull();
     }
 
     #endregion
@@ -162,13 +160,13 @@ Next, we began coding the solution. Finally, we tested and deployed the applicat
         var result = await _service.DetectNarrativeTransitionsAsync(content, DocumentType.Generic);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Temporal);
-        result
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Temporal);
+        _ = result
             .Should()
             .Contain(b => b.TriggerPhrases.Any(p => p.Equals("initially", StringComparison.OrdinalIgnoreCase)));
-        result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("then", StringComparison.OrdinalIgnoreCase)));
-        result
+        _ = result.Should().Contain(b => b.TriggerPhrases.Any(p => p.Equals("then", StringComparison.OrdinalIgnoreCase)));
+        _ = result
             .Should()
             .Contain(b => b.TriggerPhrases.Any(p => p.Equals("finally", StringComparison.OrdinalIgnoreCase)));
     }
@@ -188,12 +186,12 @@ As a result, all user sessions were lost.
         var result = await _service.DetectNarrativeTransitionsAsync(content, DocumentType.Documentation);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Causal);
-        result
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().Contain(b => b.TransitionType == NarrativeTransitionType.Causal);
+        _ = result
             .Should()
             .Contain(b => b.TriggerPhrases.Any(p => p.Equals("because", StringComparison.OrdinalIgnoreCase)));
-        result
+        _ = result
             .Should()
             .Contain(b => b.TriggerPhrases.Any(p => p.Equals("therefore", StringComparison.OrdinalIgnoreCase)));
     }
@@ -218,10 +216,10 @@ Finally, we test and deploy.
         var result = await _service.AnalyzeLogicalFlowAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result.OverallNarrativeType.Should().Be(NarrativeType.Sequential);
-        result.TemporalProgression.Should().Be(TemporalProgression.Linear);
-        result.FlowCoherence.Should().BeGreaterThan(0.5);
+        _ = result.Should().NotBeNull();
+        _ = result.OverallNarrativeType.Should().Be(NarrativeType.Sequential);
+        _ = result.TemporalProgression.Should().Be(TemporalProgression.Linear);
+        _ = result.FlowCoherence.Should().BeGreaterThan(0.5);
     }
 
     [Fact]
@@ -240,10 +238,10 @@ Therefore, we need to improve error handling.
         var result = await _service.AnalyzeLogicalFlowAsync(content);
 
         // Assert
-        result.Should().NotBeNull();
-        result.OverallNarrativeType.Should().Be(NarrativeType.Causal);
-        result.CausalChain.Should().NotBeEmpty();
-        result.LogicalConsistency.Should().BeGreaterThan(0.5);
+        _ = result.Should().NotBeNull();
+        _ = result.OverallNarrativeType.Should().Be(NarrativeType.Causal);
+        _ = result.CausalChain.Should().NotBeEmpty();
+        _ = result.LogicalConsistency.Should().BeGreaterThan(0.5);
     }
 
     #endregion
@@ -264,14 +262,14 @@ Next, we write code. Finally, we perform testing.
         var result = await _service.IdentifyTemporalSequencesAsync(content);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().Contain(s => s.TemporalMarkers.Contains("first"));
-        result.Should().Contain(s => s.TemporalMarkers.Contains("then"));
-        result.Should().Contain(s => s.TemporalMarkers.Contains("next"));
-        result.Should().Contain(s => s.TemporalMarkers.Contains("finally"));
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().Contain(s => s.TemporalMarkers.Contains("first"));
+        _ = result.Should().Contain(s => s.TemporalMarkers.Contains("then"));
+        _ = result.Should().Contain(s => s.TemporalMarkers.Contains("next"));
+        _ = result.Should().Contain(s => s.TemporalMarkers.Contains("finally"));
 
         // Sequences should be in order
-        result.Should().BeInAscendingOrder(s => s.SequentialOrder);
+        _ = result.Should().BeInAscendingOrder(s => s.SequentialOrder);
     }
 
     #endregion
@@ -293,15 +291,15 @@ As a result, users experienced timeouts.
         var result = await _service.DetectCausalRelationshipsAsync(content);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().Contain(r => r.CausalIndicator.Equals("because", StringComparison.OrdinalIgnoreCase));
-        result.Should().Contain(r => r.CausalIndicator.Equals("therefore", StringComparison.OrdinalIgnoreCase));
-        result.Should().Contain(r => r.CausalIndicator.Equals("as a result", StringComparison.OrdinalIgnoreCase));
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().Contain(r => r.CausalIndicator.Equals("because", StringComparison.OrdinalIgnoreCase));
+        _ = result.Should().Contain(r => r.CausalIndicator.Equals("therefore", StringComparison.OrdinalIgnoreCase));
+        _ = result.Should().Contain(r => r.CausalIndicator.Equals("as a result", StringComparison.OrdinalIgnoreCase));
 
         foreach (var relation in result)
         {
-            relation.Strength.Should().BeGreaterThan(0);
-            relation.Strength.Should().BeLessOrEqualTo(1);
+            _ = relation.Strength.Should().BeGreaterThan(0);
+            _ = relation.Strength.Should().BeLessOrEqualTo(1);
         }
     }
 
@@ -325,15 +323,15 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
         var result = await _service.IdentifyNarrativeArcElementsAsync(content, DocumentType.Documentation);
 
         // Assert
-        result.Should().NotBeEmpty();
-        result.Should().ContainKey(NarrativeFunction.Setup);
-        result.Should().ContainKey(NarrativeFunction.Background);
-        result.Should().ContainKey(NarrativeFunction.Development);
-        result.Should().ContainKey(NarrativeFunction.Resolution);
+        _ = result.Should().NotBeEmpty();
+        _ = result.Should().ContainKey(NarrativeFunction.Setup);
+        _ = result.Should().ContainKey(NarrativeFunction.Background);
+        _ = result.Should().ContainKey(NarrativeFunction.Development);
+        _ = result.Should().ContainKey(NarrativeFunction.Resolution);
 
         foreach (var element in result)
         {
-            element.Value.Should().NotBeEmpty();
+            _ = element.Value.Should().NotBeEmpty();
         }
     }
 
@@ -377,17 +375,17 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
         var result = await _service.ValidateNarrativeSegmentsAsync(segments, "Original content");
 
         // Assert
-        result.Should().NotBeNull();
-        result.OverallQuality.Should().BeGreaterThan(0.4);
-        result.FlowCoherence.Should().BeGreaterThan(0.3);
-        result.SegmentResults.Should().HaveCount(2);
+        _ = result.Should().NotBeNull();
+        _ = result.OverallQuality.Should().BeGreaterThan(0.4);
+        _ = result.FlowCoherence.Should().BeGreaterThan(0.3);
+        _ = result.SegmentResults.Should().HaveCount(2);
     }
 
     #endregion
 
     #region Helper Methods
 
-    private string CreateNarrativeDocument()
+    private static string CreateNarrativeDocument()
     {
         return @"
 Introduction: This document describes our journey to solve a critical performance issue.

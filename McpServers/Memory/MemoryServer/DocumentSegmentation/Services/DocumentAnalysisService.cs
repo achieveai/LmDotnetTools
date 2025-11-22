@@ -1,7 +1,5 @@
 using System.Text.RegularExpressions;
 using MemoryServer.DocumentSegmentation.Models;
-using MemoryServer.DocumentSegmentation.Services;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.DocumentSegmentation.Services;
@@ -26,10 +24,10 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
     private static readonly Regex LinkPattern = MyRegex7();
     private static readonly Regex MethodologyPattern = MyRegex8();
     private static readonly Regex ConversationPattern = MyRegex9();
-    private static readonly char[] separator = new[] { ' ', '\t', '\n', '\r' };
-    private static readonly string[] separatorArray = new[] { "\n\n", "\r\n\r\n" };
-    private static readonly char[] separatorArray0 = new[] { '.', '!', '?' };
-    private static readonly char[] separatorArray1 = new[] { ' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?' };
+    private static readonly char[] separator = [' ', '\t', '\n', '\r'];
+    private static readonly string[] separatorArray = ["\n\n", "\r\n\r\n"];
+    private static readonly char[] separatorArray0 = ['.', '!', '?'];
+    private static readonly char[] separatorArray1 = [' ', '\t', '\n', '\r', '.', ',', ';', ':', '!', '?'];
 
     public DocumentAnalysisService(
         ILogger<DocumentAnalysisService> logger,
@@ -448,7 +446,16 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
                 scores[SegmentationStrategy.NarrativeBased] = 0.3;
                 scores[SegmentationStrategy.Hybrid] = 0.9;
                 break;
-
+            case DocumentType.Generic:
+                break;
+            case DocumentType.Article:
+                break;
+            case DocumentType.Transcript:
+                break;
+            case DocumentType.Report:
+                break;
+            case DocumentType.Documentation:
+                break;
             default:
                 scores[SegmentationStrategy.TopicBased] = 0.7;
                 scores[SegmentationStrategy.StructureBased] = 0.6;
@@ -606,9 +613,14 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
 
         // Content variety indicators
         if (features.HasConversationalPatterns)
+        {
             score += 0.1;
+        }
+
         if (features.HasNarrativeFlow)
+        {
             score += 0.2;
+        }
 
         return Math.Min(score, 1.0);
     }
@@ -639,12 +651,11 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
         DocumentComplexityAnalysis complexity
     )
     {
-        var reasons = new List<string>();
-
-        // Document type reasoning
-        reasons.Add(
+        var reasons = new List<string>
+        {
+            // Document type reasoning
             $"Document identified as {typeDetection.DocumentType} with {typeDetection.Confidence:P0} confidence"
-        );
+        };
 
         // Strategy-specific reasoning
         switch (strategy)
@@ -652,33 +663,53 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
             case SegmentationStrategy.TopicBased:
                 reasons.Add("Topic-based segmentation recommended for content with diverse themes");
                 if (complexity.SemanticComplexity > 0.6)
+                {
                     reasons.Add("High semantic complexity indicates topic diversity");
+                }
+
                 break;
 
             case SegmentationStrategy.StructureBased:
                 reasons.Add("Structure-based segmentation recommended due to formal document organization");
                 if (complexity.StructuralComplexity > 0.6)
+                {
                     reasons.Add($"High structural complexity detected (headings: {complexity.Features.HeadingCount})");
+                }
+
                 break;
 
             case SegmentationStrategy.NarrativeBased:
                 reasons.Add("Narrative-based segmentation recommended for sequential content");
                 if (complexity.Features.HasNarrativeFlow)
+                {
                     reasons.Add("Narrative flow patterns detected");
+                }
+
                 break;
 
             case SegmentationStrategy.Hybrid:
                 reasons.Add("Hybrid approach recommended for complex content requiring multiple strategies");
                 if (complexity.ComplexityScore > 0.7)
+                {
                     reasons.Add("High overall complexity justifies multi-strategy approach");
+                }
+
+                break;
+            case SegmentationStrategy.Custom:
+                break;
+            default:
                 break;
         }
 
         // Complexity reasoning
         if (complexity.ComplexityScore > 0.8)
+        {
             reasons.Add("Very high document complexity requires sophisticated segmentation");
+        }
         else if (complexity.ComplexityScore < 0.3)
+        {
             reasons.Add("Low document complexity allows for simpler segmentation approach");
+        }
 
         return string.Join(". ", reasons) + ".";
     }
@@ -711,13 +742,19 @@ public partial class DocumentAnalysisService : IDocumentAnalysisService
 
         // Feature-specific recommendations
         if (features.HasFormalStructure)
+        {
             recommendations.Add("Leverage structural elements for segmentation");
+        }
 
         if (features.HasNarrativeFlow)
+        {
             recommendations.Add("Preserve narrative sequence in segments");
+        }
 
         if (features.CodeBlockCount > 0)
+        {
             recommendations.Add("Ensure code blocks remain intact within segments");
+        }
 
         return recommendations;
     }

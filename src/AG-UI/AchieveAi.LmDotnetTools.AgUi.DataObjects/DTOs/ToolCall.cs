@@ -18,7 +18,7 @@ public sealed record ToolCall
     /// Type of the tool call (always "function")
     /// </summary>
     [JsonPropertyName("type")]
-    public string Type => "function";
+    public static string Type => "function";
 
     /// <summary>
     /// Function call details

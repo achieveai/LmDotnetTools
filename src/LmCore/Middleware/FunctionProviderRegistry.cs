@@ -60,7 +60,7 @@ public class FunctionProviderRegistry : IFunctionProviderRegistry
         }
 
         // Sort by priority
-        return allProviders.OrderBy(p => p.Priority).ToList();
+        return [.. allProviders.OrderBy(p => p.Priority)];
     }
 
     public IFunctionProvider? GetProvider(string name)

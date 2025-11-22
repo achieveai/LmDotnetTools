@@ -1,6 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 
@@ -12,9 +10,9 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils;
 /// </summary>
 public abstract class RequestCaptureBase
 {
-    private readonly List<HttpRequestMessage> _capturedRequests = new();
-    private readonly List<string> _capturedBodies = new();
-    private readonly List<object> _capturedResponses = new();
+    private readonly List<HttpRequestMessage> _capturedRequests = [];
+    private readonly List<string> _capturedBodies = [];
+    private readonly List<object> _capturedResponses = [];
 
     /// <summary>
     /// Shared JsonSerializerOptions that can handle both OpenAI and Anthropic provider types
@@ -80,7 +78,9 @@ public abstract class RequestCaptureBase
     {
         var body = LastRequestBody;
         if (string.IsNullOrEmpty(body))
+        {
             return null;
+        }
 
         try
         {
@@ -100,7 +100,9 @@ public abstract class RequestCaptureBase
     {
         var response = _capturedResponses.LastOrDefault();
         if (response is T typedResponse)
+        {
             return typedResponse;
+        }
 
         if (response is string jsonResponse)
         {
@@ -132,7 +134,9 @@ public abstract class RequestCaptureBase
             else if (response is IEnumerable<T> typedResponses)
             {
                 foreach (var item in typedResponses)
+                {
                     yield return item;
+                }
             }
             else if (response is string jsonResponse)
             {
@@ -147,7 +151,9 @@ public abstract class RequestCaptureBase
                 }
 
                 if (deserialized != null)
+                {
                     yield return deserialized;
+                }
             }
         }
     }

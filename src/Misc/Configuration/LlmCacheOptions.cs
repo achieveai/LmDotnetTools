@@ -70,7 +70,7 @@ public record LlmCacheOptions
             try
             {
                 // Try to get the full path to validate the directory path
-                Path.GetFullPath(CacheDirectory);
+                _ = Path.GetFullPath(CacheDirectory);
             }
             catch (Exception ex)
             {

@@ -99,7 +99,7 @@ public class FunctionFilter
             // Priority 2: Check provider-specific allowed list
             if (providerConfig.AllowedFunctions != null && providerConfig.AllowedFunctions.Count > 0)
             {
-                bool isAllowed = providerConfig.AllowedFunctions.Any(pattern => MatchesPattern(originalName, pattern));
+                var isAllowed = providerConfig.AllowedFunctions.Any(pattern => MatchesPattern(originalName, pattern));
 
                 if (!isAllowed)
                 {
@@ -143,7 +143,7 @@ public class FunctionFilter
             // Check against both registered name and provider-prefixed pattern
             var providerPrefixedPattern = $"{providerName}__{originalName}";
 
-            bool isAllowed = _globalConfig.GlobalAllowedFunctions.Any(pattern =>
+            var isAllowed = _globalConfig.GlobalAllowedFunctions.Any(pattern =>
                 MatchesPattern(registeredName, pattern)
                 || MatchesPattern(providerPrefixedPattern, pattern)
                 || MatchesPattern(originalName, pattern)

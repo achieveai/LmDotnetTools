@@ -25,5 +25,5 @@ public enum RunStatus
     /// Run was cancelled by user or system
     /// Serialized as: "cancelled"
     /// </summary>
-    Cancelled
+    Cancelled,
 }

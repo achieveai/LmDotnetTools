@@ -1,17 +1,9 @@
-using System;
-using System.Collections.Generic;
 using System.Net;
-using System.Net.Http;
-using System.Text.Json;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Performance;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
-using dotenv.net;
 using Microsoft.Extensions.Logging;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
@@ -23,8 +15,8 @@ public class OpenClientHttpTests
 {
     private readonly ILogger<OpenClient> _logger;
     private readonly IPerformanceTracker _performanceTracker;
-    private static readonly string[] fallbackKeys = new[] { "OPENAI_API_KEY" };
-    private static readonly string[] fallbackKeysArray = new[] { "OPENAI_API_URL" };
+    private static readonly string[] fallbackKeys = ["OPENAI_API_KEY"];
+    private static readonly string[] fallbackKeysArray = ["OPENAI_API_URL"];
 
     public OpenClientHttpTests()
     {
@@ -119,7 +111,7 @@ public class OpenClientHttpTests
         }
         else
         {
-            await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.CreateChatCompletionsAsync(request));
+            _ = await Assert.ThrowsAnyAsync<HttpRequestException>(() => client.CreateChatCompletionsAsync(request));
         }
 
         // Verify performance tracking captured the metrics

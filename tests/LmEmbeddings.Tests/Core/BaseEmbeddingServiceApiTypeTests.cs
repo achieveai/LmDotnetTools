@@ -324,7 +324,7 @@ public class BaseEmbeddingServiceApiTypeTests
 
         public override int EmbeddingSize => 1536;
 
-        private static readonly string[] result = new[] { "test-model" };
+        private static readonly string[] result = ["test-model"];
 
         public override async Task<EmbeddingResponse> GenerateEmbeddingsAsync(
             EmbeddingRequest request,
@@ -348,18 +348,19 @@ public class BaseEmbeddingServiceApiTypeTests
                     var embeddingResponse = JsonSerializer.Deserialize<TestEmbeddingResponse>(responseJson);
 
                     if (embeddingResponse?.Embeddings == null)
+                    {
                         throw new InvalidOperationException("Invalid response from API");
+                    }
 
                     return new EmbeddingResponse
                     {
-                        Embeddings = embeddingResponse
+                        Embeddings = [.. embeddingResponse
                             .Embeddings.Select(e => new EmbeddingItem
                             {
                                 Vector = e.Vector,
                                 Index = e.Index,
                                 Text = e.Text,
-                            })
-                            .ToArray(),
+                            })],
                         Model = embeddingResponse.Model,
                         Usage =
                             embeddingResponse.Usage != null
@@ -640,16 +641,16 @@ public class BaseEmbeddingServiceApiTypeTests
             },
         };
 
-    private static readonly string[] item = new[] { "Hello world" };
-    private static readonly string[] itemArray = new[] { "Hello", "World" };
-    private static readonly string[] itemArray0 = new[] { "Hello world" };
-    private static readonly string[] itemArray1 = new[] { "Hello", "World" };
-    private static readonly string[] itemArray2 = new[] { "test" };
-    private static readonly string[] itemArray3 = new[] { "test" };
-    private static readonly string[] itemArray4 = new[] { "test" };
-    private static readonly string[] itemArray5 = new[] { "test" };
-    private static readonly string[] itemArray6 = new[] { "test1", "test2" };
-    private static readonly string[] itemArray7 = new[] { "input", "model", "custom_param", "another_param" };
-    private static readonly string[] itemArray8 = new[] { "test" };
-    private static readonly string[] itemArray9 = new[] { "input", "model", "jina_specific" };
+    private static readonly string[] item = ["Hello world"];
+    private static readonly string[] itemArray = ["Hello", "World"];
+    private static readonly string[] itemArray0 = ["Hello world"];
+    private static readonly string[] itemArray1 = ["Hello", "World"];
+    private static readonly string[] itemArray2 = ["test"];
+    private static readonly string[] itemArray3 = ["test"];
+    private static readonly string[] itemArray4 = ["test"];
+    private static readonly string[] itemArray5 = ["test"];
+    private static readonly string[] itemArray6 = ["test1", "test2"];
+    private static readonly string[] itemArray7 = ["input", "model", "custom_param", "another_param"];
+    private static readonly string[] itemArray8 = ["test"];
+    private static readonly string[] itemArray9 = ["input", "model", "jina_specific"];
 }

@@ -133,7 +133,7 @@ public sealed class PerformanceLogger : IDisposable
 
             var message = $"Performance metrics: {string.Join(", ", messageBuilder)}";
 
-            _logger.Log(_logLevel, _eventId, message, values.ToArray());
+            _logger.Log(_logLevel, _eventId, message, [.. values]);
         }
 
         _disposed = true;

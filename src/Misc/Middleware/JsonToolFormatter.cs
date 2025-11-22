@@ -31,7 +31,7 @@ public class JsonToolFormatter
     )
     {
         // Initialize tracking for this tool if needed
-        if (!_indentLevels.TryGetValue(toolCallName, out int indentLevel))
+        if (!_indentLevels.TryGetValue(toolCallName, out var indentLevel))
         {
             indentLevel = 0;
             _indentLevels[toolCallName] = indentLevel;
@@ -48,7 +48,7 @@ public class JsonToolFormatter
             if (ShouldIndent(update.Kind))
             {
                 // Special case for EndObject and EndArray - they need one less indent level
-                int indentAmount =
+                var indentAmount =
                     update.Kind == JsonFragmentKind.EndObject || update.Kind == JsonFragmentKind.EndArray
                         ? Math.Max(0, (indentLevel - 1) * 2)
                         : (indentLevel * 2);
@@ -94,7 +94,7 @@ public class JsonToolFormatter
                     }
 
                     yield return (StringColor, update.TextValue ?? string.Empty);
-                    processedStrings.Add(update.Path);
+                    _ = processedStrings.Add(update.Path);
                     break;
 
                 case JsonFragmentKind.PartialString:
@@ -105,7 +105,7 @@ public class JsonToolFormatter
                     }
                     // Ensure we have quotes around the string
                     yield return (StringColor, value);
-                    processedStrings.Add(update.Path);
+                    _ = processedStrings.Add(update.Path);
                     break;
 
                 case JsonFragmentKind.CompleteNumber:
@@ -125,6 +125,10 @@ public class JsonToolFormatter
                     _indentLevels[toolCallName] = 0;
                     processedStrings.Clear();
                     break;
+                case JsonFragmentKind.StartString:
+                    break;
+                default:
+                    break;
             }
 
             // Add comma after values in arrays/objects
@@ -135,8 +139,9 @@ public class JsonToolFormatter
         }
     }
 
-    private static bool ShouldIndent(JsonFragmentKind kind) =>
-        kind switch
+    private static bool ShouldIndent(JsonFragmentKind kind)
+    {
+        return kind switch
         {
             JsonFragmentKind.StartObject => false,
             JsonFragmentKind.EndObject => true,
@@ -145,9 +150,11 @@ public class JsonToolFormatter
             JsonFragmentKind.Key => true,
             _ => false,
         };
+    }
 
-    private static bool NeedsComma(JsonFragmentKind kind) =>
-        kind switch
+    private static bool NeedsComma(JsonFragmentKind kind)
+    {
+        return kind switch
         {
             JsonFragmentKind.CompleteString => true,
             JsonFragmentKind.CompleteNumber => true,
@@ -157,4 +164,5 @@ public class JsonToolFormatter
             JsonFragmentKind.EndArray => true,
             _ => false,
         };
+    }
 }

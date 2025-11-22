@@ -105,8 +105,8 @@ public class TaskManager
                 Id = string.IsNullOrEmpty(DisplayId) ? Id.ToString() : DisplayId, // Use DisplayId for hierarchical IDs
                 Title = Title,
                 Status = Status,
-                Notes = Notes.ToList(),
-                SubTasks = SubTasks.Select(st => st.ToPublic()).ToImmutableList(),
+                Notes = [.. Notes],
+                SubTasks = [.. SubTasks.Select(st => st.ToPublic())],
             };
         }
     }
@@ -314,24 +314,24 @@ Examples:
 
         if (clearExisting)
         {
-            result.AppendLine("Cleared existing tasks.");
+            _ = result.AppendLine("Cleared existing tasks.");
         }
 
         if (addedTasks.Count > 0)
         {
-            result.AppendLine($"Added {addedTasks.Count} task(s):");
+            _ = result.AppendLine($"Added {addedTasks.Count} task(s):");
             foreach (var task in addedTasks)
             {
-                result.AppendLine($"  - {task}");
+                _ = result.AppendLine($"  - {task}");
             }
         }
 
         if (errors.Count > 0)
         {
-            result.AppendLine("Errors:");
+            _ = result.AppendLine("Errors:");
             foreach (var error in errors)
             {
-                result.AppendLine($"  - {error}");
+                _ = result.AppendLine($"  - {error}");
             }
         }
 
@@ -441,7 +441,7 @@ Examples:
                     return $"Error: Subtask {subtaskId.Value} not found under task {taskId}.";
                 }
 
-                task.SubTasks.Remove(subtask);
+                _ = task.SubTasks.Remove(subtask);
             }
 
             return $"Deleted subtask {subtaskId.Value} from task {taskId}: {subtask.Title}";
@@ -454,7 +454,7 @@ Examples:
                 return $"Error: Task {taskId} not found.";
             }
 
-            _state.RootTasks.Remove(task);
+            _ = _state.RootTasks.Remove(task);
             RemoveTaskAndSubtasks(task);
             return $"Deleted task {taskId} and all subtasks: {task.Title}";
         }
@@ -480,7 +480,7 @@ Examples:
             return error!;
         }
 
-        return TaskManager.FormatTaskDetails(task, taskRef);
+        return FormatTaskDetails(task, taskRef);
     }
 
     [Function(
@@ -634,10 +634,10 @@ Examples:
         }
 
         var sb = new StringBuilder();
-        sb.AppendLine($"Notes for {taskRef}: {targetTask.Title}");
-        for (int i = 0; i < notesCopy.Count; i++)
+        _ = sb.AppendLine($"Notes for {taskRef}: {targetTask.Title}");
+        for (var i = 0; i < notesCopy.Count; i++)
         {
-            sb.AppendLine($"{i + 1}. {notesCopy[i]}");
+            _ = sb.AppendLine($"{i + 1}. {notesCopy[i]}");
         }
         return sb.ToString().TrimEnd();
     }
@@ -697,27 +697,27 @@ Examples:
         var sb = new StringBuilder();
 
         // Count tasks by status for summary
-        var allTasks = TaskManager.GetAllTasksFlat(rootTasksCopy);
+        var allTasks = GetAllTasksFlat(rootTasksCopy);
         var notStartedCount = allTasks.Count(t => t.Status == TaskStatus.NotStarted);
         var inProgressCount = allTasks.Count(t => t.Status == TaskStatus.InProgress);
         var completedCount = allTasks.Count(t => t.Status == TaskStatus.Completed);
         var totalActive = notStartedCount + inProgressCount;
 
         // Beautiful header with task summary
-        sb.AppendLine("# 📋 Task List");
+        _ = sb.AppendLine("# 📋 Task List");
         if (filterStatus == null && !mainOnly)
         {
-            sb.AppendLine();
-            sb.AppendLine(
+            _ = sb.AppendLine();
+            _ = sb.AppendLine(
                 $"**Status**: {inProgressCount} in progress | {notStartedCount} pending | {completedCount} completed"
             );
-            sb.AppendLine($"**Total**: {totalActive} active tasks");
+            _ = sb.AppendLine($"**Total**: {totalActive} active tasks");
         }
-        sb.AppendLine();
+        _ = sb.AppendLine();
 
         foreach (var task in rootTasksCopy)
         {
-            TaskManager.AppendTaskMarkdown(sb, task, level: 0, filterStatus, mainOnly);
+            AppendTaskMarkdown(sb, task, level: 0, filterStatus, mainOnly);
         }
 
         var result = sb.ToString().TrimEnd();
@@ -726,7 +726,7 @@ Examples:
 
     public IList<TaskItem> GetTasks()
     {
-        return _state.RootTasks.Select(t => t.ToPublic()).ToImmutableList();
+        return [.. _state.RootTasks.Select(t => t.ToPublic())];
     }
 
     [Function(
@@ -760,7 +760,7 @@ Examples:
 
         foreach (var task in rootTasksCopy)
         {
-            TaskManager.SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
+            SearchTaskRecursive(task, searchTerm.Trim(), task.Id.ToString(), matches);
         }
 
         if (matches.Count == 0)
@@ -769,11 +769,11 @@ Examples:
         }
 
         var sb = new StringBuilder();
-        sb.AppendLine($"Found {matches.Count} task(s) matching '{searchTerm}':");
+        _ = sb.AppendLine($"Found {matches.Count} task(s) matching '{searchTerm}':");
         foreach (var (task, path) in matches)
         {
             var statusSymbol = GetStatusSymbol(task.Status);
-            sb.AppendLine($"- {statusSymbol} {path}: {task.Title}");
+            _ = sb.AppendLine($"- {statusSymbol} {path}: {task.Title}");
         }
         return sb.ToString().TrimEnd();
     }
@@ -834,7 +834,7 @@ Examples:
         }
 
         // Navigate through subtask hierarchy
-        for (int i = 1; i < parts.Length; i++)
+        for (var i = 1; i < parts.Length; i++)
         {
             if (!int.TryParse(parts[i], out var subId))
             {
@@ -861,7 +861,7 @@ Examples:
 
     private void RemoveTaskAndSubtasks(PrivateTaskItem task)
     {
-        _state.RootTasks.Remove(task);
+        _ = _state.RootTasks.Remove(task);
     }
 
     private static List<PrivateTaskItem> GetAllTasksFlat(List<PrivateTaskItem> rootTasks)
@@ -888,8 +888,8 @@ Examples:
     private static string FormatTaskDetails(PrivateTaskItem task, string header)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"{string.Concat(header.Substring(0, 1).ToUpper(), header.AsSpan(1))}: {task.Title}");
-        sb.AppendLine($"Status: {NormalizeStatusText(task.Status)}");
+        _ = sb.AppendLine($"{string.Concat(header.Substring(0, 1).ToUpper(), header.AsSpan(1))}: {task.Title}");
+        _ = sb.AppendLine($"Status: {NormalizeStatusText(task.Status)}");
 
         List<string> notesCopy;
         lock (task.Notes)
@@ -899,10 +899,10 @@ Examples:
 
         if (notesCopy.Count > 0)
         {
-            sb.AppendLine($"Notes ({notesCopy.Count}):");
-            for (int i = 0; i < notesCopy.Count; i++)
+            _ = sb.AppendLine($"Notes ({notesCopy.Count}):");
+            for (var i = 0; i < notesCopy.Count; i++)
             {
-                sb.AppendLine($"{i + 1}. {notesCopy[i]}");
+                _ = sb.AppendLine($"{i + 1}. {notesCopy[i]}");
             }
         }
 
@@ -914,11 +914,11 @@ Examples:
 
         if (subtasksCopy.Count > 0)
         {
-            sb.AppendLine($"Subtasks ({subtasksCopy.Count}):");
+            _ = sb.AppendLine($"Subtasks ({subtasksCopy.Count}):");
             foreach (var subtask in subtasksCopy)
             {
                 var statusSymbol = GetStatusSymbol(subtask.Status);
-                sb.AppendLine($"  {statusSymbol} {subtask.Id}. {subtask.Title}");
+                _ = sb.AppendLine($"  {statusSymbol} {subtask.Id}. {subtask.Title}");
             }
         }
 
@@ -943,7 +943,7 @@ Examples:
 
         // Use hierarchical numbering with proper formatting
         var taskNumber = string.IsNullOrEmpty(task.DisplayId) ? task.Id.ToString() : task.DisplayId;
-        sb.AppendLine(
+        _ = sb.AppendLine(
             $"{indent}{statusSymbol} {taskNumber}. {task.Title}{(task.Status == TaskStatus.Removed ? " (removed)" : string.Empty)}"
         );
 
@@ -951,10 +951,10 @@ Examples:
 
         if (notesCopy.Count > 0)
         {
-            sb.AppendLine($"{indent}  Notes:");
-            for (int i = 0; i < notesCopy.Count; i++)
+            _ = sb.AppendLine($"{indent}  Notes:");
+            for (var i = 0; i < notesCopy.Count; i++)
             {
-                sb.AppendLine($"{indent}  {i + 1}. {notesCopy[i]}");
+                _ = sb.AppendLine($"{indent}  {i + 1}. {notesCopy[i]}");
             }
         }
 
@@ -968,7 +968,7 @@ Examples:
 
             foreach (var sub in subtasksCopy)
             {
-                TaskManager.AppendTaskMarkdown(sb, sub, level + 1, filterStatus, mainOnly);
+                AppendTaskMarkdown(sb, sub, level + 1, filterStatus, mainOnly);
             }
         }
     }
@@ -991,21 +991,21 @@ Examples:
             subtasksCopy = new List<PrivateTaskItem>(task.SubTasks);
         }
 
-        for (int i = 0; i < subtasksCopy.Count; i++)
+        for (var i = 0; i < subtasksCopy.Count; i++)
         {
             var subtask = subtasksCopy[i];
-            TaskManager.SearchTaskRecursive(subtask, searchTerm, $"{path}.{subtask.Id}", matches);
+            SearchTaskRecursive(subtask, searchTerm, $"{path}.{subtask.Id}", matches);
         }
     }
 
     public string JsonSerializeTasks()
     {
-        return System.Text.Json.JsonSerializer.Serialize(
+        return JsonSerializer.Serialize(
             _state,
             new System.Text.Json.JsonSerializerOptions
             {
                 WriteIndented = false,
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             }
         );
     }
@@ -1017,7 +1017,7 @@ Examples:
             new JsonSerializerOptions
             {
                 WriteIndented = false,
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             }
         );
     }
@@ -1062,8 +1062,9 @@ Examples:
         };
     }
 
-    private static string GetStatusSymbol(TaskStatus status) =>
-        status switch
+    private static string GetStatusSymbol(TaskStatus status)
+    {
+        return status switch
         {
             TaskStatus.NotStarted => "[ ]",
             TaskStatus.InProgress => "[-]",
@@ -1071,6 +1072,7 @@ Examples:
             TaskStatus.Removed => "[d]",
             _ => "[ ]",
         };
+    }
 
     private static bool TryParseStatus(string input, out TaskStatus status)
     {
@@ -1108,8 +1110,9 @@ Examples:
         }
     }
 
-    private static string NormalizeStatusText(TaskStatus status) =>
-        status switch
+    private static string NormalizeStatusText(TaskStatus status)
+    {
+        return status switch
         {
             TaskStatus.NotStarted => "not started",
             TaskStatus.InProgress => "in progress",
@@ -1117,4 +1120,5 @@ Examples:
             TaskStatus.Removed => "removed",
             _ => "not started",
         };
+    }
 }

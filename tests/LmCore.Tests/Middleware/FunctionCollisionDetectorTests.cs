@@ -1,12 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.LmCore.Configuration;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
 using Microsoft.Extensions.Logging;
-using Moq;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
@@ -16,9 +9,9 @@ namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 public class FunctionCollisionDetectorTests
 {
     private readonly Mock<ILogger> _mockLogger;
-    private static readonly string[] expected = new[] { "func1", "func2", "func3" };
-    private static readonly string[] expectedArray = new[] { "Provider1", "Provider2" };
-    private static readonly string[] expectedArray0 = new[] { "Provider2", "Provider3" };
+    private static readonly string[] expected = ["func1", "func2", "func3"];
+    private static readonly string[] expectedArray = ["Provider1", "Provider2"];
+    private static readonly string[] expectedArray0 = ["Provider2", "Provider3"];
 
     public FunctionCollisionDetectorTests()
     {
@@ -39,14 +32,14 @@ public class FunctionCollisionDetectorTests
 
     private static List<FunctionDescriptor> CreateDescriptorsWithCollisions()
     {
-        return new List<FunctionDescriptor>
-        {
+        return
+        [
             CreateTestDescriptor("getUser", "Provider1"),
             CreateTestDescriptor("getUser", "Provider2"),
             CreateTestDescriptor("listItems", "Provider1"),
             CreateTestDescriptor("createResource", "Provider2"),
             CreateTestDescriptor("createResource", "Provider3"),
-        };
+        ];
     }
 
     #endregion
@@ -342,7 +335,7 @@ public class FunctionCollisionDetectorTests
         var namingMap = detector.DetectAndResolveCollisions(functions);
 
         // Assert
-        Assert.Single(namingMap);
+        _ = Assert.Single(namingMap);
         Assert.NotNull(namingMap.Values.First());
         Assert.NotEmpty(namingMap.Values.First());
     }
@@ -377,7 +370,7 @@ public class FunctionCollisionDetectorTests
         var functions = new List<FunctionDescriptor>();
 
         // Create 100 providers with some collisions
-        for (int i = 0; i < 100; i++)
+        for (var i = 0; i < 100; i++)
         {
             functions.Add(CreateTestDescriptor("commonFunc", $"Provider{i}"));
             functions.Add(CreateTestDescriptor($"uniqueFunc{i}", $"Provider{i}"));

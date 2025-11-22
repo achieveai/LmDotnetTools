@@ -3,7 +3,6 @@ using MemoryServer.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
-using Xunit;
 
 namespace MemoryServer.Tests.Services;
 
@@ -41,7 +40,7 @@ public class ResultEnricherTests
     public async Task EnrichResultsAsync_WithNullResults_ThrowsArgumentNullException()
     {
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+        _ = await Assert.ThrowsAsync<ArgumentNullException>(() =>
             _resultEnricher.EnrichResultsAsync(null!, _sessionContext)
         );
     }
@@ -73,7 +72,7 @@ public class ResultEnricherTests
 
         // Assert
         Assert.NotNull(enrichmentResults);
-        Assert.Single(enrichmentResults.Results);
+        _ = Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed);
 
         var enrichedResult = enrichmentResults.Results[0];
@@ -108,7 +107,7 @@ public class ResultEnricherTests
             },
         };
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(r => r.GetRelationshipsForEntityAsync("John", _sessionContext, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(relationships);
 
@@ -117,7 +116,7 @@ public class ResultEnricherTests
 
         // Assert
         Assert.NotNull(enrichmentResults);
-        Assert.Single(enrichmentResults.Results);
+        _ = Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed);
 
         var enrichedResult = enrichmentResults.Results[0];
@@ -151,11 +150,11 @@ public class ResultEnricherTests
             Confidence = 0.8f,
         };
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(r => r.GetEntityByNameAsync("John", _sessionContext, It.IsAny<CancellationToken>()))
             .ReturnsAsync(johnEntity);
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(r => r.GetEntityByNameAsync("Microsoft", _sessionContext, It.IsAny<CancellationToken>()))
             .ReturnsAsync(microsoftEntity);
 
@@ -164,7 +163,7 @@ public class ResultEnricherTests
 
         // Assert
         Assert.NotNull(enrichmentResults);
-        Assert.Single(enrichmentResults.Results);
+        _ = Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed);
 
         var enrichedResult = enrichmentResults.Results[0];
@@ -205,7 +204,7 @@ public class ResultEnricherTests
             }, // Below threshold
         };
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(r => r.GetRelationshipsForEntityAsync("John", _sessionContext, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(relationships);
 
@@ -215,7 +214,7 @@ public class ResultEnricherTests
         // Assert
         Assert.NotNull(enrichmentResults);
         var enrichedResult = enrichmentResults.Results[0];
-        Assert.Single(enrichedResult.RelatedRelationships); // Only high-confidence relationship included
+        _ = Assert.Single(enrichedResult.RelatedRelationships); // Only high-confidence relationship included
         Assert.Equal("John works_at Microsoft", enrichedResult.RelatedRelationships[0].Content);
     }
 
@@ -261,7 +260,7 @@ public class ResultEnricherTests
             },
         };
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(r => r.GetRelationshipsForEntityAsync("John", _sessionContext, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(relationships);
 
@@ -271,7 +270,7 @@ public class ResultEnricherTests
         // Assert
         Assert.NotNull(enrichmentResults);
         var enrichedResult = enrichmentResults.Results[0];
-        Assert.Single(enrichedResult.RelatedRelationships); // Limited to 1 item
+        _ = Assert.Single(enrichedResult.RelatedRelationships); // Limited to 1 item
         Assert.Equal("John works_at Microsoft", enrichedResult.RelatedRelationships[0].Content); // Highest confidence
     }
 
@@ -287,7 +286,7 @@ public class ResultEnricherTests
 
         // Assert
         Assert.NotNull(enrichmentResults);
-        Assert.Single(enrichmentResults.Results);
+        _ = Assert.Single(enrichmentResults.Results);
         Assert.False(enrichmentResults.WasEnrichmentPerformed);
         Assert.Equal("Enrichment disabled or no results", enrichmentResults.FallbackReason);
 
@@ -305,7 +304,7 @@ public class ResultEnricherTests
         var entityResult = CreateEntityResult(1, "John", 0.9f);
         var results = new List<UnifiedSearchResult> { entityResult };
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(r => r.GetRelationshipsForEntityAsync("John", _sessionContext, null, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Exception("Repository error"));
 
@@ -314,7 +313,7 @@ public class ResultEnricherTests
 
         // Assert
         Assert.NotNull(enrichmentResults);
-        Assert.Single(enrichmentResults.Results);
+        _ = Assert.Single(enrichmentResults.Results);
         Assert.True(enrichmentResults.WasEnrichmentPerformed); // Still performed for other parts
 
         var enrichedResult = enrichmentResults.Results[0];
@@ -322,7 +321,7 @@ public class ResultEnricherTests
         Assert.NotNull(enrichedResult.RelevanceExplanation); // But explanation still generated
 
         // Verify error is logged in metrics
-        Assert.Single(enrichmentResults.Metrics.Errors);
+        _ = Assert.Single(enrichmentResults.Metrics.Errors);
         Assert.Contains("Entity enrichment failed for ID 1", enrichmentResults.Metrics.Errors[0]);
     }
 
@@ -363,7 +362,7 @@ public class ResultEnricherTests
             CreateEntityResult(2, "John", 0.8f),
         };
 
-        _mockGraphRepository
+        _ = _mockGraphRepository
             .Setup(r => r.GetRelationshipsForEntityAsync("John", _sessionContext, null, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<Relationship>());
 

@@ -23,7 +23,10 @@ public record UsageMessage : IMessage, ICanGetUsage
     /// Gets the usage information from this message.
     /// </summary>
     /// <returns>The usage information.</returns>
-    public Usage? GetUsage() => Usage;
+    public Usage? GetUsage()
+    {
+        return Usage;
+    }
 
     /// <summary>
     /// The role associated with this usage (typically matches the role of the last content message).

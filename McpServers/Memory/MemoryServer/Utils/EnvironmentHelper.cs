@@ -26,7 +26,7 @@ public static class EnvironmentHelper
             try
             {
                 // Find workspace root by looking for .env file or solution file
-                string? envPath = FindEnvFile();
+                var envPath = FindEnvFile();
 
                 if (envPath != null)
                 {

@@ -137,7 +137,7 @@ public class BasicConversationTests
         Assert.NotNull(responses);
         var response = responses.FirstOrDefault();
         Assert.NotNull(response);
-        Assert.IsType<TextMessage>(response);
+        _ = Assert.IsType<TextMessage>(response);
         var textResponse = (TextMessage)response;
         Assert.Equal(Role.Assistant, textResponse.Role);
         Assert.Contains("Claude", textResponse.Text);

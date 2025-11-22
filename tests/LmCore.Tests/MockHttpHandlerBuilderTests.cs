@@ -1,14 +1,7 @@
-using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Nodes;
-using System.Text.Json.Serialization;
-using System.Text.Unicode;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using Xunit;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Tests;
 
@@ -100,9 +93,9 @@ public class MockHttpHandlerBuilderTests
             """{"model": "claude-3-sonnet-20240229", "messages": [{"role": "user", "content": "Hello"}]}""";
 
         // Act
-        await httpClient.PostAsync(
+        _ = await httpClient.PostAsync(
             "https://api.anthropic.com/v1/messages",
-            new StringContent(requestContent, System.Text.Encoding.UTF8, "application/json")
+            new StringContent(requestContent, Encoding.UTF8, "application/json")
         );
 
         // Assert
@@ -187,7 +180,7 @@ public class MockHttpHandlerBuilderTests
         var anthropicRequest = capture.GetAnthropicRequest();
         Assert.NotNull(anthropicRequest);
         Assert.Equal("claude-3-sonnet-20240229", anthropicRequest.Model);
-        Assert.Single(anthropicRequest.Messages);
+        _ = Assert.Single(anthropicRequest.Messages);
         var firstMessage = anthropicRequest.Messages.First();
         Assert.Equal("user", firstMessage.Role);
         Assert.Equal("Hello", firstMessage.Content);
@@ -549,7 +542,7 @@ public class MockHttpHandlerBuilderTests
 
         // Act - make multiple requests
         var responses = new List<HttpResponseMessage>();
-        for (int i = 0; i < 4; i++)
+        for (var i = 0; i < 4; i++)
         {
             var response = await httpClient.PostAsync(
                 "https://api.anthropic.com/v1/messages",

@@ -29,7 +29,7 @@ public static class MockToolCallHelper
         {
             foreach (var contract in functionContracts)
             {
-                string fullName = $"{contract.ClassName}-{contract.Name}";
+                var fullName = $"{contract.ClassName}-{contract.Name}";
                 if (callbackOverrides.TryGetValue(fullName, out var callback))
                 {
                     functionMap[fullName] = callback;

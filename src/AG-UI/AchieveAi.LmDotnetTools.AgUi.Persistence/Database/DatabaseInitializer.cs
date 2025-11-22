@@ -20,9 +20,7 @@ public sealed class DatabaseInitializer
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
-    public DatabaseInitializer(
-        IDbConnectionFactory connectionFactory,
-        ILogger<DatabaseInitializer>? logger = null)
+    public DatabaseInitializer(IDbConnectionFactory connectionFactory, ILogger<DatabaseInitializer>? logger = null)
     {
         _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         _logger = logger ?? NullLogger<DatabaseInitializer>.Instance;
@@ -50,7 +48,8 @@ public sealed class DatabaseInitializer
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE TABLE IF NOT EXISTS Sessions (
                         Id TEXT PRIMARY KEY,
                         ConversationId TEXT,
@@ -59,33 +58,36 @@ public sealed class DatabaseInitializer
                         Status TEXT NOT NULL,
                         MetadataJson TEXT
                     );";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             // Create indexes on Sessions
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE INDEX IF NOT EXISTS idx_sessions_conversation
                     ON Sessions(ConversationId);";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE INDEX IF NOT EXISTS idx_sessions_status
                     ON Sessions(Status);";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             // Create Messages table
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE TABLE IF NOT EXISTS Messages (
                         Id TEXT PRIMARY KEY,
                         SessionId TEXT NOT NULL,
@@ -94,33 +96,36 @@ public sealed class DatabaseInitializer
                         MessageType TEXT NOT NULL,
                         FOREIGN KEY (SessionId) REFERENCES Sessions(Id) ON DELETE CASCADE
                     );";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             // Create indexes on Messages
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON Messages(SessionId, Timestamp);";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE INDEX IF NOT EXISTS idx_messages_timestamp
                     ON Messages(Timestamp);";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             // Create Events table
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE TABLE IF NOT EXISTS Events (
                         Id TEXT PRIMARY KEY,
                         SessionId TEXT NOT NULL,
@@ -129,26 +134,28 @@ public sealed class DatabaseInitializer
                         EventType TEXT NOT NULL,
                         FOREIGN KEY (SessionId) REFERENCES Sessions(Id) ON DELETE CASCADE
                     );";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             // Create indexes on Events
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE INDEX IF NOT EXISTS idx_events_session
                     ON Events(SessionId, Timestamp);";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = @"
+                cmd.CommandText =
+                    @"
                     CREATE INDEX IF NOT EXISTS idx_events_timestamp
                     ON Events(Timestamp);";
-                await cmd.ExecuteNonQueryAsync(ct);
+                _ = await cmd.ExecuteNonQueryAsync(ct);
             }
 
             await transaction.CommitAsync(ct);

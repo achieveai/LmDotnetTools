@@ -48,7 +48,9 @@ public static class TestUtils
     public static string? GetText(IMessage? message)
     {
         if (message == null)
+        {
             return null;
+        }
 
         return message switch
         {

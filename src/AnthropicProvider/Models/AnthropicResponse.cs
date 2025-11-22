@@ -107,14 +107,14 @@ public record AnthropicStreamEvent
     public string Type =>
         this switch
         {
-            AnthropicMessageStartEvent _ => "message_start",
-            AnthropicContentBlockStartEvent _ => "content_block_start",
-            AnthropicContentBlockDeltaEvent _ => "content_block_delta",
-            AnthropicContentBlockStopEvent _ => "content_block_stop",
-            AnthropicMessageDeltaEvent _ => "message_delta",
-            AnthropicMessageStopEvent _ => "message_stop",
-            AnthropicPingEvent _ => "ping",
-            AnthropicErrorEvent _ => "error",
+            AnthropicMessageStartEvent => "message_start",
+            AnthropicContentBlockStartEvent => "content_block_start",
+            AnthropicContentBlockDeltaEvent => "content_block_delta",
+            AnthropicContentBlockStopEvent => "content_block_stop",
+            AnthropicMessageDeltaEvent => "message_delta",
+            AnthropicMessageStopEvent => "message_stop",
+            AnthropicPingEvent => "ping",
+            AnthropicErrorEvent => "error",
             _ => throw new InvalidOperationException("Invalid event type"),
         };
 }
@@ -273,11 +273,11 @@ public record AnthropicDelta
     public string Type =>
         this switch
         {
-            AnthropicTextDelta _ => "text_delta",
-            AnthropicInputJsonDelta _ => "input_json_delta",
-            AnthropicThinkingDelta _ => "thinking_delta",
-            AnthropicSignatureDelta _ => "signature_delta",
-            AnthropicToolCallsDelta _ => "tool_calls_delta",
+            AnthropicTextDelta => "text_delta",
+            AnthropicInputJsonDelta => "input_json_delta",
+            AnthropicThinkingDelta => "thinking_delta",
+            AnthropicSignatureDelta => "signature_delta",
+            AnthropicToolCallsDelta => "tool_calls_delta",
             _ => throw new InvalidOperationException("Invalid delta type"),
         };
 }

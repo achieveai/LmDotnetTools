@@ -225,13 +225,15 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
                 );
 
                 var response = await HttpClient.PostAsync("/v1/embeddings", content, cancellationToken);
-                response.EnsureSuccessStatusCode();
+                _ = response.EnsureSuccessStatusCode();
 
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
                 var openAIResponse = JsonSerializer.Deserialize<OpenAIEmbeddingResponse>(responseJson, _jsonOptions);
 
                 if (openAIResponse?.Data == null)
+                {
                     throw new InvalidOperationException("Invalid response from OpenAI API");
+                }
 
                 var embeddings = openAIResponse
                     .Data.Select(
@@ -397,7 +399,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
             );
         }
 
-        return jsonElement.EnumerateArray().Select(x => x.GetSingle()).ToArray();
+        return [.. jsonElement.EnumerateArray().Select(x => x.GetSingle())];
     }
 
     /// <summary>

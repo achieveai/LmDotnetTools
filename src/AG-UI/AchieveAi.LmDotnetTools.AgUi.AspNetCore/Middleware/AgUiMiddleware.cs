@@ -15,11 +15,12 @@ public sealed class AgUiMiddleware
     private readonly AgUiOptions _options;
     private readonly ILogger<AgUiMiddleware> _logger;
 
-    public AgUiMiddleware(
-        RequestDelegate next,
-        IOptions<AgUiOptions> options,
-        ILogger<AgUiMiddleware> logger)
+    public AgUiMiddleware(RequestDelegate next, IOptions<AgUiOptions> options, ILogger<AgUiMiddleware> logger)
     {
+        ArgumentNullException.ThrowIfNull(next, nameof(next));
+        ArgumentNullException.ThrowIfNull(options, nameof(options));
+        ArgumentNullException.ThrowIfNull(logger, nameof(logger));
+
         _next = next;
         _options = options.Value;
         _logger = logger;
@@ -30,6 +31,9 @@ public sealed class AgUiMiddleware
     /// </summary>
     public async Task InvokeAsync(HttpContext context, AgUiWebSocketHandler webSocketHandler)
     {
+        ArgumentNullException.ThrowIfNull(context, nameof(context));
+        ArgumentNullException.ThrowIfNull(webSocketHandler, nameof(webSocketHandler));
+
         // Check if request path matches AG-UI endpoint
         if (!context.Request.Path.StartsWithSegments(_options.WebSocketPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -83,7 +87,7 @@ public sealed class AgUiMiddleware
 
         // Check if origin matches any allowed origins
         return _options.AllowedOrigins.Any(allowed =>
-            allowed.Equals("*", StringComparison.Ordinal) ||
-            allowed.Equals(origin, StringComparison.OrdinalIgnoreCase));
+            allowed.Equals("*", StringComparison.Ordinal) || allowed.Equals(origin, StringComparison.OrdinalIgnoreCase)
+        );
     }
 }

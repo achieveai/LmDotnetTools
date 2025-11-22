@@ -58,17 +58,26 @@ public static class OpenAIJsonSerializerOptionsFactory
     /// Creates JsonSerializerOptions optimized for OpenAI API production use.
     /// Uses the standard OpenAI configuration with compact formatting.
     /// </summary>
-    public static JsonSerializerOptions CreateForProduction() => CreateForOpenAI(writeIndented: false);
+    public static JsonSerializerOptions CreateForProduction()
+    {
+        return CreateForOpenAI(writeIndented: false);
+    }
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for OpenAI testing and debugging.
     /// Uses indented formatting for better readability.
     /// </summary>
-    public static JsonSerializerOptions CreateForTesting() => CreateForOpenAI(writeIndented: true);
+    public static JsonSerializerOptions CreateForTesting()
+    {
+        return CreateForOpenAI(writeIndented: true);
+    }
 
     /// <summary>
     /// Creates JsonSerializerOptions for cross-provider scenarios.
     /// Uses case-insensitive matching for robustness across different providers.
     /// </summary>
-    public static JsonSerializerOptions CreateUniversal() => CreateForOpenAI(caseInsensitive: true);
+    public static JsonSerializerOptions CreateUniversal()
+    {
+        return CreateForOpenAI(caseInsensitive: true);
+    }
 }

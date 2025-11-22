@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Text.Json.Nodes;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Extensions;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -38,8 +37,8 @@ public class CustomFunctionProvider : IFunctionProvider
                 + "to ask the user for clarifications or to provide more information, this is "
                 + "important because you will need to continue work after the user's "
                 + "response.",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "question",
@@ -58,16 +57,16 @@ public class CustomFunctionProvider : IFunctionProvider
                         "The options to choose from. If the user doesn't choose any of the options, they can say 'Other' or 'None of the above'.",
                     IsRequired = true,
                 },
-            }.ToList(),
+            ],
         };
 
-        var askUserHandler = async (string json) =>
+        static async Task<string> askUserHandler(string json)
         {
-            var jsonObject = JsonObject.Parse(json)!;
+            var jsonObject = JsonNode.Parse(json)!;
             var question = jsonObject["question"]?.ToString() ?? "";
             var options = jsonObject["options"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
             return await Program.AskUser(question, options);
-        };
+        }
 
         yield return new FunctionDescriptor
         {
@@ -85,10 +84,10 @@ public static class Program
         // Load environment variables from .env file
         LoadEnvironmentVariables();
 
-        string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
-        string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
-        string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
-        string PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
+        var API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
+        var API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
+        var KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
+        var PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
 
         Console.WriteLine("Example Python MCP Client Demo");
 
@@ -162,7 +161,7 @@ public static class Program
 
             // Register Todo TaskManager instance functions (stateful)
             var taskManager = new TaskManager();
-            functionRegistry.AddFunctionsFromObject(taskManager, providerName: "TodoManager", priority: 50);
+            _ = functionRegistry.AddFunctionsFromObject(taskManager, providerName: "TodoManager", priority: 50);
 
             // Print comprehensive function documentation
             Console.WriteLine("=== Available Functions ===");
@@ -174,13 +173,13 @@ public static class Program
 
             // Set up services with function call support
             var services = new ServiceCollection();
-            services.AddLlmFileCacheFromEnvironment(); // Uses environment variables for cache configuration
+            _ = services.AddLlmFileCacheFromEnvironment(); // Uses environment variables for cache configuration
 
             // Add function call services
-            services.AddFunctionCallServices();
+            _ = services.AddFunctionCallServices();
 
             // Add MCP function providers (this will register available MCP tools from assemblies)
-            services.AddMcpFunctionsFromLoadedAssemblies();
+            _ = services.AddMcpFunctionsFromLoadedAssemblies();
 
             // Build service provider
             var serviceProvider = services.BuildServiceProvider();
@@ -244,7 +243,7 @@ public static class Program
 
             do
             {
-                bool contLoop = true;
+                var contLoop = true;
                 while (contLoop)
                 {
                     contLoop = false;
@@ -270,7 +269,7 @@ public static class Program
                                 FromAgent = "UniAgentLoop",
                                 GenerationId = replyMessages[0].GenerationId,
                                 Role = Role.Assistant,
-                                Messages = replyMessages.ToImmutableList(),
+                                Messages = [.. replyMessages],
                             }
                         );
                     }
@@ -303,7 +302,7 @@ public static class Program
         await Task.WhenAll(mcpClients.Select(client => client.DisposeAsync().AsTask()));
 
         Console.WriteLine("\nPress any key to exit...");
-        Console.ReadLine();
+        _ = Console.ReadLine();
     }
 
     public static async Task MainBak()
@@ -311,10 +310,10 @@ public static class Program
         // Load environment variables from .env file
         LoadEnvironmentVariables();
 
-        string API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
-        string API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
-        string KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
-        string PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
+        var API_KEY = Environment.GetEnvironmentVariable("LLM_API_KEY")!;
+        var API_URL = Environment.GetEnvironmentVariable("LLM_API_BASE_URL")!;
+        var KV_STORE_PATH = Environment.GetEnvironmentVariable("KV_STORE_PATH")!;
+        var PROMPTS_PATH = Path.Combine(GetWorkspaceRootPath(), "example", "ExamplePythonMCPClient", "prompts.yaml");
 
         Console.WriteLine("Example Python MCP Client Demo - DeepSeek R1 Reasoning");
 
@@ -404,15 +403,20 @@ public static class Program
             var dict = new Dictionary<string, object> { ["task"] = task };
 
             if (previousPlan != null)
+            {
                 dict["previous_plan"] = previousPlan;
+            }
+
             if (progress != null)
+            {
                 dict["progress"] = progress;
+            }
 
             var plannerPrompt = promptReader.GetPromptChain("UniAgentLoop").PromptMessages(dict);
 
             do
             {
-                bool contLoop = false;
+                var contLoop = false;
                 var repliesStream = await theogent.GenerateReplyStreamingAsync(plannerPrompt, options);
 
                 var replyMessages = new List<IMessage>();
@@ -435,7 +439,7 @@ public static class Program
                             FromAgent = "UniAgentLoop",
                             GenerationId = replyMessages[0].GenerationId,
                             Role = Role.Assistant,
-                            Messages = replyMessages.ToImmutableList(),
+                            Messages = [.. replyMessages],
                         }
                     );
                 }
@@ -472,7 +476,7 @@ public static class Program
         }
 
         Console.WriteLine("\nPress any key to exit...");
-        Console.ReadLine();
+        _ = Console.ReadLine();
     }
 
     public static string GetWorkspaceRootPath()
@@ -527,7 +531,7 @@ public static class Program
             case ReasoningMessage reasoningMessage:
                 // WriteToConsoleInColor($"Reasoning: {reasoningMessage.Reasoning}", ConsoleColor.DarkGreen, null);
                 break;
-            case ImageMessage _:
+            case ImageMessage:
                 WriteToConsoleInColor("Image generated", ConsoleColor.DarkGray, null);
                 break;
             case ToolsCallMessage toolsCallMessage:
@@ -561,7 +565,7 @@ public static class Program
                     );
                 break;
             default:
-                Console.WriteLine(message.ToString());
+                Console.WriteLine(message?.ToString() ?? string.Empty);
                 break;
         }
     }
@@ -598,6 +602,8 @@ public static class Program
             string[] options
     )
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(question);
+        ArgumentNullException.ThrowIfNull(options);
         Console.WriteLine(question.Trim());
         foreach (var option in options)
         {

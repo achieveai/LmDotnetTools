@@ -52,7 +52,7 @@ public class PromptReaderTests
         var promptName = "NonExistentPrompt";
 
         // Act & Assert
-        Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName));
+        _ = Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName));
     }
 
     [Fact]
@@ -63,7 +63,7 @@ public class PromptReaderTests
         var version = "v2.0";
 
         // Act & Assert
-        Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName, version));
+        _ = Assert.Throws<KeyNotFoundException>(() => _promptReader.GetPrompt(promptName, version));
     }
 
     [Fact]
@@ -96,6 +96,6 @@ public class PromptReaderTests
         var promptName = "SimplePrompt";
 
         // Act & Assert
-        Assert.Throws<InvalidOperationException>(() => _promptReader.GetPromptChain(promptName));
+        _ = Assert.Throws<InvalidOperationException>(() => _promptReader.GetPromptChain(promptName));
     }
 }

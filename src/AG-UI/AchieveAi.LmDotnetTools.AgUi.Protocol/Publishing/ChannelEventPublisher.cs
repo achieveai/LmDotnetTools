@@ -44,8 +44,11 @@ public class ChannelEventPublisher : IEventPublisher
         }
         catch (OperationCanceledException)
         {
-            _logger.LogDebug("Publishing event {EventType} to session {SessionId} was cancelled",
-                evt.Type, evt.SessionId);
+            _logger.LogDebug(
+                "Publishing event {EventType} to session {SessionId} was cancelled",
+                evt.Type,
+                evt.SessionId
+            );
             throw;
         }
     }
@@ -53,7 +56,8 @@ public class ChannelEventPublisher : IEventPublisher
     /// <inheritdoc/>
     public async IAsyncEnumerable<AgUiEventBase> SubscribeAsync(
         string sessionId,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         var channel = GetOrCreateChannel(sessionId);
         _logger.LogInformation("Subscriber connected to session {SessionId}", sessionId);
@@ -94,7 +98,7 @@ public class ChannelEventPublisher : IEventPublisher
             {
                 FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = false,
-                SingleWriter = false
+                SingleWriter = false,
             };
 
             _channel = Channel.CreateBounded<AgUiEventBase>(options);
@@ -112,7 +116,7 @@ public class ChannelEventPublisher : IEventPublisher
 
         public void Complete()
         {
-            _channel.Writer.TryComplete();
+            _ = _channel.Writer.TryComplete();
         }
     }
 }

@@ -204,19 +204,19 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
         // Copy headers efficiently
         foreach (var header in request.Headers)
         {
-            clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            _ = clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
 
         // Copy content efficiently using byte arrays
         if (request.Content != null)
         {
-            byte[] contentBytes = await request.Content.ReadAsByteArrayAsync();
+            var contentBytes = await request.Content.ReadAsByteArrayAsync();
             var byteContent = new ByteArrayContent(contentBytes);
 
             // Copy content headers
             foreach (var header in request.Content.Headers)
             {
-                byteContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                _ = byteContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
             clone.Content = byteContent;
@@ -262,9 +262,15 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
     private static string DetermineProvider(HttpRequestMessage request)
     {
         if (request.IsAnthropicRequest())
+        {
             return "Anthropic";
+        }
+
         if (request.IsOpenAIRequest())
+        {
             return "OpenAI";
+        }
+
         return "OpenAI";
     }
 
@@ -315,17 +321,26 @@ public static class RequestExtensions
     /// <summary>
     /// Checks if this is the first request (index 0)
     /// </summary>
-    public static bool IsFirstMessage(this HttpRequestMessage request, int requestIndex) => requestIndex == 0;
+    public static bool IsFirstMessage(this HttpRequestMessage request, int requestIndex)
+    {
+        return requestIndex == 0;
+    }
 
     /// <summary>
     /// Checks if this is the second request (index 1)
     /// </summary>
-    public static bool IsSecondMessage(this HttpRequestMessage request, int requestIndex) => requestIndex == 1;
+    public static bool IsSecondMessage(this HttpRequestMessage request, int requestIndex)
+    {
+        return requestIndex == 1;
+    }
 
     /// <summary>
     /// Checks if this is the nth request (index n-1)
     /// </summary>
-    public static bool IsNthMessage(this HttpRequestMessage request, int requestIndex, int n) => requestIndex == n - 1;
+    public static bool IsNthMessage(this HttpRequestMessage request, int requestIndex, int n)
+    {
+        return requestIndex == n - 1;
+    }
 
     /// <summary>
     /// Checks if the request contains tool results
@@ -335,11 +350,15 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null)
+            {
                 return false;
+            }
 
             var content = request.Content.ReadAsStringAsync().Result;
             if (string.IsNullOrEmpty(content))
+            {
                 return false;
+            }
 
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
@@ -387,7 +406,9 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null)
+            {
                 return false;
+            }
 
             var content = request.Content.ReadAsStringAsync().Result;
             return content.Contains(text, StringComparison.OrdinalIgnoreCase);
@@ -406,11 +427,15 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null)
+            {
                 return false;
+            }
 
             var content = request.Content.ReadAsStringAsync().Result;
             if (string.IsNullOrEmpty(content))
+            {
                 return false;
+            }
 
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
@@ -445,11 +470,15 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null)
+            {
                 return 0;
+            }
 
             var content = request.Content.ReadAsStringAsync().Result;
             if (string.IsNullOrEmpty(content))
+            {
                 return 0;
+            }
 
             using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
@@ -478,7 +507,9 @@ public static class RequestExtensions
         try
         {
             if (request.Content == null)
+            {
                 return false;
+            }
 
             var content = request.Content.ReadAsStringAsync().Result;
             return content.Contains(toolName, StringComparison.OrdinalIgnoreCase);
@@ -516,7 +547,7 @@ internal class MultiConditionalResponseProvider : IResponseProvider
     private readonly List<(
         Func<HttpRequestMessage, int, bool> condition,
         IResponseProvider provider
-    )> _conditionalProviders = new();
+    )> _conditionalProviders = [];
     private readonly IResponseProvider? _defaultProvider;
 
     public MultiConditionalResponseProvider(IResponseProvider? defaultProvider = null)
@@ -535,7 +566,9 @@ internal class MultiConditionalResponseProvider : IResponseProvider
         foreach (var (condition, _) in _conditionalProviders)
         {
             if (condition(request, requestIndex))
+            {
                 return true;
+            }
         }
 
         // If no condition matches, check if we have a default provider
@@ -548,12 +581,16 @@ internal class MultiConditionalResponseProvider : IResponseProvider
         foreach (var (condition, provider) in _conditionalProviders)
         {
             if (condition(request, requestIndex))
+            {
                 return provider.CreateResponseAsync(request, requestIndex);
+            }
         }
 
         // Fall back to default provider if available
         if (_defaultProvider != null)
+        {
             return _defaultProvider.CreateResponseAsync(request, requestIndex);
+        }
 
         // If no default, return a generic error
         var errorResponse = new HttpResponseMessage(HttpStatusCode.BadRequest)
@@ -573,15 +610,21 @@ internal class MultiConditionalResponseProvider : IResponseProvider
 /// </summary>
 public class ConversationState
 {
-    private readonly Dictionary<string, object> _state = new();
+    private readonly Dictionary<string, object> _state = [];
     private int _requestCount = 0;
     private int _currentRequestIndex = -1;
 
     public int RequestCount => _requestCount;
 
-    public int IncrementRequestCount() => Interlocked.Increment(ref _requestCount);
+    public int IncrementRequestCount()
+    {
+        return Interlocked.Increment(ref _requestCount);
+    }
 
-    public int DecrementRequestCount() => Interlocked.Decrement(ref _requestCount);
+    public int DecrementRequestCount()
+    {
+        return Interlocked.Decrement(ref _requestCount);
+    }
 
     /// <summary>
     /// Ensures request count is incremented only once per request index
@@ -591,7 +634,7 @@ public class ConversationState
         if (_currentRequestIndex != requestIndex)
         {
             _currentRequestIndex = requestIndex;
-            IncrementRequestCount();
+            _ = IncrementRequestCount();
         }
     }
 
@@ -611,13 +654,22 @@ public class ConversationState
         where T : struct
     {
         if (_state.TryGetValue(key, out var value) && value is T typedValue)
+        {
             return typedValue;
+        }
+
         return defaultValue;
     }
 
-    public bool Has(string key) => _state.ContainsKey(key);
+    public bool Has(string key)
+    {
+        return _state.ContainsKey(key);
+    }
 
-    public void Clear() => _state.Clear();
+    public void Clear()
+    {
+        _state.Clear();
+    }
 }
 
 /// <summary>
@@ -672,7 +724,10 @@ internal class SimpleJsonResponseProvider : IResponseProvider, IDisposable
         _cachedContentBytes = Encoding.UTF8.GetBytes(_jsonResponse);
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
@@ -722,7 +777,10 @@ internal class ErrorResponseProvider : IResponseProvider, IDisposable
         }
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
@@ -776,7 +834,10 @@ internal class AnthropicErrorResponseProvider : IResponseProvider, IDisposable
         _cachedContentBytes = Encoding.UTF8.GetBytes(jsonContent);
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
@@ -845,7 +906,10 @@ internal class OpenAIErrorResponseProvider : IResponseProvider, IDisposable
         _cachedContentBytes = Encoding.UTF8.GetBytes(jsonContent);
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
@@ -886,7 +950,10 @@ internal class StatusCodeSequenceResponseProvider : IResponseProvider
         _finalSuccessMessage = finalSuccessMessage;
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
@@ -941,14 +1008,17 @@ internal class RateLimitErrorResponseProvider : IResponseProvider
         _providerType = providerType;
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
         var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
         response.Headers.Add("Retry-After", _retryAfterSeconds.ToString());
 
-        string jsonContent = _providerType.ToLowerInvariant() switch
+        var jsonContent = _providerType.ToLowerInvariant() switch
         {
             "anthropic" => JsonSerializer.Serialize(
                 new
@@ -1002,13 +1072,16 @@ internal class AuthenticationErrorResponseProvider : IResponseProvider
         _providerType = providerType;
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
         var response = new HttpResponseMessage(HttpStatusCode.Unauthorized);
 
-        string jsonContent = _providerType.ToLowerInvariant() switch
+        var jsonContent = _providerType.ToLowerInvariant() switch
         {
             "anthropic" => JsonSerializer.Serialize(
                 new
@@ -1051,7 +1124,10 @@ internal class TimeoutResponseProvider : IResponseProvider
         _timeoutMilliseconds = timeoutMilliseconds;
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public async Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
@@ -1161,7 +1237,10 @@ internal class RetryScenarioResponseProvider : IResponseProvider
         _failureStatus = failureStatus;
     }
 
-    public bool CanHandle(HttpRequestMessage request, int requestIndex) => true;
+    public bool CanHandle(HttpRequestMessage request, int requestIndex)
+    {
+        return true;
+    }
 
     public Task<HttpResponseMessage> CreateResponseAsync(HttpRequestMessage request, int requestIndex)
     {
@@ -1249,27 +1328,27 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
                 foreach (var item in enumerable)
                 {
                     var jsonData = JsonSerializer.Serialize(item);
-                    sseBuilder.AppendLine($"data: {jsonData}");
-                    sseBuilder.AppendLine(); // Empty line to separate events
+                    _ = sseBuilder.AppendLine($"data: {jsonData}");
+                    _ = sseBuilder.AppendLine(); // Empty line to separate events
                 }
             }
             else
             {
                 // Single object - convert to one SSE event
                 var jsonData = JsonSerializer.Serialize(sequence);
-                sseBuilder.AppendLine($"data: {jsonData}");
-                sseBuilder.AppendLine();
+                _ = sseBuilder.AppendLine($"data: {jsonData}");
+                _ = sseBuilder.AppendLine();
             }
 
             // Add final [DONE] marker for streaming completion
-            sseBuilder.AppendLine("data: [DONE]");
-            sseBuilder.AppendLine();
+            _ = sseBuilder.AppendLine("data: [DONE]");
+            _ = sseBuilder.AppendLine();
         }
         catch
         {
             // If serialization fails, return a simple error event
-            sseBuilder.AppendLine("data: {\"error\": \"Failed to serialize sequence\"}");
-            sseBuilder.AppendLine();
+            _ = sseBuilder.AppendLine("data: {\"error\": \"Failed to serialize sequence\"}");
+            _ = sseBuilder.AppendLine();
         }
 
         return sseBuilder.ToString();
@@ -1341,11 +1420,20 @@ internal class StreamingSequenceResponseProvider : IResponseProvider, IDisposabl
 
         public override void Flush() { }
 
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
 
-        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
 
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
 
         protected override void Dispose(bool disposing)
         {
@@ -1379,7 +1467,10 @@ internal class ToolResultResponseProvider : IResponseProvider
         try
         {
             if (request.Content == null)
+            {
                 return false;
+            }
+
             var body = request.Content.ReadAsStringAsync().Result;
             return body.Contains("tool_result", StringComparison.OrdinalIgnoreCase);
         }
@@ -1511,7 +1602,9 @@ public class EnhancedConditionalBuilder
     )
     {
         if (_state == null)
+        {
             throw new InvalidOperationException("State is required for stateful conditions. Use WithState() first.");
+        }
 
         var innerProvider = new SimpleJsonResponseProvider(jsonResponse);
         var statefulProvider = new StatefulResponseProvider(_state, condition, innerProvider);
@@ -1701,7 +1794,7 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
             Func<Task<HttpResponseMessage?>>? next = null;
 
             // Build the chain from the end backwards
-            for (int i = middlewareList.Count - 1; i >= 0; i--)
+            for (var i = middlewareList.Count - 1; i >= 0; i--)
             {
                 var middleware = middlewareList[i];
                 var currentNext = next;
@@ -1729,7 +1822,7 @@ internal class MockHttpHandler : HttpMessageHandler, IDisposable
 /// </summary>
 public class MockHttpHandlerBuilder
 {
-    private readonly List<IHttpHandlerMiddleware> _middlewares = new();
+    private readonly List<IHttpHandlerMiddleware> _middlewares = [];
     private string? _recordPlaybackPath;
     private bool _allowAdditionalRequests = false;
     private string? _forwardToBaseUrl;
@@ -1740,7 +1833,10 @@ public class MockHttpHandlerBuilder
     /// <summary>
     /// Creates a new builder instance
     /// </summary>
-    public static MockHttpHandlerBuilder Create() => new();
+    public static MockHttpHandlerBuilder Create()
+    {
+        return new();
+    }
 
     #region Request Handling
 
@@ -1824,7 +1920,7 @@ public class MockHttpHandlerBuilder
     )
     {
         // Check if the JSON represents an array or if SSE is forced
-        bool shouldUseSSE = forceSSE || IsJsonArray(jsonResponse);
+        var shouldUseSSE = forceSSE || IsJsonArray(jsonResponse);
 
         if (shouldUseSSE)
         {
@@ -1849,7 +1945,9 @@ public class MockHttpHandlerBuilder
     private static bool IsJsonArray(string json)
     {
         if (string.IsNullOrWhiteSpace(json))
+        {
             return false;
+        }
 
         var trimmed = json.Trim();
         return trimmed.StartsWith('[') && trimmed.EndsWith(']');
@@ -2043,7 +2141,10 @@ public class MockHttpHandlerBuilder
         try
         {
             if (request.Content == null)
+            {
                 return false;
+            }
+
             var body = request.Content.ReadAsStringAsync().Result;
             return body.Contains("tool_result", StringComparison.OrdinalIgnoreCase);
         }
@@ -2058,7 +2159,10 @@ public class MockHttpHandlerBuilder
         try
         {
             if (request.Content == null)
+            {
                 return false;
+            }
+
             var body = request.Content.ReadAsStringAsync().Result;
             return body.Contains(toolName, StringComparison.OrdinalIgnoreCase);
         }
@@ -2535,7 +2639,7 @@ internal class SseFileStream : Stream, IDisposable
         set => throw new NotSupportedException();
     }
 
-    internal static readonly string[] separator = new[] { "\r\n", "\n" };
+    internal static readonly string[] separator = ["\r\n", "\n"];
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
@@ -2584,11 +2688,20 @@ internal class SseFileStream : Stream, IDisposable
 
     public override void Flush() { }
 
-    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin)
+    {
+        throw new NotSupportedException();
+    }
 
-    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void SetLength(long value)
+    {
+        throw new NotSupportedException();
+    }
 
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        throw new NotSupportedException();
+    }
 
     protected override void Dispose(bool disposing)
     {
@@ -2610,13 +2723,13 @@ internal class SseFileStream : Stream, IDisposable
         {
             if (!string.IsNullOrEmpty(sseEvent.EventType))
             {
-                totalContent.AppendLine($"event: {sseEvent.EventType}");
+                _ = totalContent.AppendLine($"event: {sseEvent.EventType}");
             }
             if (!string.IsNullOrEmpty(sseEvent.Data))
             {
-                totalContent.AppendLine($"data: {sseEvent.Data}");
+                _ = totalContent.AppendLine($"data: {sseEvent.Data}");
             }
-            totalContent.AppendLine(); // Empty line to separate events
+            _ = totalContent.AppendLine(); // Empty line to separate events
         }
 
         return Encoding.UTF8.GetBytes(totalContent.ToString());
@@ -2680,7 +2793,7 @@ internal class SseFileStream : Stream, IDisposable
 /// </summary>
 public class RecordPlaybackData
 {
-    public List<RecordedInteraction> Interactions { get; set; } = new();
+    public List<RecordedInteraction> Interactions { get; set; } = [];
 }
 
 /// <summary>
@@ -2690,7 +2803,7 @@ public class RecordedInteraction
 {
     public JsonElement SerializedRequest { get; set; }
     public JsonElement SerializedResponse { get; set; }
-    public List<JsonElement> SerializedResponseFragments { get; set; } = new();
+    public List<JsonElement> SerializedResponseFragments { get; set; } = [];
     public bool IsStreaming { get; set; }
     public DateTime? RecordedAt { get; set; }
     public string? Provider { get; set; }
@@ -2745,7 +2858,9 @@ public static class RequestMatcher
         )
         {
             if (recordedModel.GetString() != incomingModel.GetString())
+            {
                 return false;
+            }
         }
 
         // Match messages content if present
@@ -2755,7 +2870,9 @@ public static class RequestMatcher
         )
         {
             if (!MatchMessages(incomingMessages, recordedMessages))
+            {
                 return false;
+            }
         }
 
         // Match tools if present
@@ -2765,7 +2882,9 @@ public static class RequestMatcher
         )
         {
             if (!MatchTools(incomingTools, recordedTools))
+            {
                 return false;
+            }
         }
 
         return true;
@@ -2774,15 +2893,19 @@ public static class RequestMatcher
     private static bool MatchMessages(JsonElement incoming, JsonElement recorded)
     {
         if (incoming.ValueKind != JsonValueKind.Array || recorded.ValueKind != JsonValueKind.Array)
+        {
             return false;
+        }
 
         var incomingArray = incoming.EnumerateArray().ToArray();
         var recordedArray = recorded.EnumerateArray().ToArray();
 
         if (incomingArray.Length != recordedArray.Length)
+        {
             return false;
+        }
 
-        for (int i = 0; i < incomingArray.Length; i++)
+        for (var i = 0; i < incomingArray.Length; i++)
         {
             var incomingMsg = incomingArray[i];
             var recordedMsg = recordedArray[i];
@@ -2794,7 +2917,9 @@ public static class RequestMatcher
             )
             {
                 if (!JsonElement.DeepEquals(incomingRole, recordedRole))
+                {
                     return false;
+                }
             }
 
             // Match content using DeepEquals for robust comparison
@@ -2804,7 +2929,9 @@ public static class RequestMatcher
             )
             {
                 if (!JsonElement.DeepEquals(incomingContent, recordedContent))
+                {
                     return false;
+                }
             }
         }
 
@@ -2814,16 +2941,20 @@ public static class RequestMatcher
     private static bool MatchTools(JsonElement incoming, JsonElement recorded)
     {
         if (incoming.ValueKind != JsonValueKind.Array || recorded.ValueKind != JsonValueKind.Array)
+        {
             return false;
+        }
 
         var incomingArray = incoming.EnumerateArray().ToArray();
         var recordedArray = recorded.EnumerateArray().ToArray();
 
         if (incomingArray.Length != recordedArray.Length)
+        {
             return false;
+        }
 
         // For tools, just check that the tool names match (parameters might vary)
-        for (int i = 0; i < incomingArray.Length; i++)
+        for (var i = 0; i < incomingArray.Length; i++)
         {
             var incomingTool = incomingArray[i];
             var recordedTool = recordedArray[i];
@@ -2839,7 +2970,9 @@ public static class RequestMatcher
                 )
                 {
                     if (recordedName.GetString() != incomingName.GetString())
+                    {
                         return false;
+                    }
                 }
             }
         }
@@ -2953,19 +3086,19 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
         // Copy headers efficiently
         foreach (var header in request.Headers)
         {
-            clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            _ = clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
 
         // Copy content efficiently using byte arrays instead of strings when possible
         if (request.Content != null)
         {
-            byte[] contentBytes = await request.Content.ReadAsByteArrayAsync();
+            var contentBytes = await request.Content.ReadAsByteArrayAsync();
             var byteContent = new ByteArrayContent(contentBytes);
 
             // Copy content headers
             foreach (var header in request.Content.Headers)
             {
-                byteContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                _ = byteContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
             clone.Content = byteContent;
@@ -2977,7 +3110,7 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
     private static string GetCachedProvider(HttpRequestMessage request)
     {
         // Create a cache key based on the request URI
-        string cacheKey = request.RequestUri?.Host ?? "unknown";
+        var cacheKey = request.RequestUri?.Host ?? "unknown";
 
         return _providerCache.GetOrAdd(cacheKey, _ => DetermineProvider(request));
     }
@@ -2985,9 +3118,15 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
     private static string DetermineProvider(HttpRequestMessage request)
     {
         if (request.IsAnthropicRequest())
+        {
             return "Anthropic";
+        }
+
         if (request.IsOpenAIRequest())
+        {
             return "OpenAI";
+        }
+
         return "OpenAI";
     }
 
@@ -3008,13 +3147,13 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
 {
     private readonly string _filePath;
     private readonly RecordPlaybackData _recordedData;
-    private readonly Dictionary<string, byte[]> _cachedResponseBytes = new();
-    private readonly List<RecordedInteraction> _newInteractions = new();
+    private readonly Dictionary<string, byte[]> _cachedResponseBytes = [];
+    private readonly List<RecordedInteraction> _newInteractions = [];
     private readonly object _cacheLock = new();
     private int _matchedInteractions = 0;
     private bool _disposed;
-    internal static readonly string[] separator = new[] { "\n\n", "\r\n\r\n" };
-    internal static readonly char[] separatorArray = new[] { '\n', '\r' };
+    internal static readonly string[] separator = ["\n\n", "\r\n\r\n"];
+    internal static readonly char[] separatorArray = ['\n', '\r'];
 
     public RecordPlaybackMiddleware(string filePath)
     {
@@ -3032,7 +3171,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         foreach (var interaction in _recordedData.Interactions)
         {
             // Generate a cache key based on the interaction's unique properties
-            string cacheKey = GenerateCacheKey(interaction);
+            var cacheKey = GenerateCacheKey(interaction);
             if (!_cachedResponseBytes.ContainsKey(cacheKey))
             {
                 byte[] responseBytes;
@@ -3115,7 +3254,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 {
                     if (header.Key != "Content-Type")
                     {
-                        request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                        _ = request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
                     }
                 }
             }
@@ -3196,7 +3335,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         try
         {
             // Check if this is an SSE response
-            bool isSSE = IsServerSentEventsResponse(response);
+            var isSSE = IsServerSentEventsResponse(response);
 
             // Read response content
             var responseContent = await response.Content.ReadAsStringAsync();
@@ -3218,7 +3357,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 {
                     if (header.Key != "Content-Type")
                     {
-                        response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                        _ = response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
                     }
                 }
             }
@@ -3265,7 +3404,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 }
 
                 interaction.SerializedResponse = responseElement;
-                interaction.SerializedResponseFragments = new List<JsonElement>();
+                interaction.SerializedResponseFragments = [];
             }
 
             // Add to new interactions list
@@ -3274,7 +3413,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 _newInteractions.Add(interaction);
 
                 // Cache the response bytes for this new interaction
-                string cacheKey = GenerateCacheKey(interaction);
+                var cacheKey = GenerateCacheKey(interaction);
                 if (!_cachedResponseBytes.ContainsKey(cacheKey))
                 {
                     byte[] responseBytes;
@@ -3305,9 +3444,15 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
     private static string DetermineProvider(HttpRequestMessage request)
     {
         if (request.IsAnthropicRequest())
+        {
             return "Anthropic";
+        }
+
         if (request.IsOpenAIRequest())
+        {
             return "OpenAI";
+        }
+
         return "OpenAI";
     }
 
@@ -3387,8 +3532,8 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                 var jsonData = JsonSerializer.Serialize(fragment);
 
                 // Format as SSE event
-                sseBuilder.AppendLine($"data: {jsonData}");
-                sseBuilder.AppendLine(); // Empty line to separate events
+                _ = sseBuilder.AppendLine($"data: {jsonData}");
+                _ = sseBuilder.AppendLine(); // Empty line to separate events
             }
             catch
             {
@@ -3399,8 +3544,8 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
         // Add final [DONE] marker for streaming completion
         if (fragments.Count > 0)
         {
-            sseBuilder.AppendLine("data: [DONE]");
-            sseBuilder.AppendLine();
+            _ = sseBuilder.AppendLine("data: [DONE]");
+            _ = sseBuilder.AppendLine();
         }
 
         return sseBuilder.ToString();
@@ -3409,7 +3554,9 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
     private void SaveNewInteractions()
     {
         if (_newInteractions.Count == 0 || _disposed)
+        {
             return;
+        }
 
         try
         {
@@ -3439,7 +3586,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
 
     private HttpResponseMessage CreateResponseFromRecording(RecordedInteraction interaction)
     {
-        string cacheKey = GenerateCacheKey(interaction);
+        var cacheKey = GenerateCacheKey(interaction);
         byte[] responseBytes;
 
         // Try to get cached response bytes

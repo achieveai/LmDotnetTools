@@ -35,7 +35,7 @@ public class SqliteManager : IDisposable
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var threadId = Environment.CurrentManagedThreadId;
-        var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+        var taskId = Task.CurrentId ?? -1;
 
         _logger.LogDebug(
             "🔄 GetConnectionAsync START - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
@@ -89,7 +89,7 @@ public class SqliteManager : IDisposable
                 taskId,
                 stopwatch.ElapsedMilliseconds
             );
-            _connectionSemaphore.Release();
+            _ = _connectionSemaphore.Release();
             throw;
         }
     }
@@ -101,7 +101,7 @@ public class SqliteManager : IDisposable
     internal void ReleaseConnection(SqliteConnection connection)
     {
         var threadId = Environment.CurrentManagedThreadId;
-        var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+        var taskId = Task.CurrentId ?? -1;
 
         _logger.LogDebug(
             "🔄 ReleaseConnection START - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
@@ -140,7 +140,7 @@ public class SqliteManager : IDisposable
         finally
         {
             _logger.LogDebug("🔓 Releasing semaphore - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
-            _connectionSemaphore.Release();
+            _ = _connectionSemaphore.Release();
             _logger.LogDebug(
                 "✅ Semaphore released - Thread: {ThreadId}, Task: {TaskId}, Available: {Available}/{Max}",
                 threadId,
@@ -157,17 +157,21 @@ public class SqliteManager : IDisposable
     public async Task InitializeDatabaseAsync(CancellationToken cancellationToken = default)
     {
         if (_isInitialized)
+        {
             return;
+        }
 
         // Use SemaphoreSlim for async-safe initialization
         await _initSemaphore.WaitAsync(cancellationToken);
         try
         {
             if (_isInitialized)
+            {
                 return;
+            }
 
             var threadId = Environment.CurrentManagedThreadId;
-            var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+            var taskId = Task.CurrentId ?? -1;
             _logger.LogDebug("🔧 InitializeDatabaseAsync START - Thread: {ThreadId}, Task: {TaskId}", threadId, taskId);
 
             _logger.LogInformation("Initializing SQLite database...");
@@ -247,13 +251,13 @@ public class SqliteManager : IDisposable
         finally
         {
             var threadId = Environment.CurrentManagedThreadId;
-            var taskId = System.Threading.Tasks.Task.CurrentId ?? -1;
+            var taskId = Task.CurrentId ?? -1;
             _logger.LogDebug(
                 "🔓 Releasing initialization semaphore - Thread: {ThreadId}, Task: {TaskId}",
                 threadId,
                 taskId
             );
-            _initSemaphore.Release();
+            _ = _initSemaphore.Release();
             _logger.LogDebug(
                 "✅ Initialization semaphore released - Thread: {ThreadId}, Task: {TaskId}",
                 threadId,
@@ -299,7 +303,7 @@ public class SqliteManager : IDisposable
         {
             using var command = connection.CreateCommand();
             command.CommandText = commandText;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            _ = await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
 
@@ -338,7 +342,7 @@ public class SqliteManager : IDisposable
         command.CommandText = schema;
         command.CommandTimeout = _options.CommandTimeout;
 
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
         _logger.LogInformation("Database schema created successfully");
     }
@@ -351,7 +355,7 @@ public class SqliteManager : IDisposable
         var schema = new StringBuilder();
 
         // ID sequence table for generating unique integers
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TABLE IF NOT EXISTS memory_id_sequence (
                 id INTEGER PRIMARY KEY AUTOINCREMENT
@@ -359,7 +363,7 @@ public class SqliteManager : IDisposable
         );
 
         // Main memories table with integer primary key
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY,
@@ -377,7 +381,7 @@ public class SqliteManager : IDisposable
         );
 
         // Vector embeddings using sqlite-vec (primary approach)
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
                             CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
                     memory_id INTEGER PRIMARY KEY,
@@ -386,7 +390,7 @@ public class SqliteManager : IDisposable
         );
 
         // Vector metadata table for embedding information
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TABLE IF NOT EXISTS embedding_metadata (
                 memory_id INTEGER PRIMARY KEY,
@@ -398,7 +402,7 @@ public class SqliteManager : IDisposable
         );
 
         // FTS5 virtual table for full-text search
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 content,
@@ -411,7 +415,7 @@ public class SqliteManager : IDisposable
         // Graph database tables for entities and relationships
 
         // Entities table for knowledge graph
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TABLE IF NOT EXISTS entities (
                 id INTEGER PRIMARY KEY,
@@ -435,7 +439,7 @@ public class SqliteManager : IDisposable
         );
 
         // Relationships table for knowledge graph
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TABLE IF NOT EXISTS relationships (
                 id INTEGER PRIMARY KEY,
@@ -463,7 +467,7 @@ public class SqliteManager : IDisposable
         );
 
         // FTS5 virtual tables for entity and relationship search
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
                 name,
@@ -475,7 +479,7 @@ public class SqliteManager : IDisposable
             );"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE VIRTUAL TABLE IF NOT EXISTS relationships_fts USING fts5(
                 source,
@@ -489,7 +493,7 @@ public class SqliteManager : IDisposable
         );
 
         // Vector embeddings for entities and relationships using sqlite-vec
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
                             CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(
                     entity_id INTEGER PRIMARY KEY,
@@ -497,7 +501,7 @@ public class SqliteManager : IDisposable
                 );"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
                             CREATE VIRTUAL TABLE IF NOT EXISTS relationship_embeddings USING vec0(
                     relationship_id INTEGER PRIMARY KEY,
@@ -506,7 +510,7 @@ public class SqliteManager : IDisposable
         );
 
         // Metadata tables for entity and relationship embeddings
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TABLE IF NOT EXISTS entity_embedding_metadata (
                 entity_id INTEGER PRIMARY KEY,
@@ -517,7 +521,7 @@ public class SqliteManager : IDisposable
             );"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TABLE IF NOT EXISTS relationship_embedding_metadata (
                 relationship_id INTEGER PRIMARY KEY,
@@ -529,7 +533,7 @@ public class SqliteManager : IDisposable
         );
 
         // Indexes for performance
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(user_id, agent_id, run_id);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
@@ -568,21 +572,21 @@ public class SqliteManager : IDisposable
         );
 
         // FTS5 triggers for automatic content indexing
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
                 INSERT INTO memory_fts(rowid, content, metadata) VALUES (new.id, new.content, new.metadata);
             END"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
                 UPDATE memory_fts SET content = new.content, metadata = new.metadata WHERE rowid = new.id;
             END"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.id;
@@ -590,21 +594,21 @@ public class SqliteManager : IDisposable
         );
 
         // FTS5 triggers for entities
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS entities_fts_insert AFTER INSERT ON entities BEGIN
                 INSERT INTO entities_fts(rowid, name, type, aliases, metadata) VALUES (new.id, new.name, new.type, new.aliases, new.metadata);
             END"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS entities_fts_update AFTER UPDATE ON entities BEGIN
                 UPDATE entities_fts SET name = new.name, type = new.type, aliases = new.aliases, metadata = new.metadata WHERE rowid = new.id;
             END"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS entities_fts_delete AFTER DELETE ON entities BEGIN
                 DELETE FROM entities_fts WHERE rowid = old.id;
@@ -612,21 +616,21 @@ public class SqliteManager : IDisposable
         );
 
         // FTS5 triggers for relationships
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS relationships_fts_insert AFTER INSERT ON relationships BEGIN
                 INSERT INTO relationships_fts(rowid, source, relationship_type, target, temporal_context, metadata) VALUES (new.id, new.source, new.relationship_type, new.target, new.temporal_context, new.metadata);
             END"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS relationships_fts_update AFTER UPDATE ON relationships BEGIN
                 UPDATE relationships_fts SET source = new.source, relationship_type = new.relationship_type, target = new.target, temporal_context = new.temporal_context, metadata = new.metadata WHERE rowid = new.id;
             END"
         );
 
-        schema.AppendLine(
+        _ = schema.AppendLine(
             @"
             CREATE TRIGGER IF NOT EXISTS relationships_fts_delete AFTER DELETE ON relationships BEGIN
                 DELETE FROM relationships_fts WHERE rowid = old.id;
@@ -690,7 +694,10 @@ public class ManagedSqliteConnection : IDisposable
     public string ConnectionString => _connection.ConnectionString;
     public System.Data.ConnectionState State => _connection.State;
 
-    public SqliteCommand CreateCommand() => _connection.CreateCommand();
+    public SqliteCommand CreateCommand()
+    {
+        return _connection.CreateCommand();
+    }
 
     public SqliteTransaction BeginTransaction()
     {
@@ -716,8 +723,10 @@ public class ManagedSqliteConnection : IDisposable
         }
     }
 
-    public SqliteTransaction BeginTransaction(System.Data.IsolationLevel isolationLevel) =>
-        _connection.BeginTransaction(isolationLevel);
+    public SqliteTransaction BeginTransaction(System.Data.IsolationLevel isolationLevel)
+    {
+        return _connection.BeginTransaction(isolationLevel);
+    }
 
     public void Dispose()
     {

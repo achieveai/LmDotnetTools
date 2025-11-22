@@ -1,10 +1,7 @@
 using System.Collections.Concurrent;
-using System.Collections.Immutable;
-using System.Net;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Http;
 using AchieveAi.LmDotnetTools.LmCore.Validation;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
@@ -234,7 +231,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         ValidateRequest(request);
 
         // Apply text chunking if needed
-        var processedInputs = ServerEmbeddings.ApplyTextChunking(request.Inputs);
+        var processedInputs = ApplyTextChunking(request.Inputs);
 
         var chunkedRequest = new EmbeddingRequest
         {
@@ -263,7 +260,9 @@ public class ServerEmbeddings : BaseEmbeddingService
                 var embeddingResponse = JsonSerializer.Deserialize<EmbeddingResponse>(responseJson);
 
                 if (embeddingResponse?.Embeddings == null)
+                {
                     throw new InvalidOperationException("Invalid response from API");
+                }
 
                 return embeddingResponse;
             },
@@ -314,7 +313,7 @@ public class ServerEmbeddings : BaseEmbeddingService
 
                 if (!HttpRetryHelper.IsRetryableStatusCode(response.StatusCode))
                 {
-                    response.EnsureSuccessStatusCode(); // This will throw
+                    _ = response.EnsureSuccessStatusCode(); // This will throw
                 }
 
                 lastException = new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
@@ -371,7 +370,7 @@ public class ServerEmbeddings : BaseEmbeddingService
             }
         }
 
-        return chunkedInputs.ToArray();
+        return [.. chunkedInputs];
     }
 
     /// <summary>
@@ -414,7 +413,9 @@ public class ServerEmbeddings : BaseEmbeddingService
     private void ProcessBatch(object? state)
     {
         if (_batchQueue.IsEmpty)
+        {
             return;
+        }
 
         lock (_batchLock)
         {
@@ -427,7 +428,9 @@ public class ServerEmbeddings : BaseEmbeddingService
             }
 
             if (batch.Count == 0)
+            {
                 return;
+            }
 
             // Process batch asynchronously
             _ = Task.Run(async () =>
@@ -445,7 +448,7 @@ public class ServerEmbeddings : BaseEmbeddingService
                     var response = await GenerateEmbeddingsAsync(request);
 
                     // Complete each task with its corresponding embedding
-                    for (int i = 0; i < batch.Count && i < response.Embeddings.Count; i++)
+                    for (var i = 0; i < batch.Count && i < response.Embeddings.Count; i++)
                     {
                         batch[i].TaskCompletionSource.SetResult(response.Embeddings.ElementAt(i).Vector);
                     }

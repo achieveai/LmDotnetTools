@@ -82,7 +82,7 @@ public record AnthropicRequest
     public static AnthropicRequest FromMessages(IEnumerable<IMessage> messages, GenerateReplyOptions? options = null)
     {
         // Get model from options or use default
-        string modelName = AnthropicModelNames.Claude3Sonnet;
+        var modelName = AnthropicModelNames.Claude3Sonnet;
         if (options?.ModelId is { Length: > 0 } modelId)
         {
             modelName = modelId;

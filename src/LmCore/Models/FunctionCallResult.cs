@@ -26,5 +26,8 @@ public record FunctionCallResult<T> : FunctionCallResult
 {
     public required T Result { get; init; }
 
-    public override JsonNode ToStructuredJson() => JsonSerializer.SerializeToNode(this.Result)!;
+    public override JsonNode ToStructuredJson()
+    {
+        return JsonSerializer.SerializeToNode(this.Result)!;
+    }
 }

@@ -23,9 +23,7 @@ public sealed class SessionRepository : ISessionRepository
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
-    public SessionRepository(
-        IDbConnectionFactory connectionFactory,
-        ILogger<SessionRepository>? logger = null)
+    public SessionRepository(IDbConnectionFactory connectionFactory, ILogger<SessionRepository>? logger = null)
     {
         _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         _logger = logger ?? NullLogger<SessionRepository>.Instance;
@@ -37,12 +35,13 @@ public sealed class SessionRepository : ISessionRepository
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT Id, ConversationId, StartTime, EndTime, Status, MetadataJson
             FROM Sessions
             WHERE Id = @Id";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", id));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", id));
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
@@ -57,18 +56,20 @@ public sealed class SessionRepository : ISessionRepository
     /// <inheritdoc/>
     public async Task<IReadOnlyList<SessionEntity>> GetByConversationIdAsync(
         string conversationId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT Id, ConversationId, StartTime, EndTime, Status, MetadataJson
             FROM Sessions
             WHERE ConversationId = @ConversationId
             ORDER BY StartTime DESC";
 
-        cmd.Parameters.Add(new SqliteParameter("@ConversationId", conversationId));
+        _ = cmd.Parameters.Add(new SqliteParameter("@ConversationId", conversationId));
 
         var sessions = new List<SessionEntity>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -84,26 +85,24 @@ public sealed class SessionRepository : ISessionRepository
     /// <inheritdoc/>
     public async Task CreateAsync(SessionEntity session, CancellationToken ct = default)
     {
-        if (session == null)
-        {
-            throw new ArgumentNullException(nameof(session));
-        }
+        ArgumentNullException.ThrowIfNull(session);
 
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             INSERT INTO Sessions (Id, ConversationId, StartTime, EndTime, Status, MetadataJson)
             VALUES (@Id, @ConversationId, @StartTime, @EndTime, @Status, @MetadataJson)";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", session.Id));
-        cmd.Parameters.Add(new SqliteParameter("@ConversationId", (object?)session.ConversationId ?? DBNull.Value));
-        cmd.Parameters.Add(new SqliteParameter("@StartTime", session.StartTime));
-        cmd.Parameters.Add(new SqliteParameter("@EndTime", (object?)session.EndTime ?? DBNull.Value));
-        cmd.Parameters.Add(new SqliteParameter("@Status", session.Status));
-        cmd.Parameters.Add(new SqliteParameter("@MetadataJson", (object?)session.MetadataJson ?? DBNull.Value));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", session.Id));
+        _ = cmd.Parameters.Add(new SqliteParameter("@ConversationId", (object?)session.ConversationId ?? DBNull.Value));
+        _ = cmd.Parameters.Add(new SqliteParameter("@StartTime", session.StartTime));
+        _ = cmd.Parameters.Add(new SqliteParameter("@EndTime", (object?)session.EndTime ?? DBNull.Value));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Status", session.Status));
+        _ = cmd.Parameters.Add(new SqliteParameter("@MetadataJson", (object?)session.MetadataJson ?? DBNull.Value));
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        _ = await cmd.ExecuteNonQueryAsync(ct);
 
         _logger.LogDebug("Created session {SessionId} with status {Status}", session.Id, session.Status);
     }
@@ -111,15 +110,13 @@ public sealed class SessionRepository : ISessionRepository
     /// <inheritdoc/>
     public async Task UpdateAsync(SessionEntity session, CancellationToken ct = default)
     {
-        if (session == null)
-        {
-            throw new ArgumentNullException(nameof(session));
-        }
+        ArgumentNullException.ThrowIfNull(session);
 
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             UPDATE Sessions
             SET ConversationId = @ConversationId,
                 StartTime = @StartTime,
@@ -128,14 +125,14 @@ public sealed class SessionRepository : ISessionRepository
                 MetadataJson = @MetadataJson
             WHERE Id = @Id";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", session.Id));
-        cmd.Parameters.Add(new SqliteParameter("@ConversationId", (object?)session.ConversationId ?? DBNull.Value));
-        cmd.Parameters.Add(new SqliteParameter("@StartTime", session.StartTime));
-        cmd.Parameters.Add(new SqliteParameter("@EndTime", (object?)session.EndTime ?? DBNull.Value));
-        cmd.Parameters.Add(new SqliteParameter("@Status", session.Status));
-        cmd.Parameters.Add(new SqliteParameter("@MetadataJson", (object?)session.MetadataJson ?? DBNull.Value));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", session.Id));
+        _ = cmd.Parameters.Add(new SqliteParameter("@ConversationId", (object?)session.ConversationId ?? DBNull.Value));
+        _ = cmd.Parameters.Add(new SqliteParameter("@StartTime", session.StartTime));
+        _ = cmd.Parameters.Add(new SqliteParameter("@EndTime", (object?)session.EndTime ?? DBNull.Value));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Status", session.Status));
+        _ = cmd.Parameters.Add(new SqliteParameter("@MetadataJson", (object?)session.MetadataJson ?? DBNull.Value));
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        _ = await cmd.ExecuteNonQueryAsync(ct);
 
         _logger.LogDebug("Updated session {SessionId} to status {Status}", session.Id, session.Status);
     }
@@ -146,7 +143,8 @@ public sealed class SessionRepository : ISessionRepository
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT Id, ConversationId, StartTime, EndTime, Status, MetadataJson
             FROM Sessions
             WHERE Status NOT IN ('Completed', 'Failed')
@@ -170,16 +168,17 @@ public sealed class SessionRepository : ISessionRepository
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             UPDATE Sessions
             SET Status = 'Failed',
                 EndTime = @EndTime
             WHERE Id = @Id";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", sessionId));
-        cmd.Parameters.Add(new SqliteParameter("@EndTime", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", sessionId));
+        _ = cmd.Parameters.Add(new SqliteParameter("@EndTime", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        _ = await cmd.ExecuteNonQueryAsync(ct);
 
         _logger.LogWarning("Marked session {SessionId} as failed", sessionId);
     }
@@ -196,7 +195,7 @@ public sealed class SessionRepository : ISessionRepository
             StartTime = reader.GetInt64(2),
             EndTime = reader.IsDBNull(3) ? null : reader.GetInt64(3),
             Status = reader.GetString(4),
-            MetadataJson = reader.IsDBNull(5) ? null : reader.GetString(5)
+            MetadataJson = reader.IsDBNull(5) ? null : reader.GetString(5),
         };
     }
 }

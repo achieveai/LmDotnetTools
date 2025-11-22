@@ -1,6 +1,5 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Configuration;
+using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Extensions;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Services;
 using AchieveAi.LmDotnetTools.AgUi.Persistence.Database;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Middleware;
@@ -74,18 +73,19 @@ if (!string.IsNullOrWhiteSpace(seqUrl))
 
 // Add controllers and API support
 // Include controllers from AgUi.AspNetCore assembly
-builder.Services.AddControllers()
+builder
+    .Services.AddControllers()
     .AddApplicationPart(typeof(AchieveAi.LmDotnetTools.AgUi.AspNetCore.Controllers.AgUiController).Assembly);
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new()
-    {
-        Title = "AG-UI Sample API",
-        Version = "v1",
-        Description = "Sample application demonstrating AG-UI protocol with agents and tools"
-    });
-});
+builder.Services.AddSwaggerGen(c => c.SwaggerDoc(
+        "v1",
+        new()
+        {
+            Title = "AG-UI Sample API",
+            Version = "v1",
+            Description = "Sample application demonstrating AG-UI protocol with agents and tools",
+        }
+    ));
 
 startupLogger.Information("Configuring AG-UI services...");
 
@@ -98,7 +98,7 @@ builder.Services.AddAgUi(options =>
     options.MaxSessionAgeHours = builder.Configuration.GetValue<int>("AgUi:MaxSessionAgeHours");
     options.EnableDebugLogging = builder.Configuration.GetValue<bool>("AgUi:EnableDebugLogging");
     options.EnableCors = true;
-    options.AllowedOrigins = ImmutableList.Create("*");
+    options.AllowedOrigins = ["*"];
     options.KeepAliveInterval = TimeSpan.FromSeconds(30);
     options.MaxMessageSize = 1024 * 1024; // 1MB
     options.EventBufferSize = 1000;
@@ -134,6 +134,7 @@ startupLogger.Information("  Registered: GetWeatherTool, CalculatorTool, SearchT
 startupLogger.Information("Registering sample agents...");
 builder.Services.AddSingleton<ToolCallingAgent>();
 builder.Services.AddSingleton<InstructionChainAgent>();
+
 // Also register as IStreamingAgent for AG-UI controller
 builder.Services.AddSingleton<IStreamingAgent>(sp => sp.GetRequiredService<InstructionChainAgent>());
 builder.Services.AddSingleton<IStreamingAgent>(sp => sp.GetRequiredService<ToolCallingAgent>());
@@ -146,14 +147,10 @@ startupLogger.Information("  Registered: CopilotKitSessionMapper");
 
 // Add CORS for development
 builder.Services.AddCors(options =>
-{
     options.AddDefaultPolicy(policy =>
-    {
-        _ = policy.AllowAnyOrigin()
-              .AllowAnyMethod()
-              .AllowAnyHeader();
-    });
-});
+        policy.AllowAnyOrigin()
+            .AllowAnyMethod()
+            .AllowAnyHeader()));
 
 // Add health checks
 builder.Services.AddHealthChecks();
@@ -169,8 +166,8 @@ logger.LogInformation("=== Configuring Middleware Pipeline ===");
 if (app.Environment.IsDevelopment())
 {
     logger.LogInformation("Enabling Swagger UI (Development environment)");
-    app.UseSwagger();
-    app.UseSwaggerUI(c =>
+    _ = app.UseSwagger();
+    _ = app.UseSwaggerUI(c =>
     {
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "AG-UI Sample API v1");
         c.RoutePrefix = "swagger";

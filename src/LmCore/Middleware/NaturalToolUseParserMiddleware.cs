@@ -186,7 +186,7 @@ public partial class PartialToolCallDetector
                 }
                 if (correspondingOpen != null)
                 {
-                    matchedCloses.Add(correspondingOpen.Index);
+                    _ = matchedCloses.Add(correspondingOpen.Index);
                 }
             }
 
@@ -360,7 +360,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             try
             {
                 // Validate it's parseable JSON
-                JsonDocument.Parse(trimmed);
+                _ = JsonDocument.Parse(trimmed);
                 return trimmed;
             }
             catch (JsonException)
@@ -393,7 +393,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 if (contract != null && contract.Parameters != null && _schemaValidator != null)
                 {
                     var jsonSchema = contract.GetJsonSchema();
-                    string schemaString =
+                    var schemaString =
                         jsonSchema != null
                             ? JsonSerializer.Serialize(jsonSchema, JsonSchemaValidator.SchemaSerializationOptions)
                             : string.Empty;
@@ -411,7 +411,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                         [
                             new ToolsCallMessage
                             {
-                                ToolCalls = new[] { toolCall }.ToImmutableList(),
+                                ToolCalls = [toolCall],
                                 Role = Role.Assistant,
                             },
                         ];
@@ -501,7 +501,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         if (_isFirstInvocation && _functions.Any())
         {
             _isFirstInvocation = false;
-            var markdown = NaturalToolUseParserMiddleware.RenderContractsToMarkdown(_functions);
+            var markdown = RenderContractsToMarkdown(_functions);
             var systemMessage = (context.Messages.FirstOrDefault(m => m.Role == Role.System)?.ToString() ?? "");
             systemMessage = systemMessage + "\n\n---\n\n# Tool Calls\n\n" + markdown;
             var newMessages = context.Messages.ToList();
@@ -532,7 +532,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         var sb = new StringBuilder();
         foreach (var func in functions)
         {
-            sb.AppendLine(func.ToMarkdown());
+            _ = sb.AppendLine(func.ToMarkdown());
         }
         return sb.ToString();
     }
@@ -586,7 +586,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 templateUpdate ??= textUpdate;
 
                 // Add to buffer
-                textBuffer.Append(textUpdate.Text);
+                _ = textBuffer.Append(textUpdate.Text);
                 bufferedUpdates.Add(textUpdate);
 
                 // Check if remaining buffer contains complete tool calls
@@ -606,7 +606,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                         }
 
                         // Clear buffer after processing
-                        textBuffer.Clear();
+                        _ = textBuffer.Clear();
                         bufferedUpdates.Clear();
                     }
                 }
@@ -617,7 +617,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 if (!string.IsNullOrEmpty(safeTextResult.SafeText))
                 {
                     var safeTextLen = safeTextResult.SafeText.Length;
-                    int returned = 0;
+                    var returned = 0;
                     foreach (var item in bufferedUpdates)
                     {
                         if (safeTextLen < item.Text.Length)
@@ -632,8 +632,8 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
                     if (returned > 0)
                     {
-                        textBuffer.Clear();
-                        bufferedUpdates = bufferedUpdates.Skip(returned).ToList();
+                        _ = textBuffer.Clear();
+                        bufferedUpdates = [.. bufferedUpdates.Skip(returned)];
                         bufferedUpdates.ForEach(b => textBuffer.Append(b.Text));
                     }
                 }
@@ -646,7 +646,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                     yield return message;
                 }
 
-                textBuffer.Clear();
+                _ = textBuffer.Clear();
                 bufferedUpdates.Clear();
 
                 if (reply is TextMessage textMsg)
@@ -690,7 +690,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             return messages;
         }
 
-        int currentPosition = 0;
+        var currentPosition = 0;
 
         foreach (var match in matches)
         {
@@ -799,13 +799,13 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken
     )
     {
-        var prompt = NaturalToolUseParserMiddleware.CreateLegacyFallbackPrompt(rawText, toolName);
-        var messages = NaturalToolUseParserMiddleware.CreatePromptMessages(prompt);
+        var prompt = CreateLegacyFallbackPrompt(rawText, toolName);
+        var messages = CreatePromptMessages(prompt);
 
         try
         {
             var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, null, cancellationToken);
-            var fallbackReply = NaturalToolUseParserMiddleware.ExtractTextMessageFromReplies(fallbackReplies);
+            var fallbackReply = ExtractTextMessageFromReplies(fallbackReplies);
 
             if (fallbackReply != null)
             {
@@ -827,16 +827,16 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken
     )
     {
-        var responseFormat = NaturalToolUseParserMiddleware.CreateResponseFormat(toolName, jsonSchema);
+        var responseFormat = CreateResponseFormat(toolName, jsonSchema);
         var options = new GenerateReplyOptions { ResponseFormat = responseFormat };
 
-        var prompt = NaturalToolUseParserMiddleware.CreateStructuredOutputPrompt(rawText, toolName);
-        var messages = NaturalToolUseParserMiddleware.CreatePromptMessages(prompt);
+        var prompt = CreateStructuredOutputPrompt(rawText, toolName);
+        var messages = CreatePromptMessages(prompt);
 
         try
         {
             var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, options, cancellationToken);
-            var fallbackReply = NaturalToolUseParserMiddleware.ExtractTextMessageFromReplies(fallbackReplies);
+            var fallbackReply = ExtractTextMessageFromReplies(fallbackReplies);
 
             if (fallbackReply != null)
             {
@@ -870,7 +870,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         try
         {
             var fallbackReplies = await _fallbackParser!.GenerateReplyAsync(messages, null, cancellationToken);
-            var fallbackReply = NaturalToolUseParserMiddleware.ExtractTextMessageFromReplies(fallbackReplies);
+            var fallbackReply = ExtractTextMessageFromReplies(fallbackReplies);
 
             if (fallbackReply != null)
             {
@@ -924,14 +924,14 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 
-        return NaturalToolUseParserMiddleware.ValidateJsonSyntaxAndReturn(jsonText, toolName);
+        return ValidateJsonSyntaxAndReturn(jsonText, toolName);
     }
 
     private static IEnumerable<IMessage> ValidateJsonSyntaxAndReturn(string jsonText, string toolName)
     {
         try
         {
-            JsonDocument.Parse(jsonText);
+            _ = JsonDocument.Parse(jsonText);
             return [new TextMessage { Text = jsonText, Role = Role.Assistant }];
         }
         catch (JsonException)

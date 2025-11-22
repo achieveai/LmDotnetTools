@@ -29,9 +29,7 @@ public class ToolCallTracker : IToolCallTracker
             return Guid.NewGuid().ToString();
         }
 
-        return _toolCallIdMap.TryGetValue(lmCoreToolCallId, out var agUiId)
-            ? agUiId
-            : lmCoreToolCallId;
+        return _toolCallIdMap.TryGetValue(lmCoreToolCallId, out var agUiId) ? agUiId : lmCoreToolCallId;
     }
 
     /// <inheritdoc/>
@@ -41,7 +39,7 @@ public class ToolCallTracker : IToolCallTracker
         {
             ToolCallId = toolCallId,
             ToolName = toolName,
-            StartTime = DateTime.UtcNow
+            StartTime = DateTime.UtcNow,
         };
     }
 
@@ -51,7 +49,7 @@ public class ToolCallTracker : IToolCallTracker
         if (_toolCallStates.TryGetValue(toolCallId, out var state))
         {
             var duration = DateTime.UtcNow - state.StartTime;
-            _toolCallStates.TryRemove(toolCallId, out _);
+            _ = _toolCallStates.TryRemove(toolCallId, out _);
             return duration;
         }
 

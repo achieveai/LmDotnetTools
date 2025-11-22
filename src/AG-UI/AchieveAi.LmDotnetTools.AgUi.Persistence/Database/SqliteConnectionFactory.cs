@@ -27,7 +27,8 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
     public SqliteConnectionFactory(
         string connectionString,
         int maxConcurrentConnections = 10,
-        ILogger<SqliteConnectionFactory>? logger = null)
+        ILogger<SqliteConnectionFactory>? logger = null
+    )
     {
         if (string.IsNullOrWhiteSpace(connectionString))
         {
@@ -36,9 +37,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
 
         if (maxConcurrentConnections < 1)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(maxConcurrentConnections),
-                "Must be at least 1.");
+            throw new ArgumentOutOfRangeException(nameof(maxConcurrentConnections), "Must be at least 1.");
         }
 
         _connectionString = connectionString;
@@ -79,7 +78,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
         {
             // Release semaphore if connection creation failed
             connection?.Dispose();
-            _semaphore.Release();
+            _ = _semaphore.Release();
             throw;
         }
     }
@@ -111,10 +110,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
         private readonly ILogger _logger;
         private bool _disposed;
 
-        public ManagedSqliteConnection(
-            string connectionString,
-            SemaphoreSlim semaphore,
-            ILogger logger)
+        public ManagedSqliteConnection(string connectionString, SemaphoreSlim semaphore, ILogger logger)
             : base(connectionString)
         {
             _semaphore = semaphore;
@@ -135,12 +131,12 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
             // Enable WAL mode for better concurrency
             using var walCommand = CreateCommand();
             walCommand.CommandText = "PRAGMA journal_mode=WAL;";
-            await walCommand.ExecuteNonQueryAsync(ct);
+            _ = await walCommand.ExecuteNonQueryAsync(ct);
 
             // Enable foreign keys
             using var fkCommand = CreateCommand();
             fkCommand.CommandText = "PRAGMA foreign_keys=ON;";
-            await fkCommand.ExecuteNonQueryAsync(ct);
+            _ = await fkCommand.ExecuteNonQueryAsync(ct);
         }
 
         protected override void Dispose(bool disposing)
@@ -152,7 +148,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
 
             if (disposing)
             {
-                _semaphore?.Release();
+                _ = (_semaphore?.Release());
                 _logger.LogTrace("Released SQLite connection and semaphore slot");
             }
 
@@ -167,7 +163,7 @@ public sealed class SqliteConnectionFactory : IDbConnectionFactory, IDisposable
                 return;
             }
 
-            _semaphore?.Release();
+            _ = (_semaphore?.Release());
             _logger.LogTrace("Released SQLite connection and semaphore slot (async)");
             _disposed = true;
 

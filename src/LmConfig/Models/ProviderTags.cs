@@ -187,7 +187,7 @@ public static class ProviderTags
         }
 
         var validTags = GetAllTags();
-        return tags.Where(tag => !validTags.Contains(tag)).ToList();
+        return [.. tags.Where(tag => !validTags.Contains(tag))];
     }
 
     /// <summary>

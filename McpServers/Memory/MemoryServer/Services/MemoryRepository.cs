@@ -38,10 +38,14 @@ public class MemoryRepository : IMemoryRepository
     )
     {
         if (string.IsNullOrWhiteSpace(content))
+        {
             throw new ArgumentException("Memory content cannot be empty", nameof(content));
+        }
 
         if (content.Length > 10000)
+        {
             throw new ArgumentException("Memory content cannot exceed 10,000 characters", nameof(content));
+        }
 
         // Generate unique integer ID
         var id = await _idGenerator.GenerateNextIdAsync(cancellationToken);
@@ -71,20 +75,20 @@ public class MemoryRepository : IMemoryRepository
                 INSERT INTO memories (id, content, user_id, agent_id, run_id, metadata, created_at, updated_at, version)
                 VALUES (@id, @content, @userId, @agentId, @runId, @metadata, @createdAt, @updatedAt, @version)";
 
-                command.Parameters.AddWithValue("@id", memory.Id);
-                command.Parameters.AddWithValue("@content", memory.Content);
-                command.Parameters.AddWithValue("@userId", memory.UserId);
-                command.Parameters.AddWithValue("@agentId", memory.AgentId ?? (object)DBNull.Value);
-                command.Parameters.AddWithValue("@runId", memory.RunId ?? (object)DBNull.Value);
-                command.Parameters.AddWithValue(
+                _ = command.Parameters.AddWithValue("@id", memory.Id);
+                _ = command.Parameters.AddWithValue("@content", memory.Content);
+                _ = command.Parameters.AddWithValue("@userId", memory.UserId);
+                _ = command.Parameters.AddWithValue("@agentId", memory.AgentId ?? (object)DBNull.Value);
+                _ = command.Parameters.AddWithValue("@runId", memory.RunId ?? (object)DBNull.Value);
+                _ = command.Parameters.AddWithValue(
                     "@metadata",
                     metadata != null ? JsonSerializer.Serialize(metadata) : (object)DBNull.Value
                 );
-                command.Parameters.AddWithValue("@createdAt", memory.CreatedAt);
-                command.Parameters.AddWithValue("@updatedAt", memory.UpdatedAt);
-                command.Parameters.AddWithValue("@version", memory.Version);
+                _ = command.Parameters.AddWithValue("@createdAt", memory.CreatedAt);
+                _ = command.Parameters.AddWithValue("@updatedAt", memory.UpdatedAt);
+                _ = command.Parameters.AddWithValue("@version", memory.Version);
 
-                await command.ExecuteNonQueryAsync(cancellationToken);
+                _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
                 _logger.LogInformation("Added memory {Id} for session {SessionContext}", memory.Id, sessionContext);
                 return memory;
@@ -118,17 +122,17 @@ public class MemoryRepository : IMemoryRepository
                 if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
                     command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
                 }
 
                 if (!string.IsNullOrEmpty(sessionContext.RunId))
                 {
                     command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
                 }
 
-                command.Parameters.AddWithValue("@id", id);
-                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                _ = command.Parameters.AddWithValue("@id", id);
+                _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
 
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
                 if (await reader.ReadAsync(cancellationToken))
@@ -154,10 +158,14 @@ public class MemoryRepository : IMemoryRepository
     )
     {
         if (string.IsNullOrWhiteSpace(content))
+        {
             throw new ArgumentException("Memory content cannot be empty", nameof(content));
+        }
 
         if (content.Length > 10000)
+        {
             throw new ArgumentException("Memory content cannot exceed 10,000 characters", nameof(content));
+        }
 
         // First get the existing memory to check permissions and get current version
         var existingMemory = await GetByIdAsync(id, sessionContext, cancellationToken);
@@ -183,25 +191,25 @@ public class MemoryRepository : IMemoryRepository
                 if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
                     command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
                 }
 
                 if (!string.IsNullOrEmpty(sessionContext.RunId))
                 {
                     command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
                 }
 
                 var updatedAt = DateTime.UtcNow;
-                command.Parameters.AddWithValue("@id", id);
-                command.Parameters.AddWithValue("@content", content.Trim());
-                command.Parameters.AddWithValue(
+                _ = command.Parameters.AddWithValue("@id", id);
+                _ = command.Parameters.AddWithValue("@content", content.Trim());
+                _ = command.Parameters.AddWithValue(
                     "@metadata",
                     metadata != null ? JsonSerializer.Serialize(metadata) : (object)DBNull.Value
                 );
-                command.Parameters.AddWithValue("@updatedAt", updatedAt);
-                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                command.Parameters.AddWithValue("@currentVersion", existingMemory.Version);
+                _ = command.Parameters.AddWithValue("@updatedAt", updatedAt);
+                _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                _ = command.Parameters.AddWithValue("@currentVersion", existingMemory.Version);
 
                 var rowsAffected = await command.ExecuteNonQueryAsync(cancellationToken);
                 if (rowsAffected == 0)
@@ -248,17 +256,17 @@ public class MemoryRepository : IMemoryRepository
                 if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
                     command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
                 }
 
                 if (!string.IsNullOrEmpty(sessionContext.RunId))
                 {
                     command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
                 }
 
-                command.Parameters.AddWithValue("@id", id);
-                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                _ = command.Parameters.AddWithValue("@id", id);
+                _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
 
                 var rowsAffected = await command.ExecuteNonQueryAsync(cancellationToken);
                 var deleted = rowsAffected > 0;
@@ -300,20 +308,20 @@ public class MemoryRepository : IMemoryRepository
                 if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
                     command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
                 }
 
                 if (!string.IsNullOrEmpty(sessionContext.RunId))
                 {
                     command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
                 }
 
                 command.CommandText += " ORDER BY created_at DESC LIMIT @limit OFFSET @offset";
 
-                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                command.Parameters.AddWithValue("@limit", limit);
-                command.Parameters.AddWithValue("@offset", offset);
+                _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                _ = command.Parameters.AddWithValue("@limit", limit);
+                _ = command.Parameters.AddWithValue("@offset", offset);
 
                 var memories = new List<Memory>();
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -340,7 +348,9 @@ public class MemoryRepository : IMemoryRepository
     )
     {
         if (string.IsNullOrWhiteSpace(query))
-            return new List<Memory>();
+        {
+            return [];
+        }
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
@@ -387,22 +397,22 @@ public class MemoryRepository : IMemoryRepository
         if (!string.IsNullOrEmpty(sessionContext.AgentId))
         {
             command.CommandText += " AND (m.agent_id = @agentId OR m.agent_id IS NULL)";
-            command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+            _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
         }
 
         if (!string.IsNullOrEmpty(sessionContext.RunId))
         {
             command.CommandText += " AND (m.run_id = @runId OR m.run_id IS NULL)";
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+            _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
         }
 
         command.CommandText += " ORDER BY fts.rank LIMIT @limit";
 
         // Escape FTS5 special characters and prepare query
         var escapedQuery = EscapeFts5Query(query);
-        command.Parameters.AddWithValue("@query", escapedQuery);
-        command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-        command.Parameters.AddWithValue("@limit", limit);
+        _ = command.Parameters.AddWithValue("@query", escapedQuery);
+        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+        _ = command.Parameters.AddWithValue("@limit", limit);
 
         var memories = new List<Memory>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -442,21 +452,21 @@ public class MemoryRepository : IMemoryRepository
         if (!string.IsNullOrEmpty(sessionContext.AgentId))
         {
             command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-            command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+            _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
         }
 
         if (!string.IsNullOrEmpty(sessionContext.RunId))
         {
             command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-            command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+            _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
         }
 
         command.CommandText += " ORDER BY created_at DESC LIMIT @limit";
 
         var likeQuery = $"%{query}%";
-        command.Parameters.AddWithValue("@query", likeQuery);
-        command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-        command.Parameters.AddWithValue("@limit", limit);
+        _ = command.Parameters.AddWithValue("@query", likeQuery);
+        _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+        _ = command.Parameters.AddWithValue("@limit", limit);
 
         var memories = new List<Memory>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -497,16 +507,16 @@ public class MemoryRepository : IMemoryRepository
                 if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
                     command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
                 }
 
                 if (!string.IsNullOrEmpty(sessionContext.RunId))
                 {
                     command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
                 }
 
-                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
 
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
                 if (await reader.ReadAsync(cancellationToken))
@@ -562,16 +572,16 @@ public class MemoryRepository : IMemoryRepository
                 if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
                     command.CommandText += " AND (agent_id = @agentId OR agent_id IS NULL)";
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
                 }
 
                 if (!string.IsNullOrEmpty(sessionContext.RunId))
                 {
                     command.CommandText += " AND (run_id = @runId OR run_id IS NULL)";
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
                 }
 
-                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
 
                 var deletedCount = await command.ExecuteNonQueryAsync(cancellationToken);
 
@@ -603,11 +613,11 @@ public class MemoryRepository : IMemoryRepository
         var memory = await GetByIdAsync(id, sessionContext, cancellationToken);
         if (memory == null)
         {
-            return new List<MemoryHistoryEntry>();
+            return [];
         }
 
-        return new List<MemoryHistoryEntry>
-        {
+        return
+        [
             new MemoryHistoryEntry
             {
                 MemoryId = memory.Id,
@@ -616,7 +626,7 @@ public class MemoryRepository : IMemoryRepository
                 CreatedAt = memory.UpdatedAt,
                 ChangeType = "current",
             },
-        };
+        ];
     }
 
     private Memory ReadMemoryFromReader(SqliteDataReader reader)
@@ -715,7 +725,7 @@ public class MemoryRepository : IMemoryRepository
             SELECT COUNT(*) FROM sqlite_master 
             WHERE type='table' AND name=@tableName";
 
-        command.Parameters.AddWithValue("@tableName", tableName);
+        _ = command.Parameters.AddWithValue("@tableName", tableName);
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result != null && Convert.ToInt32(result) > 0;
@@ -734,10 +744,14 @@ public class MemoryRepository : IMemoryRepository
     )
     {
         if (embedding == null || embedding.Length == 0)
+        {
             throw new ArgumentException("Embedding cannot be empty", nameof(embedding));
+        }
 
         if (string.IsNullOrWhiteSpace(modelName))
+        {
             throw new ArgumentException("Model name cannot be empty", nameof(modelName));
+        }
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
@@ -749,7 +763,7 @@ public class MemoryRepository : IMemoryRepository
                     "[" + string.Join(",", embedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture))) + "]";
 
                 // Check if we're using vec0 virtual table or regular table with dimension column
-                bool hasVec0Table = await CheckForVec0TableAsync(connection, cancellationToken);
+                var hasVec0Table = await CheckForVec0TableAsync(connection, cancellationToken);
 
                 using var embeddingCommand = connection.CreateCommand();
                 embeddingCommand.Transaction = transaction;
@@ -769,13 +783,13 @@ public class MemoryRepository : IMemoryRepository
                         @"
                     INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding, dimension)
                     VALUES (@memoryId, @embedding, @dimension)";
-                    embeddingCommand.Parameters.AddWithValue("@dimension", embedding.Length);
+                    _ = embeddingCommand.Parameters.AddWithValue("@dimension", embedding.Length);
                 }
 
-                embeddingCommand.Parameters.AddWithValue("@memoryId", memoryId);
-                embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
+                _ = embeddingCommand.Parameters.AddWithValue("@memoryId", memoryId);
+                _ = embeddingCommand.Parameters.AddWithValue("@embedding", embeddingJson);
 
-                await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
+                _ = await embeddingCommand.ExecuteNonQueryAsync(cancellationToken);
 
                 // Store metadata if embedding_metadata table exists
                 if (await CheckForTableAsync(connection, "embedding_metadata", cancellationToken))
@@ -787,12 +801,12 @@ public class MemoryRepository : IMemoryRepository
                     INSERT OR REPLACE INTO embedding_metadata (memory_id, model_name, embedding_dimension, created_at)
                     VALUES (@memoryId, @modelName, @dimension, @createdAt)";
 
-                    metadataCommand.Parameters.AddWithValue("@memoryId", memoryId);
-                    metadataCommand.Parameters.AddWithValue("@modelName", modelName);
-                    metadataCommand.Parameters.AddWithValue("@dimension", embedding.Length);
-                    metadataCommand.Parameters.AddWithValue("@createdAt", DateTime.UtcNow);
+                    _ = metadataCommand.Parameters.AddWithValue("@memoryId", memoryId);
+                    _ = metadataCommand.Parameters.AddWithValue("@modelName", modelName);
+                    _ = metadataCommand.Parameters.AddWithValue("@dimension", embedding.Length);
+                    _ = metadataCommand.Parameters.AddWithValue("@createdAt", DateTime.UtcNow);
 
-                    await metadataCommand.ExecuteNonQueryAsync(cancellationToken);
+                    _ = await metadataCommand.ExecuteNonQueryAsync(cancellationToken);
                 }
 
                 _logger.LogDebug(
@@ -823,7 +837,7 @@ public class MemoryRepository : IMemoryRepository
                 FROM memory_embeddings 
                 WHERE memory_id = @memoryId";
 
-                command.Parameters.AddWithValue("@memoryId", memoryId);
+                _ = command.Parameters.AddWithValue("@memoryId", memoryId);
 
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
                 if (await reader.ReadAsync(cancellationToken))
@@ -857,7 +871,9 @@ public class MemoryRepository : IMemoryRepository
     )
     {
         if (queryEmbedding == null || queryEmbedding.Length == 0)
+        {
             throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
+        }
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
@@ -881,13 +897,13 @@ public class MemoryRepository : IMemoryRepository
                 if (!string.IsNullOrEmpty(sessionContext.AgentId))
                 {
                     command.CommandText += " AND (m.agent_id = @agentId OR m.agent_id IS NULL)";
-                    command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
+                    _ = command.Parameters.AddWithValue("@agentId", sessionContext.AgentId);
                 }
 
                 if (!string.IsNullOrEmpty(sessionContext.RunId))
                 {
                     command.CommandText += " AND (m.run_id = @runId OR m.run_id IS NULL)";
-                    command.Parameters.AddWithValue("@runId", sessionContext.RunId);
+                    _ = command.Parameters.AddWithValue("@runId", sessionContext.RunId);
                 }
 
                 command.CommandText +=
@@ -904,10 +920,10 @@ public class MemoryRepository : IMemoryRepository
                     + string.Join(",", queryEmbedding.Select(f => f.ToString("G", CultureInfo.InvariantCulture)))
                     + "]";
 
-                command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
-                command.Parameters.AddWithValue("@userId", sessionContext.UserId);
-                command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
-                command.Parameters.AddWithValue("@limit", limit);
+                _ = command.Parameters.AddWithValue("@queryEmbedding", queryEmbeddingJson);
+                _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
+                _ = command.Parameters.AddWithValue("@distanceThreshold", distanceThreshold);
+                _ = command.Parameters.AddWithValue("@limit", limit);
 
                 var results = new List<VectorSearchResult>();
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -955,10 +971,14 @@ public class MemoryRepository : IMemoryRepository
     )
     {
         if (string.IsNullOrWhiteSpace(query))
+        {
             throw new ArgumentException("Query cannot be empty", nameof(query));
+        }
 
         if (queryEmbedding == null || queryEmbedding.Length == 0)
+        {
             throw new ArgumentException("Query embedding cannot be empty", nameof(queryEmbedding));
+        }
 
         // Perform both searches in parallel
         var traditionalSearchTask = SearchAsync(query, sessionContext, limit * 2, 0.0f, cancellationToken);
@@ -973,7 +993,7 @@ public class MemoryRepository : IMemoryRepository
         var combinedResults = new Dictionary<int, (Memory memory, float combinedScore)>();
 
         // Add traditional search results with their weights
-        for (int i = 0; i < traditionalResults.Count; i++)
+        for (var i = 0; i < traditionalResults.Count; i++)
         {
             var memory = traditionalResults[i];
             var traditionalScore = 1.0f - (float)i / traditionalResults.Count; // Higher score for earlier results
@@ -1026,7 +1046,9 @@ public class MemoryRepository : IMemoryRepository
     public async Task<List<string>> GetAgentsAsync(string userId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(userId))
+        {
             throw new ArgumentException("UserId cannot be empty", nameof(userId));
+        }
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
@@ -1043,7 +1065,7 @@ public class MemoryRepository : IMemoryRepository
                   AND agent_id != ''
                 ORDER BY agent_id";
 
-                command.Parameters.AddWithValue("@userId", userId);
+                _ = command.Parameters.AddWithValue("@userId", userId);
 
                 var agents = new List<string>();
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -1077,10 +1099,14 @@ public class MemoryRepository : IMemoryRepository
     )
     {
         if (string.IsNullOrWhiteSpace(userId))
+        {
             throw new ArgumentException("UserId cannot be empty", nameof(userId));
+        }
 
         if (string.IsNullOrWhiteSpace(agentId))
+        {
             throw new ArgumentException("AgentId cannot be empty", nameof(agentId));
+        }
 
         await using var session = await _sessionFactory.CreateSessionAsync(cancellationToken);
 
@@ -1098,8 +1124,8 @@ public class MemoryRepository : IMemoryRepository
                   AND run_id != ''
                 ORDER BY run_id";
 
-                command.Parameters.AddWithValue("@userId", userId);
-                command.Parameters.AddWithValue("@agentId", agentId);
+                _ = command.Parameters.AddWithValue("@userId", userId);
+                _ = command.Parameters.AddWithValue("@agentId", agentId);
 
                 var runs = new List<string>();
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);

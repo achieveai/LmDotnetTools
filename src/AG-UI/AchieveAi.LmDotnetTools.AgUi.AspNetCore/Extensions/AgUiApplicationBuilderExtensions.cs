@@ -20,44 +20,41 @@ public static class AgUiApplicationBuilderExtensions
     /// <returns>The application builder for chaining</returns>
     public static IApplicationBuilder UseAgUi(this IApplicationBuilder app)
     {
+        ArgumentNullException.ThrowIfNull(app, nameof(app));
+
         // Verify services are registered
         var options = app.ApplicationServices.GetService<IOptions<AgUiOptions>>();
         if (options == null)
         {
             throw new InvalidOperationException(
-                "AG-UI services not registered. Call services.AddAgUi() in ConfigureServices.");
+                "AG-UI services not registered. Call services.AddAgUi() in ConfigureServices."
+            );
         }
 
         // Enable WebSockets if not already enabled
-        app.UseWebSockets(new Microsoft.AspNetCore.Builder.WebSocketOptions
-        {
-            KeepAliveInterval = options.Value.KeepAliveInterval
-        });
+        _ = app.UseWebSockets(
+            new Microsoft.AspNetCore.Builder.WebSocketOptions { KeepAliveInterval = options.Value.KeepAliveInterval }
+        );
 
         // Add CORS if enabled
         if (options.Value.EnableCors && options.Value.AllowedOrigins.Count > 0)
         {
-            app.UseCors(builder =>
+            _ = app.UseCors(builder =>
             {
                 var origins = options.Value.AllowedOrigins.ToArray();
                 if (origins.Contains("*"))
                 {
-                    builder.AllowAnyOrigin()
-                           .AllowAnyMethod()
-                           .AllowAnyHeader();
+                    _ = builder.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
                 }
                 else
                 {
-                    builder.WithOrigins(origins)
-                           .AllowAnyMethod()
-                           .AllowAnyHeader()
-                           .AllowCredentials();
+                    _ = builder.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader().AllowCredentials();
                 }
             });
         }
 
         // Add AG-UI middleware
-        app.UseMiddleware<AgUiMiddleware>();
+        _ = app.UseMiddleware<AgUiMiddleware>();
 
         return app;
     }
@@ -70,13 +67,18 @@ public static class AgUiApplicationBuilderExtensions
     /// <returns>The endpoint route builder for chaining</returns>
     public static IEndpointRouteBuilder MapAgUi(this IEndpointRouteBuilder endpoints)
     {
+        ArgumentNullException.ThrowIfNull(endpoints, nameof(endpoints));
+
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<AgUiOptions>>().Value;
 
-        endpoints.Map(options.WebSocketPath, async context =>
-        {
-            var handler = context.RequestServices.GetRequiredService<WebSockets.AgUiWebSocketHandler>();
-            await handler.HandleWebSocketAsync(context, context.RequestAborted);
-        });
+        _ = endpoints.Map(
+            options.WebSocketPath,
+            async context =>
+            {
+                var handler = context.RequestServices.GetRequiredService<WebSockets.AgUiWebSocketHandler>();
+                await handler.HandleWebSocketAsync(context, context.RequestAborted);
+            }
+        );
 
         return endpoints;
     }

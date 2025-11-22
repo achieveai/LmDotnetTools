@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmConfig.Capabilities;
 using AchieveAi.LmDotnetTools.LmConfig.Models;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -83,7 +82,7 @@ public class ModelConfigGeneratorServiceTests
             "MatchesFamily",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static
         );
-        var result = (bool)matchesFamilyMethod!.Invoke(null, new object[] { model, family })!;
+        var result = (bool)matchesFamilyMethod!.Invoke(null, [model, family])!;
 
         // Assert
         Assert.Equal(shouldMatch, result);
@@ -105,7 +104,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.All(result, model => Assert.True(model.IsReasoning || model.HasCapability("thinking")));
@@ -127,7 +126,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.All(result, model => Assert.True(model.HasCapability("multimodal")));
@@ -149,7 +148,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.True(result.Count <= 2);
@@ -171,7 +170,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.All(result, model => Assert.Contains("llama", model.Id.ToLowerInvariant()));
@@ -193,7 +192,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.All(
@@ -223,7 +222,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.All(
@@ -235,7 +234,7 @@ public class ModelConfigGeneratorServiceTests
                 Assert.True(model.IsReasoning || model.HasCapability("thinking"));
             }
         );
-        Assert.Single(result); // Should only include reasoning models from 2024 onwards
+        _ = Assert.Single(result); // Should only include reasoning models from 2024 onwards
     }
 
     [Fact]
@@ -254,7 +253,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.All(result, model => Assert.True(model.CreatedDate.HasValue));
@@ -277,7 +276,7 @@ public class ModelConfigGeneratorServiceTests
 
         var service = CreateTestService();
 
-        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, new object[] { models, options })!;
+        var result = (IReadOnlyList<ModelConfig>)applyFiltersMethod!.Invoke(service, [models, options])!;
 
         // Assert
         Assert.Empty(result);

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using LmEmbeddings.Models;
 using Xunit;
 
@@ -132,6 +131,8 @@ public class EmbeddingApiTypeTests
                 var isDefault = apiType == EmbeddingApiType.Default;
                 Assert.Equal(expectedCompatibility, isDefault);
                 Debug.WriteLine($"✓ {apiType} is default: {isDefault}");
+                break;
+            default:
                 break;
         }
     }

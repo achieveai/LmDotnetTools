@@ -69,20 +69,26 @@ public static class MessageExtensions
     /// <summary>
     /// Checks if a message can provide text content
     /// </summary>
-    public static bool CanGetText(this IMessage message) =>
-        message is ICanGetText && ((ICanGetText)message).GetText() != null;
+    public static bool CanGetText(this IMessage message)
+    {
+        return message is ICanGetText && ((ICanGetText)message).GetText() != null;
+    }
 
     /// <summary>
     /// Checks if a message can provide binary content
     /// </summary>
-    public static bool CanGetBinary(this IMessage message) =>
-        message is ICanGetBinary && ((ICanGetBinary)message).GetBinary() != null;
+    public static bool CanGetBinary(this IMessage message)
+    {
+        return message is ICanGetBinary && ((ICanGetBinary)message).GetBinary() != null;
+    }
 
     /// <summary>
     /// Checks if a message can provide tool calls
     /// </summary>
-    public static bool CanGetToolCalls(this IMessage message) =>
-        message is ICanGetToolCalls && ((ICanGetToolCalls)message).GetToolCalls() != null;
+    public static bool CanGetToolCalls(this IMessage message)
+    {
+        return message is ICanGetToolCalls && ((ICanGetToolCalls)message).GetToolCalls() != null;
+    }
 
     /// <summary>
     /// Gets all usage data from a collection of messages that support usage data
@@ -105,8 +111,10 @@ public static class MessageExtensions
     /// <summary>
     /// Checks if a message can provide usage information
     /// </summary>
-    public static bool CanGetUsage(this IMessage message) =>
-        message is ICanGetUsage && ((ICanGetUsage)message).GetUsage() != null;
+    public static bool CanGetUsage(this IMessage message)
+    {
+        return message is ICanGetUsage && ((ICanGetUsage)message).GetUsage() != null;
+    }
 
     /// <summary>
     /// Transforms a ToolsCallAggregateMessage to natural language format with XML-style tool calls.
@@ -210,7 +218,11 @@ public static class MessageExtensions
     /// </summary>
     public static IMessage WithIds(this IMessage message, GenerateReplyOptions? options)
     {
-        if (options == null) return message;
+        if (options == null)
+        {
+            return message;
+        }
+
         return message.WithIds(options.RunId, options.ParentRunId, options.ThreadId);
     }
 
@@ -221,57 +233,27 @@ public static class MessageExtensions
     {
         if (message is TextMessage textMessage)
         {
-            return textMessage with
-            {
-                RunId = runId,
-                ParentRunId = parentRunId,
-                ThreadId = threadId
-            };
+            return textMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
         }
         else if (message is ToolsCallMessage toolsCallMessage)
         {
-            return toolsCallMessage with
-            {
-                RunId = runId,
-                ParentRunId = parentRunId,
-                ThreadId = threadId
-            };
+            return toolsCallMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
         }
         else if (message is ReasoningMessage reasoningMessage)
         {
-            return reasoningMessage with
-            {
-                RunId = runId,
-                ParentRunId = parentRunId,
-                ThreadId = threadId
-            };
+            return reasoningMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
         }
         else if (message is TextUpdateMessage textUpdateMessage)
         {
-            return textUpdateMessage with
-            {
-                RunId = runId,
-                ParentRunId = parentRunId,
-                ThreadId = threadId
-            };
+            return textUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
         }
         else if (message is ToolsCallUpdateMessage toolsCallUpdateMessage)
         {
-            return toolsCallUpdateMessage with
-            {
-                RunId = runId,
-                ParentRunId = parentRunId,
-                ThreadId = threadId
-            };
+            return toolsCallUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
         }
         else if (message is ReasoningUpdateMessage reasoningUpdateMessage)
         {
-            return reasoningUpdateMessage with
-            {
-                RunId = runId,
-                ParentRunId = parentRunId,
-                ThreadId = threadId
-            };
+            return reasoningUpdateMessage with { RunId = runId, ParentRunId = parentRunId, ThreadId = threadId };
         }
 
         return message;

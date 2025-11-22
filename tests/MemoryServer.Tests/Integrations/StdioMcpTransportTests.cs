@@ -11,6 +11,7 @@ namespace MemoryServer.Tests.Integrations;
 public class StdioMcpTransportTests : McpTransportTestBase
 {
     private readonly string _serverExecutablePath;
+    private static readonly string[] options = ["--stdio"];
 
     public StdioMcpTransportTests(ITestOutputHelper output)
         : base(output)
@@ -38,7 +39,10 @@ public class StdioMcpTransportTests : McpTransportTestBase
         }
     }
 
-    protected override string GetTransportName() => "STDIO";
+    protected override string GetTransportName()
+    {
+        return "STDIO";
+    }
 
     protected override async Task<IMcpClient> CreateClientAsync()
     {
@@ -54,7 +58,7 @@ public class StdioMcpTransportTests : McpTransportTestBase
             {
                 Name = "memory-server",
                 Command = _serverExecutablePath,
-                Arguments = new[] { "--stdio" },
+                Arguments = options,
             }
         );
 

@@ -32,24 +32,24 @@ public class RoundTripConverterTests
             Text = "Hello, this is a test message",
             Role = Role.User,
             GenerationId = "gen-round-1",
-            FromAgent = "TestAgent"
+            FromAgent = "TestAgent",
         };
 
         // Act - LmCore -> AG-UI
         var agUiMessages = _lmToAgUi.ConvertMessage(original);
-        agUiMessages.Should().HaveCount(1);
+        _ = agUiMessages.Should().HaveCount(1);
 
         // Act - AG-UI -> LmCore
         var converted = _agUiToLm.ConvertMessage(agUiMessages[0]);
 
         // Assert
-        converted.Should().BeOfType<TextMessage>();
+        _ = converted.Should().BeOfType<TextMessage>();
         var roundTrip = (TextMessage)converted;
 
-        roundTrip.Text.Should().Be(original.Text);
-        roundTrip.Role.Should().Be(original.Role);
-        roundTrip.GenerationId.Should().Be(original.GenerationId);
-        roundTrip.FromAgent.Should().Be(original.FromAgent);
+        _ = roundTrip.Text.Should().Be(original.Text);
+        _ = roundTrip.Role.Should().Be(original.Role);
+        _ = roundTrip.GenerationId.Should().Be(original.GenerationId);
+        _ = roundTrip.FromAgent.Should().Be(original.FromAgent);
     }
 
     [Fact]
@@ -61,7 +61,7 @@ public class RoundTripConverterTests
             FunctionArgs: """{"location": "Paris", "units": "celsius"}"""
         )
         {
-            ToolCallId = "call-round-1"
+            ToolCallId = "call-round-1",
         };
 
         var original = new ToolsCallMessage
@@ -69,28 +69,28 @@ public class RoundTripConverterTests
             Role = Role.Assistant,
             GenerationId = "gen-tools-round",
             FromAgent = "WeatherAgent",
-            ToolCalls = ImmutableList.Create(toolCall)
+            ToolCalls = [toolCall],
         };
 
         // Act - LmCore -> AG-UI
         var agUiMessages = _lmToAgUi.ConvertMessage(original);
-        agUiMessages.Should().HaveCount(1);
+        _ = agUiMessages.Should().HaveCount(1);
 
         // Act - AG-UI -> LmCore
         var converted = _agUiToLm.ConvertMessage(agUiMessages[0]);
 
         // Assert
-        converted.Should().BeOfType<ToolsCallMessage>();
+        _ = converted.Should().BeOfType<ToolsCallMessage>();
         var roundTrip = (ToolsCallMessage)converted;
 
-        roundTrip.Role.Should().Be(original.Role);
-        roundTrip.GenerationId.Should().Be(original.GenerationId);
-        roundTrip.FromAgent.Should().Be(original.FromAgent);
-        roundTrip.ToolCalls.Should().HaveCount(1);
+        _ = roundTrip.Role.Should().Be(original.Role);
+        _ = roundTrip.GenerationId.Should().Be(original.GenerationId);
+        _ = roundTrip.FromAgent.Should().Be(original.FromAgent);
+        _ = roundTrip.ToolCalls.Should().HaveCount(1);
 
         var roundTripCall = roundTrip.ToolCalls[0];
-        roundTripCall.ToolCallId.Should().Be(toolCall.ToolCallId);
-        roundTripCall.FunctionName.Should().Be(toolCall.FunctionName);
+        _ = roundTripCall.ToolCallId.Should().Be(toolCall.ToolCallId);
+        _ = roundTripCall.FunctionName.Should().Be(toolCall.FunctionName);
 
         // Verify JSON arguments are semantically equivalent
         var originalArgs = JsonDocument.Parse(toolCall.FunctionArgs!);
@@ -98,48 +98,45 @@ public class RoundTripConverterTests
 
         var originalLocation = originalArgs.RootElement.GetProperty("location").GetString();
         var roundTripLocation = roundTripArgs.RootElement.GetProperty("location").GetString();
-        roundTripLocation.Should().Be(originalLocation);
+        _ = roundTripLocation.Should().Be(originalLocation);
 
         var originalUnits = originalArgs.RootElement.GetProperty("units").GetString();
         var roundTripUnits = roundTripArgs.RootElement.GetProperty("units").GetString();
-        roundTripUnits.Should().Be(originalUnits);
+        _ = roundTripUnits.Should().Be(originalUnits);
     }
 
     [Fact]
     public void RoundTrip_ToolsCallResultMessage_PreservesData()
     {
         // Arrange - Note: AG-UI tool result messages go back to LmCore as single-result messages
-        var result = new ToolCallResult(
-            ToolCallId: "call-result-1",
-            Result: "Temperature in Paris: 18°C"
-        );
+        var result = new ToolCallResult(ToolCallId: "call-result-1", Result: "Temperature in Paris: 18°C");
 
         var original = new ToolsCallResultMessage
         {
             Role = Role.Tool,
             GenerationId = "gen-result-round",
             FromAgent = "ToolExecutor",
-            ToolCallResults = ImmutableList.Create(result)
+            ToolCallResults = [result],
         };
 
         // Act - LmCore -> AG-UI (creates one message per result)
         var agUiMessages = _lmToAgUi.ConvertMessage(original);
-        agUiMessages.Should().HaveCount(1);
+        _ = agUiMessages.Should().HaveCount(1);
 
         // Act - AG-UI -> LmCore
         var converted = _agUiToLm.ConvertMessage(agUiMessages[0]);
 
         // Assert
-        converted.Should().BeOfType<ToolsCallResultMessage>();
+        _ = converted.Should().BeOfType<ToolsCallResultMessage>();
         var roundTrip = (ToolsCallResultMessage)converted;
 
-        roundTrip.Role.Should().Be(original.Role);
-        roundTrip.FromAgent.Should().Be(original.FromAgent);
-        roundTrip.ToolCallResults.Should().HaveCount(1);
+        _ = roundTrip.Role.Should().Be(original.Role);
+        _ = roundTrip.FromAgent.Should().Be(original.FromAgent);
+        _ = roundTrip.ToolCallResults.Should().HaveCount(1);
 
         var roundTripResult = roundTrip.ToolCallResults[0];
-        roundTripResult.ToolCallId.Should().Be(result.ToolCallId);
-        roundTripResult.Result.Should().Be(result.Result);
+        _ = roundTripResult.ToolCallId.Should().Be(result.ToolCallId);
+        _ = roundTripResult.Result.Should().Be(result.Result);
     }
 
     [Fact]
@@ -148,32 +145,47 @@ public class RoundTripConverterTests
         // Arrange
         var originalMessages = new List<IMessage>
         {
-            new TextMessage { Text = "Message 1", Role = Role.User, GenerationId = "m1" },
-            new TextMessage { Text = "Message 2", Role = Role.Assistant, GenerationId = "m2" },
-            new TextMessage { Text = "Message 3", Role = Role.User, GenerationId = "m3" }
+            new TextMessage
+            {
+                Text = "Message 1",
+                Role = Role.User,
+                GenerationId = "m1",
+            },
+            new TextMessage
+            {
+                Text = "Message 2",
+                Role = Role.Assistant,
+                GenerationId = "m2",
+            },
+            new TextMessage
+            {
+                Text = "Message 3",
+                Role = Role.User,
+                GenerationId = "m3",
+            },
         };
 
         // Act - LmCore -> AG-UI
         var agUiMessages = _lmToAgUi.ConvertMessageHistory(originalMessages);
-        agUiMessages.Should().HaveCount(3);
+        _ = agUiMessages.Should().HaveCount(3);
 
         // Act - AG-UI -> LmCore
         var converted = _agUiToLm.ConvertMessageHistory(agUiMessages);
 
         // Assert
-        converted.Should().HaveCount(3);
+        _ = converted.Should().HaveCount(3);
 
         var msg1 = (TextMessage)converted[0];
-        msg1.Text.Should().Be("Message 1");
-        msg1.Role.Should().Be(Role.User);
+        _ = msg1.Text.Should().Be("Message 1");
+        _ = msg1.Role.Should().Be(Role.User);
 
         var msg2 = (TextMessage)converted[1];
-        msg2.Text.Should().Be("Message 2");
-        msg2.Role.Should().Be(Role.Assistant);
+        _ = msg2.Text.Should().Be("Message 2");
+        _ = msg2.Role.Should().Be(Role.Assistant);
 
         var msg3 = (TextMessage)converted[2];
-        msg3.Text.Should().Be("Message 3");
-        msg3.Role.Should().Be(Role.User);
+        _ = msg3.Text.Should().Be("Message 3");
+        _ = msg3.Role.Should().Be(Role.User);
     }
 
     [Fact]
@@ -184,7 +196,7 @@ public class RoundTripConverterTests
         {
             Text = "Special: <>&\"'éñ中文🎉 Test",
             Role = Role.User,
-            GenerationId = "gen-special"
+            GenerationId = "gen-special",
         };
 
         // Act
@@ -193,7 +205,7 @@ public class RoundTripConverterTests
 
         // Assert
         var roundTrip = (TextMessage)converted;
-        roundTrip.Text.Should().Be(original.Text);
+        _ = roundTrip.Text.Should().Be(original.Text);
     }
 
     [Fact]
@@ -201,29 +213,26 @@ public class RoundTripConverterTests
     {
         // Arrange
         var complexArgs = """
-        {
-            "nested": {
-                "value": 42,
-                "array": [1, 2, 3],
-                "flag": true
-            },
-            "string": "test value"
-        }
-        """;
+            {
+                "nested": {
+                    "value": 42,
+                    "array": [1, 2, 3],
+                    "flag": true
+                },
+                "string": "test value"
+            }
+            """;
 
-        var toolCall = new LmCoreToolCall(
-            FunctionName: "complex_function",
-            FunctionArgs: complexArgs
-        )
+        var toolCall = new LmCoreToolCall(FunctionName: "complex_function", FunctionArgs: complexArgs)
         {
-            ToolCallId = "call-complex"
+            ToolCallId = "call-complex",
         };
 
         var original = new ToolsCallMessage
         {
             Role = Role.Assistant,
             GenerationId = "gen-complex",
-            ToolCalls = ImmutableList.Create(toolCall)
+            ToolCalls = [toolCall],
         };
 
         // Act
@@ -239,11 +248,18 @@ public class RoundTripConverterTests
         var roundTripJson = JsonDocument.Parse(roundTripArgs!);
 
         // Verify nested values
-        originalJson.RootElement.GetProperty("nested").GetProperty("value").GetInt32()
-            .Should().Be(roundTripJson.RootElement.GetProperty("nested").GetProperty("value").GetInt32());
+        _ = originalJson
+            .RootElement.GetProperty("nested")
+            .GetProperty("value")
+            .GetInt32()
+            .Should()
+            .Be(roundTripJson.RootElement.GetProperty("nested").GetProperty("value").GetInt32());
 
-        originalJson.RootElement.GetProperty("string").GetString()
-            .Should().Be(roundTripJson.RootElement.GetProperty("string").GetString());
+        _ = originalJson
+            .RootElement.GetProperty("string")
+            .GetString()
+            .Should()
+            .Be(roundTripJson.RootElement.GetProperty("string").GetString());
     }
 
     [Fact]
@@ -260,7 +276,7 @@ public class RoundTripConverterTests
         {
             Role = Role.Assistant,
             GenerationId = "gen-multi",
-            ToolCalls = toolCalls
+            ToolCalls = toolCalls,
         };
 
         // Act
@@ -269,16 +285,16 @@ public class RoundTripConverterTests
 
         // Assert
         var roundTrip = (ToolsCallMessage)converted;
-        roundTrip.ToolCalls.Should().HaveCount(3);
+        _ = roundTrip.ToolCalls.Should().HaveCount(3);
 
-        roundTrip.ToolCalls[0].FunctionName.Should().Be("func1");
-        roundTrip.ToolCalls[0].ToolCallId.Should().Be("call-1");
+        _ = roundTrip.ToolCalls[0].FunctionName.Should().Be("func1");
+        _ = roundTrip.ToolCalls[0].ToolCallId.Should().Be("call-1");
 
-        roundTrip.ToolCalls[1].FunctionName.Should().Be("func2");
-        roundTrip.ToolCalls[1].ToolCallId.Should().Be("call-2");
+        _ = roundTrip.ToolCalls[1].FunctionName.Should().Be("func2");
+        _ = roundTrip.ToolCalls[1].ToolCallId.Should().Be("call-2");
 
-        roundTrip.ToolCalls[2].FunctionName.Should().Be("func3");
-        roundTrip.ToolCalls[2].ToolCallId.Should().Be("call-3");
+        _ = roundTrip.ToolCalls[2].FunctionName.Should().Be("func3");
+        _ = roundTrip.ToolCalls[2].ToolCallId.Should().Be("call-3");
     }
 
     [Theory]
@@ -292,7 +308,7 @@ public class RoundTripConverterTests
         {
             Text = "Test message",
             Role = role,
-            GenerationId = $"gen-{role}"
+            GenerationId = $"gen-{role}",
         };
 
         // Act
@@ -301,26 +317,23 @@ public class RoundTripConverterTests
 
         // Assert
         var roundTrip = (TextMessage)converted;
-        roundTrip.Role.Should().Be(original.Role);
+        _ = roundTrip.Role.Should().Be(original.Role);
     }
 
     [Fact]
     public void RoundTrip_EmptyToolCallArguments_PreservesEmptyObject()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(
-            FunctionName: "no_args_function",
-            FunctionArgs: "{}"
-        )
+        var toolCall = new LmCoreToolCall(FunctionName: "no_args_function", FunctionArgs: "{}")
         {
-            ToolCallId = "call-empty"
+            ToolCallId = "call-empty",
         };
 
         var original = new ToolsCallMessage
         {
             Role = Role.Assistant,
             GenerationId = "gen-empty-args",
-            ToolCalls = ImmutableList.Create(toolCall)
+            ToolCalls = [toolCall],
         };
 
         // Act
@@ -329,6 +342,6 @@ public class RoundTripConverterTests
 
         // Assert
         var roundTrip = (ToolsCallMessage)converted;
-        roundTrip.ToolCalls[0].FunctionArgs.Should().Be("{}");
+        _ = roundTrip.ToolCalls[0].FunctionArgs.Should().Be("{}");
     }
 }

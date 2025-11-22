@@ -153,7 +153,7 @@ public class EmbeddingTestDataGeneratorTests
         Assert.NotNull(texts);
         Assert.Equal(count, texts.Length);
 
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             Assert.Equal($"{prefix}_{i}", texts[i]);
         }
@@ -263,9 +263,9 @@ public class EmbeddingTestDataGeneratorTests
         foreach (var testCase in testCases)
         {
             Assert.Equal(3, testCase.Length); // count, size, description
-            Assert.IsType<int>(testCase[0]); // count
-            Assert.IsType<int>(testCase[1]); // size
-            Assert.IsType<string>(testCase[2]); // description
+            _ = Assert.IsType<int>(testCase[0]); // count
+            _ = Assert.IsType<int>(testCase[1]); // size
+            _ = Assert.IsType<string>(testCase[2]); // description
         }
 
         Debug.WriteLine($"✓ Generated {testCases.Count()} embedding test cases");
@@ -286,9 +286,9 @@ public class EmbeddingTestDataGeneratorTests
         foreach (var testCase in testCases)
         {
             Assert.Equal(3, testCase.Length); // code, message, description
-            Assert.IsType<string>(testCase[0]); // code
-            Assert.IsType<string>(testCase[1]); // message
-            Assert.IsType<string>(testCase[2]); // description
+            _ = Assert.IsType<string>(testCase[0]); // code
+            _ = Assert.IsType<string>(testCase[1]); // message
+            _ = Assert.IsType<string>(testCase[2]); // description
         }
 
         Debug.WriteLine($"✓ Generated {testCases.Count()} error test cases");

@@ -23,9 +23,7 @@ public sealed class MessageRepository : IMessageRepository
     /// </summary>
     /// <param name="connectionFactory">The connection factory.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
-    public MessageRepository(
-        IDbConnectionFactory connectionFactory,
-        ILogger<MessageRepository>? logger = null)
+    public MessageRepository(IDbConnectionFactory connectionFactory, ILogger<MessageRepository>? logger = null)
     {
         _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
         _logger = logger ?? NullLogger<MessageRepository>.Instance;
@@ -37,12 +35,13 @@ public sealed class MessageRepository : IMessageRepository
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT Id, SessionId, MessageJson, Timestamp, MessageType
             FROM Messages
             WHERE Id = @Id";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", id));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", id));
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
@@ -59,21 +58,23 @@ public sealed class MessageRepository : IMessageRepository
         string sessionId,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT Id, SessionId, MessageJson, Timestamp, MessageType
             FROM Messages
             WHERE SessionId = @SessionId
             ORDER BY Timestamp ASC
             LIMIT @Take OFFSET @Skip";
 
-        cmd.Parameters.Add(new SqliteParameter("@SessionId", sessionId));
-        cmd.Parameters.Add(new SqliteParameter("@Skip", skip));
-        cmd.Parameters.Add(new SqliteParameter("@Take", take));
+        _ = cmd.Parameters.Add(new SqliteParameter("@SessionId", sessionId));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Skip", skip));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Take", take));
 
         var messages = new List<MessageEntity>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -88,7 +89,8 @@ public sealed class MessageRepository : IMessageRepository
             messages.Count,
             sessionId,
             skip,
-            take);
+            take
+        );
 
         return messages;
     }
@@ -98,12 +100,14 @@ public sealed class MessageRepository : IMessageRepository
         string conversationId,
         int skip = 0,
         int take = 100,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             SELECT m.Id, m.SessionId, m.MessageJson, m.Timestamp, m.MessageType
             FROM Messages m
             INNER JOIN Sessions s ON m.SessionId = s.Id
@@ -111,9 +115,9 @@ public sealed class MessageRepository : IMessageRepository
             ORDER BY m.Timestamp ASC
             LIMIT @Take OFFSET @Skip";
 
-        cmd.Parameters.Add(new SqliteParameter("@ConversationId", conversationId));
-        cmd.Parameters.Add(new SqliteParameter("@Skip", skip));
-        cmd.Parameters.Add(new SqliteParameter("@Take", take));
+        _ = cmd.Parameters.Add(new SqliteParameter("@ConversationId", conversationId));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Skip", skip));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Take", take));
 
         var messages = new List<MessageEntity>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -128,7 +132,8 @@ public sealed class MessageRepository : IMessageRepository
             messages.Count,
             conversationId,
             skip,
-            take);
+            take
+        );
 
         return messages;
     }
@@ -136,31 +141,30 @@ public sealed class MessageRepository : IMessageRepository
     /// <inheritdoc/>
     public async Task CreateAsync(MessageEntity message, CancellationToken ct = default)
     {
-        if (message == null)
-        {
-            throw new ArgumentNullException(nameof(message));
-        }
+        ArgumentNullException.ThrowIfNull(message);
 
         await using var connection = await _connectionFactory.CreateConnectionAsync(ct);
         await using var cmd = connection.CreateCommand();
 
-        cmd.CommandText = @"
+        cmd.CommandText =
+            @"
             INSERT INTO Messages (Id, SessionId, MessageJson, Timestamp, MessageType)
             VALUES (@Id, @SessionId, @MessageJson, @Timestamp, @MessageType)";
 
-        cmd.Parameters.Add(new SqliteParameter("@Id", message.Id));
-        cmd.Parameters.Add(new SqliteParameter("@SessionId", message.SessionId));
-        cmd.Parameters.Add(new SqliteParameter("@MessageJson", message.MessageJson));
-        cmd.Parameters.Add(new SqliteParameter("@Timestamp", message.Timestamp));
-        cmd.Parameters.Add(new SqliteParameter("@MessageType", message.MessageType));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Id", message.Id));
+        _ = cmd.Parameters.Add(new SqliteParameter("@SessionId", message.SessionId));
+        _ = cmd.Parameters.Add(new SqliteParameter("@MessageJson", message.MessageJson));
+        _ = cmd.Parameters.Add(new SqliteParameter("@Timestamp", message.Timestamp));
+        _ = cmd.Parameters.Add(new SqliteParameter("@MessageType", message.MessageType));
 
-        await cmd.ExecuteNonQueryAsync(ct);
+        _ = await cmd.ExecuteNonQueryAsync(ct);
 
         _logger.LogTrace(
             "Created message {MessageId} for session {SessionId} (type: {MessageType})",
             message.Id,
             message.SessionId,
-            message.MessageType);
+            message.MessageType
+        );
     }
 
     /// <summary>
@@ -174,7 +178,7 @@ public sealed class MessageRepository : IMessageRepository
             SessionId = reader.GetString(1),
             MessageJson = reader.GetString(2),
             Timestamp = reader.GetInt64(3),
-            MessageType = reader.GetString(4)
+            MessageType = reader.GetString(4),
         };
     }
 }

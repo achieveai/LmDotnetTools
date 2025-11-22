@@ -33,7 +33,7 @@ public class PromptTemplate
     /// <summary>
     /// Additional prompt configuration metadata
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, object> Metadata { get; set; } = [];
 }
 
 /// <summary>
@@ -199,5 +199,5 @@ public class PromptOptions
     /// <summary>
     /// Custom prompt file paths for specific languages or strategies
     /// </summary>
-    public Dictionary<string, string> CustomPromptPaths { get; set; } = new();
+    public Dictionary<string, string> CustomPromptPaths { get; set; } = [];
 }

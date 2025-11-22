@@ -42,5 +42,8 @@ public interface IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ThreadId => null;
 
-    public ImmutableDictionary<string, object?>? GetMetaTools() => null;
+    public ImmutableDictionary<string, object?>? GetMetaTools()
+    {
+        return null;
+    }
 }

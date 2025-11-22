@@ -41,8 +41,8 @@ public static class EnvironmentHelper
             else
             {
                 // Try to find the .env.test file in the workspace root
-                string workspaceRoot = FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
-                string workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
+                var workspaceRoot = FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory);
+                var workspaceEnvPath = Path.Combine(workspaceRoot, ".env.test");
 
                 Console.WriteLine($"Loading environment variables from workspace root: {workspaceEnvPath}");
                 if (File.Exists(workspaceEnvPath))

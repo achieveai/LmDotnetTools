@@ -1,11 +1,8 @@
 using MemoryServer.Models;
 using MemoryServer.Services;
-using MemoryServer.Tests.Mocks;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
-using Xunit;
 using Xunit.Abstractions;
 
 namespace MemoryServer.Tests.Services;
@@ -43,7 +40,7 @@ public class RerankingEngineTests
     public void RerankingEngine_Constructor_WithNullOptions_ThrowsArgumentNullException()
     {
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => new RerankingEngine(null!, _mockLogger.Object));
+        _ = Assert.Throws<ArgumentNullException>(() => new RerankingEngine(null!, _mockLogger.Object));
     }
 
     [Fact]
@@ -53,7 +50,7 @@ public class RerankingEngineTests
         var options = CreateTestOptions();
 
         // Act & Assert
-        Assert.Throws<ArgumentNullException>(() => new RerankingEngine(options, null!));
+        _ = Assert.Throws<ArgumentNullException>(() => new RerankingEngine(options, null!));
     }
 
     [Fact]
@@ -65,11 +62,11 @@ public class RerankingEngineTests
         var results = CreateTestResults();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("", results, sessionContext));
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("", results, sessionContext));
 
-        await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("   ", results, sessionContext));
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync("   ", results, sessionContext));
 
-        await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync(null!, results, sessionContext));
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => engine.RerankResultsAsync(null!, results, sessionContext));
     }
 
     [Fact]
@@ -80,7 +77,7 @@ public class RerankingEngineTests
         var sessionContext = CreateTestSessionContext();
 
         // Act & Assert
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+        _ = await Assert.ThrowsAsync<ArgumentNullException>(() =>
             engine.RerankResultsAsync("test query", null!, sessionContext)
         );
     }
@@ -147,7 +144,7 @@ public class RerankingEngineTests
         Assert.NotEqual(originalScores, newScores);
 
         // Results should be sorted by score (descending)
-        for (int i = 0; i < result.Results.Count - 1; i++)
+        for (var i = 0; i < result.Results.Count - 1; i++)
         {
             Assert.True(result.Results[i].Score >= result.Results[i + 1].Score);
         }
@@ -380,7 +377,7 @@ public class RerankingEngineTests
         return new RerankingEngine(options, _mockLogger.Object);
     }
 
-    private IOptions<MemoryServerOptions> CreateTestOptions(bool enableReranking = true, int maxCandidates = 100)
+    private static IOptions<MemoryServerOptions> CreateTestOptions(bool enableReranking = true, int maxCandidates = 100)
     {
         var memoryServerOptions = new MemoryServerOptions
         {
@@ -411,7 +408,7 @@ public class RerankingEngineTests
         return Options.Create(memoryServerOptions);
     }
 
-    private SessionContext CreateTestSessionContext()
+    private static SessionContext CreateTestSessionContext()
     {
         return new SessionContext
         {
@@ -421,11 +418,11 @@ public class RerankingEngineTests
         };
     }
 
-    private List<UnifiedSearchResult> CreateTestResults(int count = 3)
+    private static List<UnifiedSearchResult> CreateTestResults(int count = 3)
     {
         var results = new List<UnifiedSearchResult>();
 
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             results.Add(
                 new UnifiedSearchResult

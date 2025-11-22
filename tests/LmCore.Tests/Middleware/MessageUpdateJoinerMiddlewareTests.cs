@@ -17,7 +17,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Mock the agent to return our test message
         var mockAgent = new Mock<IAgent>();
-        mockAgent
+        _ = mockAgent
             .Setup(a =>
                 a.GenerateReplyAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -55,7 +55,7 @@ public class MessageUpdateJoinerMiddlewareTests
     public async Task InvokeStreamingAsync_JoinTextMessages()
     {
         // Arrange
-        string testString = "This is a test";
+        var testString = "This is a test";
         // Default behavior is to not preserve update messages
         var middleware = new MessageUpdateJoinerMiddleware();
         var cancellationToken = CancellationToken.None;
@@ -65,7 +65,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        mockStreamingAgent
+        _ = mockStreamingAgent
             .Setup(a =>
                 a.GenerateReplyStreamingAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -90,7 +90,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Assert - With current implementation of ProcessTextUpdate, no update messages should be emitted
         // since it just returns the original message and preserveUpdateMessages is false
-        Assert.Single(results);
+        _ = Assert.Single(results);
 
         Assert.Equal(testString, ((ICanGetText)results[0]).GetText());
 
@@ -110,7 +110,7 @@ public class MessageUpdateJoinerMiddlewareTests
     public async Task InvokeStreaminAsync_ValidateUsage()
     {
         // Arrange
-        string testString = "This is a test";
+        var testString = "This is a test";
         // Set preserveUpdateMessages to true to see all messages
         var middleware = new MessageUpdateJoinerMiddleware();
         var cancellationToken = CancellationToken.None;
@@ -134,12 +134,14 @@ public class MessageUpdateJoinerMiddlewareTests
             Role = Role.Assistant,
         };
 
-        var updateMessages = new List<IMessage>(textUpdates);
-        updateMessages.Add(usageMessage);
+        var updateMessages = new List<IMessage>(textUpdates)
+        {
+            usageMessage
+        };
 
         // Set up mock streaming agent to return our updates as an async enumerable
         var mockStreamingAgent = new Mock<IStreamingAgent>();
-        mockStreamingAgent
+        _ = mockStreamingAgent
             .Setup(a =>
                 a.GenerateReplyStreamingAsync(
                     It.IsAny<IEnumerable<IMessage>>(),
@@ -167,7 +169,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Check that the first message is the text message with the complete text
         var textMessage = results[0];
-        Assert.IsType<TextMessage>(textMessage);
+        _ = Assert.IsType<TextMessage>(textMessage);
         Assert.NotNull(textMessage);
         Assert.Equal(testString, ((LmCore.Messages.ICanGetText)textMessage).GetText());
 
@@ -176,7 +178,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Check that the second message is a usage message
         var usageMessageResult = results[1];
-        Assert.IsType<UsageMessage>(usageMessageResult);
+        _ = Assert.IsType<UsageMessage>(usageMessageResult);
         var typedUsageMessage = (UsageMessage)usageMessageResult;
 
         // Verify the usage data is correct
@@ -209,7 +211,7 @@ public class MessageUpdateJoinerMiddlewareTests
         result.Add(words[0]);
 
         // Add remaining words with preceding space
-        for (int i = 1; i < words.Length; i++)
+        for (var i = 1; i < words.Length; i++)
         {
             result.Add(" " + words[i]);
         }

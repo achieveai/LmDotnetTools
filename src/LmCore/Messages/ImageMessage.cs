@@ -33,13 +33,25 @@ public class ImageMessage : IMessage, ICanGetBinary, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; set; }
 
-    public string? GetText() => ImageData.ToDataUrl();
+    public string? GetText()
+    {
+        return ImageData.ToDataUrl();
+    }
 
-    public BinaryData? GetBinary() => ImageData;
+    public BinaryData? GetBinary()
+    {
+        return ImageData;
+    }
 
-    public static ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
 
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 }
 
 public class ImageMessageJsonConverter : ShadowPropertiesJsonConverter<ImageMessage>
@@ -164,7 +176,7 @@ public static partial class ImageMessageExtensions
             return null;
         }
 
-        string actualMimeType = data.MediaType ?? "application/octet-stream";
+        var actualMimeType = data.MediaType ?? "application/octet-stream";
         var base64Data = Convert.ToBase64String(data.ToArray());
         return $"data:{actualMimeType};base64,{base64Data}";
     }

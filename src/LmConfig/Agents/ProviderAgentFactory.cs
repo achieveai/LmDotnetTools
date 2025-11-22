@@ -109,7 +109,7 @@ public class ProviderAgentFactory : IProviderAgentFactory
 
     public IReadOnlyList<string> GetSupportedProviders()
     {
-        return ProviderCompatibility.Keys.Where(provider => ProviderCompatibility[provider] != "Replicate").ToList();
+        return [.. ProviderCompatibility.Keys.Where(provider => ProviderCompatibility[provider] != "Replicate")];
     }
 
     public ProviderCapabilityInfo? GetProviderCapabilities(string providerName)
@@ -233,9 +233,9 @@ public class ProviderAgentFactory : IProviderAgentFactory
         var providerCfg = new Http.ProviderConfig(
             apiKey,
             resolution.Connection.EndpointUrl,
-            Http.ProviderType.Anthropic
+            ProviderType.Anthropic
         );
-        var httpClient = Http.HttpClientFactory.Create(
+        var httpClient = HttpClientFactory.Create(
             providerCfg,
             _handlerBuilder,
             resolution.Connection.Timeout,
@@ -248,8 +248,8 @@ public class ProviderAgentFactory : IProviderAgentFactory
     private IOpenClient CreateOpenAIClient(ProviderResolution resolution)
     {
         var apiKey = resolution.Connection.GetApiKey() ?? throw new InvalidOperationException("API key not found.");
-        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, Http.ProviderType.OpenAI);
-        var httpClient = Http.HttpClientFactory.Create(
+        var providerCfg = new Http.ProviderConfig(apiKey, resolution.Connection.EndpointUrl, ProviderType.OpenAI);
+        var httpClient = HttpClientFactory.Create(
             providerCfg,
             _handlerBuilder,
             resolution.Connection.Timeout,

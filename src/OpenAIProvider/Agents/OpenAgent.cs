@@ -94,7 +94,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
 
             if (
                 coreUsage.ExtraProperties != null
-                && coreUsage.ExtraProperties.TryGetValue("estimated_cost", out object? value)
+                && coreUsage.ExtraProperties.TryGetValue("estimated_cost", out var value)
             )
             {
                 totalCost = value switch
@@ -157,7 +157,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             _logger.LogDebug(
                 "Message conversion details: CompletionId={CompletionId}, ConvertedMessageCount={MessageCount}, HasToolCalls={HasToolCalls}",
                 openMessage.CompletionId,
-                resultMessages.Count(),
+                resultMessages.Count,
                 openMessage.ChatMessage.ToolCalls?.Any() == true
             );
 
@@ -184,7 +184,7 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
             _logger.LogDebug(
                 "Message conversion details (no usage): CompletionId={CompletionId}, ConvertedMessageCount={MessageCount}, HasToolCalls={HasToolCalls}",
                 openMessage.CompletionId,
-                resultMessages.Count(),
+                resultMessages.Count,
                 openMessage.ChatMessage.ToolCalls?.Any() == true
             );
 
@@ -229,14 +229,14 @@ public class OpenClientAgent : IStreamingAgent, IDisposable
     {
         var response = _client.StreamingChatCompletionsAsync(request, cancellationToken)!;
 
-        string completionId = string.Empty;
-        string modelId = string.Empty;
-        int totalChunks = 0;
-        bool hasUsageData = false;
+        var completionId = string.Empty;
+        var modelId = string.Empty;
+        var totalChunks = 0;
+        var hasUsageData = false;
         var startTime = DateTime.UtcNow;
         DateTime? firstTokenTime = null;
-        int totalPromptTokens = 0;
-        int totalCompletionTokens = 0;
+        var totalPromptTokens = 0;
+        var totalCompletionTokens = 0;
         double? totalCost = null;
 
         await foreach (var item in response)

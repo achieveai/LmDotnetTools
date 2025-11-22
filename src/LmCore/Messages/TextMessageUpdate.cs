@@ -21,7 +21,10 @@ public record TextUpdateMessage : IMessage, ICanGetText
     /// Gets the text content of the message.
     /// </summary>
     /// <returns>The text content.</returns>
-    public string? GetText() => Text;
+    public string? GetText()
+    {
+        return Text;
+    }
 
     /// <summary>
     /// The role of the message sender (typically Assistant for LM responses).
@@ -83,17 +86,26 @@ public record TextUpdateMessage : IMessage, ICanGetText
     /// <summary>
     /// Not supported for text updates.
     /// </summary>
-    public static BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
 
     /// <summary>
     /// Not supported for text updates.
     /// </summary>
-    public static ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
 
     /// <summary>
     /// Not supported for text updates.
     /// </summary>
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 
     /// <summary>
     /// Converts this update to a complete TextMessage.

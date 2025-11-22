@@ -108,10 +108,10 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     if (update.Path == "root.thought" && update.TextValue != null)
                     {
                         // Unescape the JSON string
-                        string thought = JsonStringUtils.UnescapeJsonString(update.TextValue);
+                        var thought = JsonStringUtils.UnescapeJsonString(update.TextValue);
 
                         // Check if this is a complete or partial update
-                        bool isComplete = update.Kind == JsonFragmentKind.CompleteString;
+                        var isComplete = update.Kind == JsonFragmentKind.CompleteString;
 
                         // For better incremental experience, process this chunk directly
                         // but don't process the last line unless it's a complete string
@@ -171,7 +171,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             if (!isComplete && lines.Length > 0)
             {
                 _thinkingLine = lines[lines.Length - 1]; // Store the last line for further processing
-                lines = lines.Take(lines.Length - 1).ToArray(); // Exclude the last line for now
+                lines = [.. lines.Take(lines.Length - 1)]; // Exclude the last line for now
             }
             foreach (var line in lines)
             {
@@ -207,7 +207,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             // Blockquote detection
             if (line.TrimStart().StartsWith(">"))
             {
-                int quoteEnd = line.IndexOf(">");
+                var quoteEnd = line.IndexOf(">");
                 yield return (_blockquoteColor, line.Substring(0, quoteEnd + 1));
                 yield return (_thinkingColor, line.Substring(quoteEnd + 1));
                 yield break;
@@ -232,13 +232,13 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             }
 
             // Process inline formatting (bold, italic, code)
-            int pos = 0;
+            var pos = 0;
             while (pos < line.Length)
             {
                 // Bold detection
                 if (pos + 1 < line.Length && line.Substring(pos, 2) == "**")
                 {
-                    int closeBold = line.IndexOf("**", pos + 2);
+                    var closeBold = line.IndexOf("**", pos + 2);
                     if (closeBold != -1)
                     {
                         yield return (_boldColor, line.Substring(pos, closeBold + 2 - pos));
@@ -250,7 +250,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 // Italic detection
                 if (pos < line.Length && line[pos] == '*' && (pos == 0 || line[pos - 1] != '*'))
                 {
-                    int closeItalic = line.IndexOf("*", pos + 1);
+                    var closeItalic = line.IndexOf("*", pos + 1);
                     if (closeItalic != -1 && (closeItalic + 1 >= line.Length || line[closeItalic + 1] != '*'))
                     {
                         yield return (_italicColor, line.Substring(pos, closeItalic + 1 - pos));
@@ -262,7 +262,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 // Inline code detection
                 if (pos < line.Length && line[pos] == '`')
                 {
-                    int closeCode = line.IndexOf("`", pos + 1);
+                    var closeCode = line.IndexOf("`", pos + 1);
                     if (closeCode != -1)
                     {
                         yield return (_codeBlockColor, line.Substring(pos, closeCode + 1 - pos));
@@ -304,10 +304,10 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     if (update.Path.EndsWith("code") && update.TextValue != null)
                     {
                         // Unescape the JSON string
-                        string code = JsonStringUtils.UnescapeJsonString(update.TextValue);
+                        var code = JsonStringUtils.UnescapeJsonString(update.TextValue);
 
                         // Check if this is a complete or partial update
-                        bool isComplete = update.Kind == JsonFragmentKind.CompleteString;
+                        var isComplete = update.Kind == JsonFragmentKind.CompleteString;
 
                         // For better incremental experience, process this chunk directly
                         // but don't process the last line unless it's a complete string
@@ -368,7 +368,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             if (!isComplete && lines.Length > 0)
             {
                 _pythonLine = lines[lines.Length - 1]; // Store the last line for further processing
-                lines = lines.Take(lines.Length - 1).ToArray(); // Exclude the last line for now
+                lines = [.. lines.Take(lines.Length - 1)]; // Exclude the last line for now
             }
             foreach (var line in lines)
             {
@@ -392,7 +392,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 yield break;
             }
 
-            int pos = 0;
+            var pos = 0;
 
             // Indicate line start with a consistent indentation
             yield return ((_pythonPunctuationColor, "  "));

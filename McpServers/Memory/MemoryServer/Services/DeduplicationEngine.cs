@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using MemoryServer.Models;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MemoryServer.Services;
@@ -118,7 +117,9 @@ public partial class DeduplicationEngine : IDeduplicationEngine
             metrics.TotalDuration = totalStopwatch.Elapsed;
 
             if (!effectiveOptions.EnableGracefulFallback)
+            {
                 throw;
+            }
 
             return CreateFallbackResults(
                 results,
@@ -165,7 +166,7 @@ public partial class DeduplicationEngine : IDeduplicationEngine
                 foreach (var result in group.Where(r => !processedIds.Contains(r.Id)))
                 {
                     deduplicatedResults.Add(result);
-                    processedIds.Add(result.Id);
+                    _ = processedIds.Add(result.Id);
                 }
                 continue;
             }
@@ -178,13 +179,13 @@ public partial class DeduplicationEngine : IDeduplicationEngine
             foreach (var result in preservedResults.Where(r => !processedIds.Contains(r.Id)))
             {
                 deduplicatedResults.Add(result);
-                processedIds.Add(result.Id);
+                _ = processedIds.Add(result.Id);
             }
 
             // Mark ALL results in the duplicate group as processed to prevent them from being added back later
             foreach (var result in group.Where(r => !processedIds.Contains(r.Id)))
             {
-                processedIds.Add(result.Id);
+                _ = processedIds.Add(result.Id);
             }
 
             metrics.DuplicatesRemoved += group.Count - preservedResults.Count;
@@ -200,7 +201,7 @@ public partial class DeduplicationEngine : IDeduplicationEngine
         }
 
         // Sort by original score to maintain ranking
-        return deduplicatedResults.OrderByDescending(r => r.Score).ToList();
+        return [.. deduplicatedResults.OrderByDescending(r => r.Score)];
     }
 
     private static async Task AnalyzeContentSimilarityAsync(
@@ -212,28 +213,32 @@ public partial class DeduplicationEngine : IDeduplicationEngine
     {
         var processedIds = new HashSet<int>();
 
-        for (int i = 0; i < results.Count; i++)
+        for (var i = 0; i < results.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (processedIds.Contains(results[i].Id))
+            {
                 continue;
+            }
 
             var currentGroup = new List<UnifiedSearchResult> { results[i] };
-            processedIds.Add(results[i].Id);
+            _ = processedIds.Add(results[i].Id);
 
             // Compare with remaining results
-            for (int j = i + 1; j < results.Count; j++)
+            for (var j = i + 1; j < results.Count; j++)
             {
                 if (processedIds.Contains(results[j].Id))
+                {
                     continue;
+                }
 
                 var similarity = CalculateContentSimilarity(results[i], results[j]);
 
                 if (similarity >= options.SimilarityThreshold)
                 {
                     currentGroup.Add(results[j]);
-                    processedIds.Add(results[j].Id);
+                    _ = processedIds.Add(results[j].Id);
                 }
             }
 
@@ -271,17 +276,23 @@ public partial class DeduplicationEngine : IDeduplicationEngine
         var content2 = NormalizeContent(result2.Content);
 
         if (string.IsNullOrEmpty(content1) || string.IsNullOrEmpty(content2))
+        {
             return 0.0f;
+        }
 
         // Use Jaccard similarity for text comparison
         var words1 = content1.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
         var words2 = content2.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
 
         if (words1.Count == 0 && words2.Count == 0)
+        {
             return 1.0f;
+        }
 
         if (words1.Count == 0 || words2.Count == 0)
+        {
             return 0.0f;
+        }
 
         var intersection = words1.Intersect(words2).Count();
         var union = words1.Union(words2).Count();
@@ -293,7 +304,9 @@ public partial class DeduplicationEngine : IDeduplicationEngine
     private static string NormalizeContent(string content)
     {
         if (string.IsNullOrEmpty(content))
+        {
             return string.Empty;
+        }
 
         // Remove extra whitespace, convert to lowercase, remove punctuation
         return MyRegex().Replace(content.ToLowerInvariant().Trim(), " ").Replace("  ", " ");
@@ -305,7 +318,9 @@ public partial class DeduplicationEngine : IDeduplicationEngine
     )
     {
         if (duplicateGroup.Count <= 1)
+        {
             return duplicateGroup;
+        }
 
         // Always keep the highest scoring result
         var sortedGroup = duplicateGroup.OrderByDescending(r => r.Score).ToList();
@@ -351,18 +366,24 @@ public partial class DeduplicationEngine : IDeduplicationEngine
     {
         // Different types often provide complementary information
         if (primary.Type != candidate.Type)
+        {
             return true;
+        }
 
         // Check if secondary content provides additional value
         if (!string.IsNullOrEmpty(candidate.SecondaryContent) && string.IsNullOrEmpty(primary.SecondaryContent))
+        {
             return true;
+        }
 
         // Check if confidence levels are significantly different
         if (primary.Confidence.HasValue && candidate.Confidence.HasValue)
         {
             var confidenceDiff = Math.Abs(primary.Confidence.Value - candidate.Confidence.Value);
             if (confidenceDiff >= 0.2f) // Significant confidence difference
+            {
                 return true;
+            }
         }
 
         // Check metadata for complementary information
@@ -373,7 +394,9 @@ public partial class DeduplicationEngine : IDeduplicationEngine
 
             // If candidate has unique metadata keys, it provides complementary info
             if (candidateKeys.Except(primaryKeys).Any())
+            {
                 return true;
+            }
         }
 
         return false;

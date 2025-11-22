@@ -32,13 +32,25 @@ public record ToolsCallResultMessage : IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
 
-    public static string? GetText() => null;
+    public static string? GetText()
+    {
+        return null;
+    }
 
-    public static BinaryData? GetBinary() => null;
+    public static BinaryData? GetBinary()
+    {
+        return null;
+    }
 
-    public static ToolCall? GetToolCalls() => null;
+    public static ToolCall? GetToolCalls()
+    {
+        return null;
+    }
 
-    public static IEnumerable<IMessage>? GetMessages() => null;
+    public static IEnumerable<IMessage>? GetMessages()
+    {
+        return null;
+    }
 
     // Factory method for creating a ToolsCallResultMessage with a single result
     public static ToolsCallResultMessage Create(
@@ -56,7 +68,7 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = ImmutableList.Create(new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)),
+            ToolCallResults = [new ToolCallResult(toolCall.ToolCallId, result ?? string.Empty)],
         };
     }
 
@@ -75,9 +87,7 @@ public record ToolsCallResultMessage : IMessage
             FromAgent = fromAgent,
             Metadata = metadata,
             GenerationId = generationId,
-            ToolCallResults = results
-                .Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty))
-                .ToImmutableList(),
+            ToolCallResults = [.. results.Select(r => new ToolCallResult(r.toolCall.ToolCallId, r.result ?? string.Empty))],
         };
     }
 }

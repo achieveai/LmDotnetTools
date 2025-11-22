@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using System.Net;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Models;
 using Microsoft.Extensions.Logging;
@@ -103,12 +102,17 @@ public class RerankingService : IRerankService, IDisposable
     )
     {
         if (string.IsNullOrWhiteSpace(query))
+        {
             throw new ArgumentException("Query cannot be null or empty", nameof(query));
+        }
+
         ArgumentNullException.ThrowIfNull(documents);
 
         var docList = documents.ToList();
         if (docList.Count == 0)
+        {
             throw new ArgumentException("Documents cannot be empty", nameof(documents));
+        }
 
         return await ExecuteWithLinearRetryAsync(
             async (attemptNumber) =>
@@ -117,7 +121,7 @@ public class RerankingService : IRerankService, IDisposable
                 {
                     Model = _model,
                     Query = query,
-                    Documents = documents.ToImmutableList(),
+                    Documents = [.. documents],
                     TopN = null, // Return all documents ranked
                 };
 
@@ -134,7 +138,7 @@ public class RerankingService : IRerankService, IDisposable
 
                 if (!IsRetryableStatusCode(response.StatusCode))
                 {
-                    response.EnsureSuccessStatusCode(); // This will throw
+                    _ = response.EnsureSuccessStatusCode(); // This will throw
                 }
 
                 throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
@@ -306,9 +310,7 @@ public class RerankingService : IRerankService, IDisposable
 
         return new RerankResponse
         {
-            Results = rankedDocuments
-                .Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score })
-                .ToImmutableList(),
+            Results = [.. rankedDocuments.Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score })],
         };
     }
 
@@ -331,14 +333,12 @@ public class RerankingService : IRerankService, IDisposable
         // Apply topK filtering if specified
         if (topK.HasValue && topK.Value > 0)
         {
-            rankedDocuments = rankedDocuments.Take(topK.Value).ToList();
+            rankedDocuments = [.. rankedDocuments.Take(topK.Value)];
         }
 
         return new RerankResponse
         {
-            Results = rankedDocuments
-                .Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score })
-                .ToImmutableList(),
+            Results = [.. rankedDocuments.Select(doc => new RerankResult { Index = doc.Index, RelevanceScore = doc.Score })],
         };
     }
 

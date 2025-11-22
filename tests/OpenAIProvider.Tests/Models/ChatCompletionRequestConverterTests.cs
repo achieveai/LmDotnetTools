@@ -10,7 +10,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
     {
         // Small value to compensate for floating-point precision issues
         private const double FloatPrecisionDelta = 0.00001;
-        private static readonly string[] expected = new[] { "stop1", "stop2" };
+        private static readonly string[] expected = ["stop1", "stop2"];
 
         [Fact]
         public void Create_BasicMessages_CreatesCorrectRequest()
@@ -60,7 +60,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 Temperature = 0.9f,
                 MaxToken = 1000,
                 TopP = 0.95f,
-                StopSequence = new[] { "stop1", "stop2" },
+                StopSequence = ["stop1", "stop2"],
                 RandomSeed = 42,
             };
 
@@ -73,7 +73,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             Assert.Equal(1000, result.MaxTokens);
 
             // Make sure TopP is not null before accessing Value
-            Assert.NotNull(result.TopP);
+            _ = Assert.NotNull(result.TopP);
             Assert.Equal(0.95d, result.TopP!.Value, precision: 5);
 
             Assert.Equal(expected, result.Stop);
@@ -104,14 +104,14 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 },
             };
 
-            var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = new[] { function } };
+            var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = [function] };
 
             // Act
             var result = ChatCompletionRequest.FromMessages(messages, options);
 
             // Assert
             Assert.NotNull(result.Tools);
-            Assert.Single(result.Tools);
+            _ = Assert.Single(result.Tools);
 
             var tool = result.Tools[0];
             Assert.Equal("function", tool.Type);
@@ -129,7 +129,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             {
                 new TextMessage { Role = Role.System, Text = "You are a helpful assistant" },
                 new TextMessage { Role = Role.User, Text = "What's the weather in New York?" },
-                new ToolsCallMessage { Role = Role.Assistant, ToolCalls = new[] { toolCall }.ToImmutableList() },
+                new ToolsCallMessage { Role = Role.Assistant, ToolCalls = [toolCall] },
                 new TextMessage
                 {
                     Role = Role.Tool,
@@ -151,7 +151,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             var toolCallMessage = result.Messages[2];
             Assert.Equal(RoleEnum.Assistant, toolCallMessage.Role);
             Assert.NotNull(toolCallMessage.ToolCalls);
-            Assert.Single(toolCallMessage.ToolCalls);
+            _ = Assert.Single(toolCallMessage.ToolCalls);
             Assert.Equal("get_weather", toolCallMessage.ToolCalls[0].Function.Name);
 
             // Check function response conversion
@@ -159,7 +159,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             Assert.Equal(RoleEnum.Tool, functionResponseMessage.Role);
 
             // Use string.Contains instead of direct comparison for robustness
-            string content = functionResponseMessage.Content?.Get<string>() ?? string.Empty;
+            var content = functionResponseMessage.Content?.Get<string>() ?? string.Empty;
             Assert.Contains("temp", content);
             Assert.Contains("72", content);
             Assert.Contains("sunny", content);
@@ -181,7 +181,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             Assert.Equal("", result.Model); // Empty string as default model
             Assert.Equal(0.7d, result.Temperature, precision: 5); // Default temperature
             Assert.Equal(1024, result.MaxTokens); // Default max tokens
-            Assert.Single(result.Messages);
+            _ = Assert.Single(result.Messages);
             Assert.Equal(RoleEnum.User, result.Messages[0].Role);
         }
     }

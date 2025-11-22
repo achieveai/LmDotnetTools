@@ -2,16 +2,15 @@ using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.AgUi.AspNetCore.Models;
-using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
+using AchieveAi.LmDotnetTools.AgUi.DataObjects;
 using AchieveAi.LmDotnetTools.AgUi.Protocol.Middleware;
+using AchieveAi.LmDotnetTools.AgUi.Protocol.Publishing;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using AchieveAi.LmDotnetTools.AgUi.DataObjects;
 
 namespace AchieveAi.LmDotnetTools.AgUi.AspNetCore.Controllers;
 
@@ -30,7 +29,8 @@ public class AgUiController : ControllerBase
     public AgUiController(
         ILogger<AgUiController> logger,
         IEventPublisher _eventPublisher,
-        IServiceProvider serviceProvider)
+        IServiceProvider serviceProvider
+    )
     {
         _logger = logger;
         this._eventPublisher = _eventPublisher;
@@ -44,35 +44,41 @@ public class AgUiController : ControllerBase
     /// <param name="cancellationToken">Cancellation token</param>
     [HttpPost]
     [Produces("text/event-stream")]
-    public async Task StreamAgUiEvents(
-        [FromBody] AgUiRequest request,
-        CancellationToken cancellationToken)
+    public async Task StreamAgUiEvents([FromBody] AgUiRequest request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request, nameof(request));
+
         var sessionId = request.ThreadId ?? Guid.NewGuid().ToString();
 
-        _logger.LogInformation("AG-UI SSE request received - SessionId: {SessionId}, Agent: {Agent}",
-            sessionId, request.Agent ?? "default");
+        _logger.LogInformation(
+            "AG-UI SSE request received - SessionId: {SessionId}, Agent: {Agent}",
+            sessionId,
+            request.Agent ?? "default"
+        );
 
         // Set SSE headers
         Response.ContentType = "text/event-stream";
-        Response.Headers["Cache-Control"] = "no-cache";
-        Response.Headers["Connection"] = "keep-alive";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers.Connection = "keep-alive";
         Response.Headers["X-Accel-Buffering"] = "no"; // Disable nginx buffering
 
         try
         {
             // Start agent execution in background task
-            var executionTask = Task.Run(async () =>
-            {
-                try
+            var executionTask = Task.Run(
+                async () =>
                 {
-                    await ExecuteAgentAsync(request, sessionId, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Agent execution failed for session {SessionId}", sessionId);
-                }
-            }, cancellationToken);
+                    try
+                    {
+                        await ExecuteAgentAsync(request, sessionId, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Agent execution failed for session {SessionId}", sessionId);
+                    }
+                },
+                cancellationToken
+            );
 
             // Subscribe to events and stream as SSE
             await foreach (var evt in _eventPublisher.SubscribeAsync(sessionId, cancellationToken))
@@ -83,8 +89,7 @@ public class AgUiController : ControllerBase
                 await Response.Body.WriteAsync(bytes, cancellationToken);
                 await Response.Body.FlushAsync(cancellationToken);
 
-                _logger.LogDebug("Streamed SSE event: {EventType} for session {SessionId}",
-                    evt.Type, sessionId);
+                _logger.LogDebug("Streamed SSE event: {EventType} for session {SessionId}", evt.Type, sessionId);
 
                 if (evt.Type == AgUiEventTypes.RUN_FINISHED)
                 {
@@ -109,12 +114,14 @@ public class AgUiController : ControllerBase
             // Try to send error event
             try
             {
-                var errorJson = JsonSerializer.Serialize(new
-                {
-                    type = "RUN_ERROR",
-                    sessionId,
-                    error = ex.Message
-                });
+                var errorJson = JsonSerializer.Serialize(
+                    new
+                    {
+                        type = "RUN_ERROR",
+                        sessionId,
+                        error = ex.Message,
+                    }
+                );
                 var errorData = $"data: {errorJson}\n\n";
                 var errorBytes = Encoding.UTF8.GetBytes(errorData);
                 await Response.Body.WriteAsync(errorBytes, CancellationToken.None);
@@ -131,10 +138,7 @@ public class AgUiController : ControllerBase
         }
     }
 
-    private async Task ExecuteAgentAsync(
-        AgUiRequest request,
-        string sessionId,
-        CancellationToken cancellationToken)
+    private async Task ExecuteAgentAsync(AgUiRequest request, string sessionId, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Executing agent for session {SessionId}", sessionId);
 
@@ -146,7 +150,7 @@ public class AgUiController : ControllerBase
             MaxToken = 4096,
             Temperature = 0.7f,
             RunId = request.RunId ?? Guid.NewGuid().ToString(),
-            ThreadId = sessionId
+            ThreadId = sessionId,
         };
 
         // Get agent - try to resolve specific agent by name or use first available
@@ -157,7 +161,9 @@ public class AgUiController : ControllerBase
             // Try to get named agent from service provider
             // This would require a registry pattern - for now just get all and select by type name
             var agents = _serviceProvider.GetServices<IStreamingAgent>();
-            agent = agents.FirstOrDefault(a => a.GetType().Name.Equals(request.Agent, StringComparison.OrdinalIgnoreCase));
+            agent = agents.FirstOrDefault(a =>
+                a.GetType().Name.Equals(request.Agent, StringComparison.OrdinalIgnoreCase)
+            );
         }
 
         // Fallback to first registered agent
@@ -166,7 +172,9 @@ public class AgUiController : ControllerBase
         if (agent == null)
         {
             _logger.LogError("No IStreamingAgent registered in DI container");
-            throw new InvalidOperationException("No agent available - please register at least one IStreamingAgent in DI");
+            throw new InvalidOperationException(
+                "No agent available - please register at least one IStreamingAgent in DI"
+            );
         }
 
         // Get AgUiStreamingMiddleware from DI
@@ -183,34 +191,38 @@ public class AgUiController : ControllerBase
         // Consume the stream
         await foreach (var message in responseStream.WithCancellation(cancellationToken))
         {
-            _logger.LogDebug("Agent produced message of type {MessageType} for session {SessionId}",
-                message.GetType().Name, sessionId);
+            _logger.LogDebug(
+                "Agent produced message of type {MessageType} for session {SessionId}",
+                message.GetType().Name,
+                sessionId
+            );
         }
 
         _logger.LogInformation("Agent execution completed for session {SessionId}", sessionId);
     }
 
-    private ImmutableList<IMessage> ConvertMessages(List<AgUiMessage>? messages)
+    private static ImmutableList<IMessage> ConvertMessages(List<AgUiMessage>? messages)
     {
         if (messages == null || messages.Count == 0)
         {
             return ImmutableList<IMessage>.Empty;
         }
 
-        return messages
-            .Select(m => new TextMessage
-            {
-                Role = m.Role.ToLowerInvariant() switch
+        return [.. messages
+            .Select(m =>
+                new TextMessage
                 {
-                    "user" => Role.User,
-                    "assistant" => Role.Assistant,
-                    "system" => Role.System,
-                    "tool" => Role.Tool,
-                    _ => Role.User
-                },
-                Text = m.Content,
-                FromAgent = m.Name
-            } as IMessage)
-            .ToImmutableList();
+                    Role = m.Role.ToLowerInvariant() switch
+                    {
+                        "user" => Role.User,
+                        "assistant" => Role.Assistant,
+                        "system" => Role.System,
+                        "tool" => Role.Tool,
+                        _ => Role.User,
+                    },
+                    Text = m.Content,
+                    FromAgent = m.Name,
+                } as IMessage
+            )];
     }
 }

@@ -29,7 +29,7 @@ public class GraphRepositoryTests : IDisposable
 
         // Create a simple logger factory that returns NullLogger instances
         _mockLoggerFactory = new Mock<ILoggerFactory>();
-        _mockLoggerFactory.Setup(f => f.CreateLogger(It.IsAny<string>())).Returns(new Mock<ILogger>().Object);
+        _ = _mockLoggerFactory.Setup(f => f.CreateLogger(It.IsAny<string>())).Returns(new Mock<ILogger>().Object);
 
         // Create TestSqliteSessionFactory for proper test isolation
         _sessionFactory = new TestSqliteSessionFactory(_mockLoggerFactory.Object);
@@ -84,7 +84,7 @@ public class GraphRepositoryTests : IDisposable
     )
     {
         // Arrange
-        await _repository.AddEntityAsync(entity, sessionContext);
+        _ = await _repository.AddEntityAsync(entity, sessionContext);
 
         // Act
         var result = await _repository.GetEntityByNameAsync(entity.Name, sessionContext);
@@ -175,15 +175,15 @@ public class GraphRepositoryTests : IDisposable
     {
         // Arrange
         // Act
-        await _repository.AddEntityAsync(entity1, session1);
-        await _repository.AddEntityAsync(entity2, session2);
+        _ = await _repository.AddEntityAsync(entity1, session1);
+        _ = await _repository.AddEntityAsync(entity2, session2);
 
         var entitiesSession1 = await _repository.GetEntitiesAsync(session1);
         var entitiesSession2 = await _repository.GetEntitiesAsync(session2);
 
         // Assert
-        Assert.Single(entitiesSession1);
-        Assert.Single(entitiesSession2);
+        _ = Assert.Single(entitiesSession1);
+        _ = Assert.Single(entitiesSession2);
         Assert.Equal(entity1.Name, entitiesSession1.First().Name);
         Assert.Equal(entity2.Name, entitiesSession2.First().Name);
     }
@@ -242,7 +242,7 @@ public class GraphRepositoryTests : IDisposable
                     Name = "New York",
                     Type = "city",
                     UserId = "user456",
-                    Aliases = new List<string> { "NYC", "Big Apple" },
+                    Aliases = ["NYC", "Big Apple"],
                     Confidence = 0.9f,
                 },
                 new SessionContext { UserId = "user456", AgentId = "agent789" },
@@ -382,7 +382,7 @@ public class GraphRepositoryTests : IDisposable
 
     #region Timeout Helper
 
-    private async Task<T> WithTimeoutAsync<T>(Task<T> task, int timeoutSeconds, string operationName)
+    private static async Task<T> WithTimeoutAsync<T>(Task<T> task, int timeoutSeconds, string operationName)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);
@@ -397,7 +397,7 @@ public class GraphRepositoryTests : IDisposable
         return await task;
     }
 
-    private async Task WithTimeoutAsync(Task task, int timeoutSeconds, string operationName)
+    private static async Task WithTimeoutAsync(Task task, int timeoutSeconds, string operationName)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         var timeoutTask = Task.Delay(Timeout.Infinite, cts.Token);
@@ -429,7 +429,7 @@ public class GraphRepositoryTests : IDisposable
         catch (Exception ex)
         {
             // Log disposal errors but don't throw
-            System.Diagnostics.Debug.WriteLine($"Error during disposal: {ex.Message}");
+            Debug.WriteLine($"Error during disposal: {ex.Message}");
         }
     }
 }

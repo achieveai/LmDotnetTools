@@ -36,17 +36,26 @@ public static class AnthropicJsonSerializerOptionsFactory
     /// Creates JsonSerializerOptions optimized for Anthropic API production use.
     /// Uses the standard Anthropic configuration with compact formatting.
     /// </summary>
-    public static JsonSerializerOptions CreateForProduction() => CreateForAnthropic(writeIndented: false);
+    public static JsonSerializerOptions CreateForProduction()
+    {
+        return CreateForAnthropic(writeIndented: false);
+    }
 
     /// <summary>
     /// Creates JsonSerializerOptions optimized for Anthropic testing and debugging.
     /// Uses indented formatting for better readability.
     /// </summary>
-    public static JsonSerializerOptions CreateForTesting() => CreateForAnthropic(writeIndented: true);
+    public static JsonSerializerOptions CreateForTesting()
+    {
+        return CreateForAnthropic(writeIndented: true);
+    }
 
     /// <summary>
     /// Creates JsonSerializerOptions for cross-provider scenarios.
     /// Uses case-insensitive matching for robustness across different providers.
     /// </summary>
-    public static JsonSerializerOptions CreateUniversal() => CreateForAnthropic(caseInsensitive: true);
+    public static JsonSerializerOptions CreateUniversal()
+    {
+        return CreateForAnthropic(caseInsensitive: true);
+    }
 }
