@@ -128,7 +128,7 @@ public class MessageTransformationMiddlewareTests
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var toolCall = new ToolCall("test_function", "{\"arg\":\"value\"}") { ToolCallId = "call_1", ToolCallIdx = 0 };
+        var toolCall = new ToolCall { FunctionName = "test_function", FunctionArgs = "{\"arg\":\"value\"}", ToolCallId = "call_1", ToolCallIdx = 0 };
         var agent = new MockAgent(
             new TextMessage { Text = "Response", GenerationId = "gen1" }
         );
@@ -245,7 +245,7 @@ public class MessageTransformationMiddlewareTests
     {
         // Arrange
         var middleware = new MessageTransformationMiddleware();
-        var toolCall = new ToolCall("test_func", "{}") { ToolCallId = "call_1", ToolCallIdx = 0 };
+        var toolCall = new ToolCall { FunctionName = "test_func", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 };
 
         // Mock agent that returns raw messages (simulating provider)
         var agent = new MockAgent(

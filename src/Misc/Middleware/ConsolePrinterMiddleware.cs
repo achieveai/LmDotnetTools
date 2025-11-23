@@ -472,8 +472,10 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         if (_isNewMessage)
         {
             // Create a new tool call object
-            var newToolCall = new ToolCall(update.FunctionName ?? "unknown", update.FunctionArgs ?? "{}")
+            var newToolCall = new ToolCall
             {
+                FunctionName = update.FunctionName ?? "unknown",
+                FunctionArgs = update.FunctionArgs ?? "{}",
                 ToolCallId = update.ToolCallId,
                 Index = update.Index ?? indexKey,
             };

@@ -41,7 +41,7 @@ public class SimpleTestAgent : IAgent
     public void InjectToolCall(string functionName, object args)
     {
         var serializedArgs = JsonSerializer.Serialize(args);
-        var toolCall = new ToolCall(functionName, serializedArgs);
+        var toolCall = new ToolCall { FunctionName = functionName, FunctionArgs = serializedArgs };
         _injectedMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
     }
 

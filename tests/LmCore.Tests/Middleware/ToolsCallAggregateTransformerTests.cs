@@ -8,7 +8,7 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_SingleToolCall_ProducesCorrectXmlFormat()
     {
         // Arrange
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"San Francisco\",\"unit\":\"celsius\"}" };
         var toolResult = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies");
 
         var toolCallMessage = new ToolsCallMessage
@@ -49,8 +49,8 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_MultipleToolCalls_UsesCorrectSeparator()
     {
         // Arrange
-        var toolCall1 = new ToolCall("GetWeather", "{\"location\":\"San Francisco\"}");
-        var toolCall2 = new ToolCall("GetTime", "{\"timezone\":\"PST\"}");
+        var toolCall1 = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"San Francisco\"}" };
+        var toolCall2 = new ToolCall { FunctionName = "GetTime", FunctionArgs = "{\"timezone\":\"PST\"}" };
         var toolResult1 = new ToolCallResult(null, "Sunny, 25°C");
         var toolResult2 = new ToolCallResult(null, "3:45 PM");
 
@@ -83,7 +83,7 @@ public class ToolsCallAggregateTransformerTests
             .Add("test_key", "test_value")
             .Add("another_key", 42);
 
-        var toolCall = new ToolCall("TestFunction", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "test result");
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall], Metadata = metadata };
@@ -105,7 +105,7 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_InvalidJsonArgs_UsesOriginalText()
     {
         // Arrange
-        var toolCall = new ToolCall("TestFunction", "invalid json {");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "invalid json {" };
         var toolResult = new ToolCallResult(null, "test result");
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
@@ -131,7 +131,7 @@ public class ToolsCallAggregateTransformerTests
             Role = Role.Assistant,
         };
 
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Boston\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Boston\"}" };
         var toolResult = new ToolCallResult(null, "Rainy, 18°C");
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
@@ -177,7 +177,7 @@ public class ToolsCallAggregateTransformerTests
     public void FormatToolCallAndResponse_SimpleCall_FormatsCorrectly()
     {
         // Arrange
-        var toolCall = new ToolCall("CalculateSum", "{\"a\":5,\"b\":3}");
+        var toolCall = new ToolCall { FunctionName = "CalculateSum", FunctionArgs = "{\"a\":5,\"b\":3}" };
         var toolResult = new ToolCallResult(null, "8");
 
         // Act
@@ -203,7 +203,7 @@ public class ToolsCallAggregateTransformerTests
     public void FormatToolCallAndResponse_JsonResponse_FormatsJsonCorrectly()
     {
         // Arrange
-        var toolCall = new ToolCall("GetData", "{}");
+        var toolCall = new ToolCall { FunctionName = "GetData", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "{\"status\":\"success\",\"data\":[1,2,3]}");
 
         // Act
@@ -232,7 +232,7 @@ public class ToolsCallAggregateTransformerTests
     public void TransformToNaturalFormat_EmptyFunctionName_UsesUnknownFunction()
     {
         // Arrange
-        var toolCall = new ToolCall(null, "{}");
+        var toolCall = new ToolCall { FunctionName = null, FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "result");
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };

@@ -11,10 +11,11 @@ public class NaturalToolUseTransformationIntegrationTests
     public void FullPipeline_SingleToolCall_TransformsCorrectly()
     {
         // Arrange - Create a realistic scenario with weather tool call
-        var weatherToolCall = new ToolCall(
-            "GetWeather",
-            "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\",\"include_forecast\":true}"
-        );
+        var weatherToolCall = new ToolCall
+        {
+            FunctionName = "GetWeather",
+            FunctionArgs = "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\",\"include_forecast\":true}"
+        };
         var weatherResult = new ToolCallResult(
             "weather-call-1",
             "{\"temperature\":22,\"condition\":\"partly_cloudy\",\"humidity\":65,\"wind_speed\":12,\"forecast\":[{\"day\":\"today\",\"high\":24,\"low\":18},{\"day\":\"tomorrow\",\"high\":26,\"low\":19}]}"
@@ -84,11 +85,12 @@ public class NaturalToolUseTransformationIntegrationTests
     public void FullPipeline_MultipleToolCalls_WithSeparators()
     {
         // Arrange - Create a scenario with multiple tool calls
-        var searchCall = new ToolCall("SearchDatabase", "{\"query\":\"customers in California\",\"limit\":5}");
-        var analysisCall = new ToolCall(
-            "AnalyzeResults",
-            "{\"data_source\":\"customer_search\",\"metrics\":[\"count\",\"revenue\"]}"
-        );
+        var searchCall = new ToolCall { FunctionName = "SearchDatabase", FunctionArgs = "{\"query\":\"customers in California\",\"limit\":5}" };
+        var analysisCall = new ToolCall
+        {
+            FunctionName = "AnalyzeResults",
+            FunctionArgs = "{\"data_source\":\"customer_search\",\"metrics\":[\"count\",\"revenue\"]}"
+        };
 
         var searchResult = new ToolCallResult(
             "search-1",
@@ -150,10 +152,11 @@ public class NaturalToolUseTransformationIntegrationTests
             GenerationId = "gen-conv-001",
         };
 
-        var toolCall = new ToolCall(
-            "GetCustomersByRegion",
-            "{\"region\":\"West Coast\",\"status\":\"active\",\"sort_by\":\"revenue\"}"
-        );
+        var toolCall = new ToolCall
+        {
+            FunctionName = "GetCustomersByRegion",
+            FunctionArgs = "{\"region\":\"West Coast\",\"status\":\"active\",\"sort_by\":\"revenue\"}"
+        };
         var toolResult = new ToolCallResult(
             "customer-search-1",
             "{\"count\":42,\"total_revenue\":2500000,\"top_customers\":[{\"name\":\"TechCorp\",\"revenue\":500000},{\"name\":\"StartupXYZ\",\"revenue\":350000}]}"
@@ -207,10 +210,11 @@ public class NaturalToolUseTransformationIntegrationTests
     public void ExtensionMethods_Integration_WorksSeamlessly()
     {
         // Arrange - Test the extension methods in a realistic scenario
-        var toolCall = new ToolCall(
-            "ProcessPayment",
-            "{\"amount\":99.99,\"currency\":\"USD\",\"payment_method\":\"credit_card\"}"
-        );
+        var toolCall = new ToolCall
+        {
+            FunctionName = "ProcessPayment",
+            FunctionArgs = "{\"amount\":99.99,\"currency\":\"USD\",\"payment_method\":\"credit_card\"}"
+        };
         var toolResult = new ToolCallResult(
             "payment-123",
             "{\"status\":\"success\",\"transaction_id\":\"txn_abc123\",\"confirmation_code\":\"CONF789\"}"
@@ -274,7 +278,7 @@ public class NaturalToolUseTransformationIntegrationTests
         var regularMessage = new TextMessage { Text = "This is just text", Role = Role.User };
 
         // Create aggregate with potentially problematic data
-        var problematicToolCall = new ToolCall(null, "invalid json {"); // Null name, invalid JSON
+        var problematicToolCall = new ToolCall { FunctionName = null, FunctionArgs = "invalid json {" };
         var problematicToolResult = new ToolCallResult(null, "simple text result");
 
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [problematicToolCall] };
@@ -329,10 +333,11 @@ public class NaturalToolUseTransformationIntegrationTests
         };
 
         // First tool call - get sales data
-        var salesCall = new ToolCall(
-            "GetSalesData",
-            "{\"period\":\"Q1 2024\",\"include_breakdown\":true,\"currency\":\"USD\"}"
-        );
+        var salesCall = new ToolCall
+        {
+            FunctionName = "GetSalesData",
+            FunctionArgs = "{\"period\":\"Q1 2024\",\"include_breakdown\":true,\"currency\":\"USD\"}"
+        };
         var salesResult = new ToolCallResult(
             "sales-001",
             "{\"total_sales\":1750000,\"breakdown\":{\"January\":580000,\"February\":620000,\"March\":550000},\"transactions\":156,\"average_order\":11218}"
@@ -350,10 +355,11 @@ public class NaturalToolUseTransformationIntegrationTests
         };
 
         // Second tool call - create report
-        var reportCall = new ToolCall(
-            "CreateSummaryReport",
-            "{\"data_source\":\"Q1_sales\",\"format\":\"executive_summary\",\"include_charts\":false}"
-        );
+        var reportCall = new ToolCall
+        {
+            FunctionName = "CreateSummaryReport",
+            FunctionArgs = "{\"data_source\":\"Q1_sales\",\"format\":\"executive_summary\",\"include_charts\":false}"
+        };
         var reportResult = new ToolCallResult(
             "report-001",
             "Q1 2024 Sales Summary:\\n\\nTotal Revenue: $1,750,000\\nTransactions: 156\\nAverage Order Value: $11,218\\n\\nMonthly Breakdown:\\n- January: $580,000 (33.1%)\\n- February: $620,000 (35.4%)\\n- March: $550,000 (31.4%)\\n\\nKey Insights:\\n- February was the strongest month\\n- Consistent performance across the quarter\\n- High average order value indicates quality customer base"

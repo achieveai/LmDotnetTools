@@ -65,8 +65,10 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         // Serialize JsonElement to JSON string
         var argumentsJson = JsonSerializer.Serialize(toolCall.Function.Arguments);
 
-        return new ToolCall(FunctionName: toolCall.Function.Name, FunctionArgs: argumentsJson)
+        return new ToolCall
         {
+            FunctionName = toolCall.Function.Name,
+            FunctionArgs = argumentsJson,
             ToolCallId = toolCall.Id,
         };
     }
@@ -200,12 +202,12 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         return dict == null || !dict.TryGetValue(key, out var value)
             ? null
             : value switch
-        {
-            float f => f,
-            double d => (float)d,
-            int i => (float)i,
-            _ => null,
-        };
+            {
+                float f => f,
+                double d => (float)d,
+                int i => (float)i,
+                _ => null,
+            };
     }
 
     private static int? ExtractInt(Dictionary<string, object>? dict, string key)
@@ -213,11 +215,11 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         return dict == null || !dict.TryGetValue(key, out var value)
             ? null
             : value switch
-        {
-            int i => i,
-            long l => (int)l,
-            _ => null,
-        };
+            {
+                int i => i,
+                long l => (int)l,
+                _ => null,
+            };
     }
 
     private static string[]? ExtractStringArray(Dictionary<string, object>? dict, string key)

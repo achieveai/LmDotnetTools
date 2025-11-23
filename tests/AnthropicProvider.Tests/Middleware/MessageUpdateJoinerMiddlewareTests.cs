@@ -182,7 +182,7 @@ public class MessageUpdateJoinerMiddlewareTests
                         var functionArgs = GetStringProperty(toolCallElement, "function_args");
                         var toolCallId = GetStringProperty(toolCallElement, "tool_call_id");
 
-                        toolCalls.Add(new ToolCall(functionName, functionArgs) { ToolCallId = toolCallId });
+                        toolCalls.Add(new ToolCall { FunctionName = functionName, FunctionArgs = functionArgs, ToolCallId = toolCallId });
                     }
                 }
 

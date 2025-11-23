@@ -17,5 +17,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\src\LmConfig\docs\models.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include=".mcp.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

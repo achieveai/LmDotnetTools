@@ -470,7 +470,7 @@ public class FunctionCallMiddlewareTests
 
         return new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall(functionName, jsonArgs) { ToolCallId = Guid.NewGuid().ToString() }],
+            ToolCalls = [new ToolCall { FunctionName = functionName, FunctionArgs = jsonArgs, ToolCallId = Guid.NewGuid().ToString() }],
             Role = Role.Assistant,
         };
     }
@@ -1040,10 +1040,7 @@ public class FunctionCallMiddlewareTests
         // Create a tool call message with the calculator add function and our large numbers
         var toolCallMessage = new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall("CalculatorTool-Add", JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }))
-                {
-                    ToolCallId = toolCallId,
-                }],
+            ToolCalls = [new ToolCall { FunctionName = "CalculatorTool-Add", FunctionArgs = JsonSerializer.Serialize(new { a = firstNumber, b = secondNumber }), ToolCallId = toolCallId }],
             Role = Role.Assistant,
         };
 

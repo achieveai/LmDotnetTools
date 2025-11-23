@@ -134,11 +134,10 @@ public class JsonlStreamParser
                 RunId = runId,
                 ParentRunId = parentRunId,
                 ThreadId = threadId,
-                ToolCalls = [new ToolCall(
-                    FunctionName: contentBlock.Name,
-                    FunctionArgs: contentBlock.Input?.GetRawText() ?? "{}"
-                )
+                ToolCalls = [new ToolCall
                 {
+                    FunctionName = contentBlock.Name,
+                    FunctionArgs = contentBlock.Input?.GetRawText() ?? "{}",
                     ToolCallId = contentBlock.Id
                 }]
             },

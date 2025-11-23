@@ -56,11 +56,10 @@ public class RoundTripConverterTests
     public void RoundTrip_ToolsCallMessage_PreservesStructure()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(
-            FunctionName: "get_weather",
-            FunctionArgs: """{"location": "Paris", "units": "celsius"}"""
-        )
+        var toolCall = new LmCoreToolCall
         {
+            FunctionName = "get_weather",
+            FunctionArgs = """{"location": "Paris", "units": "celsius"}""",
             ToolCallId = "call-round-1",
         };
 
@@ -223,10 +222,7 @@ public class RoundTripConverterTests
             }
             """;
 
-        var toolCall = new LmCoreToolCall(FunctionName: "complex_function", FunctionArgs: complexArgs)
-        {
-            ToolCallId = "call-complex",
-        };
+        var toolCall = new LmCoreToolCall { FunctionName = "complex_function", FunctionArgs = complexArgs, ToolCallId = "call-complex" };
 
         var original = new ToolsCallMessage
         {
@@ -267,9 +263,9 @@ public class RoundTripConverterTests
     {
         // Arrange
         var toolCalls = ImmutableList.Create(
-            new LmCoreToolCall("func1", """{"a": 1}""") { ToolCallId = "call-1" },
-            new LmCoreToolCall("func2", """{"b": 2}""") { ToolCallId = "call-2" },
-            new LmCoreToolCall("func3", """{"c": 3}""") { ToolCallId = "call-3" }
+            new LmCoreToolCall { FunctionName = "func1", FunctionArgs = """{"a": 1}""", ToolCallId = "call-1" },
+            new LmCoreToolCall { FunctionName = "func2", FunctionArgs = """{"b": 2}""", ToolCallId = "call-2" },
+            new LmCoreToolCall { FunctionName = "func3", FunctionArgs = """{"c": 3}""", ToolCallId = "call-3" }
         );
 
         var original = new ToolsCallMessage
@@ -324,10 +320,7 @@ public class RoundTripConverterTests
     public void RoundTrip_EmptyToolCallArguments_PreservesEmptyObject()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(FunctionName: "no_args_function", FunctionArgs: "{}")
-        {
-            ToolCallId = "call-empty",
-        };
+        var toolCall = new LmCoreToolCall { FunctionName = "no_args_function", FunctionArgs = "{}", ToolCallId = "call-empty" };
 
         var original = new ToolsCallMessage
         {

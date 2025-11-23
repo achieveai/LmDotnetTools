@@ -6,7 +6,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void ToNaturalToolUse_WithToolsCallAggregateMessage_TransformsCorrectly()
     {
         // Arrange
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Paris\"}" };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C");
 
         var toolCallMessage = new ToolsCallMessage
@@ -61,7 +61,7 @@ public class MessageExtensionsNaturalToolUseTests
         // Arrange
         var textMessage = new TextMessage { Text = "Hello", Role = Role.User };
 
-        var toolCall = new ToolCall("TestFunction", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "test result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
@@ -85,7 +85,7 @@ public class MessageExtensionsNaturalToolUseTests
         // Arrange
         var prefixMessage = new TextMessage { Text = "Let me check that for you.", Role = Role.Assistant };
 
-        var toolCall = new ToolCall("CheckWeather", "{\"city\":\"London\"}");
+        var toolCall = new ToolCall { FunctionName = "CheckWeather", FunctionArgs = "{\"city\":\"London\"}" };
         var toolResult = new ToolCallResult(null, "Cloudy, 18°C");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
@@ -139,7 +139,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void ContainsTransformableToolCalls_WithAggregateMessage_ReturnsTrue()
     {
         // Arrange
-        var toolCall = new ToolCall("TestFunc", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunc", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
@@ -192,7 +192,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void IsTransformableToolCall_WithAggregateMessage_ReturnsTrue()
     {
         // Arrange
-        var toolCall = new ToolCall("TestFunc", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunc", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
@@ -222,7 +222,7 @@ public class MessageExtensionsNaturalToolUseTests
     public void ToNaturalToolUse_WithInvalidAggregateMessage_ReturnsOriginalMessage()
     {
         // Arrange - Create an aggregate message that might cause transformation to fail
-        var toolCall = new ToolCall(null, null); // Invalid data
+        var toolCall = new ToolCall { FunctionName = null, FunctionArgs = null }; // Invalid data
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };

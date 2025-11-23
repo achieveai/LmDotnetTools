@@ -39,10 +39,11 @@ public class McpServerTests
 
             // Create a test agent and inject a tool call message to be returned
             var agent = new SimpleTestAgent();
-            var toolCall = new LmCore.Messages.ToolCall(
-                "GreetingTool.SayHello",
-                JsonSerializer.Serialize(new { name = "User" })
-            );
+            var toolCall = new LmCore.Messages.ToolCall
+            {
+                FunctionName = "GreetingTool.SayHello",
+                FunctionArgs = JsonSerializer.Serialize(new { name = "User" })
+            };
             agent.InjectMessage(new ToolsCallMessage { ToolCalls = [toolCall] });
 
             // Create a simple text message as the initial message
