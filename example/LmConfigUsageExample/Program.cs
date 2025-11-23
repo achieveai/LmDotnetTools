@@ -1,5 +1,3 @@
-using System.Collections.Immutable;
-using System.Reflection;
 using System.Text;
 using AchieveAi.LmDotnetTools.LmConfig.Agents;
 using AchieveAi.LmDotnetTools.LmConfig.Services;
@@ -7,30 +5,46 @@ using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace LmConfigUsageExample;
 
-class Program
+internal class Program
 {
-    static async Task Main(string[] args)
+    private static async Task Main(string[] args)
     {
-        Console.WriteLine("=== LmConfig Enhanced Usage Examples ===\\n");
+        // Parse command-line arguments
+        var promptArg = Array.FindIndex(args, a => a == "--prompt" || a == "-p");
+        var prompt = promptArg >= 0 && promptArg + 1 < args.Length
+            ? args[promptArg + 1]
+            : "Hello! Can you tell me what MCP tools are available to you?";
 
-        RunFileBasedExample();
-        RunEmbeddedResourceExample();
-        RunStreamFactoryExample();
-        RunIOptionsExample();
-        await RunProviderAvailabilityExample();
-        await RunModelIdResolutionExample();
-        await RunClaudeAgentSdkExample();
+        // Check if user wants to run all examples (excluding ClaudeAgentSDK)
+        var runAllExamples = args.Contains("--all");
+
+        if (runAllExamples)
+        {
+            Console.WriteLine("=== LmConfig Usage Examples ===\n");
+            RunFileBasedExample();
+            RunEmbeddedResourceExample();
+            RunStreamFactoryExample();
+            RunIOptionsExample();
+            await RunProviderAvailabilityExample();
+            await RunModelIdResolutionExample();
+            Console.WriteLine("\nNote: ClaudeAgentSDK example (Example 7) requires OneShot mode.");
+            Console.WriteLine("Run with: dotnet run --prompt \"Your question here\"\n");
+            return;
+        }
+
+        // Default: Run ClaudeAgentSDK in OneShot mode
+        Console.WriteLine("=== ClaudeAgentSDK One-Shot Mode ===\n");
+        await RunClaudeAgentSdkOneShotExample(prompt);
     }
 
     /// <summary>
     /// Example 1: Traditional file-based configuration loading
     /// </summary>
-    static void RunFileBasedExample()
+    private static void RunFileBasedExample()
     {
         Console.WriteLine("1. File-Based Configuration Loading");
         Console.WriteLine("==================================");
@@ -38,7 +52,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Create configuration from models.json file
             var configuration = new ConfigurationBuilder()
@@ -46,7 +60,7 @@ class Program
                 .Build();
 
             // Add LmConfig with file-based configuration
-            services.AddLmConfig(configuration);
+            _ = services.AddLmConfig(configuration);
 
             var serviceProvider = services.BuildServiceProvider();
             var agent = serviceProvider.GetRequiredService<IAgent>();
@@ -63,7 +77,7 @@ class Program
     /// <summary>
     /// Example 2: Embedded resource configuration loading
     /// </summary>
-    static void RunEmbeddedResourceExample()
+    private static void RunEmbeddedResourceExample()
     {
         Console.WriteLine("2. Embedded Resource Configuration Loading");
         Console.WriteLine("==========================================");
@@ -71,12 +85,12 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Try to load from embedded resource (will fallback to file if not embedded)
             try
             {
-                services.AddLmConfigFromEmbeddedResource("models.json");
+                _ = services.AddLmConfigFromEmbeddedResource("models.json");
                 Console.WriteLine("✓ Successfully loaded configuration from embedded resource");
             }
             catch (InvalidOperationException)
@@ -88,7 +102,7 @@ class Program
                     .AddJsonFile("models.json", optional: false, reloadOnChange: false)
                     .Build();
 
-                services.AddLmConfig(configuration);
+                _ = services.AddLmConfig(configuration);
                 Console.WriteLine("✓ Successfully loaded configuration from file as fallback");
             }
 
@@ -106,7 +120,7 @@ class Program
     /// <summary>
     /// Example 3: Stream factory configuration loading
     /// </summary>
-    static void RunStreamFactoryExample()
+    private static void RunStreamFactoryExample()
     {
         Console.WriteLine("3. Stream Factory Configuration Loading");
         Console.WriteLine("=======================================");
@@ -114,10 +128,10 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Load configuration using stream factory
-            services.AddLmConfigFromStream(() =>
+            _ = services.AddLmConfigFromStream(() =>
             {
                 // This could be from any source: HTTP, database, memory, etc.
                 var configPath = Path.Combine("..", "..", "src", "LmConfig", "docs", "models.json");
@@ -140,7 +154,7 @@ class Program
     /// <summary>
     /// Example 4: IOptions pattern configuration loading
     /// </summary>
-    static void RunIOptionsExample()
+    private static void RunIOptionsExample()
     {
         Console.WriteLine("4. IOptions Pattern Configuration Loading");
         Console.WriteLine("=========================================");
@@ -148,7 +162,7 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             // Create configuration using .NET's configuration system
             var configuration = new ConfigurationBuilder()
@@ -156,7 +170,7 @@ class Program
                 .Build();
 
             // Use IOptions pattern with configuration section
-            services.AddLmConfig(configuration);
+            _ = services.AddLmConfig(configuration);
 
             var serviceProvider = services.BuildServiceProvider();
             var agent = serviceProvider.GetRequiredService<IAgent>();
@@ -173,7 +187,7 @@ class Program
     /// <summary>
     /// Example 5: Provider availability checking
     /// </summary>
-    static async Task RunProviderAvailabilityExample()
+    private static async Task RunProviderAvailabilityExample()
     {
         Console.WriteLine("5. Provider Availability Checking");
         Console.WriteLine("==================================");
@@ -181,13 +195,13 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             var configuration = new ConfigurationBuilder()
                 .AddJsonFile("models.json", optional: false, reloadOnChange: false)
                 .Build();
 
-            services.AddLmConfig(configuration);
+            _ = services.AddLmConfig(configuration);
 
             var serviceProvider = services.BuildServiceProvider();
             var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
@@ -239,7 +253,7 @@ class Program
     /// <summary>
     /// Example 6: ModelId Resolution and Translation
     /// </summary>
-    static async Task RunModelIdResolutionExample()
+    private static async Task RunModelIdResolutionExample()
     {
         Console.WriteLine("6. ModelId Resolution and Translation");
         Console.WriteLine("=====================================");
@@ -247,13 +261,13 @@ class Program
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
             var configuration = new ConfigurationBuilder()
                 .AddJsonFile("models.json", optional: false, reloadOnChange: false)
                 .Build();
 
-            services.AddLmConfig(configuration);
+            _ = services.AddLmConfig(configuration);
 
             var serviceProvider = services.BuildServiceProvider();
             var unifiedAgent = serviceProvider.GetRequiredService<UnifiedAgent>();
@@ -342,24 +356,30 @@ class Program
         }
     }
 
-    /// <summary>
-    /// Example 7: ClaudeAgentSDK Provider with MCP Tools
-    /// </summary>
-    static async Task RunClaudeAgentSdkExample()
-    {
-        Console.WriteLine("7. ClaudeAgentSDK Provider with MCP Tools");
-        Console.WriteLine("==========================================");
+    // NOTE: Interactive mode is not yet fully implemented.
+    // Example 7 has been removed. Use OneShot mode (default) for ClaudeAgentSDK testing.
 
+    /// <summary>
+    /// ClaudeAgentSDK Provider in One-Shot Mode
+    /// Sends a prompt, runs to completion, and exits
+    /// </summary>
+    private static async Task RunClaudeAgentSdkOneShotExample(string prompt)
+    {
         try
         {
             var services = new ServiceCollection();
-            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _ = services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
 
-            var configuration = new ConfigurationBuilder()
-                .AddJsonFile("models.json", optional: false, reloadOnChange: false)
-                .Build();
+            // Configure ClaudeAgentSdkOptions with OneShot mode
+            _ = services.AddSingleton(new AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkOptions
+            {
+                ProjectRoot = Directory.GetCurrentDirectory(),
+                McpConfigPath = ".mcp.json",
+                Mode = AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration.ClaudeAgentSdkMode.OneShot
+            });
 
-            services.AddLmConfig(configuration);
+            // Use AddLmConfigFromFile to directly load the JSON file
+            _ = services.AddLmConfigFromFile("models.json");
 
             var serviceProvider = services.BuildServiceProvider();
             var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
@@ -370,109 +390,121 @@ class Program
             {
                 Console.WriteLine("✗ ClaudeAgentSDK provider is not available");
                 Console.WriteLine("  Required:");
-                Console.WriteLine("  - ANTHROPIC_API_KEY environment variable");
                 Console.WriteLine("  - Node.js installed");
                 Console.WriteLine("  - @anthropic-ai/claude-agent-sdk npm package installed globally");
                 Console.WriteLine("  - .mcp.json configuration file in the project root");
+                Console.WriteLine("  - Authentication: Claude Code subscription OR ANTHROPIC_API_KEY environment variable");
                 Console.WriteLine();
                 return;
             }
 
             Console.WriteLine("✓ ClaudeAgentSDK provider is available");
+            Console.WriteLine($"Prompt: \"{prompt}\"\n");
 
             // Try to resolve the claude-sonnet-4-5 model
-            try
+            var resolution = await modelResolver.ResolveProviderAsync("claude-sonnet-4-5");
+            if (resolution == null)
             {
-                var resolution = await modelResolver.ResolveProviderAsync("claude-sonnet-4-5");
-                if (resolution != null)
+                Console.WriteLine("✗ Failed to resolve claude-sonnet-4-5 model");
+                return;
+            }
+
+            Console.WriteLine($"✓ Resolved model: {resolution.EffectiveModelName}");
+            Console.WriteLine($"  Provider: {resolution.EffectiveProviderName}");
+
+            // Create the agent with OneShot mode
+            var factory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
+            var agent = factory.CreateStreamingAgent(resolution);
+
+            // Configure OneShot mode via options
+            var messages = new List<IMessage>
+            {
+                new TextMessage
                 {
-                    Console.WriteLine($"✓ Resolved model: {resolution.EffectiveModelName}");
-                    Console.WriteLine($"  Provider: {resolution.EffectiveProviderName}");
-                    Console.WriteLine($"  Compatibility: {resolution.Connection.Compatibility}");
+                    Text = prompt,
+                    Role = Role.User
+                }
+            };
 
-                    // Create the agent
-                    var factory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
-                    var agent = factory.CreateStreamingAgent(resolution);
+            var options = new GenerateReplyOptions
+            {
+                ModelId = "claude-sonnet-4-5",
+                Temperature = 0.7f,
+                MaxToken = 10 // Max turns in one-shot mode
+            };
 
-                    Console.WriteLine("✓ Created ClaudeAgentSDK streaming agent");
+            Console.WriteLine("\nAgent response (streaming):");
+            Console.WriteLine("----------------------------\n");
 
-                    // Test basic interaction
-                    Console.WriteLine("\\nTesting basic interaction...");
-                    var messages = new List<IMessage>
+            while (true)
+            {
+                var streamTask = await agent.GenerateReplyStreamingAsync(messages, options);
+                await foreach (var msg in streamTask)
+                {
+                    switch (msg)
                     {
-                        new TextMessage
-                        {
-                            Text = "Hello! Can you tell me what MCP tools are available to you?",
-                            Role = Role.User
-                        }
-                    };
-
-                    var options = new GenerateReplyOptions
-                    {
-                        ModelId = "claude-sonnet-4-5",
-                        Temperature = 0.7f,
-                        MaxToken = 1000
-                    };
-
-                    Console.WriteLine("\\nAgent response (streaming):");
-                    Console.WriteLine("----------------------------");
-
-                    var streamTask = await agent.GenerateReplyStreamingAsync(messages, options);
-                    await foreach (var msg in streamTask)
-                    {
-                        switch (msg)
-                        {
-                            case TextMessage textMsg:
-                                Console.Write(textMsg.Text);
-                                break;
-                            case ReasoningMessage reasoningMsg:
-                                Console.WriteLine($"\\n[Thinking: {reasoningMsg.Reasoning[..Math.Min(100, reasoningMsg.Reasoning.Length)]}...]");
-                                break;
-                            case ToolsCallMessage toolCallMsg:
-                                if (toolCallMsg.ToolCalls.Any())
-                                {
-                                    Console.WriteLine($"\\n[Tool Call: {toolCallMsg.ToolCalls[0].FunctionName}]");
-                                }
-                                break;
-                            case ToolsCallResultMessage toolResultMsg:
-                                if (toolResultMsg.ToolCallResults.Any())
-                                {
-                                    var result = toolResultMsg.ToolCallResults[0].Result?.ToString() ?? "null";
-                                    Console.WriteLine($"[Tool Result: {result[..Math.Min(100, result.Length)]}...]");
-                                }
-                                break;
-                            case UsageMessage usageMsg:
-                                Console.WriteLine($"\\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]");
-                                break;
-                        }
+                        case TextMessage textMsg:
+                            Console.Write(textMsg.Text);
+                            break;
+                        case ReasoningMessage reasoningMsg:
+                            Console.WriteLine($"\n[Thinking: {reasoningMsg.Reasoning[..Math.Min(100, reasoningMsg.Reasoning.Length)]}...]");
+                            break;
+                        case ToolsCallMessage toolCallMsg:
+                            if (toolCallMsg.ToolCalls.Any())
+                            {
+                                Console.WriteLine($"\n[Tool Call: {toolCallMsg.ToolCalls[0].FunctionName}]");
+                            }
+                            break;
+                        case ToolsCallResultMessage toolResultMsg:
+                            if (toolResultMsg.ToolCallResults.Any())
+                            {
+                                var result = toolResultMsg.ToolCallResults[0].Result?.ToString() ?? "null";
+                                Console.WriteLine($"[Tool Result: {result[..Math.Min(100, result.Length)]}...]");
+                            }
+                            break;
+                        case UsageMessage usageMsg:
+                            Console.WriteLine($"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]");
+                            break;
                     }
 
-                    Console.WriteLine("\\n----------------------------");
-                    Console.WriteLine("\\n✓ ClaudeAgentSDK interaction completed successfully");
+                    messages = [
+                        .. messages,
+                        msg,
+                    ];
+                }
 
-                    // Dispose the agent
-                    if (agent is IDisposable disposable)
-                    {
-                        disposable.Dispose();
-                        Console.WriteLine("✓ Agent disposed");
-                    }
+                var userInput = Console.ReadLine();
+                if (userInput == "/exit")
+                {
+                    break;
                 }
                 else
                 {
-                    Console.WriteLine("✗ Failed to resolve claude-sonnet-4-5 model");
+                    messages =
+                    [
+                        .. messages,
+                        new TextMessage
+                        {
+                            Text = userInput ?? string.Empty,
+                            Role = Role.User
+                        },
+                    ];
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"✗ ClaudeAgentSDK interaction failed: {ex.Message}");
-                Console.WriteLine($"  Stack: {ex.StackTrace}");
-            }
 
-            Console.WriteLine();
+            Console.WriteLine("\n\n----------------------------");
+            Console.WriteLine("✓ One-shot execution completed, program will now exit");
+
+            // Dispose the agent
+            if (agent is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"✗ ClaudeAgentSDK example failed: {ex.Message}\n");
+            Console.WriteLine($"✗ ClaudeAgentSDK one-shot example failed: {ex.Message}");
+            Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
     }
 }

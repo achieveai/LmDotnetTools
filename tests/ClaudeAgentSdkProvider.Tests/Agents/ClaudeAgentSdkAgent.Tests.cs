@@ -34,7 +34,7 @@ public class ClaudeAgentSdkAgentTests
 
         // Assert
         Assert.True(mockClient.IsRunning);
-        Assert.Single(responses);
+        _ = Assert.Single(responses);
         var textMsg = Assert.IsType<TextMessage>(responses.First());
         Assert.Equal("Hello from agent", textMsg.Text);
     }
@@ -65,15 +65,15 @@ public class ClaudeAgentSdkAgentTests
 
         // Assert
         Assert.Equal(2, streamedMessages.Count);
-        Assert.IsType<ReasoningMessage>(streamedMessages[0]);
-        Assert.IsType<TextMessage>(streamedMessages[1]);
+        _ = Assert.IsType<ReasoningMessage>(streamedMessages[0]);
+        _ = Assert.IsType<TextMessage>(streamedMessages[1]);
     }
 
     [Fact]
     public void Agent_ThrowsOnNullClient()
     {
         // Arrange & Act & Assert
-        Assert.Throws<ArgumentNullException>(() =>
+        _ = Assert.Throws<ArgumentNullException>(() =>
             new ClaudeAgentSdkAgent("test", null!, new ClaudeAgentSdkOptions()));
     }
 
@@ -82,7 +82,7 @@ public class ClaudeAgentSdkAgentTests
     {
         // Arrange & Act & Assert
         var mockClient = new MockClaudeAgentSdkClient(messagesToReplay: []);
-        Assert.Throws<ArgumentNullException>(() =>
+        _ = Assert.Throws<ArgumentNullException>(() =>
             new ClaudeAgentSdkAgent("test", mockClient, null!));
     }
 
@@ -91,7 +91,7 @@ public class ClaudeAgentSdkAgentTests
     {
         // Arrange & Act & Assert
         var mockClient = new MockClaudeAgentSdkClient(messagesToReplay: []);
-        Assert.Throws<ArgumentNullException>(() =>
+        _ = Assert.Throws<ArgumentNullException>(() =>
             new ClaudeAgentSdkAgent(null!, mockClient, new ClaudeAgentSdkOptions()));
     }
 
@@ -114,7 +114,7 @@ public class ClaudeAgentSdkAgentTests
         };
 
         // Act
-        await agent.GenerateReplyAsync(
+        _ = await agent.GenerateReplyAsync(
             [new TextMessage { Text = "Input", Role = Role.User }],
             generateOptions
         );
@@ -137,7 +137,7 @@ public class ClaudeAgentSdkAgentTests
         var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
 
         // Act
-        await agent.GenerateReplyAsync([new TextMessage { Text = "Input", Role = Role.User }]);
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input", Role = Role.User }]);
 
         // Assert
         Assert.Equal("claude-sonnet-4-5-20250929", capturedModelId);
@@ -155,7 +155,7 @@ public class ClaudeAgentSdkAgentTests
         var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
 
         // Act
-        await agent.GenerateReplyAsync([new TextMessage { Text = "Input", Role = Role.User }]);
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input", Role = Role.User }]);
 
         // Assert
         Assert.NotNull(mockClient.CurrentSession);
@@ -178,7 +178,7 @@ public class ClaudeAgentSdkAgentTests
         var agent = new ClaudeAgentSdkAgent("test-agent", mockClient, options);
 
         // Act
-        await agent.GenerateReplyAsync([new TextMessage { Text = "Input 1", Role = Role.User }]);
+        _ = await agent.GenerateReplyAsync([new TextMessage { Text = "Input 1", Role = Role.User }]);
         var isStillRunning = mockClient.IsRunning;
 
         // Assert - client should still be running after first call

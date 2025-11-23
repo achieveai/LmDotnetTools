@@ -8,6 +8,7 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\ClaudeAgentSdkProvider\AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.csproj" />
     <ProjectReference Include="..\..\src\LmConfig\AchieveAi.LmDotnetTools.LmConfig.csproj" />
   </ItemGroup>
   <ItemGroup>

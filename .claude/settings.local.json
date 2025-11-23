@@ -13,7 +13,9 @@
       "Bash(sed:*)",
       "Bash(git add:*)",
       "Bash(mkdir:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(dotnet run:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": [],

@@ -8,12 +8,12 @@ namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 /// </summary>
 public record FileHistorySnapshotEvent : JsonlEventBase
 {
-    [JsonPropertyName("messageId")]
+    [JsonPropertyName("message_id")]
     public required string MessageId { get; init; }
 
     [JsonPropertyName("snapshot")]
     public JsonElement? Snapshot { get; init; }
 
-    [JsonPropertyName("isSnapshotUpdate")]
+    [JsonPropertyName("is_snapshot_update")]
     public bool IsSnapshotUpdate { get; init; }
 }

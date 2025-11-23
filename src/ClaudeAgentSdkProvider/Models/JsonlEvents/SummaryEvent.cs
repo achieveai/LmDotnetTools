@@ -10,6 +10,6 @@ public record SummaryEvent : JsonlEventBase
     [JsonPropertyName("summary")]
     public required string Summary { get; init; }
 
-    [JsonPropertyName("leafUuid")]
+    [JsonPropertyName("leaf_uuid")]
     public required string LeafUuid { get; init; }
 }

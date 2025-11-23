@@ -1,6 +1,22 @@
 namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Configuration;
 
 /// <summary>
+/// Execution mode for ClaudeAgentSDK
+/// </summary>
+public enum ClaudeAgentSdkMode
+{
+    /// <summary>
+    /// Interactive mode: Keep process alive for multiple turns, send messages via stdin
+    /// </summary>
+    Interactive,
+
+    /// <summary>
+    /// One-shot mode: Send initial prompt, close stdin, read all output until process exits
+    /// </summary>
+    OneShot
+}
+
+/// <summary>
 /// Configuration options for ClaudeAgentSDK provider
 /// </summary>
 public record ClaudeAgentSdkOptions
@@ -29,4 +45,9 @@ public record ClaudeAgentSdkOptions
     /// Path to .mcp.json configuration file
     /// </summary>
     public string? McpConfigPath { get; init; }
+
+    /// <summary>
+    /// Execution mode (default: Interactive)
+    /// </summary>
+    public ClaudeAgentSdkMode Mode { get; init; } = ClaudeAgentSdkMode.Interactive;
 }

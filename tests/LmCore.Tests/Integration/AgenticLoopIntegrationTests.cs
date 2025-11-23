@@ -82,7 +82,7 @@ public class AgenticLoopIntegrationTests
 
         // Assert tool result has correct generation ID
         Assert.Equal(generationId1, toolResultMessage.GenerationId);
-        Assert.Single(toolResultMessage.ToolCallResults);
+        _ = Assert.Single(toolResultMessage.ToolCallResults);
         Assert.Contains("72", toolResultMessage.ToolCallResults[0].Result);
 
         // Step 3: Send tool results back to LLM (simulate second turn)
@@ -250,9 +250,9 @@ public class AgenticLoopIntegrationTests
 
         // Assert
         // Verify upstream transformation: Provider received aggregated message
-        Assert.Single(trackingProvider.ReceivedMessages);
+        _ = Assert.Single(trackingProvider.ReceivedMessages);
         var receivedMsg = trackingProvider.ReceivedMessages[0];
-        Assert.IsType<ToolsCallAggregateMessage>(receivedMsg);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(receivedMsg);
 
         // Verify downstream transformation: Response has ordering
         Assert.Equal(0, responseMsg.MessageOrderIdx);
@@ -297,7 +297,7 @@ public class AgenticLoopIntegrationTests
         // Assert
         Assert.NotNull(captureAgent.CapturedOptions);
         Assert.NotNull(captureAgent.CapturedOptions.Functions);
-        Assert.Single(captureAgent.CapturedOptions.Functions);
+        _ = Assert.Single(captureAgent.CapturedOptions.Functions);
         Assert.Equal("test_function", captureAgent.CapturedOptions.Functions[0].Name);
 
         // Response should have ordering

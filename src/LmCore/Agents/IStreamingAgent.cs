@@ -14,7 +14,7 @@ public interface IStreamingAgent : IAgent
     /// <param name="options">Optional configuration for reply generation.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>An asynchronous stream of message updates.</returns>
-    public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
+    Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
         IEnumerable<IMessage> messages,
         GenerateReplyOptions? options = null,
         CancellationToken cancellationToken = default

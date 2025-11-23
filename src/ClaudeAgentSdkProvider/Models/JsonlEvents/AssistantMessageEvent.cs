@@ -11,31 +11,31 @@ public record AssistantMessageEvent : JsonlEventBase
     [JsonPropertyName("uuid")]
     public required string Uuid { get; init; }
 
-    [JsonPropertyName("parentUuid")]
-    public string? ParentUuid { get; init; }
+    [JsonPropertyName("parent_tool_use_id")]
+    public string? ParentToolUseId { get; init; }
 
-    [JsonPropertyName("sessionId")]
-    public required string SessionId { get; init; }
+    [JsonPropertyName("session_id")]
+    public string? SessionId { get; init; }
 
     [JsonPropertyName("message")]
     public required AssistantMessage Message { get; init; }
 
     [JsonPropertyName("timestamp")]
-    public required DateTime Timestamp { get; init; }
+    public DateTime? Timestamp { get; init; }
 
     [JsonPropertyName("cwd")]
     public string? Cwd { get; init; }
 
-    [JsonPropertyName("gitBranch")]
+    [JsonPropertyName("git_branch")]
     public string? GitBranch { get; init; }
 
     [JsonPropertyName("version")]
     public string? Version { get; init; }
 
-    [JsonPropertyName("isSidechain")]
+    [JsonPropertyName("is_sidechain")]
     public bool IsSidechain { get; init; }
 
-    [JsonPropertyName("userType")]
+    [JsonPropertyName("user_type")]
     public string? UserType { get; init; }
 }
 

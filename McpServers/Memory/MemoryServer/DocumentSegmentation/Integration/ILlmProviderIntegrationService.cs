@@ -38,7 +38,7 @@ public interface ILlmProviderIntegrationService
     /// <param name="maxSegments">Optional maximum number of segments desired</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Raw JSON returned by the LLM (empty string if not available)</returns>
-    public virtual Task<string> GenerateTopicSegmentationJsonAsync(
+    virtual Task<string> GenerateTopicSegmentationJsonAsync(
         string content,
         DocumentType documentType,
         int? maxSegments = null,
