@@ -29,15 +29,9 @@ public class ToolCallExecutor
         CancellationToken cancellationToken = default
     )
     {
-        if (toolCallMessage == null)
-        {
-            throw new ArgumentNullException(nameof(toolCallMessage));
-        }
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
 
-        if (functionMap == null)
-        {
-            throw new ArgumentNullException(nameof(functionMap));
-        }
+        ArgumentNullException.ThrowIfNull(functionMap);
 
         var effectiveLogger = logger ?? NullLogger.Instance;
         var toolCalls = toolCallMessage.ToolCalls;

@@ -151,7 +151,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                 jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine);
 
             await _stdinWriter.WriteLineAsync(jsonLine);
-            await _stdinWriter.FlushAsync();
+            await _stdinWriter.FlushAsync(cancellationToken);
 
             // In OneShot mode, close stdin immediately after sending the message
             // This signals the CLI to run to completion and exit
@@ -177,7 +177,7 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
 
             if (jsonlEvent is AssistantMessageEvent assistantEvent)
             {
-                var eventMessages = _parser.ConvertToMessages(assistantEvent);
+                var eventMessages = JsonlStreamParser.ConvertToMessages(assistantEvent);
                 foreach (var msg in eventMessages)
                 {
                     yield return msg;

@@ -19,7 +19,10 @@
       "Bash(git commit:*)",
       "Bash(nul)",
       "Bash(tee:*)",
-      "Skill(:*)"
+      "Skill(:*)",
+      "Bash(rm:*)",
+      "Bash(Select-String -Pattern \"error|Build succeeded|Build FAILED\")",
+      "Bash(Select-Object -Last 10)"
     ],
     "deny": [],
     "ask": [],

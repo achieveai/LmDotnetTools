@@ -1235,12 +1235,13 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
             var significantWords = ExtractSignificantWords(segment.Content).Take(5).ToList();
             foreach (var word in significantWords)
             {
-                if (!distribution.ContainsKey(word))
+                if (!distribution.TryGetValue(word, out var value))
                 {
-                    distribution[word] = [];
+                    value = ([]);
+                    distribution[word] = value;
                 }
 
-                distribution[word].Add(segment.Id);
+                value.Add(segment.Id);
             }
         }
 

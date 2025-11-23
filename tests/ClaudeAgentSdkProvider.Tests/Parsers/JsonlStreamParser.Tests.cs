@@ -43,7 +43,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -81,7 +81,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         _ = Assert.Single(messages);
@@ -115,7 +115,7 @@ public class JsonlStreamParserTests
         };
 
         // Act
-        var messages = _parser.ConvertToMessages(assistantEvent).ToList();
+        var messages = JsonlStreamParser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
         Assert.Equal(2, messages.Count);  // TextMessage + UsageMessage

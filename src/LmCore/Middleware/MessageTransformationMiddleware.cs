@@ -41,7 +41,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     )
     {
         // UPSTREAM: Reconstruct aggregates for provider
-        var aggregatedMessages = ReconstructAggregates(context.Messages);
+        var aggregatedMessages = MessageTransformationMiddleware.ReconstructAggregates(context.Messages);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -59,7 +59,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         var replies = await agent.GenerateReplyAsync(modifiedContext.Messages, modifiedContext.Options, cancellationToken);
 
         // DOWNSTREAM: Assign message ordering to replies
-        var orderedReplies = AssignMessageOrdering(replies);
+        var orderedReplies = MessageTransformationMiddleware.AssignMessageOrdering(replies);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -79,7 +79,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     )
     {
         // UPSTREAM: Reconstruct aggregates for provider
-        var aggregatedMessages = ReconstructAggregates(context.Messages);
+        var aggregatedMessages = MessageTransformationMiddleware.ReconstructAggregates(context.Messages);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -101,7 +101,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
         );
 
         // DOWNSTREAM: Assign message ordering to streaming replies
-        return AssignMessageOrderingStreaming(streamingResponse);
+        return MessageTransformationMiddleware.AssignMessageOrderingStreaming(streamingResponse);
     }
 
     #region Downstream: Assign Message Ordering
@@ -109,7 +109,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Assigns messageOrderIdx to messages with the same GenerationId
     /// </summary>
-    private IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
+    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
     {
         var messageList = messages.ToList();
         var orderIndexByGeneration = new Dictionary<string, int>();
@@ -179,7 +179,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Assigns messageOrderIdx to streaming messages on the fly
     /// </summary>
-    private async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
+    private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
         IAsyncEnumerable<IMessage> messages
     )
     {
@@ -254,18 +254,18 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Reconstructs CompositeMessage and ToolsCallAggregateMessage from ordered message stream
     /// </summary>
-    private IEnumerable<IMessage> ReconstructAggregates(IEnumerable<IMessage> messages)
+    private static IEnumerable<IMessage> ReconstructAggregates(IEnumerable<IMessage> messages)
     {
         var result = new List<IMessage>();
         var messageList = messages.ToList();
 
         // Group consecutive messages by GenerationId
-        var groups = GroupByGeneration(messageList);
+        var groups = MessageTransformationMiddleware.GroupByGeneration(messageList);
 
         foreach (var group in groups)
         {
             // Check if this group can be reconstructed into a ToolsCallAggregateMessage
-            var aggregate = TryCreateToolCallAggregate(group);
+            var aggregate = MessageTransformationMiddleware.TryCreateToolCallAggregate(group);
             if (aggregate != null)
             {
                 result.Add(aggregate);
@@ -276,7 +276,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
             if (group.Count > 1 && group.All(m => m.GenerationId == group[0].GenerationId))
             {
                 // Create CompositeMessage for messages with same GenerationId
-                var composite = CreateCompositeMessage(group);
+                var composite = MessageTransformationMiddleware.CreateCompositeMessage(group);
                 result.Add(composite);
             }
             else
@@ -292,7 +292,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Groups consecutive messages by GenerationId, keeping messages without GenerationId separate
     /// </summary>
-    private List<List<IMessage>> GroupByGeneration(List<IMessage> messages)
+    private static List<List<IMessage>> GroupByGeneration(List<IMessage> messages)
     {
         var groups = new List<List<IMessage>>();
         var currentGroup = new List<IMessage>();
@@ -334,7 +334,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Attempts to create a ToolsCallAggregateMessage if the group contains a ToolsCallMessage followed by ToolsCallResultMessage
     /// </summary>
-    private ToolsCallAggregateMessage? TryCreateToolCallAggregate(List<IMessage> group)
+    private static ToolsCallAggregateMessage? TryCreateToolCallAggregate(List<IMessage> group)
     {
         // Sort by MessageOrderIdx if available
         var sortedGroup = group
@@ -373,7 +373,7 @@ public class MessageTransformationMiddleware : IStreamingMiddleware
     /// <summary>
     /// Creates a CompositeMessage from a group of messages
     /// </summary>
-    private CompositeMessage CreateCompositeMessage(List<IMessage> group)
+    private static CompositeMessage CreateCompositeMessage(List<IMessage> group)
     {
         // Sort by MessageOrderIdx
         var sortedMessages = group

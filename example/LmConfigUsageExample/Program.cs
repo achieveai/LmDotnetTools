@@ -450,13 +450,13 @@ internal class Program
                             Console.WriteLine($"\n[Thinking: {reasoningMsg.Reasoning[..Math.Min(100, reasoningMsg.Reasoning.Length)]}...]");
                             break;
                         case ToolsCallMessage toolCallMsg:
-                            if (toolCallMsg.ToolCalls.Any())
+                            if (!toolCallMsg.ToolCalls.IsEmpty)
                             {
                                 Console.WriteLine($"\n[Tool Call: {toolCallMsg.ToolCalls[0].FunctionName}]");
                             }
                             break;
                         case ToolsCallResultMessage toolResultMsg:
-                            if (toolResultMsg.ToolCallResults.Any())
+                            if (!toolResultMsg.ToolCallResults.IsEmpty)
                             {
                                 var result = toolResultMsg.ToolCallResults[0].Result?.ToString() ?? "null";
                                 Console.WriteLine($"[Tool Result: {result[..Math.Min(100, result.Length)]}...]");
