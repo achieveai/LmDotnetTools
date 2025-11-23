@@ -59,8 +59,8 @@ public class JsonlStreamParser
 
         // Map event properties to message properties
         var runId = assistantEvent.Uuid;
-        var parentRunId = assistantEvent.ParentUuid;
-        var threadId = assistantEvent.SessionId;
+        var parentRunId = assistantEvent.ParentToolUseId;
+        var threadId = assistantEvent.SessionId ?? string.Empty; // Provide default if session_id is missing
         var generationId = assistantEvent.Message.Id;
         var role = ParseRole(assistantEvent.Message.Role);
 
@@ -86,6 +86,66 @@ public class JsonlStreamParser
                 threadId
             );
             messages.Add(usageMessage);
+        }
+
+        return messages;
+    }
+
+    /// <summary>
+    /// Convert a UserMessageEvent to IMessage instances
+    /// Returns messages for tool results or other user content
+    /// </summary>
+    public IEnumerable<IMessage> ConvertToMessages(UserMessageEvent userEvent)
+    {
+        ArgumentNullException.ThrowIfNull(userEvent);
+
+        var messages = new List<IMessage>();
+
+        // Map event properties to message properties
+        var runId = userEvent.Uuid;
+        var threadId = userEvent.SessionId ?? string.Empty;
+        var role = ParseRole(userEvent.Message.Role);
+
+        // For user events, we don't have a message.id like assistant events
+        // Use the UUID as the generation ID
+        var generationId = userEvent.Uuid;
+
+        // Parse content - it could be a string or array of content blocks
+        if (userEvent.Message.Content.ValueKind == JsonValueKind.Array)
+        {
+            var contentBlocks = JsonSerializer.Deserialize<ContentBlock[]>(
+                userEvent.Message.Content.GetRawText(),
+                _jsonOptions
+            );
+
+            if (contentBlocks != null)
+            {
+                foreach (var contentBlock in contentBlocks)
+                {
+                    var message = ConvertContentBlock(contentBlock, role, generationId, runId, null, threadId);
+                    if (message != null)
+                    {
+                        messages.Add(message);
+                    }
+                }
+            }
+        }
+        else if (userEvent.Message.Content.ValueKind == JsonValueKind.String)
+        {
+            // Simple text content
+            var text = userEvent.Message.Content.GetString();
+            if (!string.IsNullOrEmpty(text))
+            {
+                messages.Add(new TextMessage
+                {
+                    Text = text,
+                    Role = role,
+                    GenerationId = generationId,
+                    RunId = runId,
+                    ThreadId = threadId,
+                    IsThinking = false
+                });
+            }
         }
 
         return messages;

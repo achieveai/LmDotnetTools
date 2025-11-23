@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 using AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Parsers;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -45,7 +46,7 @@ public class JsonlStreamParserTests
         var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
-        Assert.Single(messages);
+        _ = Assert.Single(messages);
         var textMessage = Assert.IsType<TextMessage>(messages[0]);
         Assert.Equal("Hello, world!", textMessage.Text);
         Assert.Equal("test-uuid", textMessage.RunId);
@@ -83,7 +84,7 @@ public class JsonlStreamParserTests
         var messages = _parser.ConvertToMessages(assistantEvent).ToList();
 
         // Assert
-        Assert.Single(messages);
+        _ = Assert.Single(messages);
         var reasoningMessage = Assert.IsType<ReasoningMessage>(messages[0]);
         Assert.Equal("Let me think about this...", reasoningMessage.Reasoning);
         Assert.Equal(ReasoningVisibility.Plain, reasoningMessage.Visibility);
@@ -122,5 +123,120 @@ public class JsonlStreamParserTests
         Assert.Equal(100, usageMessage.Usage.PromptTokens);
         Assert.Equal(50, usageMessage.Usage.CompletionTokens);
         Assert.Equal(150, usageMessage.Usage.TotalTokens);
+    }
+
+    [Fact]
+    public void ConvertToMessages_UserMessageWithToolResult_CreatesToolResultMessage()
+    {
+        // Arrange - simulating the JSON structure from the actual tool result event
+        var toolResultContentJson = """
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_123",
+                    "content": "Tool execution successful"
+                }
+            ]
+            """;
+
+        var userEvent = new UserMessageEvent
+        {
+            Type = "user",
+            Uuid = "user-uuid-123",
+            SessionId = "session-123",
+            Message = new UserMessage
+            {
+                Role = "user",
+                Content = JsonDocument.Parse(toolResultContentJson).RootElement
+            }
+        };
+
+        // Act
+        var messages = _parser.ConvertToMessages(userEvent).ToList();
+
+        // Assert
+        _ = Assert.Single(messages);
+        var toolResultMessage = Assert.IsType<ToolsCallResultMessage>(messages[0]);
+        Assert.Equal("user-uuid-123", toolResultMessage.RunId);
+        Assert.Equal("session-123", toolResultMessage.ThreadId);
+        Assert.Equal("user-uuid-123", toolResultMessage.GenerationId);
+
+        _ = Assert.Single(toolResultMessage.ToolCallResults);
+        var result = toolResultMessage.ToolCallResults[0];
+        Assert.Equal("toolu_123", result.ToolCallId);
+        Assert.Contains("Tool execution successful", result.Result);
+    }
+
+    [Fact]
+    public void ConvertToMessages_UserMessageWithTextContent_CreatesTextMessage()
+    {
+        // Arrange - user message with simple text content
+        var userEvent = new UserMessageEvent
+        {
+            Type = "user",
+            Uuid = "user-uuid-456",
+            SessionId = "session-456",
+            Message = new UserMessage
+            {
+                Role = "user",
+                Content = JsonDocument.Parse("\"Hello, assistant!\"").RootElement
+            }
+        };
+
+        // Act
+        var messages = _parser.ConvertToMessages(userEvent).ToList();
+
+        // Assert
+        _ = Assert.Single(messages);
+        var textMessage = Assert.IsType<TextMessage>(messages[0]);
+        Assert.Equal("Hello, assistant!", textMessage.Text);
+        Assert.Equal("user-uuid-456", textMessage.RunId);
+        Assert.Equal("session-456", textMessage.ThreadId);
+    }
+
+    [Fact]
+    public void ConvertToMessages_UserMessageWithMultipleToolResults_CreatesMultipleMessages()
+    {
+        // Arrange - simulating multiple tool results in one user message
+        var multipleToolResultsJson = """
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_001",
+                    "content": "First result"
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_002",
+                    "content": "Second result"
+                }
+            ]
+            """;
+
+        var userEvent = new UserMessageEvent
+        {
+            Type = "user",
+            Uuid = "user-uuid-789",
+            SessionId = "session-789",
+            Message = new UserMessage
+            {
+                Role = "user",
+                Content = JsonDocument.Parse(multipleToolResultsJson).RootElement
+            }
+        };
+
+        // Act
+        var messages = _parser.ConvertToMessages(userEvent).ToList();
+
+        // Assert
+        Assert.Equal(2, messages.Count);
+
+        var firstResult = Assert.IsType<ToolsCallResultMessage>(messages[0]);
+        Assert.Equal("toolu_001", firstResult.ToolCallResults[0].ToolCallId);
+        Assert.Contains("First result", firstResult.ToolCallResults[0].Result);
+
+        var secondResult = Assert.IsType<ToolsCallResultMessage>(messages[1]);
+        Assert.Equal("toolu_002", secondResult.ToolCallResults[0].ToolCallId);
+        Assert.Contains("Second result", secondResult.ToolCallResults[0].Result);
     }
 }

@@ -28,6 +28,12 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
     private string? _systemPromptTempFile;
     private bool _disposed;
 
+    private readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
+
     public ClaudeAgentSdkClient(
         ClaudeAgentSdkOptions options,
         ILogger<ClaudeAgentSdkClient>? logger = null)
@@ -124,11 +130,40 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
             throw new InvalidOperationException("Client is not running. Call StartAsync first.");
         }
 
-        // Note: The claude-agent-sdk CLI doesn't actually consume messages via stdin after startup
-        // It processes messages through its internal agent loop
-        // This method mainly reads and parses the JSONL output
+        // Extract the last user message (claude-agent-sdk maintains its own conversation history)
+        // We only send the latest user input, ignoring previous messages
+        var lastUserMessage = messages
+            .LastOrDefault(m => m.Role == Role.User);
 
-        // Read and parse stdout
+        if (lastUserMessage == null)
+        {
+            _logger?.LogWarning("No user message found in the message collection");
+            yield break;
+        }
+
+        // Convert to JSONL input format and send to stdin
+        if (_stdinWriter != null)
+        {
+            var inputWrapper = ConvertToInputMessage(lastUserMessage);
+            var jsonLine = JsonSerializer.Serialize(inputWrapper, _jsonOptions);
+
+            _logger?.LogDebug("Sending JSONL message to claude-agent-sdk: {Message}",
+                jsonLine.Length > 200 ? jsonLine[..200] + "..." : jsonLine);
+
+            await _stdinWriter.WriteLineAsync(jsonLine);
+            await _stdinWriter.FlushAsync();
+
+            // In OneShot mode, close stdin immediately after sending the message
+            // This signals the CLI to run to completion and exit
+            if (_options.Mode == ClaudeAgentSdkMode.OneShot)
+            {
+                _logger?.LogDebug("OneShot mode: Closing stdin to signal completion");
+                _stdinWriter.Close();
+                _stdinWriter = null;
+            }
+        }
+
+        // Read and parse stdout for the response
         await foreach (var line in ReadStdoutLinesAsync(cancellationToken))
         {
             if (string.IsNullOrWhiteSpace(line))
@@ -148,11 +183,70 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
                     yield return msg;
                 }
             }
+            // User messages contain tool results and other user inputs
+            else if (jsonlEvent is UserMessageEvent userEvent)
+            {
+                var eventMessages = _parser.ConvertToMessages(userEvent);
+                foreach (var msg in eventMessages)
+                {
+                    yield return msg;
+                }
+            }
             // Summary events are informational, we can log them but don't emit as messages
             else if (jsonlEvent is SummaryEvent summaryEvent)
             {
                 _logger?.LogDebug("Summary: {Summary}", summaryEvent.Summary);
             }
+            // System init events contain session info and available tools
+            else if (jsonlEvent is SystemInitEvent systemInitEvent)
+            {
+                _logger?.LogInformation(
+                    "System initialized - SessionId: {SessionId}, Model: {Model}, Tools: {ToolCount}, MCP Servers: {McpServers}",
+                    systemInitEvent.SessionId,
+                    systemInitEvent.Model,
+                    systemInitEvent.Tools?.Count ?? 0,
+                    string.Join(", ", systemInitEvent.McpServers?.Select(s => $"{s.Name}({s.Status})") ?? [])
+                );
+
+                // Update current session with info from init event
+                if (CurrentSession != null && !string.IsNullOrEmpty(systemInitEvent.SessionId))
+                {
+                    CurrentSession = CurrentSession with
+                    {
+                        SessionId = systemInitEvent.SessionId
+                    };
+                }
+            }
+            // Result events contain final execution summary with usage and cost info
+            else if (jsonlEvent is ResultEvent resultEvent)
+            {
+                _logger?.LogInformation(
+                    "Execution completed - Status: {Subtype}, Turns: {NumTurns}, Duration: {DurationMs}ms, Cost: ${TotalCostUsd:F4}",
+                    resultEvent.Subtype,
+                    resultEvent.NumTurns,
+                    resultEvent.DurationMs,
+                    resultEvent.TotalCostUsd
+                );
+
+                if (resultEvent.PermissionDenials?.Count > 0)
+                {
+                    _logger?.LogWarning("Permission denials: {Denials}", string.Join(", ", resultEvent.PermissionDenials));
+                }
+
+                // In OneShot mode, ResultEvent signals the end of execution
+                // Break out of the loop so the program can exit
+                if (_options.Mode == ClaudeAgentSdkMode.OneShot)
+                {
+                    _logger?.LogDebug("OneShot mode: ResultEvent received, stopping output stream");
+                    yield break;
+                }
+            }
+        }
+
+        // In OneShot mode, when stdout ends, the process has exited
+        if (_options.Mode == ClaudeAgentSdkMode.OneShot)
+        {
+            _logger?.LogInformation("OneShot mode: Process completed and exited");
         }
     }
 
@@ -332,6 +426,67 @@ public class ClaudeAgentSdkClient : IClaudeAgentSdkClient
         {
             _logger?.LogError(ex, "Error reading stderr");
         }
+    }
+
+    /// <summary>
+    /// Convert IMessage to InputMessageWrapper for JSONL stdin format
+    /// Supports both TextMessage and ImageMessage with base64 encoding
+    /// </summary>
+    private static InputMessageWrapper ConvertToInputMessage(IMessage message)
+    {
+        var contentBlocks = new List<InputContentBlock>();
+
+        switch (message)
+        {
+            case TextMessage textMsg when !string.IsNullOrEmpty(textMsg.Text):
+                contentBlocks.Add(new InputTextContentBlock
+                {
+                    Text = textMsg.Text
+                });
+                break;
+
+            case ImageMessage imageMsg:
+                // Convert BinaryData to base64 with proper media type
+                var imageBytes = imageMsg.ImageData.ToArray();
+                var base64Data = Convert.ToBase64String(imageBytes);
+                var mediaType = imageMsg.ImageData.MediaType ?? "image/jpeg";
+
+                contentBlocks.Add(new InputImageContentBlock
+                {
+                    Source = new ImageSource
+                    {
+                        Type = "base64",
+                        MediaType = mediaType,
+                        Data = base64Data
+                    }
+                });
+                break;
+
+            case ICanGetText textProvider:
+                // Fallback for other message types that can provide text
+                var text = textProvider.GetText();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    contentBlocks.Add(new InputTextContentBlock
+                    {
+                        Text = text
+                    });
+                }
+                break;
+
+            default:
+                throw new NotSupportedException($"Message type {message.GetType().Name} is not supported for claude-agent-sdk input");
+        }
+
+        return new InputMessageWrapper
+        {
+            Type = "user",
+            Message = new InputMessage
+            {
+                Role = "user",
+                Content = contentBlocks
+            }
+        };
     }
 
     public void Dispose()
