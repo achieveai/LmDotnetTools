@@ -203,7 +203,7 @@ public static class ChatCompletionRequestFactory
         var randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
 
         // Prepare tools if functions are provided
-        List<FunctionTool>? tools = request.Tools;
+        var tools = request.Tools;
 
         if (options.Functions != null && options.Functions.Length > 0)
         {
@@ -211,7 +211,7 @@ public static class ChatCompletionRequestFactory
         }
 
         // Check for response format
-        ResponseFormat? responseFormat = request.ResponseFormat;
+        var responseFormat = request.ResponseFormat;
 
         if (
             options.ExtraProperties != null

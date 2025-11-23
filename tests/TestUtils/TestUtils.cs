@@ -47,12 +47,9 @@ public static class TestUtils
     /// <returns>The extracted text or null if the message is null</returns>
     public static string? GetText(IMessage? message)
     {
-        if (message == null)
-        {
-            return null;
-        }
-
-        return message switch
+        return message == null
+            ? null
+            : message switch
         {
             TextMessage textMessage => textMessage.Text,
             ToolsCallResultMessage toolCallResult => string.Join(

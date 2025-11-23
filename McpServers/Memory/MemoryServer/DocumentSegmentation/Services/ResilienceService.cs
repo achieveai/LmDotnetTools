@@ -83,7 +83,7 @@ public class ResilienceService : IResilienceService
     private readonly ILogger<ResilienceService> _logger;
 
     // Metrics tracking
-    private readonly object _metricsLock = new();
+    private readonly Lock _metricsLock = new();
     private ErrorMetrics _currentMetrics = new();
     private readonly List<(
         DateTime Timestamp,
@@ -687,9 +687,8 @@ public class ResilienceService : IResilienceService
             .OrderBy(t => t)
             .ToList();
 
-        if (recentTimes.Count == 0)
-        {
-            return new ResponseTimePercentiles
+        return recentTimes.Count == 0
+            ? new ResponseTimePercentiles
             {
                 P50 = 0,
                 P95 = 0,
@@ -697,10 +696,8 @@ public class ResilienceService : IResilienceService
                 Average = 0,
                 Min = 0,
                 Max = 0,
-            };
-        }
-
-        return new ResponseTimePercentiles
+            }
+            : new ResponseTimePercentiles
         {
             P50 = CalculatePercentile(recentTimes, 0.5),
             P95 = CalculatePercentile(recentTimes, 0.95),

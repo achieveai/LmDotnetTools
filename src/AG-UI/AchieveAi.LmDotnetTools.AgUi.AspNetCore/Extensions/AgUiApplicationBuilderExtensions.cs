@@ -42,14 +42,9 @@ public static class AgUiApplicationBuilderExtensions
             _ = app.UseCors(builder =>
             {
                 var origins = options.Value.AllowedOrigins.ToArray();
-                if (origins.Contains("*"))
-                {
-                    _ = builder.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
-                }
-                else
-                {
-                    _ = builder.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader().AllowCredentials();
-                }
+                _ = origins.Contains("*")
+                    ? builder.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()
+                    : builder.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader().AllowCredentials();
             });
         }
 

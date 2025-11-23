@@ -62,7 +62,7 @@ public class DataDrivenFunctionToolTests
         Assert.NotNull(response);
 
         // Account for the extra UsageMessage that was added to the API response
-        var responseWithoutUsage = response!.Where(r => !(r is UsageMessage)).ToList();
+        var responseWithoutUsage = response!.Where(r => r is not UsageMessage).ToList();
 
         // There should be one UsageMessage in the response
         _ = Assert.Single(response, r => r is UsageMessage);

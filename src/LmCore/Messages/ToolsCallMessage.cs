@@ -36,6 +36,10 @@ public record ToolsCallMessage : IMessage, ICanGetToolCalls
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParentRunId { get; init; }
 
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
     public IEnumerable<ToolCall>? GetToolCalls()
     {
         return ToolCalls.Count > 0 ? ToolCalls : null;
@@ -96,6 +100,10 @@ public record ToolsCallUpdateMessage : IMessage
     [JsonPropertyName("parentRunId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParentRunId { get; init; }
+
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
 }
 
 public class ToolsCallUpdateMessageJsonConverter : ShadowPropertiesJsonConverter<ToolsCallUpdateMessage>
@@ -138,6 +146,8 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
     public string? RunId { get; set; }
 
     public string? ParentRunId { get; set; }
+
+    public int? MessageOrderIdx { get; set; }
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
@@ -222,6 +232,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
                 FunctionArgs = AccumulatedArgs,
                 ToolCallId = CurrentToolCallId,
                 Index = CurrentIndex,
+                ToolCallIdx = CompletedToolCalls.Count, // Assign sequential index (0, 1, 2...)
             };
 
             // Add to completed tool calls
@@ -255,6 +266,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
             ThreadId = ThreadId,
             RunId = RunId,
             ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
         };
     }
 }

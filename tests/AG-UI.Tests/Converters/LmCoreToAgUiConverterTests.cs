@@ -145,11 +145,10 @@ public class LmCoreToAgUiConverterTests
     public void ConvertMessage_ToolsCallMessage_CreatesMessageWithToolCalls()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(
-            FunctionName: "get_weather",
-            FunctionArgs: """{"location": "San Francisco"}"""
-        )
+        var toolCall = new LmCoreToolCall
         {
+            FunctionName = "get_weather",
+            FunctionArgs = """{"location": "San Francisco"}""",
             ToolCallId = "call-123",
         };
 
@@ -184,10 +183,7 @@ public class LmCoreToAgUiConverterTests
     {
         // Arrange
         var jsonArgs = """{"location": "Paris", "units": "celsius"}""";
-        var toolCall = new LmCoreToolCall(FunctionName: "get_weather", FunctionArgs: jsonArgs)
-        {
-            ToolCallId = "call-456",
-        };
+        var toolCall = new LmCoreToolCall { FunctionName = "get_weather", FunctionArgs = jsonArgs, ToolCallId = "call-456" };
 
         var toolsCallMessage = new ToolsCallMessage
         {
@@ -213,9 +209,9 @@ public class LmCoreToAgUiConverterTests
     {
         // Arrange
         var toolCalls = ImmutableList.Create(
-            new LmCoreToolCall("func1", """{"arg1": "value1"}""") { ToolCallId = "call-1" },
-            new LmCoreToolCall("func2", """{"arg2": "value2"}""") { ToolCallId = "call-2" },
-            new LmCoreToolCall("func3", """{"arg3": "value3"}""") { ToolCallId = "call-3" }
+            new LmCoreToolCall { FunctionName = "func1", FunctionArgs = """{"arg1": "value1"}""", ToolCallId = "call-1" },
+            new LmCoreToolCall { FunctionName = "func2", FunctionArgs = """{"arg2": "value2"}""", ToolCallId = "call-2" },
+            new LmCoreToolCall { FunctionName = "func3", FunctionArgs = """{"arg3": "value3"}""", ToolCallId = "call-3" }
         );
 
         var toolsCallMessage = new ToolsCallMessage
@@ -395,7 +391,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertMessage_ToolsCallAggregateMessage_CreatesToolCallAndResults()
     {
         // Arrange - Note: The converter uses each message's individual GenerationId
-        var toolCall = new LmCoreToolCall("get_time", """{"timezone": "UTC"}""") { ToolCallId = "call-time" };
+        var toolCall = new LmCoreToolCall { FunctionName = "get_time", FunctionArgs = """{"timezone": "UTC"}""", ToolCallId = "call-time" };
         var toolsCallMessage = new ToolsCallMessage
         {
             Role = Role.Assistant,
@@ -527,10 +523,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_ValidToolCall_CreatesCorrectStructure()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(FunctionName: "calculate", FunctionArgs: """{"expression": "2 + 2"}""")
-        {
-            ToolCallId = "call-calc",
-        };
+        var toolCall = new LmCoreToolCall { FunctionName = "calculate", FunctionArgs = """{"expression": "2 + 2"}""", ToolCallId = "call-calc" };
 
         // Act
         var result = _converter.ConvertToolCall(toolCall);
@@ -548,10 +541,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithEmptyArgs_ParsesEmptyObject()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(FunctionName: "no_args_func", FunctionArgs: "{}")
-        {
-            ToolCallId = "call-empty",
-        };
+        var toolCall = new LmCoreToolCall { FunctionName = "no_args_func", FunctionArgs = "{}", ToolCallId = "call-empty" };
 
         // Act
         var result = _converter.ConvertToolCall(toolCall);
@@ -565,10 +555,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithNullArgs_ParsesEmptyObject()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(FunctionName: "null_args_func", FunctionArgs: null)
-        {
-            ToolCallId = "call-null",
-        };
+        var toolCall = new LmCoreToolCall { FunctionName = "null_args_func", FunctionArgs = null, ToolCallId = "call-null" };
 
         // Act
         var result = _converter.ConvertToolCall(toolCall);
@@ -582,10 +569,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithInvalidJson_ThrowsJsonException()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(FunctionName: "bad_json", FunctionArgs: "{not valid json}")
-        {
-            ToolCallId = "call-bad",
-        };
+        var toolCall = new LmCoreToolCall { FunctionName = "bad_json", FunctionArgs = "{not valid json}", ToolCallId = "call-bad" };
 
         // Act & Assert
         var action = () => _converter.ConvertToolCall(toolCall);
@@ -596,7 +580,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithNullToolCallId_ThrowsArgumentException()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(FunctionName: "func", FunctionArgs: "{}") { ToolCallId = null! };
+        var toolCall = new LmCoreToolCall { FunctionName = "func", FunctionArgs = "{}", ToolCallId = null! };
 
         // Act & Assert
         var action = () => _converter.ConvertToolCall(toolCall);
@@ -607,7 +591,7 @@ public class LmCoreToAgUiConverterTests
     public void ConvertToolCall_WithEmptyFunctionName_ThrowsArgumentException()
     {
         // Arrange
-        var toolCall = new LmCoreToolCall(FunctionName: "", FunctionArgs: "{}") { ToolCallId = "call-1" };
+        var toolCall = new LmCoreToolCall { FunctionName = "", FunctionArgs = "{}", ToolCallId = "call-1" };
 
         // Act & Assert
         var action = () => _converter.ConvertToolCall(toolCall);

@@ -363,7 +363,7 @@ public sealed class AgUiWebSocketHandler
         CancellationToken cancellationToken
     )
     {
-        if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
+        if (webSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
         {
             try
             {

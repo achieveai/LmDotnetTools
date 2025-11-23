@@ -130,13 +130,11 @@ public static class ServiceCollectionExtensions
         {
             _ = services.AddSingleton(Options.Create(options.AppConfig));
         }
-        else if (options.ConfigurationSection != null)
-        {
-            _ = services.Configure<AppConfig>(options.ConfigurationSection);
-        }
         else
         {
-            throw new InvalidOperationException(
+            _ = options.ConfigurationSection != null
+                ? services.Configure<AppConfig>(options.ConfigurationSection)
+                : throw new InvalidOperationException(
                 "Either AppConfig or ConfigurationSection must be specified in LmConfigOptions"
             );
         }

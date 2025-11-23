@@ -80,6 +80,8 @@ public class CircuitBreakerService : ICircuitBreakerService
     )
         where T : class
     {
+        ArgumentNullException.ThrowIfNull(operation, nameof(operation));
+
         // Check cancellation before doing any work
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -181,6 +183,9 @@ public class CircuitBreakerService : ICircuitBreakerService
     /// </summary>
     public void RecordFailure(string operationName, Exception exception)
     {
+        ArgumentException.ThrowIfNullOrEmpty(operationName, nameof(operationName));
+        ArgumentNullException.ThrowIfNull(exception, nameof(exception));
+
         var lockObject = _locks.GetOrAdd(operationName, _ => new object());
         var errorType = ClassifyError(exception);
         var threshold = GetFailureThreshold(errorType);
@@ -251,12 +256,8 @@ public class CircuitBreakerService : ICircuitBreakerService
     {
         var state = GetOrCreateState(operationName);
 
-        if (state.State == CircuitBreakerStateEnum.Open)
-        {
-            return DateTime.UtcNow < state.NextRetryAt;
-        }
-
-        return false;
+        return state.State == CircuitBreakerStateEnum.Open
+            && DateTime.UtcNow < state.NextRetryAt;
     }
 
     /// <summary>

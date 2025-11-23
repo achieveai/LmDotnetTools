@@ -3,15 +3,16 @@ using AchieveAi.LmDotnetTools.LmCore.Utils;
 
 namespace AchieveAi.LmDotnetTools.LmCore.Messages;
 
-public record struct ToolCall(
-    [property: JsonPropertyName("function_name")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        string? FunctionName,
-    [property: JsonPropertyName("function_args")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        string? FunctionArgs
-)
+public record ToolCall
 {
+    [JsonPropertyName("function_name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FunctionName { get; init; }
+
+    [JsonPropertyName("function_args")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FunctionArgs { get; init; }
+
     [JsonPropertyName("index")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int? Index { get; init; }
@@ -19,6 +20,14 @@ public record struct ToolCall(
     [JsonPropertyName("tool_call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolCallId { get; init; }
+
+    /// <summary>
+    /// Order index of this tool call within its containing ToolCallMessage.
+    /// Enables deterministic reconstruction of tool call order for KV cache optimization.
+    /// </summary>
+    [JsonPropertyName("toolCallIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int ToolCallIdx { get; init; }
 }
 
 public record struct ToolCallResult(

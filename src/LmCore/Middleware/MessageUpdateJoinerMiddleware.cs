@@ -172,7 +172,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         ref Type? activeBuilderType
     )
     {
-        Type builderType = typeof(ToolsCallMessage);
+        var builderType = typeof(ToolsCallMessage);
 
         if (activeBuilder == null || activeBuilderType != builderType)
         {
@@ -203,7 +203,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         ref Type? activeBuilderType
     )
     {
-        Type builderType = typeof(TextMessage);
+        var builderType = typeof(TextMessage);
 
         if (activeBuilder == null || activeBuilderType != builderType)
         {
@@ -242,7 +242,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         ref Type? activeBuilderType
     )
     {
-        Type builderType = typeof(ReasoningMessage);
+        var builderType = typeof(ReasoningMessage);
 
         if (activeBuilder == null || activeBuilderType != builderType)
         {

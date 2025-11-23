@@ -135,12 +135,7 @@ public class MemoryRepository : IMemoryRepository
                 _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
 
                 using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                if (await reader.ReadAsync(cancellationToken))
-                {
-                    return ReadMemoryFromReader(reader);
-                }
-
-                return null;
+                return await reader.ReadAsync(cancellationToken) ? ReadMemoryFromReader(reader) : null;
             },
             cancellationToken
         );
@@ -611,13 +606,9 @@ public class MemoryRepository : IMemoryRepository
     {
         // For now, just return the current version as a single history entry
         var memory = await GetByIdAsync(id, sessionContext, cancellationToken);
-        if (memory == null)
-        {
-            return [];
-        }
-
-        return
-        [
+        return memory == null
+            ? []
+            : [
             new MemoryHistoryEntry
             {
                 MemoryId = memory.Id,
@@ -996,7 +987,7 @@ public class MemoryRepository : IMemoryRepository
         for (var i = 0; i < traditionalResults.Count; i++)
         {
             var memory = traditionalResults[i];
-            var traditionalScore = 1.0f - (float)i / traditionalResults.Count; // Higher score for earlier results
+            var traditionalScore = 1.0f - ((float)i / traditionalResults.Count); // Higher score for earlier results
             var weightedScore = traditionalScore * traditionalWeight;
 
             combinedResults[memory.Id] = (memory, weightedScore);

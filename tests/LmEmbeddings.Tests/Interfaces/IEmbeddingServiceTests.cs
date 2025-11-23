@@ -111,7 +111,7 @@ public class IEmbeddingServiceTests
         Assert.Equal(expectedEmbeddingSize, result.Length);
         Assert.All(
             result,
-            value => Assert.True(value >= -1.0f && value <= 1.0f, "Embedding values should be normalized")
+            value => Assert.True(value is >= (-1.0f) and <= 1.0f, "Embedding values should be normalized")
         );
 
         mockService.Verify(s => s.GetEmbeddingAsync(sentence, It.IsAny<CancellationToken>()), Times.Once);
@@ -190,28 +190,18 @@ public class IEmbeddingServiceTests
         // Arrange
         var mockService = CreateMockEmbeddingService(1536);
 
-        if (input == null)
-        {
-            _ = mockService
+        _ = input == null
+            ? mockService
                 .Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new ArgumentNullException("sentence"));
-        }
-        else
-        {
-            _ = mockService
+                .ThrowsAsync(new ArgumentNullException("sentence"))
+            : mockService
                 .Setup(s => s.GetEmbeddingAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new ArgumentException("Invalid input"));
-        }
 
         // Act & Assert
-        if (input == null)
-        {
-            _ = await Assert.ThrowsAsync<ArgumentNullException>(() => mockService.Object.GetEmbeddingAsync(input!));
-        }
-        else
-        {
-            _ = await Assert.ThrowsAsync<ArgumentException>(() => mockService.Object.GetEmbeddingAsync(input));
-        }
+        _ = input == null
+            ? await Assert.ThrowsAsync<ArgumentNullException>(() => mockService.Object.GetEmbeddingAsync(input!))
+            : await Assert.ThrowsAsync<ArgumentException>(() => mockService.Object.GetEmbeddingAsync(input));
     }
 
     #endregion
@@ -394,7 +384,7 @@ public class IEmbeddingServiceTests
 
         for (var i = 0; i < size; i++)
         {
-            embedding[i] = (float)(random.NextDouble() * 2.0 - 1.0); // Values between -1 and 1
+            embedding[i] = (float)((random.NextDouble() * 2.0) - 1.0); // Values between -1 and 1
         }
 
         return embedding;

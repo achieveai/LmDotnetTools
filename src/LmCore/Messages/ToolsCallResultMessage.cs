@@ -32,6 +32,10 @@ public record ToolsCallResultMessage : IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId { get; init; }
 
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
     public static string? GetText()
     {
         return null;

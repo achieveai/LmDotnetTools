@@ -157,7 +157,7 @@ public static class AnthropicExtensions
                 Role = ParseRole("assistant"),
                 FromAgent = agentName,
                 GenerationId = messageId,
-                ToolCalls = [new ToolCall(toolContent.Name, toolContent.Input.ToString()) { ToolCallId = toolContent.Id }],
+                ToolCalls = [new ToolCall { FunctionName = toolContent.Name, FunctionArgs = toolContent.Input.ToString(), ToolCallId = toolContent.Id }],
             },
 
             AnthropicResponseThinkingContent thinkingContent => new TextMessage

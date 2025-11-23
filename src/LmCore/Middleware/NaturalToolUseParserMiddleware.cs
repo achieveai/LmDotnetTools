@@ -502,7 +502,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         {
             _isFirstInvocation = false;
             var markdown = RenderContractsToMarkdown(_functions);
-            var systemMessage = (context.Messages.FirstOrDefault(m => m.Role == Role.System)?.ToString() ?? "");
+            var systemMessage = context.Messages.FirstOrDefault(m => m.Role == Role.System)?.ToString() ?? "";
             systemMessage = systemMessage + "\n\n---\n\n# Tool Calls\n\n" + markdown;
             var newMessages = context.Messages.ToList();
             var systemMsgIndex = newMessages.FindIndex(m => m.Role == Role.System);
@@ -812,7 +812,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                 return [fallbackReply];
             }
         }
-        catch (Exception ex) when (!(ex is ToolUseParsingException))
+        catch (Exception ex) when (ex is not ToolUseParsingException)
         {
             throw new ToolUseParsingException($"Fallback parser failed for {toolName}: {ex.Message}", ex);
         }
@@ -901,7 +901,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             var isValid = _schemaValidator.Validate(jsonText, schemaString);
 
             return isValid
-                ? (IEnumerable<IMessage>)(
+                ? (IEnumerable<IMessage>)
 
                     [
                         new ToolsCallMessage
@@ -920,7 +920,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                             ],
                         },
                     ]
-                )
+                
                 : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 

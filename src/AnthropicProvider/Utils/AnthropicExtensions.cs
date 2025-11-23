@@ -91,7 +91,7 @@ public static class AnthropicExtensions
 
             return new ToolsCallMessage
             {
-                ToolCalls = [new ToolCall(functionName, arguments) { ToolCallId = toolUseContent.Id }],
+                ToolCalls = [new ToolCall { FunctionName = functionName, FunctionArgs = arguments, ToolCallId = toolUseContent.Id }],
                 Role = Role.Assistant,
                 GenerationId = responseId,
             };

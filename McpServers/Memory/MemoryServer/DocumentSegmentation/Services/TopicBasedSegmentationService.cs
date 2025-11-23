@@ -816,12 +816,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                     : 0.0;
 
                 // If topics are the same, check keyword overlap
-                if (topicSimilarity > 0.5)
-                {
-                    return CalculateKeywordSimilarity(segment1, segment2);
-                }
-
-                return topicSimilarity;
+                return topicSimilarity > 0.5 ? CalculateKeywordSimilarity(segment1, segment2) : topicSimilarity;
             }
 
             // Fallback to content-based similarity
@@ -906,16 +901,16 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             var jaccardSimilarity = (double)intersection / union;
 
             // Analyze topic coherence for each content
-            var analysis1 = AnalyzeTopicCoherence(content1, keywords1);
+            var (CoherenceScore, PrimaryTopic, SemanticUnity, TopicConsistency) = AnalyzeTopicCoherence(content1, keywords1);
             var analysis2 = AnalyzeTopicCoherence(content2, keywords2);
 
             // If both contents are from the same primary topic, boost similarity
             var topicBonus = 0.0;
-            if (analysis1.PrimaryTopic == analysis2.PrimaryTopic && analysis1.PrimaryTopic != "General")
+            if (PrimaryTopic == analysis2.PrimaryTopic && PrimaryTopic != "General")
             {
                 topicBonus = 0.3; // Significant boost for same topic
             }
-            else if (IsRelatedTopic(analysis1.PrimaryTopic, analysis2.PrimaryTopic))
+            else if (IsRelatedTopic(PrimaryTopic, analysis2.PrimaryTopic))
             {
                 topicBonus = 0.1; // Small boost for related topics
             }
@@ -970,7 +965,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             ["Education", "Science"],
         };
 
-        return relatedPairs.Any(pair => (pair.Contains(topic1) && pair.Contains(topic2)));
+        return relatedPairs.Any(pair => pair.Contains(topic1) && pair.Contains(topic2));
     }
 
     /// <summary>
@@ -1533,8 +1528,8 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
             foreach (var group in semanticGroups)
             {
-                var matches1 = words1.Where(w => group.Value.Contains(w)).Count();
-                var matches2 = words2.Where(w => group.Value.Contains(w)).Count();
+                var matches1 = words1.Count(group.Value.Contains);
+                var matches2 = words2.Count(group.Value.Contains);
 
                 if (matches1 > 0 && matches2 > 0)
                 {
@@ -1658,16 +1653,18 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
         try
         {
-            var coherence = new TopicCoherence { Topic = primaryTopic };
-
-            coherence.TerminologyConsistency = CalculateTerminologyConsistency(content, primaryTopic);
-            coherence.SemanticCoherence = await CalculateSemanticCoherenceAsync(
-                content,
-                primaryTopic,
-                cancellationToken
-            );
-            coherence.ThematicFocus = CalculateThematicFocus(content, primaryTopic);
-            coherence.ConceptualUnity = CalculateConceptualUnity(content, primaryTopic);
+            var coherence = new TopicCoherence
+            {
+                Topic = primaryTopic,
+                TerminologyConsistency = CalculateTerminologyConsistency(content, primaryTopic),
+                SemanticCoherence = await CalculateSemanticCoherenceAsync(
+                    content,
+                    primaryTopic,
+                    cancellationToken
+                ),
+                ThematicFocus = CalculateThematicFocus(content, primaryTopic),
+                ConceptualUnity = CalculateConceptualUnity(content, primaryTopic)
+            };
             coherence.Score =
                 (
                     coherence.TerminologyConsistency
@@ -2038,14 +2035,14 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
 
         // Extract keywords and analyze topics
         var keywords = ExtractKeywords(content);
-        var topicAnalysis = AnalyzeTopicCoherence(content, keywords);
+        var (CoherenceScore, PrimaryTopic, SemanticUnity, TopicConsistency) = AnalyzeTopicCoherence(content, keywords);
 
         var result = new ThematicCoherenceAnalysis
         {
-            CoherenceScore = topicAnalysis.CoherenceScore,
-            PrimaryTopic = topicAnalysis.PrimaryTopic,
-            SemanticUnity = topicAnalysis.SemanticUnity,
-            TopicConsistency = topicAnalysis.TopicConsistency,
+            CoherenceScore = CoherenceScore,
+            PrimaryTopic = PrimaryTopic,
+            SemanticUnity = SemanticUnity,
+            TopicConsistency = TopicConsistency,
             TopicKeywords = keywords,
         };
 
@@ -2217,12 +2214,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
                 norm1 += v1[i] * v1[i];
                 norm2 += v2[i] * v2[i];
             }
-            if (norm1 == 0 || norm2 == 0)
-            {
-                return 0.0;
-            }
-
-            return dot / (Math.Sqrt(norm1) * Math.Sqrt(norm2));
+            return norm1 == 0 || norm2 == 0 ? 0.0 : dot / (Math.Sqrt(norm1) * Math.Sqrt(norm2));
         }
     }
 
@@ -2369,12 +2361,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         }
 
         var totalWords = termCounts.Values.Sum();
-        if (totalWords == 0)
-        {
-            return [];
-        }
-
-        return termCounts.ToDictionary(kv => kv.Key, kv => (double)kv.Value / totalWords);
+        return totalWords == 0 ? [] : termCounts.ToDictionary(kv => kv.Key, kv => (double)kv.Value / totalWords);
     }
 
     private static bool IsStopWord(string word)
@@ -2523,7 +2510,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         // ----------------------------
         // Combine heuristics
         // ----------------------------
-        var score = 0.4 * repetitionRatio + 0.5 * sentenceCoverage + domainBonus;
+        var score = (0.4 * repetitionRatio) + (0.5 * sentenceCoverage) + domainBonus;
 
         // Ensure minimum thresholds for known highly structured legal clauses
         if (domainBonus > 0.14)
@@ -3110,7 +3097,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         var topicScores = new Dictionary<string, double>();
         foreach (var domain in topicDomains)
         {
-            var matchCount = keywords.Count(k => domain.Value.Contains(k));
+            var matchCount = keywords.Count(domain.Value.Contains);
             var matchRatio = keywords.Count > 0 ? (double)matchCount / keywords.Count : 0;
             topicScores[domain.Key] = matchRatio;
 
@@ -3320,7 +3307,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         _logger.LogDebug(
             "Final coherence analysis: Score={Score:F3}, Topic={Topic}, Unity={Unity:F3}, Consistency={Consistency:F3}",
             result.Item1,
-            result.Item2,
+            result.Key,
             result.Item3,
             result.Item4
         );
@@ -3612,18 +3599,13 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
             return 0.3;
         }
         // Accuracy heuristic: more segments up to 10 improves score
-        return Math.Min(1.0, segments.Count / 10.0 + 0.5);
+        return Math.Min(1.0, (segments.Count / 10.0) + 0.5);
     }
 
     private static double CalculateTopicCoverage(List<DocumentSegment> segments, string originalContent)
     {
         var coveredLength = segments.Sum(s => s.Content.Length);
-        if (string.IsNullOrEmpty(originalContent))
-        {
-            return 0.0;
-        }
-
-        return Math.Clamp((double)coveredLength / originalContent.Length, 0.0, 1.0);
+        return string.IsNullOrEmpty(originalContent) ? 0.0 : Math.Clamp((double)coveredLength / originalContent.Length, 0.0, 1.0);
     }
 
     private static double CalculateOverallQuality(TopicSegmentationValidation validation)

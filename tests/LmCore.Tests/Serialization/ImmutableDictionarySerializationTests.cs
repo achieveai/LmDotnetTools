@@ -48,15 +48,12 @@ public class ImmutableDictionarySerializationTests
 
         public TestClassWithExtensionData SetExtraProperty<T>(string key, T value)
         {
-            if (ExtraProperties == null)
-            {
-                return this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) };
-            }
-
-            return this with
+            return ExtraProperties == null
+                ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
+                : (this with
             {
                 ExtraProperties = ExtraProperties.Add(key, value),
-            };
+            });
         }
 
         public T? GetExtraProperty<T>(string key)
@@ -66,12 +63,7 @@ public class ImmutableDictionarySerializationTests
                 return default;
             }
 
-            if (ExtraProperties.TryGetValue(key, out var value) && value is T typedValue)
-            {
-                return typedValue;
-            }
-
-            return default;
+            return ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
         }
     }
 
@@ -91,15 +83,12 @@ public class ImmutableDictionarySerializationTests
 
         public TestClassWithNestedProperties SetExtraProperty<T>(string key, T value)
         {
-            if (ExtraProperties == null)
-            {
-                return this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) };
-            }
-
-            return this with
+            return ExtraProperties == null
+                ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
+                : (this with
             {
                 ExtraProperties = ExtraProperties.Add(key, value),
-            };
+            });
         }
 
         public T? GetExtraProperty<T>(string key)
@@ -109,12 +98,7 @@ public class ImmutableDictionarySerializationTests
                 return default;
             }
 
-            if (ExtraProperties.TryGetValue(key, out var value) && value is T typedValue)
-            {
-                return typedValue;
-            }
-
-            return default;
+            return ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
         }
     }
 

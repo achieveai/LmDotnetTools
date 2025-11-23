@@ -97,7 +97,7 @@ public class MessageUpdateJoinerMiddlewareTests
         Assert.Contains(actualMessages, m => m is UsageMessage);
 
         // Remove the UsageMessage for comparison with expected
-        var actualMessagesWithoutUsage = actualMessages.Where(m => !(m is UsageMessage)).ToList();
+        var actualMessagesWithoutUsage = actualMessages.Where(m => m is not UsageMessage).ToList();
 
         // Verify the content of the messages
         for (var i = 0; i < expectedMessages.Count; i++)
@@ -182,7 +182,7 @@ public class MessageUpdateJoinerMiddlewareTests
                         var functionArgs = GetStringProperty(toolCallElement, "function_args");
                         var toolCallId = GetStringProperty(toolCallElement, "tool_call_id");
 
-                        toolCalls.Add(new ToolCall(functionName, functionArgs) { ToolCallId = toolCallId });
+                        toolCalls.Add(new ToolCall { FunctionName = functionName, FunctionArgs = functionArgs, ToolCallId = toolCallId });
                     }
                 }
 
@@ -221,11 +221,8 @@ public class MessageUpdateJoinerMiddlewareTests
 
     private static string? GetStringProperty(JsonElement element, string propertyName)
     {
-        if (element.TryGetProperty(propertyName, out var property))
-        {
-            return property.ValueKind == JsonValueKind.String ? property.GetString() : null;
-        }
-
-        return null;
+        return element.TryGetProperty(propertyName, out var property)
+            ? property.ValueKind == JsonValueKind.String ? property.GetString() : null
+            : null;
     }
 }

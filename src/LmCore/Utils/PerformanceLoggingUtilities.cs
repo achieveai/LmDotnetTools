@@ -182,7 +182,7 @@ public static class PerformanceLoggingUtilities
             return 0;
         }
 
-        var tokensPerSecond = (totalTokens * 1000.0) / durationMs;
+        var tokensPerSecond = totalTokens * 1000.0 / durationMs;
 
         logger.LogDebug(
             LogEventIds.TokensPerSecondMetrics,
@@ -204,7 +204,7 @@ public static class PerformanceLoggingUtilities
     /// <returns>The calculated tokens per second rate.</returns>
     public static double CalculateTokensPerSecond(int totalTokens, long durationMs)
     {
-        return durationMs <= 0 ? 0 : (totalTokens * 1000.0) / durationMs;
+        return durationMs <= 0 ? 0 : totalTokens * 1000.0 / durationMs;
     }
 
     /// <summary>
@@ -396,7 +396,7 @@ public static class PerformanceLoggingUtilities
         double? averageRetrievalTimeMs = null
     )
     {
-        var hitRate = totalRequests > 0 ? (hits * 100.0) / totalRequests : 0;
+        var hitRate = totalRequests > 0 ? hits * 100.0 / totalRequests : 0;
 
         logger.LogInformation(
             LogEventIds.CacheMetrics,

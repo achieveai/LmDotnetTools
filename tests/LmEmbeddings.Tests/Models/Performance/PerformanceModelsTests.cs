@@ -225,7 +225,7 @@ public class PerformanceModelsTests
 
         if (scoresInValidRange && quality.AvgQualityScore.HasValue)
         {
-            Assert.True(quality.AvgQualityScore >= 0.0 && quality.AvgQualityScore <= 1.0);
+            Assert.True(quality.AvgQualityScore is >= 0.0 and <= 1.0);
             Debug.WriteLine("✓ Quality scores within valid range [0,1]");
         }
 

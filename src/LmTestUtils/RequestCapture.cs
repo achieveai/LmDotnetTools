@@ -138,11 +138,7 @@ public class AnthropicRequestCapture
     {
         get
         {
-            if (_requestJson.TryGetProperty("thinking", out var thinking))
-            {
-                return new ThinkingCapture(thinking);
-            }
-            return null;
+            return _requestJson.TryGetProperty("thinking", out var thinking) ? new ThinkingCapture(thinking) : null;
         }
     }
 
@@ -153,11 +149,9 @@ public class AnthropicRequestCapture
     {
         get
         {
-            if (_requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
-            {
-                return messages.EnumerateArray().Select(msg => new MessageCapture(msg));
-            }
-            return Enumerable.Empty<MessageCapture>();
+            return _requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array
+                ? messages.EnumerateArray().Select(msg => new MessageCapture(msg))
+                : Enumerable.Empty<MessageCapture>();
         }
     }
 
@@ -173,18 +167,16 @@ public class AnthropicRequestCapture
     {
         get
         {
-            if (_requestJson.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
-            {
-                return tools
+            return _requestJson.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array
+                ? tools
                     .EnumerateArray()
                     .Select(tool => new ToolCapture
                     {
                         Name = tool.TryGetProperty("name", out var name) ? name.GetString() : null,
                         Description = tool.TryGetProperty("description", out var desc) ? desc.GetString() : null,
                         InputSchema = tool.TryGetProperty("input_schema", out var schema) ? (object)schema : null,
-                    });
-            }
-            return Enumerable.Empty<ToolCapture>();
+                    })
+                : Enumerable.Empty<ToolCapture>();
         }
     }
 
@@ -235,11 +227,9 @@ public class OpenAIRequestCapture
     {
         get
         {
-            if (_requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
-            {
-                return messages.EnumerateArray().Select(msg => new MessageCapture(msg));
-            }
-            return Enumerable.Empty<MessageCapture>();
+            return _requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array
+                ? messages.EnumerateArray().Select(msg => new MessageCapture(msg))
+                : Enumerable.Empty<MessageCapture>();
         }
     }
 
@@ -303,8 +293,7 @@ public class MessageCapture
                     // Try to extract text from content array
                     var textContent = content
                         .EnumerateArray()
-                        .Where(item => item.TryGetProperty("type", out var type) && type.GetString() == "text")
-                        .FirstOrDefault();
+                        .FirstOrDefault(item => item.TryGetProperty("type", out var type) && type.GetString() == "text");
 
                     if (textContent.TryGetProperty("text", out var text))
                     {
@@ -323,11 +312,9 @@ public class MessageCapture
     {
         get
         {
-            if (_messageJson.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
-            {
-                return content.GetArrayLength();
-            }
-            return _messageJson.TryGetProperty("content", out _) ? 1 : 0;
+            return _messageJson.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array
+                ? content.GetArrayLength()
+                : _messageJson.TryGetProperty("content", out _) ? 1 : 0;
         }
     }
 }

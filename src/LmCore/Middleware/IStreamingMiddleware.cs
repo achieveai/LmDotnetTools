@@ -11,7 +11,7 @@ public interface IStreamingMiddleware : IMiddleware
     /// <summary>
     /// The method to invoke the middleware
     /// </summary>
-    public Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
+    Task<IAsyncEnumerable<IMessage>> InvokeStreamingAsync(
         MiddlewareContext context,
         IStreamingAgent agent,
         CancellationToken cancellationToken = default

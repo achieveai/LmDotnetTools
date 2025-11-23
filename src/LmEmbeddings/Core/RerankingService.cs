@@ -109,12 +109,9 @@ public class RerankingService : IRerankService, IDisposable
         ArgumentNullException.ThrowIfNull(documents);
 
         var docList = documents.ToList();
-        if (docList.Count == 0)
-        {
-            throw new ArgumentException("Documents cannot be empty", nameof(documents));
-        }
-
-        return await ExecuteWithLinearRetryAsync(
+        return docList.Count == 0
+            ? throw new ArgumentException("Documents cannot be empty", nameof(documents))
+            : await ExecuteWithLinearRetryAsync(
             async (attemptNumber) =>
             {
                 var requestPayload = new RerankRequest
@@ -271,11 +268,11 @@ public class RerankingService : IRerankService, IDisposable
     /// <returns>True if the status code indicates a retryable error</returns>
     private static bool IsRetryableStatusCode(HttpStatusCode statusCode)
     {
-        return statusCode >= HttpStatusCode.InternalServerError
-            || // 5xx errors
-            statusCode == HttpStatusCode.TooManyRequests
-            || // 429
-            statusCode == HttpStatusCode.RequestTimeout; // 408
+        return statusCode is >= HttpStatusCode.InternalServerError
+            or // 5xx errors
+            HttpStatusCode.TooManyRequests
+            or // 429
+            HttpStatusCode.RequestTimeout; // 408
     }
 
     /// <summary>

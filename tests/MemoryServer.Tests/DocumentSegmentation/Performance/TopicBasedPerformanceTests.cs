@@ -57,7 +57,7 @@ public class TopicBasedPerformanceTests
 
         stopwatch.Stop();
         var processingTimeMs = stopwatch.ElapsedMilliseconds;
-        var wordsPerSecond = (largeDocument.Split(' ').Length / (processingTimeMs / 1000.0));
+        var wordsPerSecond = largeDocument.Split(' ').Length / (processingTimeMs / 1000.0);
 
         // Assert
         _ = result.Should().NotBeNull();
@@ -101,7 +101,7 @@ public class TopicBasedPerformanceTests
 
         stopwatch.Stop();
         var processingTimeMs = stopwatch.ElapsedMilliseconds;
-        var wordsPerSecond = (document.Split(' ').Length / (processingTimeMs / 1000.0));
+        var wordsPerSecond = document.Split(' ').Length / (processingTimeMs / 1000.0);
 
         // Assert
         _ = result.Should().NotBeEmpty();
@@ -112,13 +112,9 @@ public class TopicBasedPerformanceTests
         {
             _ = wordsPerSecond.Should().BeGreaterThan(800);
         }
-        else if (wordCount <= 20000)
-        {
-            _ = wordsPerSecond.Should().BeGreaterThan(600);
-        }
         else
         {
-            _ = wordsPerSecond.Should().BeGreaterThan(400);
+            _ = wordCount <= 20000 ? wordsPerSecond.Should().BeGreaterThan(600) : wordsPerSecond.Should().BeGreaterThan(400);
         }
 
         _output.WriteLine($"Document Size Scaling Test ({wordCount} words):");
@@ -180,7 +176,7 @@ public class TopicBasedPerformanceTests
     {
         // Arrange
         var documentCount = 10;
-        var documents = Enumerable.Range(0, documentCount).Select(i => GenerateMediumDocument(i)).ToList();
+        var documents = Enumerable.Range(0, documentCount).Select(GenerateMediumDocument).ToList();
 
         var options = new TopicSegmentationOptions { UseLlmEnhancement = false };
 
@@ -345,7 +341,7 @@ public class TopicBasedPerformanceTests
                 $"Processing {wordCount} words took {stopwatch.ElapsedMilliseconds}ms, should be <{maxTimeMs}ms"
             );
 
-        var wordsPerSecond = (wordCount / (stopwatch.ElapsedMilliseconds / 1000.0));
+        var wordsPerSecond = wordCount / (stopwatch.ElapsedMilliseconds / 1000.0);
 
         _output.WriteLine($"Benchmark ({wordCount} words):");
         _output.WriteLine($"  Time: {stopwatch.ElapsedMilliseconds}ms (target: <{maxTimeMs}ms)");
@@ -385,7 +381,7 @@ public class TopicBasedPerformanceTests
         _output.WriteLine($"Boundary Detection Benchmark (5k words, {iterations} runs):");
         _output.WriteLine($"  Average: {averageTime:F0}ms");
         _output.WriteLine($"  Min: {minTime}ms, Max: {maxTime}ms");
-        _output.WriteLine($"  Std Dev: {Math.Sqrt(times.Select(t => Math.Pow(t - averageTime, 2)).Average()):F0}ms");
+        _output.WriteLine($"  Std Dev: {Math.Sqrt(times.Average(t => Math.Pow(t - averageTime, 2))):F0}ms");
     }
 
     #endregion

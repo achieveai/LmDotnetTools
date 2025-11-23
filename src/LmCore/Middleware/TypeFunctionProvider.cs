@@ -249,16 +249,12 @@ public class TypeFunctionProvider : IFunctionProvider
                         {
                             paramValues[i] = param.DefaultValue;
                         }
-                        else if (
-                            !param.ParameterType.IsValueType
-                            || Nullable.GetUnderlyingType(param.ParameterType) != null
-                        )
-                        {
-                            paramValues[i] = null;
-                        }
                         else
                         {
-                            paramValues[i] = Activator.CreateInstance(param.ParameterType);
+                            paramValues[i] = !param.ParameterType.IsValueType
+                            || Nullable.GetUnderlyingType(param.ParameterType) != null
+                                ? null
+                                : Activator.CreateInstance(param.ParameterType);
                         }
                     }
                 }

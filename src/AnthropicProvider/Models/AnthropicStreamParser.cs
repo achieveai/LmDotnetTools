@@ -515,7 +515,7 @@ public class AnthropicStreamParser
             Role = ParseRole(_role),
             FromAgent = _messageId,
             GenerationId = _messageId,
-            ToolCalls = [new ToolCall(functionName, functionArgs) { ToolCallId = block.Id ?? string.Empty }],
+            ToolCalls = [new ToolCall { FunctionName = functionName, FunctionArgs = functionArgs, ToolCallId = block.Id ?? string.Empty }],
         };
 
         // Apply usage metadata if available

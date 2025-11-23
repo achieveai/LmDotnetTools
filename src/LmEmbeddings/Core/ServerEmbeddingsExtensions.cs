@@ -238,11 +238,11 @@ public static class ServerEmbeddingsExtensions
             ErrorRates = new ErrorRateStats
             {
                 ErrorRatePercent =
-                    results.Count != 0 ? (results.Count(r => !r.Success) / (double)results.Count) * 100 : 0,
+                    results.Count != 0 ? results.Count(r => !r.Success) / (double)results.Count * 100 : 0,
                 TotalErrors = results.Count(r => !r.Success),
                 AverageRetries = results.Count != 0 ? results.Average(r => r.RetryCount) : 0,
                 SuccessRateAfterRetriesPercent =
-                    results.Count != 0 ? (results.Count(r => r.Success) / (double)results.Count) * 100 : 0,
+                    results.Count != 0 ? results.Count(r => r.Success) / (double)results.Count * 100 : 0,
             },
         };
     }

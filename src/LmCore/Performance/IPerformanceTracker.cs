@@ -76,10 +76,10 @@ public record OverallStatistics
     public long RetriedRequests { get; init; }
 
     /// <summary>Overall success rate as percentage</summary>
-    public double OverallSuccessRate => TotalRequests > 0 ? (SuccessfulRequests * 100.0) / TotalRequests : 0;
+    public double OverallSuccessRate => TotalRequests > 0 ? SuccessfulRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Overall retry rate as percentage</summary>
-    public double OverallRetryRate => TotalRequests > 0 ? (RetriedRequests * 100.0) / TotalRequests : 0;
+    public double OverallRetryRate => TotalRequests > 0 ? RetriedRequests * 100.0 / TotalRequests : 0;
 
     /// <summary>Total tokens processed across all providers</summary>
     public long TotalTokensProcessed { get; init; }

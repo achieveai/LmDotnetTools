@@ -173,9 +173,20 @@ public class ModelResolver : IModelResolver
         }
 
         // Check if API key is actually available
+        // Note: ClaudeAgentSDK can use Claude Code authentication, so API key is optional
         var apiKey = connection.GetApiKey();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
+            // ClaudeAgentSDK can work without API key when using Claude Code subscription
+            if (string.Equals(providerName, "ClaudeAgentSDK", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogDebug(
+                    "Provider {ProviderName} will use Claude Code authentication (no API key required)",
+                    providerName
+                );
+                return Task.FromResult(true);
+            }
+
             _logger.LogDebug(
                 "Provider {ProviderName} is not available: API key not found in environment variable '{EnvVar}'",
                 providerName,
@@ -351,8 +362,7 @@ public class ModelResolver : IModelResolver
         return
             criteria.MaxPromptCostPerMillion.HasValue
             && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-            ? true
-            : criteria.MaxCompletionCostPerMillion.HasValue
+            || criteria.MaxCompletionCostPerMillion.HasValue
                 && provider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 
@@ -374,8 +384,7 @@ public class ModelResolver : IModelResolver
         return
             criteria.MaxPromptCostPerMillion.HasValue
             && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-            ? true
-            : criteria.MaxCompletionCostPerMillion.HasValue
+            || criteria.MaxCompletionCostPerMillion.HasValue
                 && subProvider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
     }
 

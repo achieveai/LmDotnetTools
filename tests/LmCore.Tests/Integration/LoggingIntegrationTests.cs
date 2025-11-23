@@ -55,7 +55,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -81,7 +81,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentRequestInitiated && log.LogLevel == LogLevel.Information)
             .ToList();
         Assert.Single(initiationLogs);
-        
+
         var initiationLog = initiationLogs.First();
         Assert.Contains("LLM request initiated", initiationLog.Message);
         Assert.Contains("gpt-4", initiationLog.Message);
@@ -92,7 +92,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentRequestCompleted && log.LogLevel == LogLevel.Information)
             .ToList();
         Assert.Single(completionLogs);
-        
+
         var completionLog = completionLogs.First();
         Assert.Contains("LLM request completed", completionLog.Message);
         Assert.Contains("gpt-4", completionLog.Message);
@@ -103,7 +103,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentCacheMiss && log.LogLevel == LogLevel.Debug)
             .ToList();
         Assert.Single(cacheLogs);
-        
+
         var cacheLog = cacheLogs.First();
         Assert.Contains("Agent cache miss", cacheLog.Message);
         Assert.Contains("openai", cacheLog.Message);
@@ -146,7 +146,7 @@ public class LoggingIntegrationTests : IDisposable
         );
 
         var mockAgent = new Mock<IAgent>();
-        var toolCall = new ToolCall("TestFunction", "{\"input\":\"test\"}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{\"input\":\"test\"}" };
         var toolCallMessage = new ToolsCallMessage
         {
             ToolCalls = [toolCall],
@@ -213,7 +213,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -271,7 +271,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -297,7 +297,7 @@ public class LoggingIntegrationTests : IDisposable
             .Where(log => log.EventId == LmConfigLogEventIds.AgentRequestFailed && log.LogLevel == LogLevel.Error)
             .ToList();
         Assert.Single(errorLogs);
-        
+
         var errorLog = errorLogs.First();
         Assert.Contains("LLM request failed", errorLog.Message);
         Assert.Contains("gpt-4", errorLog.Message);
@@ -400,7 +400,7 @@ public class LoggingIntegrationTests : IDisposable
         // Assert - Verify structured logging format
         var logs = ((TestLogger<UnifiedAgent>)logger).LogEntries.ToList();
         Assert.Single(logs);
-        
+
         var log = logs.First();
         Assert.Equal(LmConfigLogEventIds.AgentRequestInitiated, log.EventId);
         Assert.Equal(LogLevel.Information, log.LogLevel);
@@ -413,13 +413,13 @@ public class LoggingIntegrationTests : IDisposable
         Assert.NotNull(log.State);
         var state = log.State as IReadOnlyList<KeyValuePair<string, object>>;
         Assert.NotNull(state);
-        
+
         var modelParam = state.FirstOrDefault(kvp => kvp.Key == "ModelId");
         Assert.Equal("gpt-4", modelParam.Value);
-        
+
         var messageCountParam = state.FirstOrDefault(kvp => kvp.Key == "MessageCount");
         Assert.Equal(2, messageCountParam.Value);
-        
+
         var typeParam = state.FirstOrDefault(kvp => kvp.Key == "RequestType");
         Assert.Equal("non-streaming", typeParam.Value);
     } */
@@ -438,7 +438,7 @@ public class LoggingIntegrationTests : IDisposable
         var mockResolution = new Mock<ProviderResolution>();
         mockResolution.SetupGet(x => x.EffectiveProviderName).Returns("openai");
         mockResolution.SetupGet(x => x.EffectiveModelName).Returns("gpt-4");
-        
+
         mockModelResolver.Setup(x => x.ResolveProviderAsync(It.IsAny<string>(), It.IsAny<ProviderSelectionCriteria>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResolution.Object);
 
@@ -460,7 +460,7 @@ public class LoggingIntegrationTests : IDisposable
 
         // Assert
         Assert.NotEmpty(result);
-        
+
         // Verify that no logging methods were called when disabled
         disabledLogger.Verify(x => x.Log(
             It.IsAny<LogLevel>(),

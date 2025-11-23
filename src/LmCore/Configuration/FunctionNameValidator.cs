@@ -37,7 +37,7 @@ public static partial class FunctionNameValidator
     /// <returns>True if the name is valid, false otherwise</returns>
     public static bool IsValidFunctionName(string? functionName)
     {
-        return string.IsNullOrWhiteSpace(functionName) ? false : ValidNamePattern.IsMatch(functionName);
+        return !string.IsNullOrWhiteSpace(functionName) && ValidNamePattern.IsMatch(functionName);
     }
 
     /// <summary>
@@ -47,7 +47,7 @@ public static partial class FunctionNameValidator
     /// <returns>True if the prefix is valid, false otherwise</returns>
     public static bool IsValidPrefix(string? prefix)
     {
-        return string.IsNullOrWhiteSpace(prefix) ? false : ValidPrefixPattern.IsMatch(prefix);
+        return !string.IsNullOrWhiteSpace(prefix) && ValidPrefixPattern.IsMatch(prefix);
     }
 
     /// <summary>

@@ -94,7 +94,13 @@ public record ChatMessage
             else
             {
                 var toolCalls = ToolCalls
-                    .Select(tc => new ToolCall(tc.Function.Name, tc.Function.Arguments) { ToolCallId = tc.Id })
+                    .Select((tc, idx) => new ToolCall
+                    {
+                        FunctionName = tc.Function.Name,
+                        FunctionArgs = tc.Function.Arguments,
+                        ToolCallId = tc.Id,
+                        ToolCallIdx = idx // Assign sequential tool call index
+                    })
                     .ToArray();
 
                 yield return new ToolsCallMessage
@@ -206,7 +212,7 @@ public record ChatMessage
                         Text = item.Get<TextContent>().Text,
                         FromAgent = name,
                         GenerationId = Id,
-                    } as IMessage
+                    }
                     : new ImageMessage
                     {
                         Role = ToRole(role!.Value),
@@ -300,7 +306,7 @@ public record ImageContent
             get
             {
                 var formattedUrl =
-                    Url.Length <= 50 ? Url : $"{Url.Substring(0, 23)}...{Url.Substring(Url.Length - 24)}";
+                    Url.Length <= 50 ? Url : $"{Url[..23]}...{Url[^24..]}";
 
                 return AltText != null ? $"Url = {formattedUrl}, AltText = {AltText}" : $"Url = {formattedUrl}";
             }

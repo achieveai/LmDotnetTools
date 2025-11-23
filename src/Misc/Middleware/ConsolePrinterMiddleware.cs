@@ -216,7 +216,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         _isNewMessage = true;
 
         // Check if last message is same type as current message
-        if (message is ToolsCallMessage || message is TextMessage)
+        if (message is ToolsCallMessage or TextMessage)
         {
             _toolsCallMessageBuilder = null; // Reset the tool call message builder
         }
@@ -472,8 +472,10 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         if (_isNewMessage)
         {
             // Create a new tool call object
-            var newToolCall = new ToolCall(update.FunctionName ?? "unknown", update.FunctionArgs ?? "{}")
+            var newToolCall = new ToolCall
             {
+                FunctionName = update.FunctionName ?? "unknown",
+                FunctionArgs = update.FunctionArgs ?? "{}",
                 ToolCallId = update.ToolCallId,
                 Index = update.Index ?? indexKey,
             };

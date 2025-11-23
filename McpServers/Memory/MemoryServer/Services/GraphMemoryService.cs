@@ -163,7 +163,7 @@ public class GraphMemoryService : IGraphMemoryService
             var traditionalTask = PerformTraditionalSearchAsync(query, sessionContext, maxResults, cancellationToken);
 
             // Perform graph-based search if enabled
-            Task<List<Memory>> graphTask = useGraphTraversal
+            var graphTask = useGraphTraversal
                 ? PerformGraphSearchAsync(query, sessionContext, maxResults, cancellationToken)
                 : Task.FromResult(new List<Memory>());
 
@@ -746,7 +746,7 @@ public class GraphMemoryService : IGraphMemoryService
         for (var i = 0; i < traditionalResults.Count; i++)
         {
             var memory = traditionalResults[i];
-            var traditionalScore = 1.0f - (float)i / traditionalResults.Count; // Higher score for earlier results
+            var traditionalScore = 1.0f - ((float)i / traditionalResults.Count); // Higher score for earlier results
 
             combinedResults.Add(
                 new HybridSearchResult
@@ -766,7 +766,7 @@ public class GraphMemoryService : IGraphMemoryService
         for (var i = 0; i < graphResults.Count; i++)
         {
             var memory = graphResults[i];
-            var graphScore = 1.0f - (float)i / graphResults.Count;
+            var graphScore = 1.0f - ((float)i / graphResults.Count);
 
             var existingResult = combinedResults.FirstOrDefault(r => r.Memory.Id == memory.Id);
             if (existingResult != null)

@@ -183,13 +183,11 @@ public static class HttpTestHelpers
 
             if (!found)
             {
-                if (throwOnMissing)
-                {
-                    throw new AssertionException(
+                return throwOnMissing
+                    ? throw new AssertionException(
                         $"Expected header '{header.Key}: {header.Value}' not found in request"
-                    );
-                }
-                return false;
+                    )
+                    : false;
             }
         }
         return true;
@@ -210,11 +208,7 @@ public static class HttpTestHelpers
     {
         if (request.Content == null)
         {
-            if (throwOnMissing)
-            {
-                throw new AssertionException("Request content is null");
-            }
-            return false;
+            return throwOnMissing ? throw new AssertionException("Request content is null") : false;
         }
 
         var content = await request.Content.ReadAsStringAsync();
@@ -225,11 +219,7 @@ public static class HttpTestHelpers
         {
             if (!root.TryGetProperty(key, out _))
             {
-                if (throwOnMissing)
-                {
-                    throw new AssertionException($"Expected JSON key '{key}' not found in request content");
-                }
-                return false;
+                return throwOnMissing ? throw new AssertionException($"Expected JSON key '{key}' not found in request content") : false;
             }
         }
         return true;

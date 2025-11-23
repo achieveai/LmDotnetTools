@@ -62,7 +62,7 @@ public static class AgUiMiddlewareConfiguration
         _ = functionCallMiddleware.WithResultCallback(agUiMiddleware);
 
         // Build the middleware chain in the correct order
-        IStreamingAgent configuredAgent = agent;
+        var configuredAgent = agent;
 
         // Optionally add JSON fragment middleware
         if (includeJsonFragmentMiddleware)
@@ -139,7 +139,7 @@ public static class AgUiMiddlewareConfiguration
         _ = functionCallMiddleware.WithResultCallback(agUiMiddleware);
 
         // Build the middleware chain
-        IStreamingAgent configuredAgent = agent;
+        var configuredAgent = agent;
 
         if (jsonFragmentMiddleware != null)
         {

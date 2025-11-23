@@ -84,7 +84,7 @@ public class PromptReader : IPromptReader
 
         foreach (var version in versions)
         {
-            if (Version.TryParse(version.TrimStart('v'), out Version? current) && current != null)
+            if (Version.TryParse(version.TrimStart('v'), out var current) && current != null)
             {
                 if (current > latest)
                 {
@@ -138,7 +138,7 @@ public class PromptReader : IPromptReader
     /// <returns>A Prompt object.</returns>
     public Prompt GetPrompt(string promptName, string version = "latest")
     {
-        if (!_prompts.TryGetValue(promptName, out Dictionary<string, object>? promptVersions))
+        if (!_prompts.TryGetValue(promptName, out var promptVersions))
         {
             throw new KeyNotFoundException($"Prompt '{promptName}' not found.");
         }

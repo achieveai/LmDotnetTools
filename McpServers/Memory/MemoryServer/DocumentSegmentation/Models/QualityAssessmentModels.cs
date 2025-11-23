@@ -92,7 +92,7 @@ public class QualityMetricWeights
     /// Validates that weights sum to approximately 1.0.
     /// </summary>
     public bool AreValid =>
-        Math.Abs((CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight) - 1.0) < 0.01;
+        Math.Abs(CoherenceWeight + IndependenceWeight + TopicConsistencyWeight + CompletenessWeight - 1.0) < 0.01;
 
     /// <summary>
     /// Normalizes weights to sum to 1.0.

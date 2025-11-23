@@ -62,6 +62,13 @@ public record ToolsCallAggregateMessage : IMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? RunId => ToolsCallMessage.RunId;
 
+    /// <summary>
+    /// Message order index from the original tool call
+    /// </summary>
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx => ToolsCallMessage.MessageOrderIdx;
+
     public ToolsCallAggregateMessage(
         ToolsCallMessage toolCallMessage,
         ToolsCallResultMessage toolCallResult,

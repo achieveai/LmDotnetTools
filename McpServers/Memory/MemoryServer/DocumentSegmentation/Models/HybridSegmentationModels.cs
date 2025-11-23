@@ -101,7 +101,7 @@ public class StrategyWeights
     /// <summary>
     /// Validates that weights sum to approximately 1.0.
     /// </summary>
-    public bool AreValid => Math.Abs((StructureWeight + NarrativeWeight + TopicWeight) - 1.0) < 0.01;
+    public bool AreValid => Math.Abs(StructureWeight + NarrativeWeight + TopicWeight - 1.0) < 0.01;
 
     /// <summary>
     /// Normalizes weights to sum to 1.0.

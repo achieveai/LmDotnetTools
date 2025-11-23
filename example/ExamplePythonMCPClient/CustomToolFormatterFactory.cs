@@ -378,7 +378,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     yield return token;
                 }
 
-                yield return ((_pythonCodeColor, Environment.NewLine));
+                yield return (_pythonCodeColor, Environment.NewLine);
             }
         }
 
@@ -395,7 +395,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             var pos = 0;
 
             // Indicate line start with a consistent indentation
-            yield return ((_pythonPunctuationColor, "  "));
+            yield return (_pythonPunctuationColor, "  ");
 
             while (pos < line.Length)
             {
@@ -405,7 +405,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 var commentMatch = PythonCommentRegex.Match(line, pos);
                 if (commentMatch.Success && commentMatch.Index == pos)
                 {
-                    yield return ((_pythonCommentColor, commentMatch.Value));
+                    yield return (_pythonCommentColor, commentMatch.Value);
                     pos = line.Length; // Skip to end of line
                     continue;
                 }
@@ -414,7 +414,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 var stringMatch = PythonStringRegex.Match(line, pos);
                 if (stringMatch.Success && stringMatch.Index == pos)
                 {
-                    yield return ((_pythonStringColor, stringMatch.Value));
+                    yield return (_pythonStringColor, stringMatch.Value);
                     pos += stringMatch.Length;
                     continue;
                 }
@@ -423,7 +423,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 var keywordMatch = PythonKeywordRegex.Match(line, pos);
                 if (keywordMatch.Success && keywordMatch.Index == pos)
                 {
-                    yield return ((_pythonKeywordColor, keywordMatch.Value));
+                    yield return (_pythonKeywordColor, keywordMatch.Value);
                     pos += keywordMatch.Length;
                     continue;
                 }
@@ -432,7 +432,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 var boolMatch = PythonBoolRegex.Match(line, pos);
                 if (boolMatch.Success && boolMatch.Index == pos)
                 {
-                    yield return ((_pythonBoolColor, boolMatch.Value));
+                    yield return (_pythonBoolColor, boolMatch.Value);
                     pos += boolMatch.Length;
                     continue;
                 }
@@ -441,7 +441,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 var numberMatch = PythonNumberRegex.Match(line, pos);
                 if (numberMatch.Success && numberMatch.Index == pos)
                 {
-                    yield return ((_pythonNumberColor, numberMatch.Value));
+                    yield return (_pythonNumberColor, numberMatch.Value);
                     pos += numberMatch.Length;
                     continue;
                 }
@@ -450,7 +450,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 var operatorMatch = PythonOperatorRegex.Match(line, pos);
                 if (operatorMatch.Success && operatorMatch.Index == pos)
                 {
-                    yield return ((_pythonOperatorColor, operatorMatch.Value));
+                    yield return (_pythonOperatorColor, operatorMatch.Value);
                     pos += operatorMatch.Length;
                     continue;
                 }
@@ -459,13 +459,13 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                 var identifierMatch = PythonIdentifierRegex.Match(line, pos);
                 if (identifierMatch.Success && identifierMatch.Index == pos)
                 {
-                    yield return ((_pythonIdentifierColor, identifierMatch.Value));
+                    yield return (_pythonIdentifierColor, identifierMatch.Value);
                     pos += identifierMatch.Length;
                     continue;
                 }
 
                 // 8. Any other character (punctuation, etc.)
-                yield return ((_pythonPunctuationColor, line[pos].ToString()));
+                yield return (_pythonPunctuationColor, line[pos].ToString());
                 pos++;
             }
         }

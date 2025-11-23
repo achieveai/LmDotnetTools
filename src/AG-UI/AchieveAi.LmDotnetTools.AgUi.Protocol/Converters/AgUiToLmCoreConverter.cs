@@ -29,13 +29,9 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         {
             return ConvertToolResultMessage(message);
         }
-        else if (message.ToolCalls?.Count > 0)
-        {
-            return ConvertToolsCallMessage(message);
-        }
         else
         {
-            return ConvertTextMessage(message);
+            return message.ToolCalls?.Count > 0 ? ConvertToolsCallMessage(message) : ConvertTextMessage(message);
         }
     }
 
@@ -69,8 +65,10 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         // Serialize JsonElement to JSON string
         var argumentsJson = JsonSerializer.Serialize(toolCall.Function.Arguments);
 
-        return new ToolCall(FunctionName: toolCall.Function.Name, FunctionArgs: argumentsJson)
+        return new ToolCall
         {
+            FunctionName = toolCall.Function.Name,
+            FunctionArgs = argumentsJson,
             ToolCallId = toolCall.Id,
         };
     }
@@ -157,7 +155,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
             foreach (var param in config.ModelParameters)
             {
                 // These will be handled as first-class properties, skip from extra
-                if (param.Key == "top_p" || param.Key == "seed" || param.Key == "stop")
+                if (param.Key is "top_p" or "seed" or "stop")
                 {
                     continue;
                 }
@@ -201,42 +199,31 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
 
     private static float? ExtractFloat(Dictionary<string, object>? dict, string key)
     {
-        if (dict == null || !dict.TryGetValue(key, out var value))
-        {
-            return null;
-        }
-
-        return value switch
-        {
-            float f => f,
-            double d => (float)d,
-            int i => (float)i,
-            _ => null,
-        };
+        return dict == null || !dict.TryGetValue(key, out var value)
+            ? null
+            : value switch
+            {
+                float f => f,
+                double d => (float)d,
+                int i => (float)i,
+                _ => null,
+            };
     }
 
     private static int? ExtractInt(Dictionary<string, object>? dict, string key)
     {
-        if (dict == null || !dict.TryGetValue(key, out var value))
-        {
-            return null;
-        }
-
-        return value switch
-        {
-            int i => i,
-            long l => (int)l,
-            _ => null,
-        };
+        return dict == null || !dict.TryGetValue(key, out var value)
+            ? null
+            : value switch
+            {
+                int i => i,
+                long l => (int)l,
+                _ => null,
+            };
     }
 
     private static string[]? ExtractStringArray(Dictionary<string, object>? dict, string key)
     {
-        if (dict == null || !dict.TryGetValue(key, out var value))
-        {
-            return null;
-        }
-
-        return value as string[];
+        return dict == null || !dict.TryGetValue(key, out var value) ? null : value as string[];
     }
 }

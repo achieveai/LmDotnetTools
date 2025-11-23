@@ -662,9 +662,9 @@ public class HybridSegmentationService : IHybridSegmentationService
     {
         return new StrategyWeights
         {
-            StructureWeight = weights1.StructureWeight * ratio1 + weights2.StructureWeight * ratio2,
-            NarrativeWeight = weights1.NarrativeWeight * ratio1 + weights2.NarrativeWeight * ratio2,
-            TopicWeight = weights1.TopicWeight * ratio1 + weights2.TopicWeight * ratio2,
+            StructureWeight = (weights1.StructureWeight * ratio1) + (weights2.StructureWeight * ratio2),
+            NarrativeWeight = (weights1.NarrativeWeight * ratio1) + (weights2.NarrativeWeight * ratio2),
+            TopicWeight = (weights1.TopicWeight * ratio1) + (weights2.TopicWeight * ratio2),
             Confidence = Math.Max(weights1.Confidence, weights2.Confidence),
             Method = WeightDeterminationMethod.LlmAnalysis,
             Rationale = $"Combined: {weights1.Rationale} + {weights2.Rationale}",
@@ -782,12 +782,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             return structureSegments;
         }
 
-        if (weights.NarrativeWeight >= weights.TopicWeight)
-        {
-            return narrativeSegments;
-        }
-
-        return topicSegments;
+        return weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
     }
 
     private static Task<List<DocumentSegment>> MergeOverlappingSegmentsAsync(
@@ -821,12 +816,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             return structureSegments;
         }
 
-        if (weights.NarrativeWeight >= weights.TopicWeight)
-        {
-            return narrativeSegments;
-        }
-
-        return topicSegments;
+        return weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
     }
 
     private static Task<List<DocumentSegment>> OptimizeSegmentationAsync(
@@ -853,12 +843,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     // Quality calculation methods
     private static double CalculateOverallQuality(List<DocumentSegment> segments)
     {
-        if (segments.Count == 0)
-        {
-            return 0.0;
-        }
-
-        return segments.Average(s => s.Quality?.CoherenceScore ?? 0.5);
+        return segments.Count == 0 ? 0.0 : segments.Average(s => s.Quality?.CoherenceScore ?? 0.5);
     }
 
     private static double CalculateStrategyCombinationScore(List<DocumentSegment> segments, StrategyWeights weights)
@@ -961,12 +946,7 @@ public class HybridSegmentationService : IHybridSegmentationService
             return SegmentationStrategy.StructureBased;
         }
 
-        if (weights.NarrativeWeight >= weights.TopicWeight)
-        {
-            return SegmentationStrategy.NarrativeBased;
-        }
-
-        return SegmentationStrategy.TopicBased;
+        return weights.NarrativeWeight >= weights.TopicWeight ? SegmentationStrategy.NarrativeBased : SegmentationStrategy.TopicBased;
     }
 
     private static SegmentationStrategy? DetermineSecondaryStrategy(
@@ -1095,7 +1075,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     private static double CalculateKeywordDensity(string content)
     {
         var words = content.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var technicalWords = words.Where(w => w.Length > 6 && char.IsUpper(w[0])).Count();
+        var technicalWords = words.Count(w => w.Length > 6 && char.IsUpper(w[0]));
         return Math.Min(1.0, (double)technicalWords / Math.Max(1, words.Length) * 20);
     }
 

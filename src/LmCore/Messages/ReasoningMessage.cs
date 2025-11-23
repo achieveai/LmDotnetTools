@@ -55,6 +55,10 @@ public record ReasoningMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParentRunId { get; init; }
 
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
     public static BinaryData? GetBinary()
     {
         return null;
@@ -115,6 +119,10 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ParentRunId { get; init; }
 
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
     public static BinaryData? GetBinary()
     {
         return null;
@@ -174,6 +182,7 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
     public string? ThreadId { get; set; }
     public string? RunId { get; set; }
     public string? ParentRunId { get; set; }
+    public int? MessageOrderIdx { get; set; }
 
     public void Add(ReasoningUpdateMessage streamingMessageUpdate)
     {
@@ -197,6 +206,7 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
             ThreadId = ThreadId,
             RunId = RunId,
             ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
         };
     }
 }

@@ -322,7 +322,7 @@ public class LoggingSystemIntegrationTests
         foreach (var eventId in agentEvents)
         {
             Assert.True(
-                eventId.Id >= 1000 && eventId.Id < 2000,
+                eventId.Id is >= 1000 and < 2000,
                 $"Agent event {eventId.Name} has ID {eventId.Id} outside expected range 1000-1999"
             );
         }
@@ -331,7 +331,7 @@ public class LoggingSystemIntegrationTests
         foreach (var eventId in middlewareEvents)
         {
             Assert.True(
-                eventId.Id >= 2000 && eventId.Id < 3000,
+                eventId.Id is >= 2000 and < 3000,
                 $"Middleware event {eventId.Name} has ID {eventId.Id} outside expected range 2000-2999"
             );
         }
@@ -340,7 +340,7 @@ public class LoggingSystemIntegrationTests
         foreach (var eventId in providerEvents)
         {
             Assert.True(
-                eventId.Id >= 3000 && eventId.Id < 4000,
+                eventId.Id is >= 3000 and < 4000,
                 $"Provider event {eventId.Name} has ID {eventId.Id} outside expected range 3000-3999"
             );
         }

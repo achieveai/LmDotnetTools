@@ -20,14 +20,7 @@ public static class ServiceCollectionExtensions
     )
     {
         // Configure options
-        if (configureOptions != null)
-        {
-            _ = services.Configure(configureOptions);
-        }
-        else
-        {
-            _ = services.Configure<AgUiMiddlewareOptions>(options => { });
-        }
+        _ = configureOptions != null ? services.Configure(configureOptions) : services.Configure<AgUiMiddlewareOptions>(options => { });
 
         // Register core services
         _ = services.AddSingleton<IEventPublisher, ChannelEventPublisher>();

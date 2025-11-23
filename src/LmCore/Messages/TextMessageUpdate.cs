@@ -84,6 +84,13 @@ public record TextUpdateMessage : IMessage, ICanGetText
     public string? ParentRunId { get; init; }
 
     /// <summary>
+    /// Order index of this message within its generation (same GenerationId).
+    /// </summary>
+    [JsonPropertyName("messageOrderIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MessageOrderIdx { get; init; }
+
+    /// <summary>
     /// Not supported for text updates.
     /// </summary>
     public static BinaryData? GetBinary()
@@ -124,6 +131,7 @@ public record TextUpdateMessage : IMessage, ICanGetText
             ThreadId = ThreadId,
             RunId = RunId,
             ParentRunId = ParentRunId,
+            MessageOrderIdx = MessageOrderIdx,
         };
     }
 }

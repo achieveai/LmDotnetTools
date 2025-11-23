@@ -45,12 +45,7 @@ public sealed class SessionRepository : ISessionRepository
 
         await using var reader = await cmd.ExecuteReaderAsync(ct);
 
-        if (await reader.ReadAsync(ct))
-        {
-            return MapSessionEntity(reader);
-        }
-
-        return null;
+        return await reader.ReadAsync(ct) ? MapSessionEntity(reader) : null;
     }
 
     /// <inheritdoc/>

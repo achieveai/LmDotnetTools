@@ -90,18 +90,20 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             };
 
             // Create a function using the proper schema
-            var function = new FunctionContract { Name = "get_weather", Description = "Get the current weather" };
-
-            // Set parameters as an array of FunctionParameterContract
-            function.Parameters = new List<FunctionParameterContract>
+            var function = new FunctionContract
             {
-                new FunctionParameterContract
+                Name = "get_weather",
+                Description = "Get the current weather",             // Set parameters as an array of FunctionParameterContract
+                Parameters = new List<FunctionParameterContract>
                 {
-                    Name = "location",
-                    Description = "The city name",
-                    ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
-                    IsRequired = true,
-                },
+                    new FunctionParameterContract
+                    {
+                        Name = "location",
+                        Description = "The city name",
+                        ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
+                        IsRequired = true,
+                    },
+                }
             };
 
             var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = [function] };
@@ -123,7 +125,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
         public void Create_WithVariousMessageTypes_ConvertsCorrectly()
         {
             // Arrange
-            var toolCall = new ToolCall("get_weather", "{\"location\":\"New York\"}") { ToolCallId = "call_123" };
+            var toolCall = new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"New York\"}", ToolCallId = "call_123" };
 
             var messages = new List<IMessage>
             {

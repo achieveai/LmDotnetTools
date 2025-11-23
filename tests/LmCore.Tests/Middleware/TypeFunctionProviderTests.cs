@@ -85,12 +85,7 @@ public class TypeFunctionProviderTests
         [Function("divide", "Divides two numbers")]
         public static double Divide(double a, double b)
         {
-            if (b == 0)
-            {
-                throw new ArgumentException("Cannot divide by zero");
-            }
-
-            return a / b;
+            return b == 0 ? throw new ArgumentException("Cannot divide by zero") : a / b;
         }
 
         [Function("asyncError")]

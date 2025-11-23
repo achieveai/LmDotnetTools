@@ -41,7 +41,7 @@ public class SimpleTestAgent : IAgent
     public void InjectToolCall(string functionName, object args)
     {
         var serializedArgs = JsonSerializer.Serialize(args);
-        var toolCall = new ToolCall(functionName, serializedArgs);
+        var toolCall = new ToolCall { FunctionName = functionName, FunctionArgs = serializedArgs };
         _injectedMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
     }
 
@@ -55,18 +55,13 @@ public class SimpleTestAgent : IAgent
         _receivedMessages.AddRange(messages);
 
         // Return the injected message, or a default if none was provided
-        if (_injectedMessage != null)
-        {
-            return Task.FromResult<IEnumerable<IMessage>>(new[] { _injectedMessage });
-        }
-        else
-        {
-            return Task.FromResult<IEnumerable<IMessage>>(
+        return _injectedMessage != null
+            ? Task.FromResult<IEnumerable<IMessage>>(new[] { _injectedMessage })
+            : Task.FromResult<IEnumerable<IMessage>>(
                 new[]
                 {
                     new TextMessage { Text = "Default response", Role = Role.Assistant },
                 }
             );
-        }
     }
 }

@@ -6,9 +6,9 @@ using ModelContextProtocol.Server;
 
 namespace AchieveAi.LmDotnetTools.McpSampleServer;
 
-class Program
+internal class Program
 {
-    static async Task Main(string[] args)
+    private static async Task Main(string[] args)
     {
         var builder = Host.CreateApplicationBuilder(args);
         _ = builder.Logging.AddConsole(consoleLogOptions =>
@@ -99,11 +99,7 @@ public static class CalculatorTool
     [McpServerTool, Description("Divides the first number by the second")]
     public static double Divide(double a, double b)
     {
-        if (b == 0)
-        {
-            throw new ArgumentException("Cannot divide by zero");
-        }
-        return a / b;
+        return b == 0 ? throw new ArgumentException("Cannot divide by zero") : a / b;
     }
 
     /// <summary>
@@ -139,11 +135,7 @@ public static class CalculatorTool
     [McpServerTool, Description("Calculates the square root of a number")]
     public static double Sqrt(double x)
     {
-        if (x < 0)
-        {
-            throw new ArgumentException("Cannot calculate square root of a negative number");
-        }
-        return Math.Sqrt(x);
+        return x < 0 ? throw new ArgumentException("Cannot calculate square root of a negative number") : Math.Sqrt(x);
     }
 
     /// <summary>

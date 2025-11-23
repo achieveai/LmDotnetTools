@@ -75,7 +75,7 @@ public class BaseHttpServiceTests
         service.Dispose();
 
         // Assert
-        _ = Assert.Throws<ObjectDisposedException>(() => service.TestThrowIfDisposed());
+        _ = Assert.Throws<ObjectDisposedException>(service.TestThrowIfDisposed);
         Debug.WriteLine("✓ Service correctly disposed and throws ObjectDisposedException");
     }
 
@@ -173,12 +173,7 @@ public class BaseHttpServiceTests
         var result = await service.TestExecuteWithRetryAsync(() =>
         {
             attempts++;
-            if (attempts < 3)
-            {
-                throw new HttpRequestException("Temporary network timeout");
-            }
-
-            return Task.FromResult("success");
+            return attempts < 3 ? throw new HttpRequestException("Temporary network timeout") : Task.FromResult("success");
         });
         stopwatch.Stop();
 
@@ -239,23 +234,17 @@ public class BaseHttpServiceTests
             () =>
             {
                 attempts++;
-                if (attempts < 3)
-                {
-                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
-                }
-
-                return Task.FromResult(
+                return attempts < 3
+                    ? Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError))
+                    : Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("success") }
                 );
             },
             async response =>
             {
-                if (response.StatusCode == HttpStatusCode.InternalServerError)
-                {
-                    throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}");
-                }
-
-                return await response.Content.ReadAsStringAsync();
+                return response.StatusCode == HttpStatusCode.InternalServerError
+                    ? throw new HttpRequestException($"HTTP {(int)response.StatusCode} {response.StatusCode}")
+                    : await response.Content.ReadAsStringAsync();
             }
         );
         stopwatch.Stop();
@@ -333,7 +322,7 @@ public class BaseHttpServiceTests
         service.Dispose();
 
         // Act & Assert
-        var exception = Assert.Throws<ObjectDisposedException>(() => service.TestThrowIfDisposed());
+        var exception = Assert.Throws<ObjectDisposedException>(service.TestThrowIfDisposed);
         Assert.Equal(typeof(TestHttpService).Name, exception.ObjectName);
 
         Debug.WriteLine("✓ ThrowIfDisposed correctly threw ObjectDisposedException when disposed");

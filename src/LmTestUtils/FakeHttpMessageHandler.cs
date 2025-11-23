@@ -125,17 +125,14 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             {
                 attemptCount++;
 
-                if (attemptCount <= failureCount)
-                {
-                    return Task.FromResult(
+                return attemptCount <= failureCount
+                    ? Task.FromResult(
                         new HttpResponseMessage(failureStatus)
                         {
                             Content = new StringContent($"Failure attempt {attemptCount}", Encoding.UTF8, "text/plain"),
                         }
-                    );
-                }
-
-                return Task.FromResult(
+                    )
+                    : Task.FromResult(
                     new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent(successResponse, Encoding.UTF8, "application/json"),
@@ -166,17 +163,14 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                     var statusCode = statusCodes[attemptCount];
                     attemptCount++;
 
-                    if (statusCode == HttpStatusCode.OK)
-                    {
-                        return Task.FromResult(
+                    return statusCode == HttpStatusCode.OK
+                        ? Task.FromResult(
                             new HttpResponseMessage(statusCode)
                             {
                                 Content = new StringContent(successResponse, Encoding.UTF8, "application/json"),
                             }
-                        );
-                    }
-
-                    return Task.FromResult(
+                        )
+                        : Task.FromResult(
                         new HttpResponseMessage(statusCode)
                         {
                             Content = new StringContent($"Error {(int)statusCode}", Encoding.UTF8, "text/plain"),

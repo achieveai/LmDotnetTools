@@ -108,12 +108,7 @@ public static class MiddlewareContextExtensions
     /// <returns>True if a session ID exists, false otherwise</returns>
     public static bool HasAgUiSession(this MiddlewareContext context, string? conversationId)
     {
-        if (string.IsNullOrEmpty(conversationId))
-        {
-            return false;
-        }
-
-        return _sessionIds.ContainsKey(conversationId);
+        return !string.IsNullOrEmpty(conversationId) && _sessionIds.ContainsKey(conversationId);
     }
 
     /// <summary>

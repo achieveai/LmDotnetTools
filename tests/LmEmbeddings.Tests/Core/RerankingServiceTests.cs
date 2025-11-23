@@ -98,7 +98,7 @@ public class RerankingServiceTests
         // Assert
         Assert.NotNull(result);
         Assert.Equal(documents.Length, result.Count);
-        Assert.All(result, doc => Assert.True(doc.Score >= 0 && doc.Score <= 1));
+        Assert.All(result, doc => Assert.True(doc.Score is >= 0 and <= 1));
         Assert.All(result, doc => Assert.True(doc.Index >= 0 && doc.Index < documents.Length));
 
         // Verify ordering (highest score first)
