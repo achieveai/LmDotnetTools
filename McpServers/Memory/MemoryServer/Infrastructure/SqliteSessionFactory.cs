@@ -169,7 +169,7 @@ public class SqliteSessionFactory : ISqliteSessionFactory
                     {
                         using var command = connection.CreateCommand();
                         command.CommandText = script;
-                        await command.ExecuteNonQueryAsync(cancellationToken);
+                        var tmp = await command.ExecuteNonQueryAsync(cancellationToken);
                     }
 
                     // Apply migrations for existing databases

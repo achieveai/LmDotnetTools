@@ -4,13 +4,19 @@ This example demonstrates how to use the LmConfig library to configure and use d
 
 ## Examples Included
 
+### Default: ClaudeAgentSDK Provider (One-Shot Mode)
+- Uses the official `@anthropic-ai/claude-agent-sdk` Node.js CLI
+- Provides access to **MCP (Model Context Protocol) tools**
+- Runs to completion and exits cleanly
+- Perfect for automation and scripting
+
+### Additional Examples (run with `--all` flag)
 1. **File-Based Configuration Loading** - Traditional configuration from models.json
 2. **Embedded Resource Configuration** - Loading config from embedded resources
 3. **Stream Factory Configuration** - Loading config from any stream source
 4. **IOptions Pattern Configuration** - Using .NET's IOptions pattern
 5. **Provider Availability Checking** - Checking which providers are available
 6. **ModelId Resolution** - Demonstrating model ID translation
-7. **ClaudeAgentSDK Provider with MCP Tools** - NEW! Test the ClaudeAgentSDK provider
 
 ## Running the Examples
 
@@ -26,28 +32,52 @@ For most examples:
   ```bash
   npm install -g @anthropic-ai/claude-agent-sdk
   ```
-- `ANTHROPIC_API_KEY` environment variable set
+- **Authentication** (one of the following):
+  - **Claude Code subscription** (recommended - no API key needed!)
+  - OR `ANTHROPIC_API_KEY` environment variable set
 - A `.mcp.json` configuration file in the project root (provided)
 
-### Running the Example
+### Running the Examples
+
+**Default: ClaudeAgentSDK One-Shot Mode**
 
 ```bash
 cd example/LmConfigUsageExample
+
+# Using default prompt
 dotnet run
+
+# With custom prompt
+dotnet run --prompt "List all files in the current directory"
+dotnet run -p "What's the weather today?"
 ```
 
-All 7 examples will run sequentially.
+The agent will:
+1. Run the agentic loop to completion (with tool calls)
+2. Display streaming output
+3. Exit cleanly when done
 
-## ClaudeAgentSDK Provider - Example 7
+**Run Other Examples:**
+
+```bash
+dotnet run --all
+```
+
+This runs examples 1-6 (configuration loading, provider availability, etc.)
+
+> **Note:** Interactive mode is not yet implemented. ClaudeAgentSDK currently only supports OneShot mode.
+
+## ClaudeAgentSDK Provider Details
 
 ### What It Does
 
-Example 7 demonstrates the ClaudeAgentSDK provider, which:
+The ClaudeAgentSDK provider:
 - Uses the official `@anthropic-ai/claude-agent-sdk` Node.js CLI
 - Provides access to **MCP (Model Context Protocol) tools**
-- Maintains a long-lived Node.js process for efficient interaction
+- Runs in **OneShot mode**: sends prompt, completes agentic loop, exits
 - Supports streaming responses with reasoning, tool calls, and results
 - Automatically manages JSONL communication between .NET and Node.js
+- Perfect for automation, scripts, and CI/CD pipelines
 
 ### Configuration
 
@@ -106,7 +136,7 @@ This configuration provides:
 
 ### Example Output
 
-When you run Example 7, you'll see:
+When you run the example, you'll see:
 
 1. Provider availability check
 2. Model resolution (claude-sonnet-4-5 → ClaudeAgentSDK)
@@ -201,13 +231,26 @@ To add or modify MCP servers, edit `.mcp.json`:
 
 See the [MCP documentation](https://modelcontextprotocol.io) for available MCP servers.
 
+### Authentication Options
+
+The ClaudeAgentSDK provider supports two authentication methods:
+
+**1. Claude Code Subscription (Recommended)**
+- No API key needed!
+- Uses your existing Claude Code authentication
+- Simply run the example - it will automatically use your Claude Code session
+
+**2. API Key**
+- Set `ANTHROPIC_API_KEY` environment variable
+- Use this if you're not using Claude Code or want to use a specific API key
+
 ### Troubleshooting
 
 **Provider not available:**
-- Ensure `ANTHROPIC_API_KEY` is set
 - Verify Node.js is installed: `node --version`
 - Verify Claude Agent SDK is installed: `npm list -g @anthropic-ai/claude-agent-sdk`
 - Check `.mcp.json` exists in the output directory
+- If not using Claude Code, ensure `ANTHROPIC_API_KEY` is set
 
 **MCP servers not working:**
 - Verify MCP server packages are installed (they're installed on-demand via `npx -y`)

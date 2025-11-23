@@ -10,8 +10,10 @@ namespace AchieveAi.LmDotnetTools.ClaudeAgentSdkProvider.Models.JsonlEvents;
 [JsonDerivedType(typeof(UserMessageEvent), "user")]
 [JsonDerivedType(typeof(AssistantMessageEvent), "assistant")]
 [JsonDerivedType(typeof(FileHistorySnapshotEvent), "file-history-snapshot")]
+[JsonDerivedType(typeof(SystemInitEvent), "system")]
+[JsonDerivedType(typeof(ResultEvent), "result")]
 public abstract record JsonlEventBase
 {
     [JsonPropertyName("type")]
-    public required string Type { get; init; }
+    public string Type { get; init; } = string.Empty;
 }

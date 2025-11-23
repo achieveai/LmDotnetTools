@@ -14,11 +14,12 @@
       "Bash(git add:*)",
       "Bash(mkdir:*)",
       "Bash(cat:*)",
-      "Bash(nul)",
       "Bash(dotnet run:*)",
-      "Bash(tee:*)",
       "Bash(dotnet nuget:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nfeat: add AspNetCore MCP server library with dynamic IFunctionProvider integration\n\nImplements a new AspNetCore library (McpServer.AspNetCore) that exposes IFunctionProvider instances as Model Context Protocol (MCP) tools via HTTP endpoints.\n\nKey features:\n- Handler-based architecture using ModelContextProtocol SDK 0.4.0-preview.3\n- Dynamic tool registration from IFunctionProvider implementations\n- McpServerHandlers with ListToolsHandler and CallToolHandler\n- Automatic JSON schema generation from FunctionContract metadata\n- Disposable server wrapper with dynamic port allocation\n- Comprehensive integration tests with MCP client (9 tests, all passing)\n- Sample application demonstrating weather, calculator, and file info tools\n\nTechnical implementation:\n- Uses ASP.NET Core options pattern for configuration\n- Builds tool lookup dictionary for efficient execution\n- Proper error handling with CallToolResult.IsError\n- Tool naming convention: ClassName-FunctionName\n- TextContentBlock for MCP protocol compliance\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit:*)",
+      "Bash(nul)",
+      "Bash(tee:*)",
+      "Skill(:*)"
     ],
     "deny": [],
     "ask": [],

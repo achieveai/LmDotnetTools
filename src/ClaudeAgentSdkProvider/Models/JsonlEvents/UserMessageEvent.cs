@@ -11,34 +11,34 @@ public record UserMessageEvent : JsonlEventBase
     [JsonPropertyName("uuid")]
     public required string Uuid { get; init; }
 
-    [JsonPropertyName("parentUuid")]
+    [JsonPropertyName("parent_uuid")]
     public string? ParentUuid { get; init; }
 
-    [JsonPropertyName("sessionId")]
+    [JsonPropertyName("session_id")]
     public required string SessionId { get; init; }
 
     [JsonPropertyName("message")]
     public required UserMessage Message { get; init; }
 
     [JsonPropertyName("timestamp")]
-    public required DateTime Timestamp { get; init; }
+    public DateTime? Timestamp { get; init; }
 
     [JsonPropertyName("cwd")]
     public string? Cwd { get; init; }
 
-    [JsonPropertyName("gitBranch")]
+    [JsonPropertyName("git_branch")]
     public string? GitBranch { get; init; }
 
     [JsonPropertyName("version")]
     public string? Version { get; init; }
 
-    [JsonPropertyName("isSidechain")]
+    [JsonPropertyName("is_sidechain")]
     public bool IsSidechain { get; init; }
 
-    [JsonPropertyName("userType")]
+    [JsonPropertyName("user_type")]
     public string? UserType { get; init; }
 
-    [JsonPropertyName("toolUseResult")]
+    [JsonPropertyName("tool_use_result")]
     public JsonElement? ToolUseResult { get; init; }
 }
 

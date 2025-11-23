@@ -78,7 +78,41 @@ public record AppConfig
     /// <returns>The provider connection info if found, null otherwise.</returns>
     public ProviderConnectionInfo? GetProviderConnection(string providerName)
     {
-        return ProviderRegistry?.TryGetValue(providerName, out var provider) == true ? provider : null;
+        System.Diagnostics.Debug.WriteLine($"DEBUG: GetProviderConnection called with: '{providerName}'");
+        System.Diagnostics.Debug.WriteLine($"DEBUG: ProviderRegistry is null: {ProviderRegistry == null}");
+
+        if (ProviderRegistry == null || string.IsNullOrWhiteSpace(providerName))
+        {
+            System.Diagnostics.Debug.WriteLine("DEBUG: Returning null - registry null or provider name empty");
+            return null;
+        }
+
+        System.Diagnostics.Debug.WriteLine($"DEBUG: ProviderRegistry count: {ProviderRegistry.Count}");
+        System.Diagnostics.Debug.WriteLine($"DEBUG: Available providers: {string.Join(", ", ProviderRegistry.Keys)}");
+
+        // Try exact match first (case-sensitive)
+        if (ProviderRegistry.TryGetValue(providerName, out var provider))
+        {
+            System.Diagnostics.Debug.WriteLine($"DEBUG: Found exact match for '{providerName}'");
+            return provider;
+        }
+
+        System.Diagnostics.Debug.WriteLine($"DEBUG: No exact match, trying case-insensitive search");
+
+        // Fall back to case-insensitive search
+        var match = ProviderRegistry.FirstOrDefault(kvp =>
+            string.Equals(kvp.Key, providerName, StringComparison.OrdinalIgnoreCase));
+
+        if (match.Value != null)
+        {
+            System.Diagnostics.Debug.WriteLine($"DEBUG: Found case-insensitive match: '{match.Key}'");
+        }
+        else
+        {
+            System.Diagnostics.Debug.WriteLine($"DEBUG: No match found for '{providerName}'");
+        }
+
+        return match.Value;
     }
 
     /// <summary>
@@ -166,10 +200,15 @@ public record ProviderConnectionInfo
         var errors = new List<string>();
         var warnings = new List<string>();
 
-        // Validate required fields
+        // Validate EndpointUrl (optional for ClaudeAgentSDK which uses Node.js CLI instead of HTTP)
+        var isClaudeAgentSdk = string.Equals(Compatibility, "ClaudeAgentSDK", StringComparison.OrdinalIgnoreCase);
+
         if (string.IsNullOrWhiteSpace(EndpointUrl))
         {
-            errors.Add("EndpointUrl is required");
+            if (!isClaudeAgentSdk)
+            {
+                errors.Add("EndpointUrl is required");
+            }
         }
         else if (!Uri.TryCreate(EndpointUrl, UriKind.Absolute, out _))
         {
@@ -186,11 +225,18 @@ public record ProviderConnectionInfo
             errors.Add("MaxRetries must be non-negative");
         }
 
-        // Check if API key is available
+        // Check if API key is available (optional for ClaudeAgentSDK with Claude Code subscription)
         var apiKey = GetApiKey();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            warnings.Add($"Environment variable '{ApiKeyEnvironmentVariable}' is not set or empty");
+            if (isClaudeAgentSdk)
+            {
+                warnings.Add($"Environment variable '{ApiKeyEnvironmentVariable}' is not set. Will use Claude Code authentication if available.");
+            }
+            else
+            {
+                warnings.Add($"Environment variable '{ApiKeyEnvironmentVariable}' is not set or empty");
+            }
         }
 
         return new ValidationResult

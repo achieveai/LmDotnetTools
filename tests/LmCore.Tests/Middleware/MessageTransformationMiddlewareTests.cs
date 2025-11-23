@@ -156,8 +156,8 @@ public class MessageTransformationMiddlewareTests
         var result = await middleware.InvokeAsync(context, agent);
 
         // Assert - Agent should have received aggregated message
-        Assert.Single(agent.ReceivedMessages);
-        Assert.IsType<ToolsCallAggregateMessage>(agent.ReceivedMessages[0]);
+        _ = Assert.Single(agent.ReceivedMessages);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(agent.ReceivedMessages[0]);
     }
 
     [Fact]
@@ -198,7 +198,7 @@ public class MessageTransformationMiddlewareTests
         var result = await middleware.InvokeAsync(context, agent);
 
         // Assert - Agent should have received composite message
-        Assert.Single(agent.ReceivedMessages);
+        _ = Assert.Single(agent.ReceivedMessages);
         var composite = Assert.IsType<CompositeMessage>(agent.ReceivedMessages[0]);
         Assert.Equal(3, composite.Messages.Count);
         Assert.Equal("First", ((TextMessage)composite.Messages[0]).Text);
@@ -231,7 +231,7 @@ public class MessageTransformationMiddlewareTests
         var result = await middleware.InvokeAsync(context, agent);
 
         // Assert - Single message should pass through unchanged
-        Assert.Single(agent.ReceivedMessages);
+        _ = Assert.Single(agent.ReceivedMessages);
         var textMessage = Assert.IsType<TextMessage>(agent.ReceivedMessages[0]);
         Assert.Equal("Single", textMessage.Text);
     }
@@ -280,8 +280,8 @@ public class MessageTransformationMiddlewareTests
 
         // Assert
         // UPSTREAM: Input should be aggregated for agent
-        Assert.Single(agent.ReceivedMessages);
-        Assert.IsType<ToolsCallAggregateMessage>(agent.ReceivedMessages[0]);
+        _ = Assert.Single(agent.ReceivedMessages);
+        _ = Assert.IsType<ToolsCallAggregateMessage>(agent.ReceivedMessages[0]);
 
         // DOWNSTREAM: Output should be ordered
         Assert.Equal(2, outputMessages.Count);

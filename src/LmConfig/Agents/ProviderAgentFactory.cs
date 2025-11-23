@@ -267,12 +267,18 @@ public class ProviderAgentFactory : IProviderAgentFactory
     {
         try
         {
-            // Create options for ClaudeAgentSDK
-            var options = new ClaudeAgentSdkOptions
-            {
-                ProjectRoot = Directory.GetCurrentDirectory(),
-                McpConfigPath = ".mcp.json"
-            };
+            // Try to get ClaudeAgentSdkOptions from DI, otherwise use defaults
+            var options = _serviceProvider.GetService<ClaudeAgentSdkOptions>()
+                ?? new ClaudeAgentSdkOptions
+                {
+                    ProjectRoot = Directory.GetCurrentDirectory(),
+                    McpConfigPath = ".mcp.json"
+                };
+
+            _logger.LogDebug(
+                "Creating ClaudeAgentSDK agent with mode: {Mode}",
+                options.Mode
+            );
 
             // Create client and agent
             var clientLogger = _loggerFactory?.CreateLogger<ClaudeAgentSdkClient>();

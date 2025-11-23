@@ -200,7 +200,7 @@
       "headers": null,
       "timeout": "00:05:00",
       "max_retries": 1,
-      "description": "Claude Agent SDK with MCP server support via Node.js CLI"
+      "description": "Claude Agent SDK with MCP server support via Node.js CLI. API key is optional when using Claude Code subscription."
     }
   }
 } 

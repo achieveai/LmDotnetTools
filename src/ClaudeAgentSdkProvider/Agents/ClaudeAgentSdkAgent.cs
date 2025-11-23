@@ -45,7 +45,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
         // Ensure client is started
         if (!_client.IsRunning)
         {
-            await StartClientAsync(options, cancellationToken);
+            await StartClientAsync(messages, options, cancellationToken);
         }
 
         // Stream responses from client
@@ -74,9 +74,9 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     /// <summary>
     /// Start the underlying CLI client with configured options
     /// </summary>
-    private async Task StartClientAsync(GenerateReplyOptions? options, CancellationToken cancellationToken)
+    private async Task StartClientAsync(IEnumerable<IMessage> messages, GenerateReplyOptions? options, CancellationToken cancellationToken)
     {
-        var request = BuildClaudeAgentSdkRequest(options);
+        var request = BuildClaudeAgentSdkRequest(messages, options);
 
         _logger?.LogInformation(
             "Starting claude-agent-sdk client with model {Model}, maxTurns {MaxTurns}",
@@ -88,13 +88,20 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     }
 
     /// <summary>
-    /// Build ClaudeAgentSdkRequest from GenerateReplyOptions
+    /// Build ClaudeAgentSdkRequest from messages and GenerateReplyOptions
     /// </summary>
-    private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest(GenerateReplyOptions? options)
+    private ClaudeAgentSdkRequest BuildClaudeAgentSdkRequest(IEnumerable<IMessage> messages, GenerateReplyOptions? options)
     {
         var modelId = options?.ModelId ?? "claude-sonnet-4-5-20250929";
         var maxTurns = options?.MaxToken ?? 40;  // MaxToken is repurposed for max turns
         var maxThinkingTokens = 0;  // Default: no extended thinking
+
+        // Extract system message from messages (we only use the first one)
+        var systemMessage = messages
+            .OfType<TextMessage>()
+            .FirstOrDefault(m => m.Role == Role.System);
+
+        string? systemPrompt = systemMessage?.Text;
 
         // Extract session ID from options if provided
         string? sessionId = null;
@@ -135,6 +142,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
             MaxTurns = maxTurns,
             MaxThinkingTokens = maxThinkingTokens,
             SessionId = sessionId,
+            SystemPrompt = systemPrompt,
             AllowedTools = allowedTools,
             McpServers = mcpServers,
             Verbose = true

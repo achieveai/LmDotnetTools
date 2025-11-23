@@ -6,9 +6,9 @@ using ModelContextProtocol.Server;
 
 namespace AchieveAi.LmDotnetTools.McpSampleServer;
 
-class Program
+internal class Program
 {
-    static async Task Main(string[] args)
+    private static async Task Main(string[] args)
     {
         var builder = Host.CreateApplicationBuilder(args);
         _ = builder.Logging.AddConsole(consoleLogOptions =>

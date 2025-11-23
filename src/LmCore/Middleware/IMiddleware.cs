@@ -11,12 +11,12 @@ public interface IMiddleware
     /// <summary>
     /// the name of the middleware
     /// </summary>
-    public string? Name { get; }
+    string? Name { get; }
 
     /// <summary>
     /// The method to invoke the middleware
     /// </summary>
-    public Task<IEnumerable<IMessage>> InvokeAsync(
+    Task<IEnumerable<IMessage>> InvokeAsync(
         MiddlewareContext context,
         IAgent agent,
         CancellationToken cancellationToken = default
