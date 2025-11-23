@@ -24,6 +24,7 @@ class Program
         RunIOptionsExample();
         await RunProviderAvailabilityExample();
         await RunModelIdResolutionExample();
+        await RunClaudeAgentSdkExample();
     }
 
     /// <summary>
@@ -155,7 +156,7 @@ class Program
                 .Build();
 
             // Use IOptions pattern with configuration section
-            services.AddLmConfigWithOptions(configuration.GetSection(""));
+            services.AddLmConfig(configuration);
 
             var serviceProvider = services.BuildServiceProvider();
             var agent = serviceProvider.GetRequiredService<IAgent>();
@@ -338,6 +339,140 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"✗ ModelId resolution example failed: {ex.Message}\n");
+        }
+    }
+
+    /// <summary>
+    /// Example 7: ClaudeAgentSDK Provider with MCP Tools
+    /// </summary>
+    static async Task RunClaudeAgentSdkExample()
+    {
+        Console.WriteLine("7. ClaudeAgentSDK Provider with MCP Tools");
+        Console.WriteLine("==========================================");
+
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+
+            var configuration = new ConfigurationBuilder()
+                .AddJsonFile("models.json", optional: false, reloadOnChange: false)
+                .Build();
+
+            services.AddLmConfig(configuration);
+
+            var serviceProvider = services.BuildServiceProvider();
+            var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+
+            // Check if ClaudeAgentSDK provider is available
+            var isAvailable = await modelResolver.IsProviderAvailableAsync("ClaudeAgentSDK");
+            if (!isAvailable)
+            {
+                Console.WriteLine("✗ ClaudeAgentSDK provider is not available");
+                Console.WriteLine("  Required:");
+                Console.WriteLine("  - ANTHROPIC_API_KEY environment variable");
+                Console.WriteLine("  - Node.js installed");
+                Console.WriteLine("  - @anthropic-ai/claude-agent-sdk npm package installed globally");
+                Console.WriteLine("  - .mcp.json configuration file in the project root");
+                Console.WriteLine();
+                return;
+            }
+
+            Console.WriteLine("✓ ClaudeAgentSDK provider is available");
+
+            // Try to resolve the claude-sonnet-4-5 model
+            try
+            {
+                var resolution = await modelResolver.ResolveProviderAsync("claude-sonnet-4-5");
+                if (resolution != null)
+                {
+                    Console.WriteLine($"✓ Resolved model: {resolution.EffectiveModelName}");
+                    Console.WriteLine($"  Provider: {resolution.EffectiveProviderName}");
+                    Console.WriteLine($"  Compatibility: {resolution.Connection.Compatibility}");
+
+                    // Create the agent
+                    var factory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
+                    var agent = factory.CreateStreamingAgent(resolution);
+
+                    Console.WriteLine("✓ Created ClaudeAgentSDK streaming agent");
+
+                    // Test basic interaction
+                    Console.WriteLine("\\nTesting basic interaction...");
+                    var messages = new List<IMessage>
+                    {
+                        new TextMessage
+                        {
+                            Text = "Hello! Can you tell me what MCP tools are available to you?",
+                            Role = Role.User
+                        }
+                    };
+
+                    var options = new GenerateReplyOptions
+                    {
+                        ModelId = "claude-sonnet-4-5",
+                        Temperature = 0.7f,
+                        MaxToken = 1000
+                    };
+
+                    Console.WriteLine("\\nAgent response (streaming):");
+                    Console.WriteLine("----------------------------");
+
+                    var streamTask = await agent.GenerateReplyStreamingAsync(messages, options);
+                    await foreach (var msg in streamTask)
+                    {
+                        switch (msg)
+                        {
+                            case TextMessage textMsg:
+                                Console.Write(textMsg.Text);
+                                break;
+                            case ReasoningMessage reasoningMsg:
+                                Console.WriteLine($"\\n[Thinking: {reasoningMsg.Reasoning[..Math.Min(100, reasoningMsg.Reasoning.Length)]}...]");
+                                break;
+                            case ToolsCallMessage toolCallMsg:
+                                if (toolCallMsg.ToolCalls.Any())
+                                {
+                                    Console.WriteLine($"\\n[Tool Call: {toolCallMsg.ToolCalls[0].FunctionName}]");
+                                }
+                                break;
+                            case ToolsCallResultMessage toolResultMsg:
+                                if (toolResultMsg.ToolCallResults.Any())
+                                {
+                                    var result = toolResultMsg.ToolCallResults[0].Result?.ToString() ?? "null";
+                                    Console.WriteLine($"[Tool Result: {result[..Math.Min(100, result.Length)]}...]");
+                                }
+                                break;
+                            case UsageMessage usageMsg:
+                                Console.WriteLine($"\\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]");
+                                break;
+                        }
+                    }
+
+                    Console.WriteLine("\\n----------------------------");
+                    Console.WriteLine("\\n✓ ClaudeAgentSDK interaction completed successfully");
+
+                    // Dispose the agent
+                    if (agent is IDisposable disposable)
+                    {
+                        disposable.Dispose();
+                        Console.WriteLine("✓ Agent disposed");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("✗ Failed to resolve claude-sonnet-4-5 model");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ ClaudeAgentSDK interaction failed: {ex.Message}");
+                Console.WriteLine($"  Stack: {ex.StackTrace}");
+            }
+
+            Console.WriteLine();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"✗ ClaudeAgentSDK example failed: {ex.Message}\n");
         }
     }
 }

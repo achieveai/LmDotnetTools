@@ -29,11 +29,7 @@ public class AgenticLoopIntegrationTests
             {
                 ToolCalls =
                 [
-                    new ToolCall("get_weather", "{\"location\":\"San Francisco\"}")
-                    {
-                        ToolCallId = "call_1",
-                        ToolCallIdx = 0
-                    }
+                    new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"San Francisco\"}", ToolCallId = "call_1", ToolCallIdx = 0 }
                 ],
                 Role = Role.Assistant,
                 GenerationId = generationId1,
@@ -144,16 +140,8 @@ public class AgenticLoopIntegrationTests
                 {
                     ToolCalls =
                     [
-                        new ToolCall("get_weather", "{\"location\":\"SF\"}")
-                        {
-                            ToolCallId = "call_1",
-                            ToolCallIdx = 0
-                        },
-                        new ToolCall("get_weather", "{\"location\":\"NYC\"}")
-                        {
-                            ToolCallId = "call_2",
-                            ToolCallIdx = 1
-                        }
+                        new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"SF\"}", ToolCallId = "call_1", ToolCallIdx = 0 },
+                        new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"NYC\"}", ToolCallId = "call_2", ToolCallIdx = 1 }
                     ],
                     Role = Role.Assistant,
                     GenerationId = "gen1",
@@ -242,11 +230,7 @@ public class AgenticLoopIntegrationTests
         {
             new ToolsCallMessage
             {
-                ToolCalls = [new ToolCall("test", "{}")
-                {
-                    ToolCallId = "call_1",
-                    ToolCallIdx = 0
-                }],
+                ToolCalls = [new ToolCall { FunctionName = "test", FunctionArgs = "{}", ToolCallId = "call_1", ToolCallIdx = 0 }],
                 Role = Role.Assistant,
                 GenerationId = "gen0",
                 MessageOrderIdx = 0

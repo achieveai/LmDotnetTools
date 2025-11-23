@@ -13,7 +13,7 @@ public class DocumentationExampleValidationTests
         // This test validates the exact example from NaturalToolUse.md Example 1
 
         // Create a sample aggregate message (from documentation)
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\",\"unit\":\"celsius\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Paris\",\"unit\":\"celsius\"}" };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C with clear skies");
 
         var toolCallMessage = new ToolsCallMessage
@@ -62,7 +62,7 @@ public class DocumentationExampleValidationTests
         // This test validates Example 2 from NaturalToolUse.md
 
         // Create the example from documentation
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\",\"unit\":\"celsius\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Paris\",\"unit\":\"celsius\"}" };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C with clear skies");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
@@ -113,7 +113,7 @@ public class DocumentationExampleValidationTests
     {
         // This test validates Example 3 from NaturalToolUse.md
 
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"Paris\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"Paris\"}" };
         var toolResult = new ToolCallResult(null, "Sunny, 25°C");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
@@ -149,7 +149,7 @@ public class DocumentationExampleValidationTests
     {
         // This test validates Example 4 from NaturalToolUse.md
 
-        var toolCall = new ToolCall("TestFunction", "{}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{}" };
         var toolResult = new ToolCallResult(null, "result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };
@@ -192,7 +192,7 @@ public class DocumentationExampleValidationTests
     {
         // This test validates the exact XML format from the documentation
 
-        var toolCall = new ToolCall("GetWeather", "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}");
+        var toolCall = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}" };
         var toolResult = new ToolCallResult(
             null,
             "Temperature is 22°C with partly cloudy skies and light winds from the west."
@@ -244,8 +244,8 @@ public class DocumentationExampleValidationTests
     {
         // This test validates the multiple tool calls format with separator from documentation
 
-        var toolCall1 = new ToolCall("GetWeather", "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}");
-        var toolCall2 = new ToolCall("GetTime", "{\"timezone\":\"America/Los_Angeles\"}");
+        var toolCall1 = new ToolCall { FunctionName = "GetWeather", FunctionArgs = "{\"location\":\"San Francisco, CA\",\"unit\":\"celsius\"}" };
+        var toolCall2 = new ToolCall { FunctionName = "GetTime", FunctionArgs = "{\"timezone\":\"America/Los_Angeles\"}" };
 
         var toolResult1 = new ToolCallResult(null, "Temperature is 22°C with partly cloudy skies.");
         var toolResult2 = new ToolCallResult(
@@ -290,7 +290,7 @@ public class DocumentationExampleValidationTests
     {
         // This test validates the Quick Start basic usage examples from documentation
 
-        var toolCall = new ToolCall("TestFunction", "{\"param\":\"value\"}");
+        var toolCall = new ToolCall { FunctionName = "TestFunction", FunctionArgs = "{\"param\":\"value\"}" };
         var toolResult = new ToolCallResult(null, "test result");
         var toolCallMessage = new ToolsCallMessage { ToolCalls = [toolCall] };
         var toolResultMessage = new ToolsCallResultMessage { ToolCallResults = [toolResult] };

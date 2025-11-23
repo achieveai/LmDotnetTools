@@ -125,7 +125,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
         public void Create_WithVariousMessageTypes_ConvertsCorrectly()
         {
             // Arrange
-            var toolCall = new ToolCall("get_weather", "{\"location\":\"New York\"}") { ToolCallId = "call_123" };
+            var toolCall = new ToolCall { FunctionName = "get_weather", FunctionArgs = "{\"location\":\"New York\"}", ToolCallId = "call_123" };
 
             var messages = new List<IMessage>
             {

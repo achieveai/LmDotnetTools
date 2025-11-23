@@ -120,7 +120,7 @@ public class ToolCallStreamingAgent : IStreamingAgent
 
         return new ToolsCallMessage
         {
-            ToolCalls = [new ToolCall("get_weather", jsonArgs) { ToolCallId = "tool-123" }],
+            ToolCalls = [new ToolCall { FunctionName = "get_weather", FunctionArgs = jsonArgs, ToolCallId = "tool-123" }],
         };
     }
 
