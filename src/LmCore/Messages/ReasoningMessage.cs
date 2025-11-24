@@ -123,6 +123,15 @@ public record ReasoningUpdateMessage : IMessage, ICanGetText
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MessageOrderIdx { get; init; }
 
+    /// <summary>
+    /// Chunk index within the same messageOrderIdx for streaming updates.
+    /// Multiple chunks can belong to the same message during streaming.
+    /// Note: Encrypted reasoning is typically sent as a single chunk.
+    /// </summary>
+    [JsonPropertyName("chunkIdx")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ChunkIdx { get; init; }
+
     public static BinaryData? GetBinary()
     {
         return null;
