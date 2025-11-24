@@ -16,7 +16,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     public string? Name => "JsonFragmentUpdateMiddleware";
 
     /// <summary>
-    /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage instances.
+    /// Processes messages and adds JsonFragmentUpdates to ToolsCallUpdateMessage and ToolCallUpdateMessage instances.
     /// </summary>
     /// <param name="messageStream">The input stream of messages</param>
     /// <returns>The processed stream of messages with JsonFragmentUpdates added</returns>
@@ -24,9 +24,12 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     {
         await foreach (var message in messageStream)
         {
-            yield return message is ToolsCallUpdateMessage toolsCallUpdateMessage
-                ? ProcessToolsCallUpdateMessage(toolsCallUpdateMessage)
-                : message;
+            yield return message switch
+            {
+                ToolsCallUpdateMessage toolsCallUpdateMessage => ProcessToolsCallUpdateMessage(toolsCallUpdateMessage),
+                ToolCallUpdateMessage toolCallUpdateMessage => ProcessToolCallUpdateMessage(toolCallUpdateMessage),
+                _ => message
+            };
         }
     }
 
@@ -52,6 +55,39 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
             Metadata = message.Metadata,
             GenerationId = message.GenerationId,
             ToolCallUpdates = [.. updatedToolCallUpdates],
+        };
+    }
+
+    /// <summary>
+    /// Processes a ToolCallUpdateMessage and adds JsonFragmentUpdates based on its FunctionArgs.
+    /// </summary>
+    /// <param name="message">The ToolCallUpdateMessage to process</param>
+    /// <returns>A new ToolCallUpdateMessage with JsonFragmentUpdates added</returns>
+    private ToolCallUpdateMessage ProcessToolCallUpdateMessage(ToolCallUpdateMessage message)
+    {
+        // If there are no function args, return the original message
+        if (string.IsNullOrEmpty(message.FunctionArgs))
+        {
+            return message;
+        }
+
+        // Generate a key for the generator based on tool call identification
+        var generatorKey = GetGeneratorKey(message);
+
+        // Get or create generator for this tool call
+        if (!_generators.TryGetValue(generatorKey, out var generator))
+        {
+            generator = new JsonFragmentToStructuredUpdateGenerator(message.FunctionName ?? "unknown");
+            _generators[generatorKey] = generator;
+        }
+
+        // Process the function args fragment and get updates
+        var jsonFragmentUpdates = generator.AddFragment(message.FunctionArgs).ToImmutableList();
+
+        // Return updated ToolCallUpdateMessage with JsonFragmentUpdates
+        return message with
+        {
+            JsonFragmentUpdates = jsonFragmentUpdates
         };
     }
 

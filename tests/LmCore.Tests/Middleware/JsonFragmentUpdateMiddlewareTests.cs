@@ -442,4 +442,288 @@ public class JsonFragmentUpdateMiddlewareTests
             await Task.Yield(); // Allow for async behavior
         }
     }
+
+    #region ToolCallUpdateMessage Tests (Singular)
+
+    [Theory]
+    [MemberData(nameof(BasicMiddlewareTestCases))]
+    public void ProcessAsync_WithBasicToolCallUpdateMessage_AddsJsonFragmentUpdates(
+        string toolCallId,
+        string functionName,
+        string functionArgs
+    )
+    {
+        // Arrange
+        System.Diagnostics.Debug.WriteLine($"Testing singular: {functionName} with args: {functionArgs}");
+
+        var middleware = new JsonFragmentUpdateMiddleware();
+        var toolCallUpdateMessage = new ToolCallUpdateMessage
+        {
+            ToolCallId = toolCallId,
+            FunctionName = functionName,
+            FunctionArgs = functionArgs,
+            Role = Role.Assistant,
+        };
+
+        var messages = new List<IMessage> { toolCallUpdateMessage };
+
+        // Act
+        var result = ProcessMessagesSync(middleware, messages);
+
+        System.Diagnostics.Debug.WriteLine($"Result count: {result.Count}");
+
+        // Assert
+        _ = Assert.Single(result);
+        var processedMessage = Assert.IsType<ToolCallUpdateMessage>(result[0]);
+
+        Assert.Equal(toolCallId, processedMessage.ToolCallId);
+        Assert.Equal(functionName, processedMessage.FunctionName);
+        Assert.Equal(functionArgs, processedMessage.FunctionArgs);
+
+        // Verify JsonFragmentUpdates were added for non-empty JSON
+        if (!string.IsNullOrEmpty(functionArgs) && functionArgs != "{}")
+        {
+            Assert.NotNull(processedMessage.JsonFragmentUpdates);
+            Assert.NotEmpty(processedMessage.JsonFragmentUpdates);
+
+            System.Diagnostics.Debug.WriteLine(
+                $"JsonFragmentUpdates count: {processedMessage.JsonFragmentUpdates.Count}"
+            );
+            foreach (var update in processedMessage.JsonFragmentUpdates)
+            {
+                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(StreamingTestCases))]
+    public void ProcessAsync_WithStreamingToolCallUpdateMessages_GroupsFragmentsProperly(
+        string fragment1,
+        string fragment2,
+        string fragment3
+    )
+    {
+        // Arrange
+        System.Diagnostics.Debug.WriteLine($"Testing singular streaming: '{fragment1}' + '{fragment2}' + '{fragment3}'");
+
+        var middleware = new JsonFragmentUpdateMiddleware();
+
+        // Create three separate ToolCallUpdateMessage instances simulating streaming
+        var messages = new List<IMessage>
+        {
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "stream-call-1",
+                FunctionName = "streaming_function",
+                FunctionArgs = fragment1,
+                Role = Role.Assistant,
+            },
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "stream-call-1", // Same ID
+                FunctionName = "streaming_function",
+                FunctionArgs = fragment2,
+                Role = Role.Assistant,
+            },
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "stream-call-1", // Same ID
+                FunctionName = "streaming_function",
+                FunctionArgs = fragment3,
+                Role = Role.Assistant,
+            },
+        };
+
+        // Act
+        var result = ProcessMessagesSync(middleware, messages);
+
+        // Assert
+        Assert.Equal(3, result.Count);
+
+        // Each message should be processed and have JsonFragmentUpdates
+        foreach (var message in result)
+        {
+            var processedMessage = Assert.IsType<ToolCallUpdateMessage>(message);
+            Assert.NotNull(processedMessage.JsonFragmentUpdates);
+
+            System.Diagnostics.Debug.WriteLine(
+                $"Message has {processedMessage.JsonFragmentUpdates.Count} fragment updates"
+            );
+            foreach (var update in processedMessage.JsonFragmentUpdates)
+            {
+                System.Diagnostics.Debug.WriteLine($"  {update.Kind}: Path='{update.Path}' Value='{update.TextValue}'");
+            }
+        }
+
+        System.Diagnostics.Debug.WriteLine("✓ All singular streaming messages processed successfully");
+    }
+
+    [Fact]
+    public void ProcessAsync_WithEmptyFunctionArgs_ToolCallUpdateMessage_ReturnsOriginalUpdate()
+    {
+        // Arrange
+        System.Diagnostics.Debug.WriteLine("Testing singular empty function args");
+
+        var middleware = new JsonFragmentUpdateMiddleware();
+        var toolCallUpdateMessage = new ToolCallUpdateMessage
+        {
+            ToolCallId = "empty-call",
+            FunctionName = "empty_function",
+            FunctionArgs = "", // Empty
+            Role = Role.Assistant,
+        };
+
+        var messages = new List<IMessage> { toolCallUpdateMessage };
+
+        // Act
+        var result = ProcessMessagesSync(middleware, messages);
+
+        // Assert
+        _ = Assert.Single(result);
+        var processedMessage = Assert.IsType<ToolCallUpdateMessage>(result[0]);
+
+        // Original message should be returned unchanged (no JsonFragmentUpdates)
+        Assert.Equal("empty-call", processedMessage.ToolCallId);
+        Assert.Equal("empty_function", processedMessage.FunctionName);
+        Assert.Equal("", processedMessage.FunctionArgs);
+        Assert.Null(processedMessage.JsonFragmentUpdates);
+
+        System.Diagnostics.Debug.WriteLine("✓ Singular empty function args handled correctly");
+    }
+
+    [Fact]
+    public void ProcessAsync_WithNullFunctionArgs_ToolCallUpdateMessage_ReturnsOriginalUpdate()
+    {
+        // Arrange
+        System.Diagnostics.Debug.WriteLine("Testing singular null function args");
+
+        var middleware = new JsonFragmentUpdateMiddleware();
+        var toolCallUpdateMessage = new ToolCallUpdateMessage
+        {
+            ToolCallId = "null-call",
+            FunctionName = "null_function",
+            FunctionArgs = null, // Null
+            Role = Role.Assistant,
+        };
+
+        var messages = new List<IMessage> { toolCallUpdateMessage };
+
+        // Act
+        var result = ProcessMessagesSync(middleware, messages);
+
+        // Assert
+        _ = Assert.Single(result);
+        var processedMessage = Assert.IsType<ToolCallUpdateMessage>(result[0]);
+
+        // Original message should be returned unchanged (no JsonFragmentUpdates)
+        Assert.Equal("null-call", processedMessage.ToolCallId);
+        Assert.Equal("null_function", processedMessage.FunctionName);
+        Assert.Null(processedMessage.FunctionArgs);
+        Assert.Null(processedMessage.JsonFragmentUpdates);
+
+        System.Diagnostics.Debug.WriteLine("✓ Singular null function args handled correctly");
+    }
+
+    [Fact]
+    public void ProcessAsync_WithCompleteJsonToolCallUpdateMessage_IncludesJsonCompleteEvent()
+    {
+        System.Diagnostics.Debug.WriteLine(
+            "Testing singular ProcessAsync with complete JSON includes JsonComplete event"
+        );
+
+        var middleware = new JsonFragmentUpdateMiddleware();
+
+        // Create a complete JSON ToolCallUpdateMessage
+        var message = new ToolCallUpdateMessage
+        {
+            FunctionName = "test_function",
+            FunctionArgs = "{\"message\": \"Hello World\"}",
+            Index = 0,
+            ToolCallId = "call_123",
+            Role = Role.Assistant,
+        };
+
+        var messages = new[] { message };
+        var result = ProcessMessagesSync(middleware, messages);
+
+        _ = Assert.Single(result);
+        var processedMessage = Assert.IsType<ToolCallUpdateMessage>(result[0]);
+
+        // Verify that JsonFragmentUpdates were added
+        Assert.NotNull(processedMessage.JsonFragmentUpdates);
+        Assert.NotEmpty(processedMessage.JsonFragmentUpdates);
+
+        // Verify that a JsonComplete event was included
+        var jsonCompleteUpdates = processedMessage
+            .JsonFragmentUpdates.Where(u => u.Kind == JsonFragmentKind.JsonComplete)
+            .ToList();
+
+        _ = Assert.Single(jsonCompleteUpdates);
+
+        var completeEvent = jsonCompleteUpdates.First();
+        Assert.Equal("root", completeEvent.Path);
+        Assert.Equal("{\"message\": \"Hello World\"}", completeEvent.TextValue);
+
+        System.Diagnostics.Debug.WriteLine($"✓ Singular JsonComplete event found: {completeEvent.TextValue}");
+        System.Diagnostics.Debug.WriteLine($"✓ Total fragment updates: {processedMessage.JsonFragmentUpdates.Count}");
+    }
+
+    [Fact]
+    public void ProcessAsync_WithMixedToolCallAndToolsCallUpdateMessages_ProcessesBothCorrectly()
+    {
+        // Arrange
+        System.Diagnostics.Debug.WriteLine("Testing mixed singular and plural messages");
+
+        var middleware = new JsonFragmentUpdateMiddleware();
+
+        var messages = new List<IMessage>
+        {
+            // Singular ToolCallUpdateMessage
+            new ToolCallUpdateMessage
+            {
+                ToolCallId = "single-call",
+                FunctionName = "single_function",
+                FunctionArgs = "{\"type\":\"single\"}",
+                Role = Role.Assistant,
+            },
+            // Plural ToolsCallUpdateMessage
+            new ToolsCallUpdateMessage
+            {
+                Role = Role.Assistant,
+                ToolCallUpdates = [
+                    new ToolCallUpdate
+                    {
+                        ToolCallId = "plural-call",
+                        FunctionName = "plural_function",
+                        FunctionArgs = "{\"type\":\"plural\"}",
+                    }
+                ],
+            },
+        };
+
+        // Act
+        var result = ProcessMessagesSync(middleware, messages);
+
+        // Assert
+        Assert.Equal(2, result.Count);
+
+        // First should be ToolCallUpdateMessage
+        var singularMessage = Assert.IsType<ToolCallUpdateMessage>(result[0]);
+        Assert.Equal("single-call", singularMessage.ToolCallId);
+        Assert.NotNull(singularMessage.JsonFragmentUpdates);
+        Assert.NotEmpty(singularMessage.JsonFragmentUpdates);
+
+        // Second should be ToolsCallUpdateMessage
+        var pluralMessage = Assert.IsType<ToolsCallUpdateMessage>(result[1]);
+        _ = Assert.Single(pluralMessage.ToolCallUpdates);
+        var pluralUpdate = pluralMessage.ToolCallUpdates[0];
+        Assert.Equal("plural-call", pluralUpdate.ToolCallId);
+        Assert.NotNull(pluralUpdate.JsonFragmentUpdates);
+        Assert.NotEmpty(pluralUpdate.JsonFragmentUpdates);
+
+        System.Diagnostics.Debug.WriteLine("✓ Mixed message types processed correctly");
+    }
+
+    #endregion
 }
