@@ -412,7 +412,7 @@ public class FunctionRegistryTests
             Name = name,
             ClassName = className,
             Description = description ?? $"Test function {name}",
-            Parameters = new List<FunctionParameterContract>(),
+            Parameters = [],
         };
     }
 
@@ -446,7 +446,7 @@ public class FunctionRegistryTests
                     Name = name,
                     ClassName = _isMcp ? "TestClass" : null,
                     Description = $"Test function {name}",
-                    Parameters = new List<FunctionParameterContract>(),
+                    Parameters = [],
                 },
                 Handler = _ => Task.FromResult($"{ProviderName}-result"),
                 ProviderName = ProviderName,
@@ -471,8 +471,8 @@ public class FunctionRegistryTests
 
         public IEnumerable<FunctionDescriptor> GetFunctions()
         {
-            return new[]
-            {
+            return
+            [
                 new FunctionDescriptor
                 {
                     Contract = new FunctionContract
@@ -480,12 +480,12 @@ public class FunctionRegistryTests
                         Name = _functionName,
                         ClassName = _isMcp ? "TestClass" : null, // Use isMcp flag for testing conflict resolution
                         Description = $"Test function {_functionName}",
-                        Parameters = new List<FunctionParameterContract>(),
+                        Parameters = [],
                     },
                     Handler = _ => Task.FromResult($"{ProviderName}-result"),
                     ProviderName = ProviderName,
                 },
-            };
+            ];
         }
     }
 
@@ -506,8 +506,8 @@ public class FunctionRegistryTests
 
         public IEnumerable<FunctionDescriptor> GetFunctions()
         {
-            return new[]
-            {
+            return
+            [
                 new FunctionDescriptor
                 {
                     Contract = new FunctionContract
@@ -515,12 +515,12 @@ public class FunctionRegistryTests
                         Name = _functionName,
                         ClassName = _isMcp ? "TestClass" : null, // MCP has class name, natural doesn't
                         Description = $"Test function {_functionName}",
-                        Parameters = new List<FunctionParameterContract>(),
+                        Parameters = [],
                     },
                     Handler = _ => Task.FromResult($"{ProviderName}-result"),
                     ProviderName = ProviderName,
                 },
-            };
+            ];
         }
     }
 
@@ -530,8 +530,8 @@ public class FunctionRegistryTests
         {
             Name = name,
             Description = $"Test function {name}",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "stringParam",
                     Description = "A string parameter",
@@ -545,7 +545,7 @@ public class FunctionRegistryTests
                     IsRequired = false,
                     DefaultValue = 42,
                 },
-            },
+            ],
         };
     }
 
@@ -557,7 +557,7 @@ public class FunctionRegistryTests
             Description = $"Test function {name}",
             ReturnType = typeof(string),
             ReturnDescription = "Returns a string result",
-            Parameters = new List<FunctionParameterContract>(),
+            Parameters = [],
         };
     }
 }

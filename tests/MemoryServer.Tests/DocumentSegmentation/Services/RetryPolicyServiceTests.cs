@@ -180,30 +180,26 @@ public class RetryPolicyServiceTests
     /// Validates AC-3.1 retry count logic for different scenarios.
     /// </summary>
     public static IEnumerable<object[]> RetryBehaviorTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new HttpRequestException("503 Service Unavailable"),
                 true,
                 "Service unavailable should be retried",
-            },
-            new object[] { new HttpRequestException("429 Too Many Requests"), true, "Rate limiting should be retried" },
-            new object[]
-            {
+            ],
+            [new HttpRequestException("429 Too Many Requests"), true, "Rate limiting should be retried"],
+            [
                 new HttpRequestException("401 Unauthorized"),
                 false,
                 "Authentication errors should not be retried",
-            },
-            new object[] { new HttpRequestException("400 Bad Request"), false, "Bad request should not be retried" },
-            new object[] { new TaskCanceledException("Timeout"), true, "Timeout should be retried" },
-            new object[]
-            {
+            ],
+            [new HttpRequestException("400 Bad Request"), false, "Bad request should not be retried"],
+            [new TaskCanceledException("Timeout"), true, "Timeout should be retried"],
+            [
                 new ArgumentException("Invalid argument"),
                 true,
                 "Generic errors should be retried by default",
-            },
-        };
+            ],
+        ];
 
     [Theory]
     [MemberData(nameof(RetryBehaviorTestCases))]

@@ -83,9 +83,15 @@ public record Union<T1, T2> : Union
         return union.Get<T2>();
     }
 
-    public static implicit operator Union<T1, T2>(T1 value) => new(value);
+    public static implicit operator Union<T1, T2>(T1 value)
+    {
+        return new(value);
+    }
 
-    public static implicit operator Union<T1, T2>(T2 value) => new(value);
+    public static implicit operator Union<T1, T2>(T2 value)
+    {
+        return new(value);
+    }
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -180,11 +186,20 @@ public record Union<T1, T2, T3> : Union<T1, T2>
         return union.Get<T3>();
     }
 
-    public static implicit operator Union<T1, T2, T3>(T1 value) => new(value);
+    public static implicit operator Union<T1, T2, T3>(T1 value)
+    {
+        return new(value);
+    }
 
-    public static implicit operator Union<T1, T2, T3>(T2 value) => new(value);
+    public static implicit operator Union<T1, T2, T3>(T2 value)
+    {
+        return new(value);
+    }
 
-    public static implicit operator Union<T1, T2, T3>(T3 value) => new(value);
+    public static implicit operator Union<T1, T2, T3>(T3 value)
+    {
+        return new(value);
+    }
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -285,13 +300,25 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
         return union.Get<T4>();
     }
 
-    public static implicit operator Union<T1, T2, T3, T4>(T1 value) => new(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T1 value)
+    {
+        return new(value);
+    }
 
-    public static implicit operator Union<T1, T2, T3, T4>(T2 value) => new(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T2 value)
+    {
+        return new(value);
+    }
 
-    public static implicit operator Union<T1, T2, T3, T4>(T3 value) => new(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T3 value)
+    {
+        return new(value);
+    }
 
-    public static implicit operator Union<T1, T2, T3, T4>(T4 value) => new(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T4 value)
+    {
+        return new(value);
+    }
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {

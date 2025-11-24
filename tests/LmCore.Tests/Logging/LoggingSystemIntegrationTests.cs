@@ -68,10 +68,9 @@ public class LoggingSystemIntegrationTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
+                ]
             );
 
         var middleware = new FunctionCallMiddleware(functions, functionMap, "test-middleware", mockLogger.Object);
@@ -192,10 +191,9 @@ public class LoggingSystemIntegrationTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
+                ]
             );
 
         var middleware = new FunctionCallMiddleware(functions, functionMap, "perf-test", mockLogger.Object);

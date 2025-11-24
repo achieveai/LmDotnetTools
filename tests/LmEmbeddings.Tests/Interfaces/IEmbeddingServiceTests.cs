@@ -25,46 +25,43 @@ public class IEmbeddingServiceTests
     /// Test data for GetEmbeddingAsync method
     /// </summary>
     public static IEnumerable<object[]> GetEmbeddingTestCases =>
-        new List<object[]>
-        {
+        [
             // Format: sentence, expectedEmbeddingSize, description
-            new object[] { "Hello world", 1536, "Simple two-word sentence" },
-            new object[] { "The quick brown fox jumps over the lazy dog.", 1536, "Complete sentence with punctuation" },
-            new object[] { "AI and machine learning are transforming technology.", 1536, "Technical content" },
-            new object[] { "🌟 Unicode and emojis work too! 🚀", 1536, "Unicode and emoji content" },
-            new object[] { "Bonjour le monde", 1536, "French language content" },
-            new object[] { "こんにちは世界", 1536, "Japanese language content" },
-            new object[] { "A", 1536, "Single character" },
-            new object[] { new string('x', 1000), 1536, "Long text (1000 characters)" },
-            new object[] { "Multiple\nlines\nof\ntext", 1536, "Multi-line text" },
-            new object[] { "Text with \"quotes\" and 'apostrophes'", 1536, "Text with quotes" },
-        };
+            ["Hello world", 1536, "Simple two-word sentence"],
+            ["The quick brown fox jumps over the lazy dog.", 1536, "Complete sentence with punctuation"],
+            ["AI and machine learning are transforming technology.", 1536, "Technical content"],
+            ["🌟 Unicode and emojis work too! 🚀", 1536, "Unicode and emoji content"],
+            ["Bonjour le monde", 1536, "French language content"],
+            ["こんにちは世界", 1536, "Japanese language content"],
+            ["A", 1536, "Single character"],
+            [new string('x', 1000), 1536, "Long text (1000 characters)"],
+            ["Multiple\nlines\nof\ntext", 1536, "Multi-line text"],
+            ["Text with \"quotes\" and 'apostrophes'", 1536, "Text with quotes"],
+        ];
 
     /// <summary>
     /// Test data for invalid inputs
     /// </summary>
     public static IEnumerable<object[]> InvalidInputTestCases =>
-        new List<object[]>
-        {
+        [
             // Format: sentence, expectedExceptionType, description
-            new object[] { null!, typeof(ArgumentException), "Null input" },
-            new object[] { "", typeof(ArgumentException), "Empty string input" },
-            new object[] { "   ", typeof(ArgumentException), "Whitespace-only input" },
-            new object[] { "\t\n\r", typeof(ArgumentException), "Tab and newline only input" },
-        };
+            [null!, typeof(ArgumentException), "Null input"],
+            ["", typeof(ArgumentException), "Empty string input"],
+            ["   ", typeof(ArgumentException), "Whitespace-only input"],
+            ["\t\n\r", typeof(ArgumentException), "Tab and newline only input"],
+        ];
 
     /// <summary>
     /// Test data for GenerateEmbeddingsAsync method
     /// </summary>
     public static IEnumerable<object[]> GenerateEmbeddingsTestCases =>
-        new List<object[]>
-        {
+        [
             // Format: inputs, model, description
-            new object[] { item, "text-embedding-3-small", "Single input" },
-            new object[] { itemArray, "text-embedding-3-small", "Multiple inputs" },
-            new object[] { itemArray0, "text-embedding-3-large", "Batch processing" },
-            new object[] { itemArray1, "text-embedding-ada-002", "Mixed content types" },
-        };
+            [item, "text-embedding-3-small", "Single input"],
+            [itemArray, "text-embedding-3-small", "Multiple inputs"],
+            [itemArray0, "text-embedding-3-large", "Batch processing"],
+            [itemArray1, "text-embedding-ada-002", "Mixed content types"],
+        ];
 
     private static readonly string[] item = ["Hello"];
     private static readonly string[] itemArray = ["Hello", "World"];

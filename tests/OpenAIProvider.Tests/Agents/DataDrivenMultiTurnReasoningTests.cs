@@ -21,11 +21,11 @@ public class DataDrivenMultiTurnReasoningTests
 
     public static IEnumerable<object[]> GetProviders()
     {
-        return new[]
-        {
-            new object[] { "DeepSeekMultiTurn", "deepseek/deepseek-r1-0528:free" },
+        return
+        [
+            ["DeepSeekMultiTurn", "deepseek/deepseek-r1-0528:free"],
             ["O4MiniMultiTurn", "o4-mini"],
-        };
+        ];
     }
 
     [Theory]

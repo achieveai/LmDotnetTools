@@ -787,12 +787,9 @@ public class HybridSegmentationService : IHybridSegmentationService
     )
     {
         // For now, return the strategy with highest weight
-        if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
-        {
-            return structureSegments;
-        }
-
-        return weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
+        return weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight
+            ? structureSegments
+            : weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
     }
 
     private static Task<List<DocumentSegment>> MergeOverlappingSegmentsAsync(
@@ -821,12 +818,9 @@ public class HybridSegmentationService : IHybridSegmentationService
         StrategyWeights weights
     )
     {
-        if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
-        {
-            return structureSegments;
-        }
-
-        return weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
+        return weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight
+            ? structureSegments
+            : weights.NarrativeWeight >= weights.TopicWeight ? narrativeSegments : topicSegments;
     }
 
     private static Task<List<DocumentSegment>> OptimizeSegmentationAsync(
@@ -951,12 +945,9 @@ public class HybridSegmentationService : IHybridSegmentationService
 
     private static SegmentationStrategy DeterminePrimaryStrategy(StrategyWeights weights)
     {
-        if (weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight)
-        {
-            return SegmentationStrategy.StructureBased;
-        }
-
-        return weights.NarrativeWeight >= weights.TopicWeight ? SegmentationStrategy.NarrativeBased : SegmentationStrategy.TopicBased;
+        return weights.StructureWeight >= weights.NarrativeWeight && weights.StructureWeight >= weights.TopicWeight
+            ? SegmentationStrategy.StructureBased
+            : weights.NarrativeWeight >= weights.TopicWeight ? SegmentationStrategy.NarrativeBased : SegmentationStrategy.TopicBased;
     }
 
     private static SegmentationStrategy? DetermineSecondaryStrategy(

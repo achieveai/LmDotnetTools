@@ -61,10 +61,10 @@ public class DataDrivenFunctionToolTests
 
         Debug.WriteLine($"Response count: {response?.Count() ?? 0}, Expected count: {expectedResponses?.Count ?? 0}");
         Debug.WriteLine(
-            $"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}"
+            $"Response types: {string.Join(", ", response?.Select(r => r.GetType().Name) ?? [])}"
         );
         Debug.WriteLine(
-            $"Expected types: {string.Join(", ", expectedResponses?.Select(r => r.GetType().Name) ?? Array.Empty<string>())}"
+            $"Expected types: {string.Join(", ", expectedResponses?.Select(r => r.GetType().Name) ?? [])}"
         );
 
         Assert.NotNull(response);
@@ -156,15 +156,15 @@ public class DataDrivenFunctionToolTests
         {
             Name = "getWeather",
             Description = "Get current weather for a location",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "location",
                     Description = "City name",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = true,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = [weatherFunction] };
@@ -230,30 +230,30 @@ public class DataDrivenFunctionToolTests
         {
             Name = "python_mcp-list_directory",
             Description = "List the contents of a directory within the code directory",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var getDirTreeFunction = new FunctionContract
         {
             Name = "python_mcp-get_directory_tree",
             Description = "Get an ASCII tree representation of a directory structure",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions

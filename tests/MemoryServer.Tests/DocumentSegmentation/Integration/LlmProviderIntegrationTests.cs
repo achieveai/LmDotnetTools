@@ -62,7 +62,7 @@ public class LlmProviderIntegrationTests : IDisposable
             {
                 Id = "test-model",
                 IsReasoning = false,
-                Providers = new List<ProviderConfig>(),
+                Providers = [],
             },
             Provider = new ProviderConfig
             {
@@ -101,7 +101,7 @@ public class LlmProviderIntegrationTests : IDisposable
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<IMessage> { testResponse });
+            .ReturnsAsync([testResponse]);
 
         // Mock prompt manager
         var testPrompt = new PromptTemplate
@@ -402,7 +402,7 @@ public class LlmProviderIntegrationTests : IDisposable
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<IMessage> { llmResponse });
+            .ReturnsAsync([llmResponse]);
 
         var service = new LlmProviderIntegrationService(
             _mockAgentFactory.Object,

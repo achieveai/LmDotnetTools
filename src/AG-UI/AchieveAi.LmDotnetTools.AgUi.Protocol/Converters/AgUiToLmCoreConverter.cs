@@ -25,14 +25,9 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
         ArgumentNullException.ThrowIfNull(message);
 
         // Determine message type based on AG-UI message properties
-        if (message.Role == "tool")
-        {
-            return ConvertToolResultMessage(message);
-        }
-        else
-        {
-            return message.ToolCalls?.Count > 0 ? ConvertToolsCallMessage(message) : ConvertTextMessage(message);
-        }
+        return message.Role == "tool"
+            ? ConvertToolResultMessage(message)
+            : message.ToolCalls?.Count > 0 ? ConvertToolsCallMessage(message) : ConvertTextMessage(message);
     }
 
     /// <inheritdoc/>

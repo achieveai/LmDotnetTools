@@ -465,6 +465,8 @@ internal class Program
                         case UsageMessage usageMsg:
                             Console.WriteLine($"\n[Usage - Prompt: {usageMsg.Usage.PromptTokens}, Completion: {usageMsg.Usage.CompletionTokens}, Total: {usageMsg.Usage.TotalTokens}]");
                             break;
+                        default:
+                            break;
                     }
 
                     messages = [

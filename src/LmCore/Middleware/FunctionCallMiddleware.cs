@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
@@ -349,7 +348,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         // Create a ToolsCallMessage from the tool calls for the executor
         var toolsCallMessage = new ToolsCallMessage
         {
-            ToolCalls = toolCalls.ToImmutableList(),
+            ToolCalls = [.. toolCalls],
             Role = Role.Assistant,
             FromAgent = string.Empty,
         };

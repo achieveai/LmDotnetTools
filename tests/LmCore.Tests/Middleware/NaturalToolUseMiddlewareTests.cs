@@ -22,8 +22,8 @@ public class NaturalToolUseMiddlewareTests
             {
                 Name = "GetWeather",
                 Description = "A test tool",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "location",
                         ParameterType = new JsonSchemaObject { Type = "string" },
@@ -36,7 +36,7 @@ public class NaturalToolUseMiddlewareTests
                         Description = "Second parameter",
                         IsRequired = true,
                     },
-                },
+                ],
             },
         ];
 
@@ -47,10 +47,9 @@ public class NaturalToolUseMiddlewareTests
 
         // Initialize default context
         _defaultContext = new MiddlewareContext(
-            new List<IMessage>
-            {
+            [
                 new TextMessage { Text = "Hello", Role = Role.User },
-            },
+            ],
             null
         );
     }
@@ -80,10 +79,9 @@ public class NaturalToolUseMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = responseText, Role = Role.Assistant },
-                }
+                ]
             );
         return mockAgent;
     }
@@ -218,10 +216,9 @@ public class NaturalToolUseMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Make schema validator accept the fixed JSON from the fallback parser

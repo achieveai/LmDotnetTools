@@ -93,15 +93,15 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
             {
                 Name = "get_weather",
                 Description = "Get the current weather",             // Set parameters as an array of FunctionParameterContract
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "location",
                         Description = "The city name",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                }
+                ]
             };
 
             var options = new GenerateReplyOptions { ModelId = "gpt-4", Functions = [function] };

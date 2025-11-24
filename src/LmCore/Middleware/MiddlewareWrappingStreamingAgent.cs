@@ -1,10 +1,11 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 using System.Runtime.CompilerServices;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+
+namespace AchieveAi.LmDotnetTools.LmCore.Middleware;
 
 public class MiddlewareWrappingStreamingAgent : IStreamingAgent
 {

@@ -133,27 +133,19 @@ public static class ServiceCollectionExtensions
         configureOptions(options);
 
         // Configure AppConfig from options
-        if (options.AppConfig != null)
-        {
-            _ = services.AddSingleton(Options.Create(options.AppConfig));
-        }
-        else
-        {
-            _ = options.ConfigurationSection != null
+        _ = options.AppConfig != null
+            ? services.AddSingleton(Options.Create(options.AppConfig))
+            : options.ConfigurationSection != null
                 ? services.Configure<AppConfig>(options.ConfigurationSection)
                 : throw new InvalidOperationException(
                 "Either AppConfig or ConfigurationSection must be specified in LmConfigOptions"
             );
-        }
 
         // Register core services using shared helper
         _ = RegisterLmConfigServices(services, options.RegisterAsDefaultAgent);
 
         // Configure HTTP clients for providers if specified
-        if (options.ConfigureHttpClients != null)
-        {
-            options.ConfigureHttpClients(services);
-        }
+        options.ConfigureHttpClients?.Invoke(services);
 
         return services;
     }

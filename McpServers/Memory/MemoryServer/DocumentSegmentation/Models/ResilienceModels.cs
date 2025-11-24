@@ -194,7 +194,7 @@ public record ErrorMetrics
     /// <summary>
     /// Recovery time measurements in milliseconds.
     /// </summary>
-    public ImmutableList<double> RecoveryTimes { get; init; } = ImmutableList<double>.Empty;
+    public ImmutableList<double> RecoveryTimes { get; init; } = [];
 
     /// <summary>
     /// API response time percentiles.

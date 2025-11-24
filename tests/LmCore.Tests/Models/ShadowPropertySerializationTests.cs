@@ -1,15 +1,12 @@
-namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
-
-using System;
 using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
 using AchieveAi.LmDotnetTools.LmCore.Core;
 using AchieveAi.LmDotnetTools.LmCore.Models;
-using Xunit;
 using Xunit.Abstractions;
 
+namespace AchieveAi.LmDotnetTools.LmCore.Tests.Models;
 /// <summary>
 /// Tests for validating that the shadow property pattern works correctly for serialization.
 /// </summary>

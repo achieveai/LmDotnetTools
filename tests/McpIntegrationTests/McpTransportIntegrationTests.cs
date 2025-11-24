@@ -32,7 +32,7 @@ public class McpTransportIntegrationTests
         {
             // Just return a text message for testing
             return Task.FromResult<IEnumerable<IMessage>>(
-                new[] { new TextMessage { Text = "This is a test response" } }
+                [new TextMessage { Text = "This is a test response" }]
             );
         }
     }

@@ -108,12 +108,11 @@ public class RequestCapture : RequestCaptureBase
 public class AnthropicRequestCapture
 {
     private readonly JsonElement _requestJson;
-    private readonly HttpRequestMessage? _httpRequest;
 
     internal AnthropicRequestCapture(JsonElement requestJson, HttpRequestMessage? httpRequest)
     {
         _requestJson = requestJson;
-        _httpRequest = httpRequest;
+        HttpRequest = httpRequest;
     }
 
     /// <summary>
@@ -134,26 +133,14 @@ public class AnthropicRequestCapture
     /// <summary>
     /// Gets the thinking configuration if present
     /// </summary>
-    public ThinkingCapture? Thinking
-    {
-        get
-        {
-            return _requestJson.TryGetProperty("thinking", out var thinking) ? new ThinkingCapture(thinking) : null;
-        }
-    }
+    public ThinkingCapture? Thinking => _requestJson.TryGetProperty("thinking", out var thinking) ? new ThinkingCapture(thinking) : null;
 
     /// <summary>
     /// Gets the messages from the request
     /// </summary>
-    public IEnumerable<MessageCapture> Messages
-    {
-        get
-        {
-            return _requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array
+    public IEnumerable<MessageCapture> Messages => _requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array
                 ? messages.EnumerateArray().Select(msg => new MessageCapture(msg))
-                : Enumerable.Empty<MessageCapture>();
-        }
-    }
+                : [];
 
     /// <summary>
     /// Gets the system message if present
@@ -163,11 +150,7 @@ public class AnthropicRequestCapture
     /// <summary>
     /// Gets the tools from the request
     /// </summary>
-    public IEnumerable<ToolCapture> Tools
-    {
-        get
-        {
-            return _requestJson.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array
+    public IEnumerable<ToolCapture> Tools => _requestJson.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array
                 ? tools
                     .EnumerateArray()
                     .Select(tool => new ToolCapture
@@ -176,14 +159,12 @@ public class AnthropicRequestCapture
                         Description = tool.TryGetProperty("description", out var desc) ? desc.GetString() : null,
                         InputSchema = tool.TryGetProperty("input_schema", out var schema) ? schema : null,
                     })
-                : Enumerable.Empty<ToolCapture>();
-        }
-    }
+                : [];
 
     /// <summary>
     /// Gets the underlying HTTP request
     /// </summary>
-    public HttpRequestMessage? HttpRequest => _httpRequest;
+    public HttpRequestMessage? HttpRequest { get; }
 }
 
 /// <summary>
@@ -192,12 +173,11 @@ public class AnthropicRequestCapture
 public class OpenAIRequestCapture
 {
     private readonly JsonElement _requestJson;
-    private readonly HttpRequestMessage? _httpRequest;
 
     internal OpenAIRequestCapture(JsonElement requestJson, HttpRequestMessage? httpRequest)
     {
         _requestJson = requestJson;
-        _httpRequest = httpRequest;
+        HttpRequest = httpRequest;
     }
 
     /// <summary>
@@ -223,20 +203,14 @@ public class OpenAIRequestCapture
     /// <summary>
     /// Gets the messages from the request
     /// </summary>
-    public IEnumerable<MessageCapture> Messages
-    {
-        get
-        {
-            return _requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array
+    public IEnumerable<MessageCapture> Messages => _requestJson.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array
                 ? messages.EnumerateArray().Select(msg => new MessageCapture(msg))
-                : Enumerable.Empty<MessageCapture>();
-        }
-    }
+                : [];
 
     /// <summary>
     /// Gets the underlying HTTP request
     /// </summary>
-    public HttpRequestMessage? HttpRequest => _httpRequest;
+    public HttpRequestMessage? HttpRequest { get; }
 }
 
 /// <summary>
@@ -308,15 +282,9 @@ public class MessageCapture
     /// <summary>
     /// Gets the number of content items in the message
     /// </summary>
-    public int ContentItemCount
-    {
-        get
-        {
-            return _messageJson.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array
+    public int ContentItemCount => _messageJson.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array
                 ? content.GetArrayLength()
                 : _messageJson.TryGetProperty("content", out _) ? 1 : 0;
-        }
-    }
 }
 
 /// <summary>

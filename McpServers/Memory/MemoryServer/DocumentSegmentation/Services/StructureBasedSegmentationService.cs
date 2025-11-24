@@ -716,7 +716,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                             // Keep the one with higher confidence
                             if (boundary.Confidence > nearby.Confidence)
                             {
-                                merged[merged.Count - 1] = boundary;
+                                merged[^1] = boundary;
                             }
                         }
                         else
@@ -734,7 +734,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                         System.Diagnostics.Debug.WriteLine("DEBUG: Non-heading merge logic applied");
                         if (boundary.Confidence > nearby.Confidence)
                         {
-                            merged[merged.Count - 1] = boundary;
+                            merged[^1] = boundary;
                         }
                     }
                 }
@@ -1162,22 +1162,13 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
     private static string DetermineSectionType(string content)
     {
         // Analyze content to determine section type
-        if (content.Contains("introduction", StringComparison.OrdinalIgnoreCase))
-        {
-            return "introduction";
-        }
-
-        if (content.Contains("conclusion", StringComparison.OrdinalIgnoreCase))
-        {
-            return "conclusion";
-        }
-
-        if (content.Contains("methodology", StringComparison.OrdinalIgnoreCase))
-        {
-            return "methodology";
-        }
-
-        return content.Contains("results", StringComparison.OrdinalIgnoreCase) ? "results" : "content";
+        return content.Contains("introduction", StringComparison.OrdinalIgnoreCase)
+            ? "introduction"
+            : content.Contains("conclusion", StringComparison.OrdinalIgnoreCase)
+            ? "conclusion"
+            : content.Contains("methodology", StringComparison.OrdinalIgnoreCase)
+            ? "methodology"
+            : content.Contains("results", StringComparison.OrdinalIgnoreCase) ? "results" : "content";
     }
 
     private static List<string> ExtractStructuralKeywords(string content)

@@ -260,8 +260,7 @@ public static class ServiceCollectionExtensions
             };
         }
 
-        var fileStore = cache as FileKvStore;
-        if (fileStore != null)
+        if (cache is FileKvStore fileStore)
         {
             var count = await fileStore.GetCountAsync();
             var directory = new DirectoryInfo(fileStore.CacheDirectory);
@@ -304,8 +303,7 @@ public static class ServiceCollectionExtensions
             return; // No cache configured, nothing to clear
         }
 
-        var fileStore = cache as FileKvStore;
-        if (fileStore != null)
+        if (cache is FileKvStore fileStore)
         {
             await fileStore.ClearAsync();
         }

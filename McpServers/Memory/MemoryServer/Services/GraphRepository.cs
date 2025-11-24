@@ -224,12 +224,7 @@ public class GraphRepository : IGraphRepository
                     entity.Id,
                     sessionContext,
                     cancellationToken
-                );
-                if (existing == null)
-                {
-                    throw new InvalidOperationException($"Entity {entity.Id} not found or does not belong to session");
-                }
-
+                ) ?? throw new InvalidOperationException($"Entity {entity.Id} not found or does not belong to session");
                 entity.UpdatedAt = DateTime.UtcNow;
                 entity.Version = existing.Version + 1;
 
@@ -568,14 +563,9 @@ public class GraphRepository : IGraphRepository
             async (connection, transaction) =>
             {
                 // Verify relationship exists and belongs to session
-                var existing = await GetRelationshipByIdAsync(relationship.Id, sessionContext, cancellationToken);
-                if (existing == null)
-                {
-                    throw new InvalidOperationException(
+                var existing = await GetRelationshipByIdAsync(relationship.Id, sessionContext, cancellationToken) ?? throw new InvalidOperationException(
                         $"Relationship {relationship.Id} not found or does not belong to session"
                     );
-                }
-
                 relationship.UpdatedAt = DateTime.UtcNow;
                 relationship.Version = existing.Version + 1;
 

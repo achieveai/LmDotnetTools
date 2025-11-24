@@ -32,7 +32,7 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(new[] { message }, originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
@@ -50,10 +50,9 @@ public class OptionsOverridingMiddlewareTests
                 (msgs, options, token) => capturedOptions = options
             )
             .ReturnsAsync(
-                new[]
-                {
+                [
                     new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -84,7 +83,7 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with null options
-        var context = new MiddlewareContext(new[] { message }, null);
+        var context = new MiddlewareContext([message], null);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
@@ -102,10 +101,9 @@ public class OptionsOverridingMiddlewareTests
                 (msgs, options, token) => capturedOptions = options
             )
             .ReturnsAsync(
-                new[]
-                {
+                [
                     new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -145,7 +143,7 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(new[] { message }, originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
@@ -163,10 +161,9 @@ public class OptionsOverridingMiddlewareTests
                 (msgs, options, token) => capturedOptions = options
             )
             .ReturnsAsync(
-                new[]
-                {
+                [
                     new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -205,7 +202,7 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(new[] { message }, originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock streaming agent to capture the options that are passed to it
         var mockStreamingAgent = new Mock<IStreamingAgent>();
@@ -273,7 +270,7 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(new[] { message }, originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
@@ -291,10 +288,9 @@ public class OptionsOverridingMiddlewareTests
                 (msgs, options, token) => capturedOptions = options
             )
             .ReturnsAsync(
-                new[]
-                {
+                [
                     new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -355,7 +351,7 @@ public class OptionsOverridingMiddlewareTests
         var message = new TextMessage { Text = "Test message", Role = Role.User };
 
         // Create the context with original options
-        var context = new MiddlewareContext(new[] { message }, originalOptions);
+        var context = new MiddlewareContext([message], originalOptions);
 
         // Set up mock agent to capture the options that are passed to it
         var mockAgent = new Mock<IAgent>();
@@ -373,10 +369,9 @@ public class OptionsOverridingMiddlewareTests
                 (msgs, options, token) => capturedOptions = options
             )
             .ReturnsAsync(
-                new[]
-                {
+                [
                     new TextMessage { Text = "Response", Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act

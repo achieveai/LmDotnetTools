@@ -183,28 +183,24 @@ public class CircuitBreakerServiceTests
     /// Validates AC-2.2 error type threshold configuration.
     /// </summary>
     public static IEnumerable<object[]> ErrorTypeTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new HttpRequestException("401 Unauthorized"),
                 "401",
                 "Authentication error should use specific threshold",
-            },
-            new object[]
-            {
+            ],
+            [
                 new HttpRequestException("503 Service Unavailable"),
                 "503",
                 "Service unavailable should use specific threshold",
-            },
-            new object[] { new TaskCanceledException("Timeout"), "timeout", "Timeout should use default threshold" },
-            new object[]
-            {
+            ],
+            [new TaskCanceledException("Timeout"), "timeout", "Timeout should use default threshold"],
+            [
                 new InvalidOperationException("Generic error"),
                 "generic",
                 "Generic error should use default threshold",
-            },
-        };
+            ],
+        ];
 
     [Theory]
     [MemberData(nameof(ErrorTypeTestCases))]

@@ -32,7 +32,8 @@
       "Bash(Select-Object -First 20)",
       "Bash(Measure-Object -Line)",
       "Bash(timeout 180 pwsh:*)",
-      "Bash(Select-String \"^(Done|Build failed|  Error|  Warning)\")"
+      "Bash(Select-String \"^(Done|Build failed|  Error|  Warning)\")",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": [],

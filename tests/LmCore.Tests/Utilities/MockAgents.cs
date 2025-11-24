@@ -20,7 +20,7 @@ public class MockAgent : IAgent
         CancellationToken cancellationToken = default
     )
     {
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { _response });
+        return Task.FromResult<IEnumerable<IMessage>>([_response]);
     }
 }
 
@@ -44,7 +44,7 @@ public class MockStreamingAgent : IStreamingAgent
     {
         // For non-streaming, just return the stream as a collection
         return Task.FromResult(
-            _responseStream.Any() ? _responseStream : new[] { new TextMessage { Text = string.Empty } }
+            _responseStream.Any() ? _responseStream : [new TextMessage { Text = string.Empty }]
         );
     }
 
@@ -85,7 +85,7 @@ public class ToolCallStreamingAgent : IStreamingAgent
     {
         // For non-streaming just return a complete tool call
         var finalToolCall = CreateFinalToolCall();
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { finalToolCall });
+        return Task.FromResult<IEnumerable<IMessage>>([finalToolCall]);
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(
@@ -179,7 +179,7 @@ public class TextStreamingAgent : IStreamingAgent
     )
     {
         // For non-streaming just return the full text
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { new TextMessage { Text = _fullText } });
+        return Task.FromResult<IEnumerable<IMessage>>([new TextMessage { Text = _fullText }]);
     }
 
     public Task<IAsyncEnumerable<IMessage>> GenerateReplyStreamingAsync(

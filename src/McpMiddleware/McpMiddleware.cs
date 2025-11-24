@@ -89,10 +89,7 @@ public partial class McpMiddleware : IStreamingMiddleware
         var functionMap = await CreateFunctionMapAsync(mcpClients, logger, cancellationToken);
 
         // If functions weren't provided, extract them from the MCP clients
-        if (functions == null)
-        {
-            functions = await ExtractFunctionContractsAsync(mcpClients, logger, cancellationToken);
-        }
+        functions ??= await ExtractFunctionContractsAsync(mcpClients, logger, cancellationToken);
 
         logger.LogInformation(
             "MCP middleware initialized: FunctionCount={FunctionCount}, FunctionNames={FunctionNames}",

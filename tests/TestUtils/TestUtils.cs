@@ -11,7 +11,7 @@ public static class TestUtils
     /// <returns>The path to the workspace root directory.</returns>
     public static string FindWorkspaceRoot(string startingPath)
     {
-        DirectoryInfo? directory = new DirectoryInfo(startingPath);
+        var directory = new DirectoryInfo(startingPath);
 
         while (directory != null)
         {

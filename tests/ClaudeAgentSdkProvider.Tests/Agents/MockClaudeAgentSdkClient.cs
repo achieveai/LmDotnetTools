@@ -13,7 +13,6 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
 {
     private readonly List<IMessage> _messagesToReplay;
     private readonly Action<ClaudeAgentSdkRequest>? _validateRequest;
-    private bool _isStarted;
 
     public MockClaudeAgentSdkClient(
         List<IMessage> messagesToReplay,
@@ -41,7 +40,7 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
             throw new ArgumentException("MaxTurns must be greater than 0", nameof(request));
         }
 
-        _isStarted = true;
+        IsRunning = true;
         CurrentSession = new SessionInfo
         {
             SessionId = request.SessionId ?? Guid.NewGuid().ToString(),
@@ -56,7 +55,7 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
         IEnumerable<IMessage> messages,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (!_isStarted)
+        if (!IsRunning)
         {
             throw new InvalidOperationException("Client must be started before sending messages");
         }
@@ -74,13 +73,13 @@ public class MockClaudeAgentSdkClient : IClaudeAgentSdkClient
         }
     }
 
-    public bool IsRunning => _isStarted;
+    public bool IsRunning { get; private set; }
 
     public SessionInfo? CurrentSession { get; private set; }
 
     public void Dispose()
     {
-        _isStarted = false;
+        IsRunning = false;
         GC.SuppressFinalize(this);
     }
 }

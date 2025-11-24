@@ -140,7 +140,7 @@ public static class HttpRetryHelper
                     _ = response.EnsureSuccessStatusCode();
                 }
 
-                return default(T)!; // This line should never be reached
+                return default!; // This line should never be reached
             }
             catch (HttpRequestException ex) when (attempt < maxRetries && IsRetryableError(ex))
             {

@@ -167,7 +167,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
         ValidationHelper.ValidateNotNullOrWhiteSpace(model);
         ThrowIfDisposed();
 
-        var request = new EmbeddingRequest { Inputs = new[] { text }, Model = model };
+        var request = new EmbeddingRequest { Inputs = [text], Model = model };
 
         return await GenerateEmbeddingsAsync(request, cancellationToken);
     }

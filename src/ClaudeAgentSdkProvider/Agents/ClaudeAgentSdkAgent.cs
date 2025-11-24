@@ -101,7 +101,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
             .OfType<TextMessage>()
             .FirstOrDefault(m => m.Role == Role.System);
 
-        string? systemPrompt = systemMessage?.Text;
+        var systemPrompt = systemMessage?.Text;
 
         // Extract session ID from options if provided
         string? sessionId = null;

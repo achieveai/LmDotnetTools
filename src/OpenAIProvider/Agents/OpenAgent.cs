@@ -11,7 +11,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Agents;
 
 public class OpenClientAgent : IStreamingAgent, IDisposable
 {
-    private IOpenClient _client;
+    private readonly IOpenClient _client;
     private readonly ILogger<OpenClientAgent> _logger;
 
     public OpenClientAgent(string name, IOpenClient client, ILogger<OpenClientAgent>? logger = null)

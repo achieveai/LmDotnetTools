@@ -240,10 +240,7 @@ public class AnthropicResponse_ToMessages_Tests
                 continue;
             }
 
-            if (currentEvent == null)
-            {
-                currentEvent = new SseEvent();
-            }
+            currentEvent ??= new SseEvent();
 
             if (line.StartsWith("event:"))
             {

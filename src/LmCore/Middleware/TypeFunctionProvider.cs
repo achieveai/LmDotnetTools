@@ -245,13 +245,11 @@ public class TypeFunctionProvider : IFunctionProvider
                                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
                             );
                         }
-                        else if (param.HasDefaultValue)
-                        {
-                            paramValues[i] = param.DefaultValue;
-                        }
                         else
                         {
-                            paramValues[i] = !param.ParameterType.IsValueType
+                            paramValues[i] = param.HasDefaultValue
+                                ? param.DefaultValue
+                                : !param.ParameterType.IsValueType
                             || Nullable.GetUnderlyingType(param.ParameterType) != null
                                 ? null
                                 : Activator.CreateInstance(param.ParameterType);

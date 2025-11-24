@@ -364,7 +364,7 @@ public class ResultEnricherTests
 
         _ = _mockGraphRepository
             .Setup(r => r.GetRelationshipsForEntityAsync("John", _sessionContext, null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<Relationship>());
+            .ReturnsAsync([]);
 
         // Act
         var enrichmentResults = await _resultEnricher.EnrichResultsAsync(results, _sessionContext);

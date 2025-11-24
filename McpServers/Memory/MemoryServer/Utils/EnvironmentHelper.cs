@@ -31,7 +31,7 @@ public static class EnvironmentHelper
                 if (envPath != null)
                 {
                     Console.WriteLine($"Loading environment variables from: {envPath}");
-                    DotEnv.Load(options: new DotEnvOptions(envFilePaths: new[] { envPath }, ignoreExceptions: false));
+                    DotEnv.Load(options: new DotEnvOptions(envFilePaths: [envPath], ignoreExceptions: false));
                     Console.WriteLine("Environment variables loaded successfully");
                 }
                 else

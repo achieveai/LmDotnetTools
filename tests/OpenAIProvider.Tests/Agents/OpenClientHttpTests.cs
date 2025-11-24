@@ -41,10 +41,10 @@ public class OpenClientHttpTests
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
-            messages: new List<ChatMessage>
-            {
+            messages:
+            [
                 new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") },
-            }
+            ]
         );
 
         // Act
@@ -97,10 +97,10 @@ public class OpenClientHttpTests
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
-            messages: new List<ChatMessage>
-            {
+            messages:
+            [
                 new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Test") },
-            }
+            ]
         );
 
         // Act & Assert
@@ -132,10 +132,10 @@ public class OpenClientHttpTests
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
-            messages: new List<ChatMessage>
-            {
+            messages:
+            [
                 new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") },
-            }
+            ]
         );
 
         // Act
@@ -167,10 +167,10 @@ public class OpenClientHttpTests
 
         var request = new ChatCompletionRequest(
             model: "qwen/qwen3-235b-a22b",
-            messages: new List<ChatMessage>
-            {
+            messages:
+            [
                 new() { Role = RoleEnum.User, Content = ChatMessage.CreateContent("Hello") },
-            }
+            ]
         );
 
         // Act

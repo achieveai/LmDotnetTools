@@ -17,7 +17,10 @@ public class TextChunk : ParsedChunk
 
     public TextChunk() { }
 
-    public TextChunk(string text) => Text = text;
+    public TextChunk(string text)
+    {
+        Text = text;
+    }
 }
 
 public class ToolCallChunk : ParsedChunk
@@ -789,9 +792,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
     private FunctionContract? GetFunctionContract(string toolName)
     {
         var contract = _functions.FirstOrDefault(f => f.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
-        return contract == null
-            ? throw new ToolUseParsingException($"Tool {toolName} not found in function contracts")
-            : contract;
+        return contract ?? throw new ToolUseParsingException($"Tool {toolName} not found in function contracts");
     }
 
     private async Task<IEnumerable<IMessage>> UseLegacyFallbackAsync(

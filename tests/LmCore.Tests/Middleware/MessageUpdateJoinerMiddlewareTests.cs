@@ -24,10 +24,10 @@ public class MessageUpdateJoinerMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new[] { message });
+            .ReturnsAsync([message]);
 
         // Create context with empty messages
-        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act
         var result = await middleware.InvokeAsync(context, mockAgent.Object, cancellationToken);
@@ -75,7 +75,7 @@ public class MessageUpdateJoinerMiddlewareTests
             .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
         var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);
@@ -151,7 +151,7 @@ public class MessageUpdateJoinerMiddlewareTests
             .ReturnsAsync(updateMessages.ToAsyncEnumerable());
 
         // Create context with empty messages
-        var context = new MiddlewareContext(new List<IMessage>(), new GenerateReplyOptions());
+        var context = new MiddlewareContext([], new GenerateReplyOptions());
 
         // Act - Get the stream from the middleware
         var resultStream = await middleware.InvokeStreamingAsync(context, mockStreamingAgent.Object, cancellationToken);

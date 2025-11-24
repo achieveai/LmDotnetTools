@@ -428,7 +428,7 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
     private class OpenAIEmbeddingResponse
     {
         public string Object { get; set; } = "";
-        public OpenAIEmbeddingData[] Data { get; set; } = Array.Empty<OpenAIEmbeddingData>();
+        public OpenAIEmbeddingData[] Data { get; set; } = [];
         public string Model { get; set; } = "";
         public OpenAIUsage? Usage { get; set; }
     }

@@ -1,8 +1,6 @@
-namespace AchieveAi.LmDotnetTools.TestUtils;
-
-using System;
 using System.Text.Json;
 
+namespace AchieveAi.LmDotnetTools.TestUtils;
 /// <summary>
 /// Helper for test debugging and diagnostics
 /// </summary>

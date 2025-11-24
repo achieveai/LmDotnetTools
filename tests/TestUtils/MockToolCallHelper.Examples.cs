@@ -85,6 +85,6 @@ public static class MockToolCallHelperExamples
             },
         };
 
-        return MockToolCallHelper.CreateMockToolCalls(new[] { typeof(MockCalculatorTool) }, callbackOverrides);
+        return MockToolCallHelper.CreateMockToolCalls([typeof(MockCalculatorTool)], callbackOverrides);
     }
 }

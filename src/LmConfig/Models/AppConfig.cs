@@ -68,7 +68,7 @@ public record AppConfig
             return matchingModels;
         }
 
-        return new List<ModelConfig>();
+        return [];
     }
 
     /// <summary>

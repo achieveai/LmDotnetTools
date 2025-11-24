@@ -471,7 +471,7 @@ namespace LmTestUtils.Tests
 
             foreach (var c in input)
             {
-                if (c is not (>= '0' and <= '9' or >= 'A' and <= 'F'))
+                if (c is not ((>= '0' and <= '9') or (>= 'A' and <= 'F')))
                 {
                     return false;
                 }

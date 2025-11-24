@@ -197,14 +197,14 @@ public static class EmbeddingTestDataGenerator
     /// <returns>Test data for use with [MemberData] attributes</returns>
     public static IEnumerable<object[]> GetEmbeddingTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { 1, 1536, "Single embedding with standard size" },
-            new object[] { 3, 1536, "Multiple embeddings with standard size" },
-            new object[] { 1, 512, "Single embedding with small size" },
-            new object[] { 5, 768, "Multiple embeddings with custom size" },
-            new object[] { 10, 1536, "Large batch with standard size" },
-        };
+        return
+        [
+            [1, 1536, "Single embedding with standard size"],
+            [3, 1536, "Multiple embeddings with standard size"],
+            [1, 512, "Single embedding with small size"],
+            [5, 768, "Multiple embeddings with custom size"],
+            [10, 1536, "Large batch with standard size"],
+        ];
     }
 
     /// <summary>
@@ -213,12 +213,12 @@ public static class EmbeddingTestDataGenerator
     /// <returns>Test data for error testing</returns>
     public static IEnumerable<object[]> GetErrorTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { "rate_limit_exceeded", "Rate limit exceeded", "Rate limit error scenario" },
-            new object[] { "invalid_api_key", "Invalid API key", "Authentication error scenario" },
-            new object[] { "model_not_found", "Model not found", "Model error scenario" },
-            new object[] { "invalid_input", "Invalid input format", "Input validation error scenario" },
-        };
+        return
+        [
+            ["rate_limit_exceeded", "Rate limit exceeded", "Rate limit error scenario"],
+            ["invalid_api_key", "Invalid API key", "Authentication error scenario"],
+            ["model_not_found", "Model not found", "Model error scenario"],
+            ["invalid_input", "Invalid input format", "Input validation error scenario"],
+        ];
     }
 }

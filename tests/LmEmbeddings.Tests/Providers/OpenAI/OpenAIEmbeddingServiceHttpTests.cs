@@ -358,10 +358,8 @@ public class OpenAIEmbeddingServiceHttpTests
     }
 
     public static IEnumerable<object[]> SuccessfulOpenAIResponseTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = item,
@@ -371,9 +369,8 @@ public class OpenAIEmbeddingServiceHttpTests
                 CreateValidOpenAIResponse(1, "base64"), // Default is base64
                 1,
                 "Single input with Default API type",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray,
@@ -384,14 +381,12 @@ public class OpenAIEmbeddingServiceHttpTests
                 CreateValidOpenAIResponse(3, "float"), // Use float format
                 3,
                 "Multiple inputs with encoding format",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> HttpErrorResponseTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray0,
@@ -402,9 +397,8 @@ public class OpenAIEmbeddingServiceHttpTests
                 "{\"error\": {\"message\": \"Invalid model\", \"type\": \"invalid_request_error\"}}",
                 typeof(HttpRequestException),
                 "Invalid model returns 400 Bad Request",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray0,
@@ -415,9 +409,8 @@ public class OpenAIEmbeddingServiceHttpTests
                 "{\"error\": {\"message\": \"Invalid API key\", \"type\": \"invalid_request_error\"}}",
                 typeof(HttpRequestException),
                 "Invalid API key returns 401 Unauthorized",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray1,
@@ -428,14 +421,12 @@ public class OpenAIEmbeddingServiceHttpTests
                 "{\"error\": {\"message\": \"Internal server error\", \"type\": \"server_error\"}}",
                 typeof(HttpRequestException),
                 "Server error returns 500 Internal Server Error",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> RetryScenarioTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray1,
@@ -446,9 +437,8 @@ public class OpenAIEmbeddingServiceHttpTests
                 CreateValidOpenAIResponse(1, "base64"), // Default is base64
                 HttpStatusCode.InternalServerError,
                 "Retry after 2 server errors",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray2,
@@ -460,14 +450,12 @@ public class OpenAIEmbeddingServiceHttpTests
                 CreateValidOpenAIResponse(2, "float"), // Use float format
                 HttpStatusCode.BadGateway,
                 "Retry after 1 bad gateway error",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> RequestValidationTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray3,
@@ -478,14 +466,12 @@ public class OpenAIEmbeddingServiceHttpTests
                 "/v1/embeddings",
                 new Dictionary<string, object> { ["input"] = itemArray3, ["model"] = "text-embedding-3-small" },
                 "Basic POST request validation",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> ApiTypeFormattingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray4,
@@ -503,9 +489,8 @@ public class OpenAIEmbeddingServiceHttpTests
                 },
                 new Dictionary<string, object> { ["normalized"] = true, ["embedding_type"] = "float" },
                 "OpenAI API formatting with user and encoding_format",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray5,
@@ -523,8 +508,8 @@ public class OpenAIEmbeddingServiceHttpTests
                 },
                 new Dictionary<string, object> { ["encoding_format"] = "float", ["user"] = "test-user" },
                 "Jina API formatting with normalized and embedding_type",
-            },
-        };
+            ],
+        ];
 
     private static readonly string[] item = ["Hello world"];
     private static readonly string[] itemArray = ["Hello", "World", "Test"];

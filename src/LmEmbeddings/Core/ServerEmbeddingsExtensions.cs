@@ -200,7 +200,7 @@ public static class ServerEmbeddingsExtensions
 
         foreach (var testCase in testList)
         {
-            var result = await service.GenerateEmbeddingsWithMetricsAsync(new[] { testCase });
+            var result = await service.GenerateEmbeddingsWithMetricsAsync([testCase]);
             if (result.Metrics != null)
             {
                 results.Add(result.Metrics);

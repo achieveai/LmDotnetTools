@@ -284,8 +284,8 @@ public class ModelConfigGeneratorServiceTests
 
     private static IReadOnlyList<ModelConfig> CreateTestModels()
     {
-        return new List<ModelConfig>
-        {
+        return
+        [
             new()
             {
                 Id = "meta-llama/llama-3.1-70b",
@@ -393,13 +393,13 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-        };
+        ];
     }
 
     private static IReadOnlyList<ModelConfig> CreateTestModelsWithDates()
     {
-        return new List<ModelConfig>
-        {
+        return
+        [
             new()
             {
                 Id = "meta-llama/llama-3.1-70b",
@@ -493,13 +493,13 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-        };
+        ];
     }
 
     private static IReadOnlyList<ModelConfig> CreateTestModelsWithMixedDates()
     {
-        return new List<ModelConfig>
-        {
+        return
+        [
             new()
             {
                 Id = "model-with-date",
@@ -560,6 +560,6 @@ public class ModelConfigGeneratorServiceTests
                     },
                 ],
             },
-        };
+        ];
     }
 }

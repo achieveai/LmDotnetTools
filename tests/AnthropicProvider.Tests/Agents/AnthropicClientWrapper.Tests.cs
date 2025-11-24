@@ -13,11 +13,7 @@ public class MockHttpHandlerBuilderRecordPlaybackTests
     {
         // Start from the assembly location
         var assemblyLocation = Assembly.GetExecutingAssembly().Location;
-        var currentDir = Path.GetDirectoryName(assemblyLocation);
-        if (currentDir == null)
-        {
-            throw new InvalidOperationException("Could not determine current directory");
-        }
+        var currentDir = Path.GetDirectoryName(assemblyLocation) ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
         while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))

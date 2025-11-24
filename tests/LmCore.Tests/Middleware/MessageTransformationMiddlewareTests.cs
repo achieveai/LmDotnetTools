@@ -107,7 +107,7 @@ public class MessageTransformationMiddlewareTests
         // Assert
         Assert.Equal(4, messages.Count);
         Assert.All(messages, m => Assert.NotNull(m.MessageOrderIdx));
-        for (int i = 0; i < messages.Count; i++)
+        for (var i = 0; i < messages.Count; i++)
         {
             Assert.Equal(i, messages[i].MessageOrderIdx);
         }
@@ -321,7 +321,7 @@ public class MessageTransformationMiddlewareTests
     private class MockAgent : IAgent
     {
         private readonly IMessage[] _responsesToReturn;
-        public List<IMessage> ReceivedMessages { get; } = new();
+        public List<IMessage> ReceivedMessages { get; } = [];
 
         public static string Name => "MockAgent";
 

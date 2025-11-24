@@ -122,7 +122,7 @@ public class FunctionCallMiddlewareTests
 
         // Create the context with our tool call message
         ArgumentNullException.ThrowIfNull(toolCallMessage);
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -158,7 +158,7 @@ public class FunctionCallMiddlewareTests
 
         // Create the context with our tool call message
         ArgumentNullException.ThrowIfNull(toolCallMessage);
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -195,7 +195,7 @@ public class FunctionCallMiddlewareTests
 
         // Create the context with our message
         ArgumentNullException.ThrowIfNull(message);
-        var context = new MiddlewareContext(new[] { message }, new GenerateReplyOptions());
+        var context = new MiddlewareContext([message], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -217,10 +217,9 @@ public class FunctionCallMiddlewareTests
                 }
             )
             .ReturnsAsync(
-                new[]
-                {
+                [
                     new TextMessage { Text = "Mock response", Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -250,7 +249,7 @@ public class FunctionCallMiddlewareTests
 
         // Create the context with our tool call message
         ArgumentNullException.ThrowIfNull(toolCallMessage);
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Mock the agent
         var mockAgent = new Mock<IAgent>();
@@ -287,10 +286,10 @@ public class FunctionCallMiddlewareTests
 
         // Create the context with our tool call message
         ArgumentNullException.ThrowIfNull(toolCallMessage);
-        var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
+        var context = new MiddlewareContext([toolCallMessage], new GenerateReplyOptions());
 
         // Create a simple streaming agent that returns no messages
-        var nextAgent = new MockStreamingAgent(Array.Empty<IMessage>());
+        var nextAgent = new MockStreamingAgent([]);
         ArgumentNullException.ThrowIfNull(nextAgent);
 
         // Act - invoke the streaming middleware
@@ -335,14 +334,14 @@ public class FunctionCallMiddlewareTests
 
     private static IEnumerable<FunctionContract> CreateMockFunctionContracts()
     {
-        return new[]
-        {
+        return
+        [
             new FunctionContract
             {
                 Name = "getWeather",
                 Description = "Get current weather for a location",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
@@ -357,14 +356,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Temperature unit (celsius or fahrenheit)",
                         IsRequired = false,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "getWeatherHistory",
                 Description = "Get historical weather data for a location",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "location",
@@ -379,14 +378,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Number of days of history",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "add",
                 Description = "Add two numbers",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -401,14 +400,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "subtract",
                 Description = "Subtract second number from first number",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -423,14 +422,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "multiply",
                 Description = "Multiply two numbers",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -445,14 +444,14 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "divide",
                 Description = "Divide first number by second number",
-                Parameters = new[]
-                {
+                Parameters =
+                [
                     new FunctionParameterContract
                     {
                         Name = "a",
@@ -467,9 +466,9 @@ public class FunctionCallMiddlewareTests
                         Description = "Second number",
                         IsRequired = true,
                     },
-                },
+                ],
             },
-        };
+        ];
     }
 
     private static ToolsCallMessage CreateToolCallMessage(string functionName, object args)
@@ -687,8 +686,8 @@ public class FunctionCallMiddlewareTests
             {
                 Name = "getWeather",
                 Description = "Get current weather for a location",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "location",
                         Description = "City name",
@@ -701,7 +700,7 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false,
                     },
-                },
+                ],
             },
         };
 
@@ -811,53 +810,53 @@ public class FunctionCallMiddlewareTests
                 Name = "python-mcp.execute_python_in_container",
                 Description =
                     "\nExecute Python code in a Docker container. The environment is limited to the container.\nFollowing packages are available:\n- pandas\n- numpy\n- matplotlib\n- seaborn\n- plotly\n- bokeh\n- hvplot\n- datashader\n- plotnine\n- cufflinks\n- graphviz\n- scipy\n- statsmodels\n- openpyxl\n- xlrd\n- xlsxwriter\n- pandasql\n- csv23\n- csvkit\n- polars\n- pyarrow\n- fastparquet\n- dask\n- vaex\n- python-dateutil\n- beautifulsoup4\n- requests\n- lxml\n- geopandas\n- folium\n- pydeck\n- holoviews\n- altair\n- visualkeras\n- kaleido\n- panel\n- voila\n\nArgs:\n    code: Python code to execute\n\nReturns:\n    Output from executed code\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "code",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.list_directory",
                 Description =
                     "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.read_file",
                 Description =
                     "\nRead a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    File contents as a string\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.write_file",
                 Description =
                     "\nWrite content to a file in the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    content: Content to write to the file\n    \nReturns:\n    Status message\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "relative_path",
                         Description = "",
@@ -870,44 +869,44 @@ public class FunctionCallMiddlewareTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.delete_file",
                 Description =
                     "\nDelete a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    Status message\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.get_directory_tree",
                 Description =
                     "\nGet an ASCII tree representation of a directory structure where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: root code directory)\n    \nReturns:\n    ASCII tree representation as a string\n",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = false,
                     },
-                },
+                ],
             },
             new FunctionContract
             {
                 Name = "python-mcp.cleanup_code_directory",
                 Description =
                     "\nClean up the code directory by removing all files and subdirectories\n\nReturns:\n    Status message\n",
-                Parameters = new List<FunctionParameterContract>(),
+                Parameters = [],
             },
         };
 
@@ -1146,15 +1145,15 @@ public class FunctionCallMiddlewareTests
                     {
                         Name = "getWeather",
                         Description = "Get current weather for a location",
-                        Parameters = new List<FunctionParameterContract>
-                        {
+                        Parameters =
+                        [
                             new() {
                                 Name = "location",
                                 Description = "City name",
                                 ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                                 IsRequired = true,
                             },
-                        },
+                        ],
                     },
                 ],
             };

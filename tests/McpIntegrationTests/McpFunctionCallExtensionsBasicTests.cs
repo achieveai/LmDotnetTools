@@ -19,21 +19,21 @@ public class McpFunctionCallExtensionsBasicTests
             new() {
                 Name = "Echo",
                 Description = "Returns the input text",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "text",
                         Description = "Text to echo",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
             new() {
                 Name = "Add",
                 Description = "Adds two numbers",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "a",
                         Description = "First number",
@@ -46,7 +46,7 @@ public class McpFunctionCallExtensionsBasicTests
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
         };
 
@@ -100,15 +100,15 @@ public class McpFunctionCallExtensionsBasicTests
             new() {
                 Name = "Echo",
                 Description = "Returns the input text",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "text",
                         Description = "Text to echo",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                },
+                ],
             },
         };
 

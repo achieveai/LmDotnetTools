@@ -52,15 +52,15 @@ public static class ProviderTestDataGenerator
     /// <returns>Test data for API key validation</returns>
     public static IEnumerable<object[]> GetApiKeyValidationTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { ApiKeys.Valid, true, "Valid API key should pass" },
-            new object[] { ApiKeys.ValidAlternate, true, "Valid alternate API key should pass" },
-            new object[] { ApiKeys.Empty, false, "Empty API key should fail" },
-            new object[] { ApiKeys.WhitespaceOnly, false, "Whitespace-only API key should fail" },
-            new object[] { ApiKeys.TooShort, false, "Too short API key should fail" },
-            new object[] { null!, false, "Null API key should fail" },
-        };
+        return
+        [
+            [ApiKeys.Valid, true, "Valid API key should pass"],
+            [ApiKeys.ValidAlternate, true, "Valid alternate API key should pass"],
+            [ApiKeys.Empty, false, "Empty API key should fail"],
+            [ApiKeys.WhitespaceOnly, false, "Whitespace-only API key should fail"],
+            [ApiKeys.TooShort, false, "Too short API key should fail"],
+            [null!, false, "Null API key should fail"],
+        ];
     }
 
     /// <summary>
@@ -69,17 +69,17 @@ public static class ProviderTestDataGenerator
     /// <returns>Test data for base URL validation</returns>
     public static IEnumerable<object[]> GetBaseUrlValidationTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { BaseUrls.ValidHttps, true, "Valid HTTPS URL should pass" },
-            new object[] { BaseUrls.ValidHttp, true, "Valid HTTP URL should pass" },
-            new object[] { BaseUrls.ValidWithPath, true, "Valid URL with path should pass" },
-            new object[] { BaseUrls.ValidWithTrailingSlash, true, "Valid URL with trailing slash should pass" },
-            new object[] { BaseUrls.Invalid, false, "Invalid URL should fail" },
-            new object[] { BaseUrls.Empty, false, "Empty URL should fail" },
-            new object[] { BaseUrls.WhitespaceOnly, false, "Whitespace-only URL should fail" },
-            new object[] { null!, false, "Null URL should fail" },
-        };
+        return
+        [
+            [BaseUrls.ValidHttps, true, "Valid HTTPS URL should pass"],
+            [BaseUrls.ValidHttp, true, "Valid HTTP URL should pass"],
+            [BaseUrls.ValidWithPath, true, "Valid URL with path should pass"],
+            [BaseUrls.ValidWithTrailingSlash, true, "Valid URL with trailing slash should pass"],
+            [BaseUrls.Invalid, false, "Invalid URL should fail"],
+            [BaseUrls.Empty, false, "Empty URL should fail"],
+            [BaseUrls.WhitespaceOnly, false, "Whitespace-only URL should fail"],
+            [null!, false, "Null URL should fail"],
+        ];
     }
 
     /// <summary>
@@ -88,15 +88,15 @@ public static class ProviderTestDataGenerator
     /// <returns>Test data for model validation</returns>
     public static IEnumerable<object[]> GetModelValidationTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { Models.Valid, true, "Valid model name should pass" },
-            new object[] { Models.ValidAlternate, true, "Valid alternate model name should pass" },
-            new object[] { Models.ValidClaude, true, "Valid Claude model name should pass" },
-            new object[] { Models.Empty, false, "Empty model name should fail" },
-            new object[] { Models.WhitespaceOnly, false, "Whitespace-only model name should fail" },
-            new object[] { null!, false, "Null model name should fail" },
-        };
+        return
+        [
+            [Models.Valid, true, "Valid model name should pass"],
+            [Models.ValidAlternate, true, "Valid alternate model name should pass"],
+            [Models.ValidClaude, true, "Valid Claude model name should pass"],
+            [Models.Empty, false, "Empty model name should fail"],
+            [Models.WhitespaceOnly, false, "Whitespace-only model name should fail"],
+            [null!, false, "Null model name should fail"],
+        ];
     }
 
     /// <summary>
@@ -114,13 +114,13 @@ public static class ProviderTestDataGenerator
     /// <returns>Test data for retry testing</returns>
     public static IEnumerable<object[]> GetRetryTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { 0, "Should succeed immediately with no retries" },
-            new object[] { 1, "Should succeed after 1 retry" },
-            new object[] { 2, "Should succeed after 2 retries" },
-            new object[] { 3, "Should succeed after 3 retries (max retries)" },
-        };
+        return
+        [
+            [0, "Should succeed immediately with no retries"],
+            [1, "Should succeed after 1 retry"],
+            [2, "Should succeed after 2 retries"],
+            [3, "Should succeed after 3 retries (max retries)"],
+        ];
     }
 
     /// <summary>
@@ -129,13 +129,13 @@ public static class ProviderTestDataGenerator
     /// <returns>Test data for timeout testing</returns>
     public static IEnumerable<object[]> GetTimeoutTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { TimeSpan.FromMilliseconds(100), "Short timeout" },
-            new object[] { TimeSpan.FromSeconds(1), "Medium timeout" },
-            new object[] { TimeSpan.FromSeconds(5), "Long timeout" },
-            new object[] { TimeSpan.FromMinutes(1), "Very long timeout" },
-        };
+        return
+        [
+            [TimeSpan.FromMilliseconds(100), "Short timeout"],
+            [TimeSpan.FromSeconds(1), "Medium timeout"],
+            [TimeSpan.FromSeconds(5), "Long timeout"],
+            [TimeSpan.FromMinutes(1), "Very long timeout"],
+        ];
     }
 
     /// <summary>

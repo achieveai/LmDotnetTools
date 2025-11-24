@@ -686,12 +686,7 @@ public class GraphDecisionEngine : IGraphDecisionEngine
     private static bool IsTypeRefinement(Entity existing, Entity newEntity)
     {
         // Check if new entity provides a more specific type
-        if (string.IsNullOrEmpty(existing.Type) && !string.IsNullOrEmpty(newEntity.Type))
-        {
-            return true;
-        }
-
-        return existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown";
+        return (string.IsNullOrEmpty(existing.Type) && !string.IsNullOrEmpty(newEntity.Type)) || (existing.Type == "unknown" && !string.IsNullOrEmpty(newEntity.Type) && newEntity.Type != "unknown");
     }
 
     private static bool HasBetterData(Entity existing, Entity newEntity)

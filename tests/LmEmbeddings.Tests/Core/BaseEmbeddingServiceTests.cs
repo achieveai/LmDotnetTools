@@ -244,109 +244,93 @@ public class BaseEmbeddingServiceTests
     #region Test Data
 
     public static IEnumerable<object[]> GetEmbeddingAsyncTestCases =>
-        new List<object[]>
-        {
-            new object[] { "Valid text input", true, "", "Valid input should succeed" },
-            new object[] { "", false, "Value cannot be null, empty, or whitespace", "Empty string should fail" },
-            new object[]
-            {
+        [
+            ["Valid text input", true, "", "Valid input should succeed"],
+            ["", false, "Value cannot be null, empty, or whitespace", "Empty string should fail"],
+            [
                 "   ",
                 false,
                 "Value cannot be null, empty, or whitespace",
                 "Whitespace-only string should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 "A very long text that should still work fine for embedding generation",
                 true,
                 "",
                 "Long text should succeed",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> GenerateEmbeddingAsyncTestCases =>
-        new List<object[]>
-        {
-            new object[] { "Valid text", "test-model", true, "", "Valid text and model should succeed" },
-            new object[]
-            {
+        [
+            ["Valid text", "test-model", true, "", "Valid text and model should succeed"],
+            [
                 "",
                 "test-model",
                 false,
                 "Value cannot be null, empty, or whitespace",
                 "Empty text should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Valid text",
                 "",
                 false,
                 "Value cannot be null, empty, or whitespace",
                 "Empty model should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 "   ",
                 "test-model",
                 false,
                 "Value cannot be null, empty, or whitespace",
                 "Whitespace text should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Valid text",
                 "   ",
                 false,
                 "Value cannot be null, empty, or whitespace",
                 "Whitespace model should fail",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> RequestValidationTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest { Model = "test-model", Inputs = item },
                 true,
                 "",
                 "Valid request should succeed",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest { Model = "", Inputs = itemArray },
                 false,
                 "Value cannot be null, empty, or whitespace",
                 "Empty model should fail",
-            },
-            new object[]
-            {
-                new EmbeddingRequest { Model = "test-model", Inputs = Array.Empty<string>() },
+            ],
+            [
+                new EmbeddingRequest { Model = "test-model", Inputs = [] },
                 false,
                 "Collection cannot be empty",
                 "Empty inputs should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest { Model = "test-model", Inputs = itemArray0 },
                 false,
                 "Collection cannot contain null, empty, or whitespace elements",
                 "Empty input text should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest { Model = "test-model", Inputs = itemArray1 },
                 false,
                 "Collection cannot contain null, empty, or whitespace elements",
                 "Whitespace input text should fail",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> PayloadFormattingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Model = "test-model",
@@ -359,9 +343,8 @@ public class BaseEmbeddingServiceTests
                 itemArray2,
                 itemArray3,
                 "OpenAI format with all optional parameters",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Model = "jina-model",
@@ -374,9 +357,8 @@ public class BaseEmbeddingServiceTests
                 itemArray5,
                 itemArray6,
                 "Jina format with all optional parameters",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Model = "basic-model",
@@ -386,33 +368,29 @@ public class BaseEmbeddingServiceTests
                 itemArray7,
                 itemArray8,
                 "Basic OpenAI format with minimal parameters",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> DisposalTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "GetEmbeddingAsync",
                 new Func<TestEmbeddingService, Task>(service => service.GetEmbeddingAsync("test")),
                 "GetEmbeddingAsync should throw after disposal",
-            },
-            new object[]
-            {
+            ],
+            [
                 "GenerateEmbeddingAsync",
                 new Func<TestEmbeddingService, Task>(service => service.GenerateEmbeddingAsync("test", "model")),
                 "GenerateEmbeddingAsync should throw after disposal",
-            },
-            new object[]
-            {
+            ],
+            [
                 "GenerateEmbeddingsAsync",
                 new Func<TestEmbeddingService, Task>(service =>
                     service.GenerateEmbeddingsAsync(new EmbeddingRequest { Model = "test", Inputs = request })
                 ),
                 "GenerateEmbeddingsAsync should throw after disposal",
-            },
-        };
+            ],
+        ];
 
     private static readonly string[] item = ["text1", "text2"];
     private static readonly string[] itemArray = ["text1"];
@@ -519,7 +497,7 @@ public class BaseEmbeddingServiceTests
         private class TestEmbeddingItem
         {
             [JsonPropertyName("Vector")]
-            public float[] Vector { get; set; } = Array.Empty<float>();
+            public float[] Vector { get; set; } = [];
 
             [JsonPropertyName("Index")]
             public int Index { get; set; }

@@ -58,12 +58,9 @@ public class ImmutableDictionarySerializationTests
 
         public T? GetExtraProperty<T>(string key)
         {
-            if (ExtraProperties == null)
-            {
-                return default;
-            }
-
-            return ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
+            return ExtraProperties == null
+                ? default
+                : ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
         }
     }
 
@@ -93,12 +90,9 @@ public class ImmutableDictionarySerializationTests
 
         public T? GetExtraProperty<T>(string key)
         {
-            if (ExtraProperties == null)
-            {
-                return default;
-            }
-
-            return ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
+            return ExtraProperties == null
+                ? default
+                : ExtraProperties.TryGetValue(key, out var value) && value is T typedValue ? typedValue : default;
         }
     }
 

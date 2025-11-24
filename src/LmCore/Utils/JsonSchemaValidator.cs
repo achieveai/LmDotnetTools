@@ -30,12 +30,12 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         // Basic checks
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new SchemaValidationResult(false, new List<string> { "Input json is null or empty" });
+            return new SchemaValidationResult(false, ["Input json is null or empty"]);
         }
 
         if (schema is null)
         {
-            return new SchemaValidationResult(false, new List<string> { "Schema is null" });
+            return new SchemaValidationResult(false, ["Schema is null"]);
         }
 
         JsonNode? dataNode;
@@ -45,7 +45,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
         catch (JsonException)
         {
-            return new SchemaValidationResult(false, new List<string> { "Invalid JSON payload" });
+            return new SchemaValidationResult(false, ["Invalid JSON payload"]);
         }
 
         Json.Schema.JsonSchema jsonSchema;
@@ -64,7 +64,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(false, new List<string> { $"Failed to parse schema: {ex.Message}" });
+            return new SchemaValidationResult(false, [$"Failed to parse schema: {ex.Message}"]);
         }
 
         Console.WriteLine($"[DEBUG] Validating JSON: {json}");
@@ -83,7 +83,7 @@ public class JsonSchemaValidator : IJsonSchemaValidator
         }
         catch (Exception ex)
         {
-            return new SchemaValidationResult(false, new List<string> { $"Validation error: {ex.Message}" });
+            return new SchemaValidationResult(false, [$"Validation error: {ex.Message}"]);
         }
     }
 

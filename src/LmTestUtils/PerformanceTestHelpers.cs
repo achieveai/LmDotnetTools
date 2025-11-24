@@ -133,17 +133,7 @@ public static class PerformanceTestHelpers
         }
 
         // Validate timing
-        if (metrics.StartTime == default)
-        {
-            return false;
-        }
-
-        if (metrics.EndTime == default)
-        {
-            return false;
-        }
-
-        return metrics.Duration > TimeSpan.Zero;
+        return metrics.StartTime != default && metrics.EndTime != default && metrics.Duration > TimeSpan.Zero;
     }
 
     /// <summary>

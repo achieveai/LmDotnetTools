@@ -367,17 +367,16 @@ public class JsonFragmentAccumulatorTests
     /// Test data for JSON completion event testing
     /// </summary>
     public static IEnumerable<object[]> JsonCompletionTestCases =>
-        new List<object[]>
-        {
+        [
             // Simple object completion
-            new object[] { "test_tool", item, "Simple object should emit JsonComplete event when closed" },
+            ["test_tool", item, "Simple object should emit JsonComplete event when closed"],
             // Simple array completion
-            new object[] { "test_tool", itemArray, "Simple array should emit JsonComplete event when closed" },
+            ["test_tool", itemArray, "Simple array should emit JsonComplete event when closed"],
             // Nested object completion
-            new object[] { "test_tool", itemArray0, "Nested object should emit JsonComplete event when fully closed" },
+            ["test_tool", itemArray0, "Nested object should emit JsonComplete event when fully closed"],
             // Single value completion
-            new object[] { "test_tool", itemArray1, "Simple string should emit JsonComplete event when closed" },
-        };
+            ["test_tool", itemArray1, "Simple string should emit JsonComplete event when closed"],
+        ];
 
     private static readonly string[] item = ["{\"key\":", " \"value\"}"];
     private static readonly string[] itemArray = ["[1,", " 2, 3]"];

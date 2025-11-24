@@ -1,13 +1,10 @@
-namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
-
-using System.Collections.Generic;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Models;
 using AchieveAi.LmDotnetTools.OpenAIProvider.Utils;
-using Xunit;
 using Xunit.Abstractions;
 
+namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models;
 /// <summary>
 /// Tests for validating that ChatCompletionRequest is serialized correctly.
 /// </summary>

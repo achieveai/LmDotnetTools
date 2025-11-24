@@ -625,7 +625,7 @@ Examples:
                 return $"{taskRef} has no notes.";
             }
 
-            notesCopy = new List<string>(targetTask.Notes);
+            notesCopy = [.. targetTask.Notes];
         }
 
         var sb = new StringBuilder();
@@ -676,7 +676,7 @@ Examples:
             return "No tasks found.";
         }
 
-        rootTasksCopy = new List<PrivateTaskItem>(_state.RootTasks);
+        rootTasksCopy = [.. _state.RootTasks];
 
         TaskStatus? filterStatus = null;
         if (!string.IsNullOrEmpty(status))
@@ -751,7 +751,7 @@ Examples:
         var matches = new List<(PrivateTaskItem task, string path)>();
 
         List<PrivateTaskItem> rootTasksCopy;
-        rootTasksCopy = new List<PrivateTaskItem>(_state.RootTasks);
+        rootTasksCopy = [.. _state.RootTasks];
 
         foreach (var task in rootTasksCopy)
         {
@@ -958,7 +958,7 @@ Examples:
             List<PrivateTaskItem> subtasksCopy;
             lock (task.SubTasks)
             {
-                subtasksCopy = new List<PrivateTaskItem>(task.SubTasks);
+                subtasksCopy = [.. task.SubTasks];
             }
 
             foreach (var sub in subtasksCopy)
@@ -983,7 +983,7 @@ Examples:
         List<PrivateTaskItem> subtasksCopy;
         lock (task.SubTasks)
         {
-            subtasksCopy = new List<PrivateTaskItem>(task.SubTasks);
+            subtasksCopy = [.. task.SubTasks];
         }
 
         for (var i = 0; i < subtasksCopy.Count; i++)

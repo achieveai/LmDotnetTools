@@ -148,10 +148,7 @@ public abstract class ShadowJsonObjectPropertiesConverter<T> : JsonConverter<T>
     /// </summary>
     protected virtual T SetMetadata(T instance, JsonObject metadata)
     {
-        if (_metadataProperty != null)
-        {
-            _metadataProperty.SetValue(instance, metadata);
-        }
+        _metadataProperty?.SetValue(instance, metadata);
         return instance;
     }
 

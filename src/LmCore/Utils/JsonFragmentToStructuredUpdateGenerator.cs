@@ -338,10 +338,7 @@ public class JsonFragmentToStructuredUpdateGenerator
         var currentFrame = _contextStack.Peek();
 
         // Initialize pending update buffer if needed
-        if (_pendingStringUpdate == null)
-        {
-            _pendingStringUpdate = new StringBuilder();
-        }
+        _pendingStringUpdate ??= new StringBuilder();
 
         if (currentFrame.IsEscaped)
         {

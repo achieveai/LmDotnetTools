@@ -16,26 +16,24 @@ public class JsonFragmentUpdateMiddlewareTests
     /// Test data for basic middleware functionality testing
     /// </summary>
     public static IEnumerable<object[]> BasicMiddlewareTestCases =>
-        new List<object[]>
-        {
+        [
             // Tool call ID, function name, function args
-            new object[] { "call-1", "test_function", "{\"message\":\"Hello\"}" },
-            new object[] { "call-2", "math_function", "{\"x\":10,\"y\":20}" },
-            new object[] { "call-3", "simple_function", "{}" },
-            new object[] { "call-4", "array_function", "[1,2,3]" },
-        };
+            ["call-1", "test_function", "{\"message\":\"Hello\"}"],
+            ["call-2", "math_function", "{\"x\":10,\"y\":20}"],
+            ["call-3", "simple_function", "{}"],
+            ["call-4", "array_function", "[1,2,3]"],
+        ];
 
     /// <summary>
     /// Test data for streaming functionality testing
     /// </summary>
     public static IEnumerable<object[]> StreamingTestCases =>
-        new List<object[]>
-        {
+        [
             // Fragment 1, Fragment 2, Fragment 3
-            new object[] { "{\"name\":\"Jo", "hn\",\"age\":", "25}" },
-            new object[] { "{\"items\":[1", ",2,3],\"total\":", "6}" },
-            new object[] { "{\"status\":\"", "processing\",\"progress\":", "50}" },
-        };
+            ["{\"name\":\"Jo", "hn\",\"age\":", "25}"],
+            ["{\"items\":[1", ",2,3],\"total\":", "6}"],
+            ["{\"status\":\"", "processing\",\"progress\":", "50}"],
+        ];
 
     [Fact]
     public void ProcessAsync_WithNonToolsCallUpdateMessage_PassesThroughUnchanged()

@@ -55,7 +55,7 @@ public class AgenticLoopIntegrationTests
             Role = Role.User
         };
 
-        var firstResponse = await agent.GenerateReplyAsync(new[] { userMessage });
+        var firstResponse = await agent.GenerateReplyAsync([userMessage]);
         var firstMessages = firstResponse.ToList();
 
         // Assert first response has ordered messages
@@ -128,8 +128,7 @@ public class AgenticLoopIntegrationTests
         // Arrange
         var mockProvider = new MockSequentialAgent(
             // Turn 1: Request weather
-            new IMessage[]
-            {
+            [
                 new ToolsCallMessage
                 {
                     ToolCalls =
@@ -141,10 +140,9 @@ public class AgenticLoopIntegrationTests
                     GenerationId = "gen1",
                     FromAgent = "MockProvider"
                 }
-            },
+            ],
             // Turn 2: Final response
-            new IMessage[]
-            {
+            [
                 new TextMessage
                 {
                     Text = "SF: 72°F, NYC: 65°F",
@@ -152,7 +150,7 @@ public class AgenticLoopIntegrationTests
                     GenerationId = "gen2",
                     FromAgent = "MockProvider"
                 }
-            }
+            ]
         );
 
         var middleware = new MessageTransformationMiddleware();
@@ -172,7 +170,7 @@ public class AgenticLoopIntegrationTests
         var userMessage = new TextMessage { Text = "Compare weather SF vs NYC", Role = Role.User };
 
         // Turn 1
-        var response1 = await agent.GenerateReplyAsync(new[] { userMessage });
+        var response1 = await agent.GenerateReplyAsync([userMessage]);
         var msg1 = response1.Single();
         var toolCallMsg = Assert.IsType<ToolsCallMessage>(msg1);
 
@@ -285,7 +283,7 @@ public class AgenticLoopIntegrationTests
 
         // Act
         var response = await agent.GenerateReplyAsync(
-            new[] { new TextMessage { Text = "Test", Role = Role.User } }
+            [new TextMessage { Text = "Test", Role = Role.User }]
         );
 
         // Assert
@@ -306,7 +304,7 @@ public class AgenticLoopIntegrationTests
     private class MockAgent : IAgent
     {
         private readonly Queue<IMessage> _responsesToReturn;
-        public List<IMessage> ReceivedMessages { get; } = new();
+        public List<IMessage> ReceivedMessages { get; } = [];
 
         public static string Name => "MockAgent";
 
@@ -357,19 +355,14 @@ public class AgenticLoopIntegrationTests
             GenerateReplyOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-            if (_responseSequence.Count == 0)
-            {
-                return Task.FromResult<IEnumerable<IMessage>>([]);
-            }
-
-            return Task.FromResult(_responseSequence.Dequeue());
+            return _responseSequence.Count == 0 ? Task.FromResult<IEnumerable<IMessage>>([]) : Task.FromResult(_responseSequence.Dequeue());
         }
     }
 
     private class MessageTrackingAgent : IAgent
     {
         private readonly IMessage _responseToReturn;
-        public List<IMessage> ReceivedMessages { get; } = new();
+        public List<IMessage> ReceivedMessages { get; } = [];
 
         public static string Name => "MessageTrackingAgent";
 

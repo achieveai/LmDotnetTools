@@ -55,7 +55,7 @@ public class DataDrivenFunctionToolTests
         var expectedResponses = _testDataManager.LoadFinalResponse(testName, ProviderType.Anthropic);
         if (expectedResponses == null)
         {
-            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? new List<IMessage>());
+            _testDataManager.SaveFinalResponse(testName, ProviderType.Anthropic, response ?? []);
             return; // Skip comparison if no expected data exists yet
         }
 
@@ -145,15 +145,15 @@ public class DataDrivenFunctionToolTests
         {
             Name = "getWeather",
             Description = "Get current weather for a location",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "location",
                     Description = "City name",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = true,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions
@@ -227,30 +227,30 @@ public class DataDrivenFunctionToolTests
         {
             Name = "python_mcp-list_directory",
             Description = "List the contents of a directory within the code directory",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var getDirTreeFunction = new FunctionContract
         {
             Name = "python_mcp-get_directory_tree",
             Description = "Get an ASCII tree representation of a directory structure",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = false,
                 },
-            },
+            ],
         };
 
         var options = new GenerateReplyOptions

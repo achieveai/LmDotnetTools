@@ -118,15 +118,15 @@ public class LoggingIntegrationTests : IDisposable
         {
             Name = "TestFunction",
             Description = "A test function",
-            Parameters = new[]
-            {
+            Parameters =
+            [
                 new FunctionParameterContract
                 {
                     Name = "input",
                     ParameterType = JsonSchemaObject.String("Test input parameter"),
                     Description = "Test input",
                 },
-            },
+            ],
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -139,7 +139,7 @@ public class LoggingIntegrationTests : IDisposable
         };
 
         var middleware = new FunctionCallMiddleware(
-            new[] { testFunction },
+            [testFunction],
             functionMap,
             "TestMiddleware",
             _middlewareLogger
@@ -162,13 +162,12 @@ public class LoggingIntegrationTests : IDisposable
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new[] { toolCallMessage });
+            .ReturnsAsync([toolCallMessage]);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Text = "Call test function", Role = Role.User },
-            },
+            ],
             new GenerateReplyOptions()
         );
 

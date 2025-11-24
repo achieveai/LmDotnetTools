@@ -383,7 +383,7 @@ public class BaseEmbeddingServiceApiTypeTests
         private class TestEmbeddingResponse
         {
             [JsonPropertyName("Embeddings")]
-            public TestEmbeddingItem[] Embeddings { get; set; } = Array.Empty<TestEmbeddingItem>();
+            public TestEmbeddingItem[] Embeddings { get; set; } = [];
 
             [JsonPropertyName("Model")]
             public string Model { get; set; } = "";
@@ -395,7 +395,7 @@ public class BaseEmbeddingServiceApiTypeTests
         private class TestEmbeddingItem
         {
             [JsonPropertyName("Vector")]
-            public float[] Vector { get; set; } = Array.Empty<float>();
+            public float[] Vector { get; set; } = [];
 
             [JsonPropertyName("Index")]
             public int Index { get; set; }
@@ -415,10 +415,8 @@ public class BaseEmbeddingServiceApiTypeTests
     }
 
     public static IEnumerable<object[]> OpenAIRequestFormattingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = item,
@@ -427,9 +425,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 },
                 new Dictionary<string, object> { ["input"] = item, ["model"] = "text-embedding-3-small" },
                 "Basic OpenAI request",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray,
@@ -448,14 +445,12 @@ public class BaseEmbeddingServiceApiTypeTests
                     ["user"] = "test-user",
                 },
                 "OpenAI request with all parameters",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> JinaRequestFormattingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray0,
@@ -464,9 +459,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 },
                 new Dictionary<string, object> { ["input"] = itemArray0, ["model"] = "jina-embeddings-v3" },
                 "Basic Jina request",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray1,
@@ -485,14 +479,12 @@ public class BaseEmbeddingServiceApiTypeTests
                     ["dimensions"] = 1024,
                 },
                 "Jina request with all parameters",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> ValidationTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray2,
@@ -503,9 +495,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 true,
                 "",
                 "Valid OpenAI request with float encoding",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray2,
@@ -516,9 +507,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 false,
                 "Invalid value 'binary'. Allowed values: float, base64",
                 "Invalid OpenAI request with binary encoding",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray3,
@@ -529,9 +519,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 true,
                 "",
                 "Valid Jina request with binary encoding",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray3,
@@ -542,14 +531,12 @@ public class BaseEmbeddingServiceApiTypeTests
                 false,
                 "Invalid value 'invalid'. Allowed values: float, binary, base64",
                 "Invalid Jina request with unsupported encoding",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> HttpErrorHandlingTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray4,
@@ -560,9 +547,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 "{\"error\": \"Bad request\"}",
                 typeof(HttpRequestException),
                 "400 Bad Request error",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray4,
@@ -573,14 +559,12 @@ public class BaseEmbeddingServiceApiTypeTests
                 "{\"error\": \"Unauthorized\"}",
                 typeof(HttpRequestException),
                 "401 Unauthorized error",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> RetryLogicTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray5,
@@ -590,9 +574,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 2, // Fail twice, then succeed
                 HttpStatusCode.InternalServerError,
                 "Retry after 2 server errors",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray6,
@@ -602,14 +585,12 @@ public class BaseEmbeddingServiceApiTypeTests
                 1, // Fail once, then succeed
                 HttpStatusCode.BadGateway,
                 "Retry after 1 bad gateway error",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> AdditionalOptionsTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray5,
@@ -623,9 +604,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 },
                 itemArray7,
                 "OpenAI request with additional options",
-            },
-            new object[]
-            {
+            ],
+            [
                 new EmbeddingRequest
                 {
                     Inputs = itemArray8,
@@ -635,8 +615,8 @@ public class BaseEmbeddingServiceApiTypeTests
                 },
                 itemArray9,
                 "Jina request with additional options",
-            },
-        };
+            ],
+        ];
 
     private static readonly string[] item = ["Hello world"];
     private static readonly string[] itemArray = ["Hello", "World"];

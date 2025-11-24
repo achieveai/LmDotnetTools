@@ -125,12 +125,7 @@ public class SessionContext
     /// </summary>
     public SessionScope GetScope()
     {
-        if (!string.IsNullOrEmpty(RunId))
-        {
-            return SessionScope.Run;
-        }
-
-        return !string.IsNullOrEmpty(AgentId) ? SessionScope.Agent : SessionScope.User;
+        return !string.IsNullOrEmpty(RunId) ? SessionScope.Run : !string.IsNullOrEmpty(AgentId) ? SessionScope.Agent : SessionScope.User;
     }
 }
 

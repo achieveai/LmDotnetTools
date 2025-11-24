@@ -1254,7 +1254,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
             {
                 if (!distribution.TryGetValue(word, out var value))
                 {
-                    value = ([]);
+                    value = [];
                     distribution[word] = value;
                 }
 

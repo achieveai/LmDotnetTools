@@ -127,7 +127,7 @@ public class GraphExtractionService : IGraphExtractionService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to extract entities from memory {MemoryId}", memoryId);
-            return Enumerable.Empty<Entity>();
+            return [];
         }
     }
 

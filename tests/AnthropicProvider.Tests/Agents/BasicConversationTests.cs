@@ -1,14 +1,7 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
-
-using System.Linq;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmTestUtils;
 // Note: Using MockHttpHandlerBuilder for modern HTTP-level testing
-using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
+
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class BasicConversationTests
 {

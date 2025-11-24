@@ -26,7 +26,7 @@ public sealed class AgUiOptions
     /// Use "*" to allow all origins (not recommended for production)
     /// Default: empty list (allows all)
     /// </summary>
-    public ImmutableList<string> AllowedOrigins { get; set; } = ImmutableList<string>.Empty;
+    public ImmutableList<string> AllowedOrigins { get; set; } = [];
 
     /// <summary>
     /// Maximum message size in bytes

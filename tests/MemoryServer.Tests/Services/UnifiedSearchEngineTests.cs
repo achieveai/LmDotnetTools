@@ -310,7 +310,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Entity>());
+            .ReturnsAsync([]);
 
         _ = _mockGraphRepository
             .Setup(x =>
@@ -321,7 +321,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Relationship>());
+            .ReturnsAsync([]);
 
         // Setup mock responses for vector searches
         _ = _mockMemoryRepository
@@ -452,7 +452,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Entity>());
+            .ReturnsAsync([]);
 
         _ = _mockGraphRepository
             .Setup(x =>
@@ -475,7 +475,7 @@ public class UnifiedSearchEngineTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<Relationship>());
+            .ReturnsAsync([]);
 
         _ = _mockGraphRepository
             .Setup(x =>

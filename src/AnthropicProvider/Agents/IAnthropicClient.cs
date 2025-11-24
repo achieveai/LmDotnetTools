@@ -1,9 +1,6 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-
-using System.Threading;
-using System.Threading.Tasks;
 using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
 /// <summary>
 /// Interface for clients that interact with the Anthropic API.
 /// </summary>

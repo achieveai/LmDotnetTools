@@ -25,6 +25,6 @@ public class MockAgent : IAgent
             Role = Role.Assistant,
             FromAgent = _name,
         };
-        return Task.FromResult<IEnumerable<IMessage>>(new[] { response });
+        return Task.FromResult<IEnumerable<IMessage>>([response]);
     }
 }

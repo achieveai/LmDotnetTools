@@ -18,14 +18,9 @@ public static class EmbeddedResourceHelper
         var assembly = Assembly.GetExecutingAssembly();
         var fullResourceName = $"MemoryServer.{resourceName}";
 
-        using var stream = assembly.GetManifestResourceStream(fullResourceName);
-        if (stream == null)
-        {
-            throw new InvalidOperationException(
+        using var stream = assembly.GetManifestResourceStream(fullResourceName) ?? throw new InvalidOperationException(
                 $"Embedded resource '{fullResourceName}' not found. Available resources: {string.Join(", ", assembly.GetManifestResourceNames())}"
             );
-        }
-
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
     }

@@ -220,10 +220,8 @@ public class GraphDecisionEngineTests
     #region Test Data
 
     public static IEnumerable<object[]> GraphUpdateAnalysisTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "New entities and relationships",
                 new List<Entity>
                 {
@@ -260,9 +258,8 @@ public class GraphDecisionEngineTests
                     GraphDecisionOperation.ADD,
                     GraphDecisionOperation.ADD,
                 },
-            },
-            new object[]
-            {
+            ],
+            [
                 "Mixed new and existing entities",
                 new List<Entity>
                 {
@@ -294,14 +291,12 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 2, // 1 UPDATE existing + 1 ADD new
                 new List<GraphDecisionOperation> { GraphDecisionOperation.UPDATE, GraphDecisionOperation.ADD },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> EntityConflictTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "Higher confidence new entity",
                 new Entity
                 {
@@ -321,9 +316,8 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 GraphDecisionOperation.UPDATE,
                 "higher confidence",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Lower confidence new entity",
                 new Entity
                 {
@@ -343,9 +337,8 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 GraphDecisionOperation.NONE,
                 "lower confidence",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Same confidence with type refinement",
                 new Entity
                 {
@@ -365,9 +358,8 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 GraphDecisionOperation.UPDATE,
                 "type refinement",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Very low confidence new entity",
                 new Entity
                 {
@@ -387,14 +379,12 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 GraphDecisionOperation.NONE,
                 "lower confidence",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> RelationshipConflictTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "Higher confidence new relationship",
                 new Relationship
                 {
@@ -416,9 +406,8 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 GraphDecisionOperation.UPDATE,
                 "higher confidence",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Lower confidence new relationship",
                 new Relationship
                 {
@@ -440,9 +429,8 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 GraphDecisionOperation.NONE,
                 "lower confidence",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Temporal context update",
                 new Relationship
                 {
@@ -466,14 +454,12 @@ public class GraphDecisionEngineTests
                 new SessionContext { UserId = "user123" },
                 GraphDecisionOperation.UPDATE,
                 "temporal context",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> ConfidenceCalculationTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "High confidence update",
                 new Entity
                 {
@@ -492,9 +478,8 @@ public class GraphDecisionEngineTests
                 },
                 0.8f, // Expected minimum confidence (average-ish)
                 1.0f, // Expected maximum confidence
-            },
-            new object[]
-            {
+            ],
+            [
                 "Low confidence scenario",
                 new Entity
                 {
@@ -513,9 +498,8 @@ public class GraphDecisionEngineTests
                 },
                 0.0f, // Expected minimum confidence
                 0.5f, // Expected maximum confidence
-            },
-            new object[]
-            {
+            ],
+            [
                 "Maximum confidence scenario",
                 new Entity
                 {
@@ -534,8 +518,8 @@ public class GraphDecisionEngineTests
                 },
                 0.9f, // Expected minimum confidence
                 1.0f, // Expected maximum confidence
-            },
-        };
+            ],
+        ];
 
     #endregion
 }

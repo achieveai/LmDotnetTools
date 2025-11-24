@@ -157,10 +157,7 @@ public abstract class ShadowPropertiesJsonConverter<T> : JsonConverter<T>
     /// </summary>
     protected virtual T SetExtraProperties(T instance, ImmutableDictionary<string, object?> extraProperties)
     {
-        if (_extraPropertiesProperty != null)
-        {
-            _extraPropertiesProperty.SetValue(instance, extraProperties);
-        }
+        _extraPropertiesProperty?.SetValue(instance, extraProperties);
         return instance;
     }
 

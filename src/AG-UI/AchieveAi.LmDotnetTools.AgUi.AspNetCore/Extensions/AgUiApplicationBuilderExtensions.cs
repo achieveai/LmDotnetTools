@@ -23,13 +23,9 @@ public static class AgUiApplicationBuilderExtensions
         ArgumentNullException.ThrowIfNull(app, nameof(app));
 
         // Verify services are registered
-        var options = app.ApplicationServices.GetService<IOptions<AgUiOptions>>();
-        if (options == null)
-        {
-            throw new InvalidOperationException(
+        var options = app.ApplicationServices.GetService<IOptions<AgUiOptions>>() ?? throw new InvalidOperationException(
                 "AG-UI services not registered. Call services.AddAgUi() in ConfigureServices."
             );
-        }
 
         // Enable WebSockets if not already enabled
         _ = app.UseWebSockets(

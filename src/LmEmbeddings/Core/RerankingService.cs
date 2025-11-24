@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Net;
 using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmEmbeddings.Interfaces;
@@ -324,7 +323,7 @@ public class RerankingService : IRerankService, IDisposable
         var documentList = documents.ToList();
         if (documentList.Count == 0)
         {
-            return new RerankResponse { Results = ImmutableList<RerankResult>.Empty };
+            return new RerankResponse { Results = [] };
         }
 
         var rankedDocuments = await RerankAsync(query, documentList, cancellationToken);
@@ -343,6 +342,6 @@ public class RerankingService : IRerankService, IDisposable
 
     public Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IReadOnlyList<string>>(new List<string> { _model });
+        return Task.FromResult<IReadOnlyList<string>>([_model]);
     }
 }

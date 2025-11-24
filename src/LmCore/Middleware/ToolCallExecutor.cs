@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -91,7 +90,7 @@ public class ToolCallExecutor
         // Preserve GenerationId from the original tool call message
         return new ToolsCallResultMessage
         {
-            ToolCallResults = toolCallResults.ToImmutableList(),
+            ToolCallResults = [.. toolCallResults],
             Role = Role.Tool,
             FromAgent = string.Empty,
             GenerationId = toolCallMessage.GenerationId,

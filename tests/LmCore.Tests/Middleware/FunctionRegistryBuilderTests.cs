@@ -340,7 +340,7 @@ public class FunctionRegistryBuilderTests
     private static IFunctionProvider CreateTestProvider(string name, string[] functionNames = null)
 #pragma warning restore CS8625
     {
-        return new TestFunctionProvider(name, functionNames ?? Array.Empty<string>());
+        return new TestFunctionProvider(name, functionNames ?? []);
     }
 
     private static FunctionContract CreateTestContract(string name)
@@ -349,7 +349,7 @@ public class FunctionRegistryBuilderTests
         {
             Name = name,
             Description = $"Test function {name}",
-            Parameters = new List<FunctionParameterContract>(),
+            Parameters = [],
         };
     }
 
@@ -379,7 +379,7 @@ public class FunctionRegistryBuilderTests
                 {
                     Name = name,
                     Description = $"Test function {name}",
-                    Parameters = new List<FunctionParameterContract>(),
+                    Parameters = [],
                 },
                 Handler = _ => Task.FromResult($"{ProviderName}-result"),
                 ProviderName = ProviderName,

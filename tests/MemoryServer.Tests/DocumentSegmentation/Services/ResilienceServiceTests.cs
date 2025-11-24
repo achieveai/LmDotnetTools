@@ -272,19 +272,17 @@ public class ResilienceServiceTests
     /// Tests different combinations of errors and recovery patterns.
     /// </summary>
     public static IEnumerable<object[]> ErrorScenarioTestCases =>
-        new List<object[]>
-        {
-            new object[] { new HttpRequestException("timeout"), true, "Network timeouts should use fallback" },
-            new object[]
-            {
+        [
+            [new HttpRequestException("timeout"), true, "Network timeouts should use fallback"],
+            [
                 new HttpRequestException("429 Too Many Requests"),
                 true,
                 "Rate limiting should use fallback",
-            },
-            new object[] { new HttpRequestException("401 Unauthorized"), true, "Auth errors should use fallback" },
-            new object[] { new ArgumentException("Invalid response"), true, "Malformed responses should use fallback" },
-            new object[] { new InvalidOperationException("Generic error"), true, "Generic errors should use fallback" },
-        };
+            ],
+            [new HttpRequestException("401 Unauthorized"), true, "Auth errors should use fallback"],
+            [new ArgumentException("Invalid response"), true, "Malformed responses should use fallback"],
+            [new InvalidOperationException("Generic error"), true, "Generic errors should use fallback"],
+        ];
 
     [Theory]
     [MemberData(nameof(ErrorScenarioTestCases))]

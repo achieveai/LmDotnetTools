@@ -222,10 +222,8 @@ public class GraphRepositoryTests : IDisposable
     #region Test Data
 
     public static IEnumerable<object[]> EntityTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new Entity
                 {
                     Name = "John Doe",
@@ -234,9 +232,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.8f,
                 },
                 new SessionContext { UserId = "user123" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Entity
                 {
                     Name = "New York",
@@ -246,9 +243,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.9f,
                 },
                 new SessionContext { UserId = "user456", AgentId = "agent789" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Entity
                 {
                     Name = "Machine Learning",
@@ -263,14 +259,12 @@ public class GraphRepositoryTests : IDisposable
                     AgentId = "agent123",
                     RunId = "run456",
                 },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> EntityUpdateTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new Entity
                 {
                     Name = "John",
@@ -286,9 +280,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.9f,
                 },
                 new SessionContext { UserId = "user123" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Entity
                 {
                     Name = "Entity",
@@ -304,14 +297,12 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.8f,
                 },
                 new SessionContext { UserId = "user456" },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> RelationshipTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new Relationship
                 {
                     Source = "John",
@@ -321,9 +312,8 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.8f,
                 },
                 new SessionContext { UserId = "user123" },
-            },
-            new object[]
-            {
+            ],
+            [
                 new Relationship
                 {
                     Source = "Alice",
@@ -334,14 +324,12 @@ public class GraphRepositoryTests : IDisposable
                     Confidence = 0.9f,
                 },
                 new SessionContext { UserId = "user456", AgentId = "agent789" },
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> SessionIsolationTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new SessionContext { UserId = "user1" },
                 new SessionContext { UserId = "user2" },
                 new Entity
@@ -356,9 +344,8 @@ public class GraphRepositoryTests : IDisposable
                     UserId = "user2",
                     Confidence = 0.8f,
                 },
-            },
-            new object[]
-            {
+            ],
+            [
                 new SessionContext { UserId = "user1", AgentId = "agent1" },
                 new SessionContext { UserId = "user1", AgentId = "agent2" },
                 new Entity
@@ -375,8 +362,8 @@ public class GraphRepositoryTests : IDisposable
                     AgentId = "agent2",
                     Confidence = 0.8f,
                 },
-            },
-        };
+            ],
+        ];
 
     #endregion
 

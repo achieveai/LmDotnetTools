@@ -361,10 +361,10 @@ public class ModelResolver : IModelResolver
 
         // Check cost limits
         return
-            criteria.MaxPromptCostPerMillion.HasValue
-            && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-            || criteria.MaxCompletionCostPerMillion.HasValue
-                && provider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
+            (criteria.MaxPromptCostPerMillion.HasValue
+            && provider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value)
+            || (criteria.MaxCompletionCostPerMillion.HasValue
+                && provider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value);
     }
 
     private static bool ShouldExcludeSubProvider(SubProviderConfig subProvider, ProviderSelectionCriteria criteria)
@@ -383,10 +383,10 @@ public class ModelResolver : IModelResolver
 
         // Check cost limits
         return
-            criteria.MaxPromptCostPerMillion.HasValue
-            && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value
-            || criteria.MaxCompletionCostPerMillion.HasValue
-                && subProvider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value;
+            (criteria.MaxPromptCostPerMillion.HasValue
+            && subProvider.Pricing.PromptPerMillion > (double)criteria.MaxPromptCostPerMillion.Value)
+            || (criteria.MaxCompletionCostPerMillion.HasValue
+                && subProvider.Pricing.CompletionPerMillion > (double)criteria.MaxCompletionCostPerMillion.Value);
     }
 
     private static IReadOnlyList<ProviderResolution> SortProvidersByPreference(

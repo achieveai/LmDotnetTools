@@ -94,8 +94,7 @@ public record ChatCompletionRequest
     [JsonExtensionData]
     private Dictionary<string, object> AdditionalParametersInternal
     {
-        get { return AdditionalParameters.ToDictionary(); }
-        init { AdditionalParameters = value.ToImmutableDictionary(); }
+        get => AdditionalParameters.ToDictionary(); init => AdditionalParameters = value.ToImmutableDictionary();
     }
 
     [JsonIgnore]
@@ -407,18 +406,11 @@ public record ChatCompletionRequest
 
         {
             // Prefer encrypted reasoning blocks. If any encrypted messages exist, drop plain ones.
-            List<ReasoningMessage> selected;
-            if (reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted))
-            {
-                selected = [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted)];
-            }
-            else
-            {
-                selected = reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary)
+            var selected = reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Encrypted)
+                ? [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Encrypted)]
+                : (List<ReasoningMessage>)(reasoningBuffer.Any(p => p.Visibility == ReasoningVisibility.Summary)
                     ? [.. reasoningBuffer.Where(p => p.Visibility == ReasoningVisibility.Summary)]
-                    : [.. reasoningBuffer];
-            }
-
+                    : [.. reasoningBuffer]);
             if (selected.Count == 1 && selected[0].Visibility == ReasoningVisibility.Plain)
             {
                 // Single plain-text reasoning ⇒ emit "reasoning" field

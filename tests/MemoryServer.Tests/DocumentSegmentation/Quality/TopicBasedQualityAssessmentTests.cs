@@ -444,10 +444,8 @@ public class TopicBasedQualityAssessmentTests
     #region Test Data Providers
 
     public static IEnumerable<object[]> TopicCoherenceTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "High Coherence - Single Topic",
                 @"Machine learning algorithms have revolutionized data analysis in recent years. These 
         computational methods enable pattern recognition and predictive modeling across various 
@@ -457,9 +455,8 @@ public class TopicBasedQualityAssessmentTests
                 0.75,
                 1.0,
                 "Focused content about machine learning should have high coherence",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Medium Coherence - Related Topics",
                 @"Software development requires careful planning and systematic approaches. Programming 
         languages provide the tools for building applications and systems. Testing methodologies 
@@ -468,9 +465,8 @@ public class TopicBasedQualityAssessmentTests
                 0.6,
                 0.85,
                 "Related software development topics should have medium-high coherence",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Low Coherence - Mixed Topics",
                 @"The weather is beautiful today with sunny skies. Database optimization requires proper 
         indexing strategies for performance. My favorite recipe includes fresh ingredients and 
@@ -478,9 +474,8 @@ public class TopicBasedQualityAssessmentTests
                 0.0,
                 0.5,
                 "Unrelated mixed topics should have low coherence",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Very Low Coherence - Random Content",
                 @"Purple elephants dance while eating computational algorithms. The stock market tastes 
         like JavaScript functions mixed with automotive engineering principles. Quantum physics 
@@ -488,46 +483,40 @@ public class TopicBasedQualityAssessmentTests
                 0.0,
                 0.3,
                 "Nonsensical random content should have very low coherence",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> SimilarityTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "High Similarity - Same Topic",
                 "Machine learning algorithms process data to identify patterns and make predictions.",
                 "Data processing using machine learning helps identify patterns for predictive analysis.",
                 0.7,
                 1.0,
                 "Segments about the same topic should have high similarity",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Medium Similarity - Related Topics",
                 "Software development requires systematic planning and organized approaches to coding.",
                 "Project management in technology involves coordinating development teams and resources.",
                 0.4,
                 0.7,
                 "Related but distinct topics should have medium similarity",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Low Similarity - Different Topics",
                 "Artificial intelligence transforms how we process and analyze large datasets.",
                 "Cooking techniques vary significantly across different cultural traditions and regions.",
                 0.0,
                 0.4,
                 "Completely different topics should have low similarity",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> TopicCoverageTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "Complete Coverage",
                 @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
                 new List<string>
@@ -539,9 +528,8 @@ public class TopicBasedQualityAssessmentTests
                 0.85,
                 1.0,
                 "Complete segmentation should achieve high coverage",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Partial Coverage",
                 @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
                 new List<string>
@@ -552,23 +540,20 @@ public class TopicBasedQualityAssessmentTests
                 0.5,
                 0.8,
                 "Partial segmentation should achieve medium coverage",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Poor Coverage",
                 @"Technology advances rapidly. Education systems evolve. Healthcare improves continuously.",
                 new List<string> { "Technology advances rapidly." },
                 0.2,
                 0.6,
                 "Minimal segmentation should achieve low coverage",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> QualityBenchmarkTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "Excellent Structure",
                 @"Introduction: This document covers three main areas.
         
@@ -583,9 +568,8 @@ public class TopicBasedQualityAssessmentTests
                 0.7,
                 1.0,
                 "Well-structured content with clear sections should achieve high quality",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Good Structure",
                 @"Technology continues to advance rapidly in various fields. Artificial intelligence and 
         machine learning are revolutionizing data analysis. These innovations impact multiple 
@@ -594,9 +578,8 @@ public class TopicBasedQualityAssessmentTests
                 0.6,
                 0.85,
                 "Coherent content should achieve good quality scores",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Poor Structure",
                 @"Random thoughts about stuff. Technology is good but cooking is better. I like cats and 
         databases need optimization. The weather affects machine learning somehow. Economic 
@@ -605,8 +588,8 @@ public class TopicBasedQualityAssessmentTests
                 0.2,
                 0.6,
                 "Incoherent content should achieve lower quality scores",
-            },
-        };
+            ],
+        ];
 
     #endregion
 

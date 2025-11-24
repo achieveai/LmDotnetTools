@@ -1,7 +1,7 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 
 using System.Text.Json.Serialization;
 
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Models;
 /// <summary>
 /// Configuration for Claude's extended thinking capability.
 /// </summary>

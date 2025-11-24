@@ -104,7 +104,7 @@ public class ProviderTestDataManager
         var json = File.ReadAllText(filePath);
         var data = JsonSerializer.Deserialize<LmCoreRequestData>(json, JsonOptions);
 
-        return (data?.Messages ?? Array.Empty<IMessage>(), data?.Options ?? new GenerateReplyOptions());
+        return (data?.Messages ?? [], data?.Options ?? new GenerateReplyOptions());
     }
 
     /// <summary>
@@ -160,7 +160,7 @@ public class ProviderTestDataManager
 
         var directoryPath = Path.Combine(_dataDirectory, providerDir);
         return !Directory.Exists(directoryPath)
-            ? Enumerable.Empty<string>()
+            ? []
             : Directory
             .GetFiles(directoryPath, "*.LmCoreRequest.json")
             .Select(path => Path.GetFileName(path)!)

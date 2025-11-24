@@ -159,10 +159,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -211,10 +210,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -264,10 +262,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -343,10 +340,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -412,10 +408,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -465,10 +460,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -532,10 +526,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -580,10 +573,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -620,10 +612,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var originalOptions = new GenerateReplyOptions { ModelId = "gpt-4", Temperature = 0.7f };
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             originalOptions
         );
 
@@ -681,10 +672,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 
@@ -759,10 +749,9 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
         var middleware = new OpenRouterUsageMiddleware(_testApiKey, _logger, httpClient, _usageCache);
 
         var context = new MiddlewareContext(
-            new[]
-            {
+            [
                 new TextMessage { Role = Role.User, Text = "Hello" },
-            },
+            ],
             new GenerateReplyOptions()
         );
 

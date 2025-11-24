@@ -81,29 +81,21 @@ public class OpenClient : BaseHttpService, IOpenClient
         {
             return "OpenRouter";
         }
-        else if (baseUrl.Contains("api.openai.com"))
-        {
-            return "OpenAI";
-        }
-        else if (baseUrl.Contains("api.deepinfra.com"))
-        {
-            return "DeepInfra";
-        }
-        else if (baseUrl.Contains("api.together.xyz"))
-        {
-            return "Together";
-        }
-        else if (baseUrl.Contains("api.fireworks.ai"))
-        {
-            return "Fireworks";
-        }
         else
         {
-            return baseUrl.Contains("groq.com")
-                ? "Groq"
-                : baseUrl.Contains("cerebras.ai") ? "Cerebras"
-                            : baseUrl.Contains("api.anthropic.com") ? "Anthropic"
-                            : "Unknown";
+            return baseUrl.Contains("api.openai.com")
+                ? "OpenAI"
+                : baseUrl.Contains("api.deepinfra.com")
+                            ? "DeepInfra"
+                            : baseUrl.Contains("api.together.xyz")
+                                        ? "Together"
+                                        : baseUrl.Contains("api.fireworks.ai")
+                                                    ? "Fireworks"
+                                                    : baseUrl.Contains("groq.com")
+                                                                ? "Groq"
+                                                                : baseUrl.Contains("cerebras.ai") ? "Cerebras"
+                                                                            : baseUrl.Contains("api.anthropic.com") ? "Anthropic"
+                                                                            : "Unknown";
         }
     }
 

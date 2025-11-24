@@ -108,14 +108,9 @@ public class TopicBasedPerformanceTests
 
         // Processing should scale reasonably with document size
         // Larger documents may be slightly less efficient due to complexity
-        if (wordCount <= 10000)
-        {
-            _ = wordsPerSecond.Should().BeGreaterThan(800);
-        }
-        else
-        {
-            _ = wordCount <= 20000 ? wordsPerSecond.Should().BeGreaterThan(600) : wordsPerSecond.Should().BeGreaterThan(400);
-        }
+        _ = wordCount <= 10000
+            ? wordsPerSecond.Should().BeGreaterThan(800)
+            : wordCount <= 20000 ? wordsPerSecond.Should().BeGreaterThan(600) : wordsPerSecond.Should().BeGreaterThan(400);
 
         _output.WriteLine($"Document Size Scaling Test ({wordCount} words):");
         _output.WriteLine($"  Processing time: {processingTimeMs:N0}ms");

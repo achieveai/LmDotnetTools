@@ -150,7 +150,7 @@ public class MessageAggregationMiddleware : IStreamingMiddleware
                 }
 
                 // Start new group
-                currentGroup = new List<IMessage> { message };
+                currentGroup = [message];
                 currentGenerationId = messageGenerationId;
             }
             else
@@ -196,16 +196,13 @@ public class MessageAggregationMiddleware : IStreamingMiddleware
         }
 
         // If we found both, create aggregate
-        if (toolCallMessage != null && toolCallResult != null)
-        {
-            return new ToolsCallAggregateMessage(
+        return toolCallMessage != null && toolCallResult != null
+            ? new ToolsCallAggregateMessage(
                 toolCallMessage,
                 toolCallResult,
                 toolCallMessage.FromAgent
-            );
-        }
-
-        return null;
+            )
+            : null;
     }
 
     /// <summary>

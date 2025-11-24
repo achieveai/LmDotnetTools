@@ -260,28 +260,26 @@ public static class HttpTestHelpers
     /// <returns>Test data for various HTTP status code scenarios</returns>
     public static IEnumerable<object[]> GetHttpStatusCodeTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { HttpStatusCode.OK, true, "200 OK should succeed" },
-            new object[] { HttpStatusCode.Created, true, "201 Created should succeed" },
-            new object[] { HttpStatusCode.BadRequest, false, "400 Bad Request should fail" },
-            new object[] { HttpStatusCode.Unauthorized, false, "401 Unauthorized should fail" },
-            new object[] { HttpStatusCode.Forbidden, false, "403 Forbidden should fail" },
-            new object[] { HttpStatusCode.NotFound, false, "404 Not Found should fail" },
-            new object[]
-            {
+        return
+        [
+            [HttpStatusCode.OK, true, "200 OK should succeed"],
+            [HttpStatusCode.Created, true, "201 Created should succeed"],
+            [HttpStatusCode.BadRequest, false, "400 Bad Request should fail"],
+            [HttpStatusCode.Unauthorized, false, "401 Unauthorized should fail"],
+            [HttpStatusCode.Forbidden, false, "403 Forbidden should fail"],
+            [HttpStatusCode.NotFound, false, "404 Not Found should fail"],
+            [
                 HttpStatusCode.InternalServerError,
                 false,
                 "500 Internal Server Error should fail (but be retryable)",
-            },
-            new object[] { HttpStatusCode.BadGateway, false, "502 Bad Gateway should fail (but be retryable)" },
-            new object[]
-            {
+            ],
+            [HttpStatusCode.BadGateway, false, "502 Bad Gateway should fail (but be retryable)"],
+            [
                 HttpStatusCode.ServiceUnavailable,
                 false,
                 "503 Service Unavailable should fail (but be retryable)",
-            },
-        };
+            ],
+        ];
     }
 
     /// <summary>

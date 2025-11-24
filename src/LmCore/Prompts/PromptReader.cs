@@ -81,7 +81,7 @@ public class PromptReader : IPromptReader
     /// <returns>The latest version string.</returns>
     private static string FindLatestVersion(IEnumerable<string> versions)
     {
-        Version latest = new Version(0, 0);
+        var latest = new Version(0, 0);
         var latestString = "";
 
         foreach (var version in versions)
@@ -157,8 +157,7 @@ public class PromptReader : IPromptReader
         else if (promptContent is List<object> chainData)
         {
             var rv = chainData
-                .Where(val => val is Dictionary<object, object>)
-                .Select(val => (Dictionary<object, object>)val)
+                .OfType<Dictionary<object, object>>()
                 .Where(d => d.Count == 1 && d.Keys.First() is string && d.Values.First() is string)
                 .Select(d => new Dictionary<string, string>
                 {

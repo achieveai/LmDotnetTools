@@ -187,8 +187,7 @@ public static class MessageExtensions
             var textContent = string.Join(
                 Environment.NewLine,
                 messages
-                    .Where(m => m is ICanGetText)
-                    .Cast<ICanGetText>()
+                    .OfType<ICanGetText>()
                     .Select(m => m.GetText())
                     .Where(text => !string.IsNullOrEmpty(text))
             );

@@ -1,1 +1,2 @@
 - When using playwright, ALWAYS use `Task` tool to make sure playwright doest polute primary context.
+- Do not use scripts to fix any build errors / warnings. For code style, use autofixers or manually fix the errors / warnings.

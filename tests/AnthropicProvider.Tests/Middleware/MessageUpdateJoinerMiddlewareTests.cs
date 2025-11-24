@@ -13,11 +13,7 @@ public class MessageUpdateJoinerMiddlewareTests
     {
         // Start from the assembly location
         var assemblyLocation = Assembly.GetExecutingAssembly().Location;
-        var currentDir = Path.GetDirectoryName(assemblyLocation);
-        if (currentDir == null)
-        {
-            throw new InvalidOperationException("Could not determine current directory");
-        }
+        var currentDir = Path.GetDirectoryName(assemblyLocation) ?? throw new InvalidOperationException("Could not determine current directory");
 
         // Go up the directory tree to find the repository root
         while (currentDir != null && !Directory.Exists(Path.Combine(currentDir, ".git")))
@@ -70,7 +66,7 @@ public class MessageUpdateJoinerMiddlewareTests
 
         // Set up middleware context with a dummy message (required for validation, but content doesn't matter for this test)
         var dummyMessage = new TextMessage { Text = "Test message", Role = Role.User };
-        var context = new MiddlewareContext(new[] { dummyMessage }, new GenerateReplyOptions());
+        var context = new MiddlewareContext([dummyMessage], new GenerateReplyOptions());
 
         // Read the expected output from the JSON file and directly parse the JSON array
         var expectedJson = await File.ReadAllTextAsync(expectedOutputPath);

@@ -137,8 +137,8 @@ public class OpenAiAgentTests
                 {
                     Name = "getWeather",
                     Description = "Get current weather for a location",
-                    Parameters = new List<FunctionParameterContract>
-                    {
+                    Parameters =
+                    [
                         new() {
                             Name = "location",
                             Description = "City name",
@@ -151,7 +151,7 @@ public class OpenAiAgentTests
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = false,
                         },
-                    },
+                    ],
                 },
             ],
         };
@@ -221,8 +221,8 @@ public class OpenAiAgentTests
                 {
                     Name = "getWeather",
                     Description = "Get current weather for a location",
-                    Parameters = new List<FunctionParameterContract>
-                    {
+                    Parameters =
+                    [
                         new() {
                             Name = "location",
                             Description = "City name",
@@ -235,7 +235,7 @@ public class OpenAiAgentTests
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = false,
                         },
-                    },
+                    ],
                 },
             ],
         };
@@ -316,8 +316,8 @@ public class OpenAiAgentTests
                 {
                     Name = "getWeather",
                     Description = "Get current weather for a location",
-                    Parameters = new List<FunctionParameterContract>
-                    {
+                    Parameters =
+                    [
                         new() {
                             Name = "location",
                             Description = "City name",
@@ -330,7 +330,7 @@ public class OpenAiAgentTests
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = false,
                         },
-                    },
+                    ],
                 },
             ],
         };

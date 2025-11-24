@@ -288,10 +288,8 @@ public class PerformanceModelsTests
     #region Test Data
 
     public static IEnumerable<object[]> RequestMetricsTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new RequestMetrics
                 {
                     RequestId = "req-123",
@@ -305,9 +303,8 @@ public class PerformanceModelsTests
                 },
                 item,
                 "Basic successful request metrics",
-            },
-            new object[]
-            {
+            ],
+            [
                 new RequestMetrics
                 {
                     RequestId = "req-456",
@@ -321,14 +318,12 @@ public class PerformanceModelsTests
                 },
                 itemArray,
                 "Failed request with retries",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> TimingBreakdownTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new TimingBreakdown
                 {
                     ValidationMs = 10,
@@ -338,20 +333,17 @@ public class PerformanceModelsTests
                 },
                 true,
                 "Valid timing breakdown",
-            },
-            new object[]
-            {
+            ],
+            [
                 new TimingBreakdown { ValidationMs = null, ServerProcessingMs = 150 },
                 true,
                 "Partial timing breakdown",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> PerformanceProfileTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new PerformanceProfile
                 {
                     Identifier = "openai-service",
@@ -390,24 +382,21 @@ public class PerformanceModelsTests
                 },
                 1,
                 "Complete service performance profile",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> ProfileTypeTestCases =>
-        new List<object[]>
-        {
-            new object[] { ProfileType.Service, "Service", "Service profile type" },
-            new object[] { ProfileType.Model, "Model", "Model profile type" },
-            new object[] { ProfileType.Endpoint, "Endpoint", "Endpoint profile type" },
-            new object[] { ProfileType.User, "User", "User profile type" },
-            new object[] { ProfileType.Feature, "Feature", "Feature profile type" },
-        };
+        [
+            [ProfileType.Service, "Service", "Service profile type"],
+            [ProfileType.Model, "Model", "Model profile type"],
+            [ProfileType.Endpoint, "Endpoint", "Endpoint profile type"],
+            [ProfileType.User, "User", "User profile type"],
+            [ProfileType.Feature, "Feature", "Feature profile type"],
+        ];
 
     public static IEnumerable<object[]> ResponseTimeStatsTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new ResponseTimeStats
                 {
                     AverageMs = 250,
@@ -420,9 +409,8 @@ public class PerformanceModelsTests
                 },
                 true,
                 "Valid statistical distribution",
-            },
-            new object[]
-            {
+            ],
+            [
                 new ResponseTimeStats
                 {
                     AverageMs = 1000,
@@ -435,14 +423,12 @@ public class PerformanceModelsTests
                 },
                 false,
                 "Invalid statistical distribution (average > P99)",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> UsageStatisticsTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new UsageStatistics
                 {
                     Entity = "user-123",
@@ -477,14 +463,12 @@ public class PerformanceModelsTests
                 },
                 2,
                 "User usage with multiple models",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> QualityMetricsTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new QualityMetrics
                 {
                     AvgQualityScore = 0.85,
@@ -493,9 +477,8 @@ public class PerformanceModelsTests
                 },
                 true,
                 "Valid quality scores",
-            },
-            new object[]
-            {
+            ],
+            [
                 new QualityMetrics
                 {
                     AvgQualityScore = 1.5, // Invalid: > 1.0
@@ -503,14 +486,12 @@ public class PerformanceModelsTests
                 },
                 false,
                 "Invalid quality scores",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> TimePeriodTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 new TimePeriod
                 {
                     Start = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
@@ -519,9 +500,8 @@ public class PerformanceModelsTests
                 },
                 3600,
                 "One hour duration",
-            },
-            new object[]
-            {
+            ],
+            [
                 new TimePeriod
                 {
                     Start = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc),
@@ -530,17 +510,16 @@ public class PerformanceModelsTests
                 },
                 86400,
                 "One day duration",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> TrendDirectionTestCases =>
-        new List<object[]>
-        {
-            new object[] { TrendDirection.Improving, "Improving", "Improving trend" },
-            new object[] { TrendDirection.Stable, "Stable", "Stable trend" },
-            new object[] { TrendDirection.Degrading, "Degrading", "Degrading trend" },
-            new object[] { TrendDirection.Unknown, "Unknown", "Unknown trend" },
-        };
+        [
+            [TrendDirection.Improving, "Improving", "Improving trend"],
+            [TrendDirection.Stable, "Stable", "Stable trend"],
+            [TrendDirection.Degrading, "Degrading", "Degrading trend"],
+            [TrendDirection.Unknown, "Unknown", "Unknown trend"],
+        ];
 
     private static readonly string[] item = ["request_id", "service", "model", "success"];
     private static readonly string[] itemArray = ["request_id", "service", "error", "retry_count"];

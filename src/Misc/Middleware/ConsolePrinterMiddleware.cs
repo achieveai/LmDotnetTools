@@ -313,7 +313,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         );
 
         // Get a formatter for this tool call and use it to format the parameters
-        _formatter = _formatter ?? _toolFormatterFactory.GetFormatter(toolCall.FunctionName ?? "unknown");
+        _formatter ??= _toolFormatterFactory.GetFormatter(toolCall.FunctionName ?? "unknown");
 
         // First call with empty updates just to print the function name
         var headerParts = _formatter(toolCall.FunctionName ?? "unknown", []);
@@ -496,7 +496,7 @@ public class ConsolePrinterHelperMiddleware : IStreamingMiddleware
         else
         {
             // Get formatter for this tool call
-            _formatter = _formatter ?? _toolFormatterFactory.GetFormatter(update.FunctionName ?? "unknown");
+            _formatter ??= _toolFormatterFactory.GetFormatter(update.FunctionName ?? "unknown");
 
             // Check if JsonFragmentUpdates is available (populated by JsonFragmentUpdateMiddleware)
             if (update.JsonFragmentUpdates != null && update.JsonFragmentUpdates.Any())

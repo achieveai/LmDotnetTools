@@ -137,32 +137,29 @@ public static class ChatCompletionTestData
     /// <returns>Test data for chat completion scenarios</returns>
     public static IEnumerable<object[]> GetChatCompletionTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { CreateSuccessfulResponse(), HttpStatusCode.OK, true, "Successful response should work" },
-            new object[] { CreateErrorResponse(), HttpStatusCode.BadRequest, false, "Bad request should fail" },
-            new object[]
-            {
+        return
+        [
+            [CreateSuccessfulResponse(), HttpStatusCode.OK, true, "Successful response should work"],
+            [CreateErrorResponse(), HttpStatusCode.BadRequest, false, "Bad request should fail"],
+            [
                 CreateRateLimitErrorResponse(),
                 HttpStatusCode.TooManyRequests,
                 false,
                 "Rate limit should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 CreateAuthenticationErrorResponse(),
                 HttpStatusCode.Unauthorized,
                 false,
                 "Auth error should fail",
-            },
-            new object[]
-            {
+            ],
+            [
                 CreateServerErrorResponse(),
                 HttpStatusCode.InternalServerError,
                 false,
                 "Server error should fail",
-            },
-        };
+            ],
+        ];
     }
 
     /// <summary>
@@ -171,13 +168,13 @@ public static class ChatCompletionTestData
     /// <returns>Test data for streaming scenarios</returns>
     public static IEnumerable<string> GetStreamingTestChunks()
     {
-        return new List<string>
-        {
+        return
+        [
             CreateStreamingChunk("Hello", "test-model"),
             CreateStreamingChunk(" there", "test-model"),
             CreateStreamingChunk("!", "test-model"),
             CreateStreamingChunk("", "test-model", "stop"),
-        };
+        ];
     }
 
     /// <summary>
@@ -197,24 +194,22 @@ public static class ChatCompletionTestData
     /// <returns>Test data for different message scenarios</returns>
     public static IEnumerable<object[]> GetMessageTestCases()
     {
-        return new List<object[]>
-        {
-            new object[]
-            {
+        return
+        [
+            [
                 new[] { ProviderTestDataGenerator.CreateTestMessage("user", "Hello") },
                 "Single user message",
-            },
-            new object[] { ProviderTestDataGenerator.CreateTestMessages(), "Multi-turn conversation" },
-            new object[]
-            {
+            ],
+            [ProviderTestDataGenerator.CreateTestMessages(), "Multi-turn conversation"],
+            [
                 new[]
                 {
                     ProviderTestDataGenerator.CreateTestMessage("system", "You are a helpful assistant"),
                     ProviderTestDataGenerator.CreateTestMessage("user", "What is 2+2?"),
                 },
                 "System message with user question",
-            },
-        };
+            ],
+        ];
     }
 
     /// <summary>
@@ -223,12 +218,12 @@ public static class ChatCompletionTestData
     /// <returns>Test data for token usage scenarios</returns>
     public static IEnumerable<object[]> GetTokenUsageTestCases()
     {
-        return new List<object[]>
-        {
-            new object[] { 10, 20, 30, "Normal token usage" },
-            new object[] { 0, 5, 5, "No prompt tokens" },
-            new object[] { 100, 0, 100, "No completion tokens" },
-            new object[] { 1000, 2000, 3000, "High token usage" },
-        };
+        return
+        [
+            [10, 20, 30, "Normal token usage"],
+            [0, 5, 5, "No prompt tokens"],
+            [100, 0, 100, "No completion tokens"],
+            [1000, 2000, 3000, "High token usage"],
+        ];
     }
 }

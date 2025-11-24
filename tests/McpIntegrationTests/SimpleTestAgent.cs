@@ -10,7 +10,7 @@ namespace AchieveAi.LmDotnetTools.McpIntegrationTests.TestHelpers;
 public class SimpleTestAgent : IAgent
 {
     private IMessage? _injectedMessage = null;
-    private List<IMessage> _receivedMessages = [];
+    private readonly List<IMessage> _receivedMessages = [];
 
     public static string Id => "test-agent";
     public static string? Name => "Test Agent";
@@ -56,12 +56,11 @@ public class SimpleTestAgent : IAgent
 
         // Return the injected message, or a default if none was provided
         return _injectedMessage != null
-            ? Task.FromResult<IEnumerable<IMessage>>(new[] { _injectedMessage })
+            ? Task.FromResult<IEnumerable<IMessage>>([_injectedMessage])
             : Task.FromResult<IEnumerable<IMessage>>(
-                new[]
-                {
+                [
                     new TextMessage { Text = "Default response", Role = Role.Assistant },
-                }
+                ]
             );
     }
 }

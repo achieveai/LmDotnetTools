@@ -574,51 +574,44 @@ public class TopicBasedLoadTestingTests
     #region Test Data Providers
 
     public static IEnumerable<object[]> HighVolumeTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "Small Batch Processing",
                 25,
                 1000,
                 TimeSpan.FromMinutes(2),
                 100.0,
                 "Process 25 small documents quickly with minimal memory usage",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Medium Batch Processing",
                 50,
                 2000,
                 TimeSpan.FromMinutes(5),
                 200.0,
                 "Process 50 medium documents efficiently",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Large Document Batch",
                 10,
                 5000,
                 TimeSpan.FromMinutes(3),
                 150.0,
                 "Process fewer but larger documents within time limits",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Mixed Size Processing",
                 30,
                 1500,
                 TimeSpan.FromMinutes(4),
                 175.0,
                 "Process mixed-size documents with balanced performance",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> ResourceMonitoringTestCases =>
-        new List<object[]>
-        {
-            new object[]
-            {
+        [
+            [
                 "Low Concurrency Load",
                 2,
                 5,
@@ -626,9 +619,8 @@ public class TopicBasedLoadTestingTests
                 50.0,
                 100.0,
                 "Monitor resource usage with low concurrent load",
-            },
-            new object[]
-            {
+            ],
+            [
                 "Medium Concurrency Load",
                 4,
                 3,
@@ -636,9 +628,8 @@ public class TopicBasedLoadTestingTests
                 70.0,
                 200.0,
                 "Monitor resource usage with medium concurrent load",
-            },
-            new object[]
-            {
+            ],
+            [
                 "High Concurrency Load",
                 8,
                 2,
@@ -646,16 +637,15 @@ public class TopicBasedLoadTestingTests
                 85.0,
                 300.0,
                 "Monitor resource usage with high concurrent load",
-            },
-        };
+            ],
+        ];
 
     public static IEnumerable<object[]> ErrorRecoveryTestCases =>
-        new List<object[]>
-        {
-            new object[] { "Low Error Rate Recovery", 10, 20, 2, "Test recovery with 10% failure rate" },
-            new object[] { "Medium Error Rate Recovery", 25, 20, 3, "Test recovery with 25% failure rate" },
-            new object[] { "High Error Rate Recovery", 40, 25, 5, "Test recovery with 40% failure rate" },
-        };
+        [
+            ["Low Error Rate Recovery", 10, 20, 2, "Test recovery with 10% failure rate"],
+            ["Medium Error Rate Recovery", 25, 20, 3, "Test recovery with 25% failure rate"],
+            ["High Error Rate Recovery", 40, 25, 5, "Test recovery with 40% failure rate"],
+        ];
 
     #endregion
 

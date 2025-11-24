@@ -138,50 +138,46 @@ public class EmbeddingApiTypeTests
     }
 
     public static IEnumerable<object[]> ApiTypeTestCases =>
-        new List<object[]>
-        {
-            new object[] { EmbeddingApiType.Default, 0, "OpenAI-compatible default format" },
-            new object[] { EmbeddingApiType.Jina, 1, "Jina AI specific format" },
-        };
+        [
+            [EmbeddingApiType.Default, 0, "OpenAI-compatible default format"],
+            [EmbeddingApiType.Jina, 1, "Jina AI specific format"],
+        ];
 
     public static IEnumerable<object[]> ApiTypeStringTestCases =>
-        new List<object[]>
-        {
-            new object[] { EmbeddingApiType.Default, "Default" },
-            new object[] { EmbeddingApiType.Jina, "Jina" },
-        };
+        [
+            [EmbeddingApiType.Default, "Default"],
+            [EmbeddingApiType.Jina, "Jina"],
+        ];
 
     public static IEnumerable<object[]> ApiTypeParsingTestCases =>
-        new List<object[]>
-        {
+        [
             // Valid cases
-            new object[] { "Default", EmbeddingApiType.Default, true },
-            new object[] { "default", EmbeddingApiType.Default, true },
-            new object[] { "DEFAULT", EmbeddingApiType.Default, true },
-            new object[] { "Jina", EmbeddingApiType.Jina, true },
-            new object[] { "jina", EmbeddingApiType.Jina, true },
-            new object[] { "JINA", EmbeddingApiType.Jina, true },
-            new object[] { "0", EmbeddingApiType.Default, true },
-            new object[] { "1", EmbeddingApiType.Jina, true },
+            ["Default", EmbeddingApiType.Default, true],
+            ["default", EmbeddingApiType.Default, true],
+            ["DEFAULT", EmbeddingApiType.Default, true],
+            ["Jina", EmbeddingApiType.Jina, true],
+            ["jina", EmbeddingApiType.Jina, true],
+            ["JINA", EmbeddingApiType.Jina, true],
+            ["0", EmbeddingApiType.Default, true],
+            ["1", EmbeddingApiType.Jina, true],
             // Invalid cases
-            new object[] { "OpenAI", EmbeddingApiType.Default, false },
-            new object[] { "Invalid", EmbeddingApiType.Default, false },
-            new object[] { "", EmbeddingApiType.Default, false },
-            new object[] { "2", EmbeddingApiType.Default, false },
-            new object[] { "-1", EmbeddingApiType.Default, false },
-        };
+            ["OpenAI", EmbeddingApiType.Default, false],
+            ["Invalid", EmbeddingApiType.Default, false],
+            ["", EmbeddingApiType.Default, false],
+            ["2", EmbeddingApiType.Default, false],
+            ["-1", EmbeddingApiType.Default, false],
+        ];
 
     public static IEnumerable<object[]> ApiTypeCompatibilityTestCases =>
-        new List<object[]>
-        {
+        [
             // OpenAI compatibility
-            new object[] { EmbeddingApiType.Default, "OpenAI", true },
-            new object[] { EmbeddingApiType.Jina, "OpenAI", false },
+            [EmbeddingApiType.Default, "OpenAI", true],
+            [EmbeddingApiType.Jina, "OpenAI", false],
             // Jina compatibility
-            new object[] { EmbeddingApiType.Default, "Jina", false },
-            new object[] { EmbeddingApiType.Jina, "Jina", true },
+            [EmbeddingApiType.Default, "Jina", false],
+            [EmbeddingApiType.Jina, "Jina", true],
             // Default checks
-            new object[] { EmbeddingApiType.Default, "Default", true },
-            new object[] { EmbeddingApiType.Jina, "Default", false },
-        };
+            [EmbeddingApiType.Default, "Default", true],
+            [EmbeddingApiType.Jina, "Default", false],
+        ];
 }

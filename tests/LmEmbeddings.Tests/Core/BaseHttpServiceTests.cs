@@ -323,7 +323,7 @@ public class BaseHttpServiceTests
 
         // Act & Assert
         var exception = Assert.Throws<ObjectDisposedException>(service.TestThrowIfDisposed);
-        Assert.Equal(typeof(TestHttpService).Name, exception.ObjectName);
+        Assert.Equal(nameof(TestHttpService), exception.ObjectName);
 
         Debug.WriteLine("✓ ThrowIfDisposed correctly threw ObjectDisposedException when disposed");
     }
@@ -333,20 +333,18 @@ public class BaseHttpServiceTests
     #region Test Data
 
     public static IEnumerable<object[]> ConstructorInvalidParametersTestCases =>
-        new List<object[]>
-        {
-            new object[] { null!, new HttpClient(), "logger", "Null logger" },
-            new object[] { TestLoggerFactory.CreateLogger<TestHttpService>(), null!, "httpClient", "Null HttpClient" },
-        };
+        [
+            [null!, new HttpClient(), "logger", "Null logger"],
+            [TestLoggerFactory.CreateLogger<TestHttpService>(), null!, "httpClient", "Null HttpClient"],
+        ];
 
     public static IEnumerable<object[]> RetryParametersTestCases =>
-        new List<object[]>
-        {
-            new object[] { 0, 1, "No retries (maxRetries=0)" },
-            new object[] { 1, 2, "One retry (maxRetries=1)" },
-            new object[] { 2, 3, "Two retries (maxRetries=2)" },
-            new object[] { 5, 6, "Five retries (maxRetries=5)" },
-        };
+        [
+            [0, 1, "No retries (maxRetries=0)"],
+            [1, 2, "One retry (maxRetries=1)"],
+            [2, 3, "Two retries (maxRetries=2)"],
+            [5, 6, "Five retries (maxRetries=5)"],
+        ];
 
     #endregion
 

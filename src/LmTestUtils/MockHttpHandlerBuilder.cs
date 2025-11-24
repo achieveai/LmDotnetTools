@@ -261,12 +261,7 @@ internal class RealHttpHandlerMiddleware : IHttpHandlerMiddleware, IDisposable
 
     private static string DetermineProvider(HttpRequestMessage request)
     {
-        if (request.IsAnthropicRequest())
-        {
-            return "Anthropic";
-        }
-
-        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
+        return request.IsAnthropicRequest() ? "Anthropic" : request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
     }
 
     public void Dispose()
@@ -3079,12 +3074,7 @@ internal class ApiForwardingProvider : IResponseProvider, IDisposable
 
     private static string DetermineProvider(HttpRequestMessage request)
     {
-        if (request.IsAnthropicRequest())
-        {
-            return "Anthropic";
-        }
-
-        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
+        return request.IsAnthropicRequest() ? "Anthropic" : request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
     }
 
     public void Dispose()
@@ -3400,12 +3390,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
 
     private static string DetermineProvider(HttpRequestMessage request)
     {
-        if (request.IsAnthropicRequest())
-        {
-            return "Anthropic";
-        }
-
-        return request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
+        return request.IsAnthropicRequest() ? "Anthropic" : request.IsOpenAIRequest() ? "OpenAI" : "OpenAI";
     }
 
     private static bool IsServerSentEventsResponse(HttpResponseMessage response)

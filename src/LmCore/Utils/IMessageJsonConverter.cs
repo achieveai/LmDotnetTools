@@ -65,51 +65,49 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
             throw new JsonException($"Expected {JsonTokenType.StartObject} but got {reader.TokenType}");
         }
 
-        using (var jsonDocument = JsonDocument.ParseValue(ref reader))
+        using var jsonDocument = JsonDocument.ParseValue(ref reader);
+        var rootElement = jsonDocument.RootElement;
+
+        // Try to find the type discriminator
+        Type targetType;
+        if (rootElement.TryGetProperty(TypeDiscriminatorPropertyName, out var typeProperty))
         {
-            var rootElement = jsonDocument.RootElement;
+            var typeDiscriminator = typeProperty.GetString()!;
+            // Use the new method to resolve the type from discriminator
+            targetType =
+                GetTypeFromDiscriminator(typeDiscriminator)
+                ?? throw new JsonException($"Unknown type discriminator: {typeDiscriminator}");
+        }
+        else
+        {
+            // If no type discriminator is present, try to infer the type from the properties
+            targetType = InferTypeFromProperties(rootElement);
+        }
 
-            // Try to find the type discriminator
-            Type targetType;
-            if (rootElement.TryGetProperty(TypeDiscriminatorPropertyName, out var typeProperty))
-            {
-                var typeDiscriminator = typeProperty.GetString()!;
-                // Use the new method to resolve the type from discriminator
-                targetType =
-                    GetTypeFromDiscriminator(typeDiscriminator)
-                    ?? throw new JsonException($"Unknown type discriminator: {typeDiscriminator}");
-            }
-            else
-            {
-                // If no type discriminator is present, try to infer the type from the properties
-                targetType = InferTypeFromProperties(rootElement);
-            }
+        // Get the json string of the object
+        var json = rootElement.GetRawText();
 
-            // Get the json string of the object
-            var json = rootElement.GetRawText();
+        // Create new options without this converter to avoid infinite recursion
+        var innerOptions = new JsonSerializerOptions(options);
 
-            // Create new options without this converter to avoid infinite recursion
-            var innerOptions = new JsonSerializerOptions(options);
+        // Remove this converter to avoid infinite recursion
+        var convertersToKeep = innerOptions.Converters.Where(c => c is not IMessageJsonConverter).ToList();
 
-            // Remove this converter to avoid infinite recursion
-            var convertersToKeep = innerOptions.Converters.Where(c => c is not IMessageJsonConverter).ToList();
+        innerOptions.Converters.Clear();
+        foreach (var conv in convertersToKeep)
+        {
+            innerOptions.Converters.Add(conv);
+        }
 
-            innerOptions.Converters.Clear();
-            foreach (var conv in convertersToKeep)
-            {
-                innerOptions.Converters.Add(conv);
-            }
-
-            // Use a type-specific converter if available, otherwise use default deserialization
-            try
-            {
-                // Try to deserialize with the target type
-                return (IMessage)JsonSerializer.Deserialize(json, targetType, innerOptions)!;
-            }
-            catch (Exception ex)
-            {
-                throw new JsonException($"Failed to deserialize message of type {targetType.Name}: {ex.Message}", ex);
-            }
+        // Use a type-specific converter if available, otherwise use default deserialization
+        try
+        {
+            // Try to deserialize with the target type
+            return (IMessage)JsonSerializer.Deserialize(json, targetType, innerOptions)!;
+        }
+        catch (Exception ex)
+        {
+            throw new JsonException($"Failed to deserialize message of type {targetType.Name}: {ex.Message}", ex);
         }
     }
 

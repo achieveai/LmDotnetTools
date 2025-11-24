@@ -21,8 +21,8 @@ public class NaturalToolUseParserMiddlewareTests
             {
                 Name = "GetWeather",
                 Description = "A test tool",
-                Parameters = new List<FunctionParameterContract>
-                {
+                Parameters =
+                [
                     new() {
                         Name = "location",
                         ParameterType = new JsonSchemaObject { Type = "string" },
@@ -35,16 +35,15 @@ public class NaturalToolUseParserMiddlewareTests
                         Description = "Second parameter",
                         IsRequired = true,
                     },
-                },
+                ],
             },
         ];
 
         // Initialize default context
         _defaultContext = new MiddlewareContext(
-            new List<IMessage>
-            {
+            [
                 new TextMessage { Text = "Hello", Role = Role.User },
-            },
+            ],
             null
         );
     }
@@ -72,10 +71,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = responseText, Role = Role.Assistant },
-                }
+                ]
             );
         return mockAgent;
     }
@@ -227,10 +225,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -603,10 +600,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -668,10 +664,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -730,10 +725,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -793,10 +787,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -854,10 +847,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -915,10 +907,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -1028,10 +1019,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -1089,10 +1079,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act & Assert
@@ -1143,10 +1132,9 @@ public class NaturalToolUseParserMiddlewareTests
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions?, CancellationToken>(
                 (messages, options, token) => capturedOptions = options)
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -1267,7 +1255,7 @@ public class NaturalToolUseParserMiddlewareTests
                     It.IsAny<CancellationToken>()
                 )
             )
-            .ReturnsAsync(new List<IMessage>());
+            .ReturnsAsync([]);
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<ToolUseParsingException>(async () =>
@@ -1476,10 +1464,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         if (debug)
@@ -1722,10 +1709,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Setup non-streaming agent
@@ -1882,10 +1868,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -1943,10 +1928,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -2005,10 +1989,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act
@@ -2068,10 +2051,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act & Assert
@@ -2143,10 +2125,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = invalidFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act & Assert
@@ -2255,10 +2236,9 @@ public class NaturalToolUseParserMiddlewareTests
                 )
             )
             .ReturnsAsync(
-                new List<IMessage>
-                {
+                [
                     new TextMessage { Text = validFallbackJson, Role = Role.Assistant },
-                }
+                ]
             );
 
         // Act

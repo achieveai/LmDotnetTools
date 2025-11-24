@@ -189,7 +189,7 @@ public static class ChatCompletionRequestFactory
         }
 
         // Prepare properties for the new request instance
-        var topP = options.TopP.HasValue ? options.TopP.Value : request.TopP;
+        var topP = options.TopP ?? request.TopP;
         var stop = options.StopSequence ?? request.Stop;
         bool? stream =
             options.ExtraProperties.TryGetValue("stream", out var streamObj) && streamObj is bool streamBool
@@ -200,7 +200,7 @@ public static class ChatCompletionRequestFactory
             && safePromptObj is bool safePromptBool
                 ? safePromptBool
                 : request.SafePrompt;
-        var randomSeed = options.RandomSeed.HasValue ? options.RandomSeed.Value : request.RandomSeed;
+        var randomSeed = options.RandomSeed ?? request.RandomSeed;
 
         // Prepare tools if functions are provided
         var tools = request.Tools;

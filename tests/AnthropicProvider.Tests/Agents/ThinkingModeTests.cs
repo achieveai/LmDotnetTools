@@ -1,16 +1,8 @@
-namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
-
-using System;
 using System.Collections.Immutable;
-using System.Threading.Tasks;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Agents;
-using AchieveAi.LmDotnetTools.AnthropicProvider.Models;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
 using AchieveAi.LmDotnetTools.LmTestUtils;
-using AchieveAi.LmDotnetTools.TestUtils;
-using Xunit;
+
+namespace AchieveAi.LmDotnetTools.AnthropicProvider.Tests.Agents;
 
 public class ThinkingModeTests
 {
@@ -138,15 +130,15 @@ public class ThinkingModeTests
         {
             Name = "python_mcp-execute_python_in_container",
             Description = "Execute Python code in a Docker container",
-            Parameters = new List<FunctionParameterContract>
-            {
+            Parameters =
+            [
                 new() {
                     Name = "code",
                     Description = "Python code to execute",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                     IsRequired = true,
                 },
-            },
+            ],
         };
 
         // Set up thinking in options

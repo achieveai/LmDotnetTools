@@ -29,12 +29,11 @@ public class FunctionRegistryFilteringTests
 
     private class TestFunctionProvider : IFunctionProvider
     {
-        private readonly string _providerName;
         private readonly List<FunctionDescriptor> _functions;
 
         public TestFunctionProvider(string providerName, params string[] functionNames)
         {
-            _providerName = providerName;
+            ProviderName = providerName;
             _functions = [.. functionNames
                 .Select(name => new FunctionDescriptor
                 {
@@ -44,11 +43,11 @@ public class FunctionRegistryFilteringTests
                         Description = $"Test function {name} from {providerName}",
                     },
                     Handler = _ => Task.FromResult($"Result from {name}"),
-                    ProviderName = _providerName,
+                    ProviderName = ProviderName,
                 })];
         }
 
-        public string ProviderName => _providerName;
+        public string ProviderName { get; }
         public int Priority => 100;
 
         public IEnumerable<FunctionDescriptor> GetFunctions()

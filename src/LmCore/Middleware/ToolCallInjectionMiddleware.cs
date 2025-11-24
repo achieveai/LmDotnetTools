@@ -101,12 +101,9 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
     /// </summary>
     private IEnumerable<FunctionContract>? CombineFunctions(IEnumerable<FunctionContract>? optionFunctions)
     {
-        if (_functions == null && optionFunctions == null)
-        {
-            return null;
-        }
-
-        return _functions == null ? optionFunctions
+        return _functions == null && optionFunctions == null
+            ? null
+            : _functions == null ? optionFunctions
             : optionFunctions == null ? _functions
             : _functions.Concat(optionFunctions);
     }

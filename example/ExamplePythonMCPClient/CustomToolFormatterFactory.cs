@@ -42,7 +42,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         private readonly IToolFormatterFactory _defaultFormatterFactory = new DefaultToolFormatterFactory(
             new ConsoleColorPair { Foreground = ConsoleColor.Blue }
         );
-        private ConsoleColorPair _markdownColor = new() { Foreground = ConsoleColor.White };
+        private readonly ConsoleColorPair _markdownColor = new() { Foreground = ConsoleColor.White };
 
         // Cached lines for partial string processing
         private string _thinkingLine = string.Empty;
@@ -172,7 +172,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             // If this is not a complete string, cache the last line for later
             if (!isComplete && lines.Length > 0)
             {
-                _thinkingLine = lines[lines.Length - 1]; // Store the last line for further processing
+                _thinkingLine = lines[^1]; // Store the last line for further processing
                 lines = [.. lines.Take(lines.Length - 1)]; // Exclude the last line for now
             }
             foreach (var line in lines)
@@ -369,7 +369,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             // If this is not a complete string, cache the last line for later
             if (!isComplete && lines.Length > 0)
             {
-                _pythonLine = lines[lines.Length - 1]; // Store the last line for further processing
+                _pythonLine = lines[^1]; // Store the last line for further processing
                 lines = [.. lines.Take(lines.Length - 1)]; // Exclude the last line for now
             }
             foreach (var line in lines)

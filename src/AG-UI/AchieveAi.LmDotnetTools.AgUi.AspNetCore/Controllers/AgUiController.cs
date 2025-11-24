@@ -204,7 +204,7 @@ public class AgUiController : ControllerBase
     private static ImmutableList<IMessage> ConvertMessages(List<AgUiMessage>? messages)
     {
         return messages == null || messages.Count == 0
-            ? ImmutableList<IMessage>.Empty
+            ? []
             : [.. messages
             .Select(m =>
                 new TextMessage
