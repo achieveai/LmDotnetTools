@@ -392,7 +392,7 @@ public class RerankingServiceTests
         var response = new
         {
             id = Guid.NewGuid().ToString(),
-            results = results,
+            results,
             meta = new { api_version = new { version = "2" }, billed_units = new { search_units = 1 } },
         };
 

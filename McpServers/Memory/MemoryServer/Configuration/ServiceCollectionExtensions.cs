@@ -20,6 +20,8 @@ public static class ServiceCollectionExtensions
         IHostEnvironment? environment = null
     )
     {
+        ArgumentNullException.ThrowIfNull(configuration);
+
         // Add memory cache
         _ = services.AddMemoryCache();
 

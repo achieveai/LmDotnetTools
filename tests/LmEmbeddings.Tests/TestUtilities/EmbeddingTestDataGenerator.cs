@@ -69,8 +69,8 @@ public static class EmbeddingTestDataGenerator
 
         var response = new
         {
-            results = results,
-            model = model,
+            results,
+            model,
             usage = new { total_tokens = documentCount * 5 },
         };
 

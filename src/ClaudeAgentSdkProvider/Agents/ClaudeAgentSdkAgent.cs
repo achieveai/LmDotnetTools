@@ -116,7 +116,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
         {
             try
             {
-                var mcpConfig = LoadMcpConfiguration(_options.McpConfigPath);
+                var mcpConfig = ClaudeAgentSdkAgent.LoadMcpConfiguration(_options.McpConfigPath);
                 mcpServers = mcpConfig?.McpServers;
             }
             catch (Exception ex)
@@ -152,7 +152,7 @@ public class ClaudeAgentSdkAgent : IStreamingAgent, IDisposable
     /// <summary>
     /// Load MCP configuration from file
     /// </summary>
-    private McpConfiguration? LoadMcpConfiguration(string mcpConfigPath)
+    private static McpConfiguration? LoadMcpConfiguration(string mcpConfigPath)
     {
         var json = File.ReadAllText(mcpConfigPath);
         return System.Text.Json.JsonSerializer.Deserialize<McpConfiguration>(json);

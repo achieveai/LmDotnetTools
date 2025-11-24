@@ -45,7 +45,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         {
             // Convert the typeDiscriminator to a shorter form by removing "_message" suffix
             return typeDiscriminator.EndsWith("_message", StringComparison.OrdinalIgnoreCase)
-                ? typeDiscriminator.Substring(0, typeDiscriminator.Length - 8)
+                ? typeDiscriminator[..^8]
                 : typeDiscriminator;
         }
 
@@ -115,6 +115,8 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
 
     public override void Write(Utf8JsonWriter writer, IMessage value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+
         if (value == null)
         {
             writer.WriteNullValue();
@@ -231,7 +233,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         // If the type name ends with "Message", remove it
         if (typeName.EndsWith("Message", StringComparison.OrdinalIgnoreCase))
         {
-            typeName = typeName.Substring(0, typeName.Length - 7);
+            typeName = typeName[..^7];
         }
 
         // Convert to snake_case
@@ -304,7 +306,7 @@ public class IMessageJsonConverter : JsonConverter<IMessage>
         var normalizedDiscriminator = typeDiscriminator;
         if (normalizedDiscriminator.EndsWith("_message", StringComparison.OrdinalIgnoreCase))
         {
-            normalizedDiscriminator = normalizedDiscriminator.Substring(0, normalizedDiscriminator.Length - 8);
+            normalizedDiscriminator = normalizedDiscriminator[..^8];
         }
 
         // Check if we have this type in our discriminator map

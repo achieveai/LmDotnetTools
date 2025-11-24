@@ -227,15 +227,13 @@ public class GraphDecisionEngineTests
                 "New entities and relationships",
                 new List<Entity>
                 {
-                    new Entity
-                    {
+                    new() {
                         Name = "John",
                         Type = "person",
                         UserId = "user123",
                         Confidence = 0.8f,
                     },
-                    new Entity
-                    {
+                    new() {
                         Name = "Pizza",
                         Type = "food",
                         UserId = "user123",
@@ -244,8 +242,7 @@ public class GraphDecisionEngineTests
                 },
                 new List<Relationship>
                 {
-                    new Relationship
-                    {
+                    new() {
                         Source = "John",
                         RelationshipType = "likes",
                         Target = "Pizza",
@@ -269,15 +266,13 @@ public class GraphDecisionEngineTests
                 "Mixed new and existing entities",
                 new List<Entity>
                 {
-                    new Entity
-                    {
+                    new() {
                         Name = "John",
                         Type = "person",
                         UserId = "user123",
                         Confidence = 0.9f,
                     }, // Higher confidence
-                    new Entity
-                    {
+                    new() {
                         Name = "Alice",
                         Type = "person",
                         UserId = "user123",
@@ -287,8 +282,7 @@ public class GraphDecisionEngineTests
                 new List<Relationship>(),
                 new List<Entity>
                 {
-                    new Entity
-                    {
+                    new() {
                         Id = 1,
                         Name = "John",
                         Type = "person",

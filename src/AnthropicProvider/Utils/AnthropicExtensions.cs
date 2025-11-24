@@ -16,6 +16,7 @@ public static class AnthropicExtensions
     /// <returns>A new message.</returns>
     public static IMessage ToMessage(this AnthropicResponse response, string agentName)
     {
+        ArgumentNullException.ThrowIfNull(response);
         // Extract text content from the response
         var textContent = string.Empty;
         foreach (var content in response.Content)
@@ -48,6 +49,7 @@ public static class AnthropicExtensions
     [Obsolete("Use Models.AnthropicExtensions.ToMessages instead")]
     public static IEnumerable<IMessage> ToMessagesLegacy(this AnthropicResponse response)
     {
+        ArgumentNullException.ThrowIfNull(response);
         // First get messages using AnthropicStreamParser for consistent conversion
         var parser = new Models.AnthropicStreamParser();
         var messages = new List<IMessage>();
@@ -110,6 +112,7 @@ public static class AnthropicExtensions
     /// <returns>True if the response contains a tool call, otherwise false.</returns>
     public static bool ContainsToolCall(this AnthropicResponse response)
     {
+        ArgumentNullException.ThrowIfNull(response);
         foreach (var content in response.Content)
         {
             if (content.Type == "tool_use")
@@ -128,6 +131,7 @@ public static class AnthropicExtensions
     /// <returns>A message for a tool call if present, otherwise null.</returns>
     public static IMessage? CreateToolCallMessage(this AnthropicResponse response)
     {
+        ArgumentNullException.ThrowIfNull(response);
         foreach (var content in response.Content)
         {
             if (content.Type == "tool_use" && content is AnthropicResponseToolUseContent toolUseContent)

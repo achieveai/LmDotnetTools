@@ -164,16 +164,14 @@ public class RerankingEngineTests
         // Create results with different creation dates
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 1,
                 Type = UnifiedResultType.Memory,
                 Content = "Old content",
                 Score = 0.5f,
                 CreatedAt = DateTime.UtcNow.AddDays(-60), // Old content
             },
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 2,
                 Type = UnifiedResultType.Memory,
                 Content = "Recent content",
@@ -211,24 +209,21 @@ public class RerankingEngineTests
         // Create results with different types but same initial score
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 1,
                 Type = UnifiedResultType.Memory,
                 Content = "Memory content",
                 Score = 1.0f,
                 CreatedAt = DateTime.UtcNow,
             },
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 2,
                 Type = UnifiedResultType.Entity,
                 Content = "Entity content",
                 Score = 1.0f,
                 CreatedAt = DateTime.UtcNow,
             },
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 3,
                 Type = UnifiedResultType.Relationship,
                 Content = "Relationship content",
@@ -292,8 +287,7 @@ public class RerankingEngineTests
 
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 1,
                 Type = UnifiedResultType.Entity,
                 Content = "Low confidence entity",
@@ -301,8 +295,7 @@ public class RerankingEngineTests
                 Confidence = 0.3f,
                 CreatedAt = DateTime.UtcNow,
             },
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 2,
                 Type = UnifiedResultType.Entity,
                 Content = "High confidence entity",
@@ -343,16 +336,14 @@ public class RerankingEngineTests
         // Create results that will likely change positions after scoring
         var results = new List<UnifiedSearchResult>
         {
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 1,
                 Type = UnifiedResultType.Relationship, // Lower weight
                 Content = "Short",
                 Score = 1.0f,
                 CreatedAt = DateTime.UtcNow.AddDays(-60),
             },
-            new UnifiedSearchResult
-            {
+            new() {
                 Id = 2,
                 Type = UnifiedResultType.Memory, // Higher weight
                 Content = "This is a longer content that should score better for content quality",

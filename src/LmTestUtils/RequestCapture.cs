@@ -47,7 +47,7 @@ public class RequestCapture<TRequest, TResponse> : RequestCaptureBase
     /// </summary>
     public void SetResponses(IEnumerable<TResponse> responses)
     {
-        SetResponse((object)responses);
+        SetResponse(responses);
     }
 }
 
@@ -174,7 +174,7 @@ public class AnthropicRequestCapture
                     {
                         Name = tool.TryGetProperty("name", out var name) ? name.GetString() : null,
                         Description = tool.TryGetProperty("description", out var desc) ? desc.GetString() : null,
-                        InputSchema = tool.TryGetProperty("input_schema", out var schema) ? (object)schema : null,
+                        InputSchema = tool.TryGetProperty("input_schema", out var schema) ? schema : null,
                     })
                 : Enumerable.Empty<ToolCapture>();
         }

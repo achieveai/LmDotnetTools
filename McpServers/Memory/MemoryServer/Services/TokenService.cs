@@ -18,6 +18,7 @@ public class TokenService : ITokenService
 
     public TokenService(IOptions<JwtOptions> jwtOptions, ILogger<TokenService> logger)
     {
+        ArgumentNullException.ThrowIfNull(jwtOptions);
         _jwtOptions = jwtOptions.Value;
         _logger = logger;
 

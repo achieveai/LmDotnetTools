@@ -33,6 +33,8 @@ public class UsageAccumulator
     /// <exception cref="InvalidOperationException">Thrown if input tokens change between usage updates.</exception>
     public bool AddUsageFromMessageMetadata(IMessage message)
     {
+        ArgumentNullException.ThrowIfNull(message);
+
         if (message.Metadata == null || !message.Metadata.TryGetValue("usage", out var usage))
         {
             return false;
@@ -65,6 +67,8 @@ public class UsageAccumulator
     /// <exception cref="InvalidOperationException">Thrown if input tokens change between usage updates.</exception>
     public bool AddUsageFromMessage(UsageMessage usageMessage)
     {
+        ArgumentNullException.ThrowIfNull(usageMessage);
+
         // Store context for the usage message
         _fromAgent = usageMessage.FromAgent;
         _generationId = usageMessage.GenerationId;

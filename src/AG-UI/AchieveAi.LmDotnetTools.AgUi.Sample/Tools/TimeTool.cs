@@ -98,8 +98,8 @@ public class TimeTool : IFunctionProvider
 
             var result = new
             {
-                timezone = timezone,
-                format = format,
+                timezone,
+                format,
                 timestamp = formattedTime,
                 iso = now.ToString("o"),
                 unix = new DateTimeOffset(now).ToUnixTimeSeconds(),

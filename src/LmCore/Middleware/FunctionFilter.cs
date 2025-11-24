@@ -48,6 +48,7 @@ public class FunctionFilter
     /// <returns>A FilterResult containing the filtering decision and reasoning</returns>
     public FilterResult ShouldFilterFunctionWithReason(FunctionDescriptor descriptor, string registeredName)
     {
+        ArgumentNullException.ThrowIfNull(descriptor);
         // If filtering is not enabled, include all functions
         if (_globalConfig == null || !_globalConfig.EnableFiltering)
         {
@@ -186,6 +187,7 @@ public class FunctionFilter
             return descriptors;
         }
 
+        ArgumentNullException.ThrowIfNull(descriptors);
         var filtered = new List<FunctionDescriptor>();
         var totalCount = 0;
         var filteredCount = 0;
@@ -240,7 +242,7 @@ public class FunctionFilter
         // Handle prefix wildcard (e.g., "github__*")
         if (pattern.EndsWith("*") && !pattern.StartsWith("*"))
         {
-            var prefix = pattern.Substring(0, pattern.Length - 1);
+            var prefix = pattern[..^1];
             var matches = text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
             if (matches)
@@ -254,7 +256,7 @@ public class FunctionFilter
         // Handle suffix wildcard (e.g., "*_search")
         if (pattern.StartsWith("*") && !pattern.EndsWith("*"))
         {
-            var suffix = pattern.Substring(1);
+            var suffix = pattern[1..];
             var matches = text.EndsWith(suffix, StringComparison.OrdinalIgnoreCase);
 
             if (matches)
@@ -268,7 +270,7 @@ public class FunctionFilter
         // Handle contains wildcard (e.g., "*search*")
         if (pattern.StartsWith("*") && pattern.EndsWith("*") && pattern.Length > 2)
         {
-            var middle = pattern.Substring(1, pattern.Length - 2);
+            var middle = pattern[1..^1];
             var matches = text.Contains(middle, StringComparison.OrdinalIgnoreCase);
 
             if (matches)

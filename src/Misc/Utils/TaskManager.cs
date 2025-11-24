@@ -883,7 +883,7 @@ Examples:
     private static string FormatTaskDetails(PrivateTaskItem task, string header)
     {
         var sb = new StringBuilder();
-        _ = sb.AppendLine($"{string.Concat(header.Substring(0, 1).ToUpper(), header.AsSpan(1))}: {task.Title}");
+        _ = sb.AppendLine($"{string.Concat(header[..1].ToUpper(), header.AsSpan(1))}: {task.Title}");
         _ = sb.AppendLine($"Status: {NormalizeStatusText(task.Status)}");
 
         List<string> notesCopy;

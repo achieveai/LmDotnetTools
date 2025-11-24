@@ -40,6 +40,7 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
         var newContext = new MiddlewareContext(context.Messages, overriddenOptions);
 
         // Forward to the next agent
+        ArgumentNullException.ThrowIfNull(agent);
         return await agent.GenerateReplyAsync(newContext.Messages, overriddenOptions, cancellationToken);
     }
 
@@ -57,6 +58,7 @@ public class OptionsOverridingMiddleware : IStreamingMiddleware
         var newContext = new MiddlewareContext(context.Messages, overriddenOptions);
 
         // Forward to the next agent
+        ArgumentNullException.ThrowIfNull(agent);
         return await agent.GenerateReplyStreamingAsync(newContext.Messages, overriddenOptions, cancellationToken);
     }
 

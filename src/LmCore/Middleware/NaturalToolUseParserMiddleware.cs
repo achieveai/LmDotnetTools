@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -96,7 +95,7 @@ public partial class ToolCallTextParser
             // Add text before this tool call
             if (match.Index > currentIndex)
             {
-                var prefixText = text.Substring(currentIndex, match.Index - currentIndex);
+                var prefixText = text[currentIndex..match.Index];
                 if (!string.IsNullOrEmpty(prefixText))
                 {
                     chunks.Add(new TextChunk(prefixText));
@@ -114,7 +113,7 @@ public partial class ToolCallTextParser
         // Add remaining text after last tool call
         if (currentIndex < text.Length)
         {
-            var suffixText = text.Substring(currentIndex);
+            var suffixText = text[currentIndex..];
             if (!string.IsNullOrEmpty(suffixText))
             {
                 chunks.Add(new TextChunk(suffixText));
@@ -195,7 +194,7 @@ public partial class PartialToolCallDetector
             {
                 if (!matchedCloses.Contains(openMatch.Index))
                 {
-                    return new PartialToolCallMatch(openMatch.Index, text.Substring(openMatch.Index));
+                    return new PartialToolCallMatch(openMatch.Index, text[openMatch.Index..]);
                 }
             }
         }
@@ -207,7 +206,7 @@ public partial class PartialToolCallDetector
             if (match.Success)
             {
                 var startIndex = match.Index;
-                var partialPattern = text.Substring(startIndex);
+                var partialPattern = text[startIndex..];
                 return new PartialToolCallMatch(startIndex, partialPattern);
             }
         }
@@ -279,8 +278,8 @@ public class SafeTextExtractor
             return new SafeTextResult(text, string.Empty);
         }
 
-        var safeText = text.Substring(0, partialMatch.StartIndex);
-        var remainingBuffer = text.Substring(partialMatch.StartIndex);
+        var safeText = text[..partialMatch.StartIndex];
+        var remainingBuffer = text[partialMatch.StartIndex..];
 
         return new SafeTextResult(safeText, remainingBuffer);
     }
@@ -470,6 +469,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         var modifiedContext = PrepareContext(context);
         var replies = await agent.GenerateReplyAsync(
             modifiedContext.Messages,
@@ -486,6 +486,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         var modifiedContext = PrepareContext(context);
         var streamingReplies = await agent.GenerateReplyStreamingAsync(
             modifiedContext.Messages,
@@ -701,7 +702,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
             if (startIndex > currentPosition)
             {
-                var prefixText = text.Substring(currentPosition, startIndex - currentPosition).Trim();
+                var prefixText = text[currentPosition..startIndex].Trim();
                 if (!string.IsNullOrEmpty(prefixText))
                 {
                     messages.Add(new TextMessage { Text = prefixText, Role = textMessage.Role });
@@ -731,7 +732,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
 
         if (currentPosition < text.Length)
         {
-            var suffixText = text.Substring(currentPosition).Trim();
+            var suffixText = text[currentPosition..].Trim();
             if (!string.IsNullOrEmpty(suffixText))
             {
                 messages.Add(new TextMessage { Text = suffixText, Role = textMessage.Role });
@@ -901,7 +902,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
             var isValid = _schemaValidator.Validate(jsonText, schemaString);
 
             return isValid
-                ? (IEnumerable<IMessage>)
+                ?
 
                     [
                         new ToolsCallMessage
@@ -920,7 +921,7 @@ public partial class NaturalToolUseParserMiddleware : IStreamingMiddleware
                             ],
                         },
                     ]
-                
+
                 : throw new ToolUseParsingException($"Fallback parser returned invalid JSON for {toolName}");
         }
 

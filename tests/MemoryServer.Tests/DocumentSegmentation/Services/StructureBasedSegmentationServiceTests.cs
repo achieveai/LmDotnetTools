@@ -294,8 +294,7 @@ Final thoughts.
         // Arrange
         var segments = new List<DocumentSegment>
         {
-            new DocumentSegment
-            {
+            new() {
                 Id = "seg1",
                 Content =
                     "# Introduction\nThis is a well-structured introduction section with clear heading and substantial content.",
@@ -306,8 +305,7 @@ Final thoughts.
                     ["heading_level"] = 1,
                 },
             },
-            new DocumentSegment
-            {
+            new() {
                 Id = "seg2",
                 Content =
                     "## Methodology\nThis section describes the methodology used in detail with proper structure and formatting.",

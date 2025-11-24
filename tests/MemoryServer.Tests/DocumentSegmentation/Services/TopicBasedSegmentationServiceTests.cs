@@ -297,15 +297,13 @@ Furthermore, economic implications must be considered. Market volatility is incr
         var originalContent = "Test content";
         var poorSegments = new List<DocumentSegment>
         {
-            new DocumentSegment
-            {
+            new() {
                 Id = "1",
                 Content = "A", // Too short
                 SequenceNumber = 0,
                 Metadata = new Dictionary<string, object> { ["start_position"] = 0, ["end_position"] = 1 },
             },
-            new DocumentSegment
-            {
+            new() {
                 Id = "2",
                 Content = CreateIncoherentContent(), // Poor coherence
                 SequenceNumber = 1,

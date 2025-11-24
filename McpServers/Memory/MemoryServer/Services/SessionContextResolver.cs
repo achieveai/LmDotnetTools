@@ -19,6 +19,7 @@ public class SessionContextResolver : ISessionContextResolver
         IHttpContextAccessor httpContextAccessor
     )
     {
+        ArgumentNullException.ThrowIfNull(options);
         _logger = logger;
         _options = options.Value.SessionDefaults;
         _httpContextAccessor = httpContextAccessor;
@@ -66,6 +67,7 @@ public class SessionContextResolver : ISessionContextResolver
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(sessionContext);
         // Basic validation rules
         if (string.IsNullOrWhiteSpace(sessionContext.UserId))
         {

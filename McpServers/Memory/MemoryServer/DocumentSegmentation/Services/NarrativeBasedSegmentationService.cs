@@ -221,6 +221,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug(
             "Starting narrative-based segmentation for document type {DocumentType}, content length: {Length}",
             documentType,
@@ -278,6 +279,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Detecting narrative transitions in content of length {Length}", content.Length);
 
         var boundaries = new List<NarrativeBoundary>();
@@ -306,6 +308,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Analyzing logical flow for content of length {Length}", content.Length);
 
         var analysis = new NarrativeFlowAnalysis
@@ -351,6 +354,8 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Validating {Count} narrative segments", segments.Count);
 
         var validation = new NarrativeSegmentationValidation();
@@ -370,7 +375,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         validation.TransitionQuality = CalculateOverallTransitionQuality(segments);
 
         // Calculate overall quality as weighted average
-        validation.OverallQuality = 
+        validation.OverallQuality =
             (validation.FlowCoherence * 0.3)
             + (validation.LogicalConsistency * 0.25)
             + (validation.TemporalConsistency * 0.2)
@@ -397,6 +402,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Identifying temporal sequences in content");
 
         var sequences = new List<TemporalSequence>();
@@ -440,6 +446,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Detecting causal relationships in content");
 
         var relations = new List<CausalRelation>();
@@ -486,6 +493,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Identifying narrative arc elements for document type {DocumentType}", documentType);
 
         var elements = new Dictionary<NarrativeFunction, List<int>>();
@@ -704,7 +712,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
 
             if (endPos > startPos)
             {
-                var segmentContent = content.Substring(startPos, endPos - startPos).Trim();
+                var segmentContent = content[startPos..endPos].Trim();
 
                 if (segmentContent.Length >= options.MinSegmentSize)
                 {
@@ -741,7 +749,7 @@ public partial class NarrativeBasedSegmentationService : INarrativeBasedSegmenta
         // Add final segment if needed
         if (boundaries.Count != 0 && boundaries.Last().Position < content.Length)
         {
-            var finalContent = content.Substring(boundaries.Last().Position).Trim();
+            var finalContent = content[boundaries.Last().Position..].Trim();
             if (finalContent.Length >= options.MinSegmentSize)
             {
                 var finalSegment = new DocumentSegment

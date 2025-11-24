@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -18,8 +17,7 @@ public class LoggingSystemIntegrationTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "test_function",
                 Description = "Test function for logging",
                 Parameters = [],
@@ -43,8 +41,7 @@ public class LoggingSystemIntegrationTests
         var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "test_function",
                 Description = "Test function for logging",
                 Parameters = [],
@@ -103,8 +100,7 @@ public class LoggingSystemIntegrationTests
         var mockLogger = new Mock<ILogger<FunctionCallMiddleware>>();
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "logging_test_function",
                 Description = "Function to test logging",
                 Parameters = [],
@@ -169,8 +165,7 @@ public class LoggingSystemIntegrationTests
 
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "perf_test_function",
                 Description = "Function for performance testing",
                 Parameters = [],
@@ -240,8 +235,7 @@ public class LoggingSystemIntegrationTests
 
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "failing_function",
                 Description = "Function that fails for testing",
                 Parameters = [],
@@ -400,8 +394,7 @@ public class LoggingSystemIntegrationTests
         // Arrange & Act & Assert - All should work with null loggers
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "null_safe_function",
                 Description = "Function for null safety testing",
                 Parameters = [],

@@ -25,6 +25,8 @@ public class ChannelEventPublisher : IEventPublisher
     /// <inheritdoc/>
     public async Task PublishAsync(AgUiEventBase evt, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(evt);
+
         if (string.IsNullOrEmpty(evt.SessionId))
         {
             _logger.LogWarning("Event {EventType} without SessionId cannot be published", evt.Type);

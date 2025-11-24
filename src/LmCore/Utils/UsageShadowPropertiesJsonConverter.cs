@@ -17,6 +17,9 @@ public class UsageShadowPropertiesJsonConverter : ShadowPropertiesJsonConverter<
         JsonSerializerOptions options
     )
     {
+        ArgumentNullException.ThrowIfNull(instance);
+        ArgumentNullException.ThrowIfNull(propertyName);
+
         switch (propertyName)
         {
             case "input_tokens":
@@ -36,6 +39,9 @@ public class UsageShadowPropertiesJsonConverter : ShadowPropertiesJsonConverter<
 
     public override void Write(Utf8JsonWriter writer, Usage value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
         writer.WriteStartObject();
 
         // Only write non-default values to respect JsonIgnoreCondition.WhenWritingDefault

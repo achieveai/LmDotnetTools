@@ -1155,6 +1155,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         return await DetectTopicBoundariesWithRetryAsync(content, documentType, cancellationToken);
     }
 
@@ -1166,6 +1167,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Analyzing thematic coherence for content length: {Length}", content.Length);
 
         var cacheKey = $"coherence_{content.GetHashCode()}";
@@ -1226,6 +1228,8 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Validating {Count} topic-based segments", segments.Count);
 
         var validation = new TopicSegmentationValidation();
@@ -1318,6 +1322,7 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug(
             "Analyzing topics using {Method} for content length: {Length}",
             analysisMethod,
@@ -1392,6 +1397,8 @@ public partial class TopicBasedSegmentationService : ITopicBasedSegmentationServ
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content1);
+        ArgumentNullException.ThrowIfNull(content2);
         _logger.LogDebug("Calculating semantic similarity between two segments");
 
         try

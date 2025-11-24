@@ -14,6 +14,7 @@ public partial class DeduplicationEngine : IDeduplicationEngine
 
     public DeduplicationEngine(IOptions<MemoryServerOptions> options, ILogger<DeduplicationEngine> logger)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options.Value.Deduplication;
         _logger = logger;
 

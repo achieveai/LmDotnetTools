@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using AchieveAi.LmDotnetTools.LmCore.Agents;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
 using AchieveAi.LmDotnetTools.LmCore.Utils;
@@ -96,8 +95,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Models
                 Description = "Get the current weather",             // Set parameters as an array of FunctionParameterContract
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "location",
                         Description = "The city name",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),

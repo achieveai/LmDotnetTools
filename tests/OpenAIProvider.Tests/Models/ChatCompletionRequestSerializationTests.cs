@@ -28,13 +28,11 @@ public class ChatCompletionRequestSerializationTests
 
         var messages = new List<ChatMessage>
         {
-            new ChatMessage
-            {
+            new() {
                 Role = RoleEnum.System,
                 Content = new Union<string, Union<TextContent, ImageContent>[]>("You are a helpful assistant."),
             },
-            new ChatMessage
-            {
+            new() {
                 Role = RoleEnum.User,
                 Content = new Union<string, Union<TextContent, ImageContent>[]>("Hello!"),
             },

@@ -30,6 +30,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(extractedEntities);
+        ArgumentNullException.ThrowIfNull(extractedRelationships);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         _logger.LogDebug(
             "Analyzing graph updates for {EntityCount} entities and {RelationshipCount} relationships",
             extractedEntities.Count,
@@ -77,6 +80,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(existingEntity);
+        ArgumentNullException.ThrowIfNull(newEntity);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         _logger.LogDebug(
             "Resolving entity conflict between existing '{ExistingName}' and new '{NewName}'",
             existingEntity.Name,
@@ -217,6 +223,9 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(existingRelationship);
+        ArgumentNullException.ThrowIfNull(newRelationship);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         _logger.LogDebug(
             "Resolving relationship conflict between existing '{ExistingType}' and new '{NewType}'",
             existingRelationship.RelationshipType,
@@ -333,6 +342,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(instruction);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         try
         {
             _logger.LogDebug(
@@ -441,6 +452,8 @@ public class GraphDecisionEngine : IGraphDecisionEngine
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(instruction);
+        ArgumentNullException.ThrowIfNull(sessionContext);
         try
         {
             var baseConfidence = instruction.Confidence;

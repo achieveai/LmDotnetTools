@@ -23,6 +23,9 @@ public static class ServerEmbeddingsExtensions
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(service);
+        ArgumentNullException.ThrowIfNull(texts);
+
         var requestId = Guid.NewGuid().ToString();
         var stopwatch = Stopwatch.StartNew();
         var startTime = DateTime.UtcNow;
@@ -121,6 +124,8 @@ public static class ServerEmbeddingsExtensions
     /// <returns>Health check result with configuration validation</returns>
     public static async Task<HealthCheckResult> GetHealthAsync(this ServerEmbeddings service)
     {
+        ArgumentNullException.ThrowIfNull(service);
+
         var stopwatch = Stopwatch.StartNew();
         var checks = new List<ComponentHealth>();
 

@@ -30,6 +30,7 @@ public class OpenClient : BaseHttpService, IOpenClient
     )
         : base(logger ?? NullLogger.Instance, CreateHttpClient(apiKey, baseUrl))
     {
+        ArgumentNullException.ThrowIfNull(baseUrl);
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
 
@@ -52,6 +53,7 @@ public class OpenClient : BaseHttpService, IOpenClient
     )
         : base(logger ?? NullLogger.Instance, httpClient)
     {
+        ArgumentNullException.ThrowIfNull(baseUrl);
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
 
         _baseUrl = baseUrl.TrimEnd('/');
@@ -110,6 +112,8 @@ public class OpenClient : BaseHttpService, IOpenClient
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(chatCompletionRequest);
+
         var providerName = GetProviderName(_baseUrl);
         var requestId = Guid.NewGuid().ToString("N")[..8];
 
@@ -254,6 +258,8 @@ public class OpenClient : BaseHttpService, IOpenClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(chatCompletionRequest);
+
         var providerName = GetProviderName(_baseUrl);
         var requestId = Guid.NewGuid().ToString("N")[..8];
 

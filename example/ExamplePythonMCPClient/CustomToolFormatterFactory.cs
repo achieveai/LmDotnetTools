@@ -64,6 +64,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
         /// <returns>A formatter for the specified tool</returns>
         public ToolFormatter CreateFormatter(string toolCallName)
         {
+            ArgumentNullException.ThrowIfNull(toolCallName);
+
             // Create specialized formatters based on tool name
             if (toolCallName.EndsWith("sequentialthinking", StringComparison.OrdinalIgnoreCase))
             { // Reset JSON accumulation state for new tool call
@@ -208,8 +210,8 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             if (line.TrimStart().StartsWith(">"))
             {
                 var quoteEnd = line.IndexOf(">");
-                yield return (_blockquoteColor, line.Substring(0, quoteEnd + 1));
-                yield return (_thinkingColor, line.Substring(quoteEnd + 1));
+                yield return (_blockquoteColor, line[..(quoteEnd + 1)]);
+                yield return (_thinkingColor, line[(quoteEnd + 1)..]);
                 yield break;
             }
 
@@ -218,7 +220,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             if (listMatch.Success)
             {
                 yield return (_listNumberColor, listMatch.Groups[1].Value);
-                yield return (_thinkingColor, line.Substring(listMatch.Groups[1].Value.Length));
+                yield return (_thinkingColor, line[listMatch.Groups[1].Value.Length..]);
                 yield break;
             }
 
@@ -227,7 +229,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
             if (bulletMatch.Success)
             {
                 yield return (_bulletListColor, bulletMatch.Groups[1].Value);
-                yield return (_thinkingColor, line.Substring(bulletMatch.Groups[1].Value.Length));
+                yield return (_thinkingColor, line[bulletMatch.Groups[1].Value.Length..]);
                 yield break;
             }
 
@@ -241,7 +243,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     var closeBold = line.IndexOf("**", pos + 2);
                     if (closeBold != -1)
                     {
-                        yield return (_boldColor, line.Substring(pos, closeBold + 2 - pos));
+                        yield return (_boldColor, line[pos..(closeBold + 2)]);
                         pos = closeBold + 2;
                         continue;
                     }
@@ -253,7 +255,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     var closeItalic = line.IndexOf("*", pos + 1);
                     if (closeItalic != -1 && (closeItalic + 1 >= line.Length || line[closeItalic + 1] != '*'))
                     {
-                        yield return (_italicColor, line.Substring(pos, closeItalic + 1 - pos));
+                        yield return (_italicColor, line[pos..(closeItalic + 1)]);
                         pos = closeItalic + 1;
                         continue;
                     }
@@ -265,7 +267,7 @@ namespace AchieveAi.LmDotnetTools.Example.ExamplePythonMCPClient
                     var closeCode = line.IndexOf("`", pos + 1);
                     if (closeCode != -1)
                     {
-                        yield return (_codeBlockColor, line.Substring(pos, closeCode + 1 - pos));
+                        yield return (_codeBlockColor, line[pos..(closeCode + 1)]);
                         pos = closeCode + 1;
                         continue;
                     }

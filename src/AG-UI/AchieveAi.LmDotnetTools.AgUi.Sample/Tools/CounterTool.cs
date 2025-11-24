@@ -119,7 +119,7 @@ public class CounterTool : IFunctionProvider
             var result = new
             {
                 operation = args.Operation,
-                name = name,
+                name,
                 value = newValue,
                 allCounters = new Dictionary<string, int>(_counters),
                 timestamp = DateTime.UtcNow.ToString("o"),

@@ -532,15 +532,13 @@ public class FunctionRegistryTests
             Description = $"Test function {name}",
             Parameters = new List<FunctionParameterContract>
             {
-                new FunctionParameterContract
-                {
+                new() {
                     Name = "stringParam",
                     Description = "A string parameter",
                     ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("string") },
                     IsRequired = true,
                 },
-                new FunctionParameterContract
-                {
+                new() {
                     Name = "optionalParam",
                     Description = "An optional parameter",
                     ParameterType = new JsonSchemaObject { Type = JsonSchemaTypeHelper.ToType("number") },

@@ -38,6 +38,8 @@ public class McpToolCollisionDetector
         bool usePrefixOnlyForCollisions
     )
     {
+        ArgumentNullException.ThrowIfNull(toolsByServer);
+
         // Convert MCP tools to function descriptors
         var descriptors = new List<FunctionDescriptor>();
         var toolToDescriptorMap = new Dictionary<(string serverId, string toolName), FunctionDescriptor>();

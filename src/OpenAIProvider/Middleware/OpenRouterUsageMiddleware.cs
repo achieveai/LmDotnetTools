@@ -87,6 +87,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
+
         // Inject usage tracking into options
         var modifiedOptions = InjectUsageTracking(context.Options);
         var modifiedContext = new MiddlewareContext(context.Messages, modifiedOptions);
@@ -110,6 +112,8 @@ public class OpenRouterUsageMiddleware : IStreamingMiddleware, IDisposable
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
+
         // Inject usage tracking into options
         var modifiedOptions = InjectUsageTracking(context.Options);
         var modifiedContext = new MiddlewareContext(context.Messages, modifiedOptions);

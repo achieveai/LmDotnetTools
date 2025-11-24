@@ -36,6 +36,7 @@ public class LmConfigService : ILmConfigService
         IOptions<AppConfig> appConfig
     )
     {
+        ArgumentNullException.ThrowIfNull(memoryOptions);
         _memoryOptions = memoryOptions.Value;
         _serviceProvider = serviceProvider;
         _logger = logger;
@@ -43,6 +44,7 @@ public class LmConfigService : ILmConfigService
         _unifiedAgent = unifiedAgent;
 
         // Use the shared AppConfig instance from DI
+        ArgumentNullException.ThrowIfNull(appConfig);
         _appConfig = appConfig.Value ?? throw new ArgumentNullException(nameof(appConfig));
     }
 

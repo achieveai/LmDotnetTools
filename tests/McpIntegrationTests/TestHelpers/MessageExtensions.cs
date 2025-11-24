@@ -17,17 +17,17 @@ public static class MessageExtensions
         return message == null
             ? null
             : message switch
-        {
-            TextMessage textMessage => textMessage.Text,
-            ToolsCallResultMessage toolCallResult => string.Join(
-                Environment.NewLine,
-                toolCallResult.ToolCallResults.Select(tcr => tcr.Result)
-            ),
-            ToolsCallAggregateMessage toolCallAggregate => string.Join(
-                Environment.NewLine,
-                toolCallAggregate.ToolsCallResult.ToolCallResults.Select(tcr => tcr.Result)
-            ),
-            _ => message.ToString(),
-        };
+            {
+                TextMessage textMessage => textMessage.Text,
+                ToolsCallResultMessage toolCallResult => string.Join(
+                    Environment.NewLine,
+                    toolCallResult.ToolCallResults.Select(tcr => tcr.Result)
+                ),
+                ToolsCallAggregateMessage toolCallAggregate => string.Join(
+                    Environment.NewLine,
+                    toolCallAggregate.ToolsCallResult.ToolCallResults.Select(tcr => tcr.Result)
+                ),
+                _ => message.ToString(),
+            };
     }
 }

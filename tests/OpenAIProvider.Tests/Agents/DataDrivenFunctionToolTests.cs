@@ -10,7 +10,7 @@ namespace AchieveAi.LmDotnetTools.OpenAIProvider.Tests.Agents;
 
 public class DataDrivenFunctionToolTests
 {
-    private readonly ProviderTestDataManager _testDataManager = new ProviderTestDataManager();
+    private readonly ProviderTestDataManager _testDataManager = new();
     private static string EnvTestPath =>
         Path.Combine(
             TestUtils.TestUtils.FindWorkspaceRoot(AppDomain.CurrentDomain.BaseDirectory),
@@ -158,8 +158,7 @@ public class DataDrivenFunctionToolTests
             Description = "Get current weather for a location",
             Parameters = new List<FunctionParameterContract>
             {
-                new FunctionParameterContract
-                {
+                new() {
                     Name = "location",
                     Description = "City name",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -233,8 +232,7 @@ public class DataDrivenFunctionToolTests
             Description = "List the contents of a directory within the code directory",
             Parameters = new List<FunctionParameterContract>
             {
-                new FunctionParameterContract
-                {
+                new() {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -249,8 +247,7 @@ public class DataDrivenFunctionToolTests
             Description = "Get an ASCII tree representation of a directory structure",
             Parameters = new List<FunctionParameterContract>
             {
-                new FunctionParameterContract
-                {
+                new() {
                     Name = "relative_path",
                     Description = "Relative path within the code directory",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),

@@ -148,6 +148,9 @@ public static class ToolsCallAggregateTransformer
     /// <returns>XML formatted string for the tool call and response pair</returns>
     public static string FormatToolCallAndResponse(ToolCall toolCall, ToolCallResult toolResult)
     {
+        ArgumentNullException.ThrowIfNull(toolCall);
+        ArgumentNullException.ThrowIfNull(toolResult);
+
         var functionName = toolCall.FunctionName ?? "UnknownFunction";
         var formattedArgs = FormatToolArguments(toolCall.FunctionArgs);
         var formattedResponse = FormatToolResponse(toolResult.Result);

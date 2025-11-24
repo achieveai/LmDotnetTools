@@ -698,14 +698,14 @@ public class ResilienceService : IResilienceService
                 Max = 0,
             }
             : new ResponseTimePercentiles
-        {
-            P50 = CalculatePercentile(recentTimes, 0.5),
-            P95 = CalculatePercentile(recentTimes, 0.95),
-            P99 = CalculatePercentile(recentTimes, 0.99),
-            Average = recentTimes.Average(),
-            Min = recentTimes.Min(),
-            Max = recentTimes.Max(),
-        };
+            {
+                P50 = CalculatePercentile(recentTimes, 0.5),
+                P95 = CalculatePercentile(recentTimes, 0.95),
+                P99 = CalculatePercentile(recentTimes, 0.99),
+                Average = recentTimes.Average(),
+                Min = recentTimes.Min(),
+                Max = recentTimes.Max(),
+            };
     }
 
     private static double CalculatePercentile(List<double> sortedValues, double percentile)

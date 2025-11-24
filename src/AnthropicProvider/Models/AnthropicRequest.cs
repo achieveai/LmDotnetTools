@@ -88,6 +88,8 @@ public record AnthropicRequest
             modelName = modelId;
         }
 
+        ArgumentNullException.ThrowIfNull(messages);
+
         // Map LmCore messages to Anthropic messages
         var anthropicMessages = new List<AnthropicMessage>();
         string? systemPrompt = null;

@@ -50,6 +50,8 @@ public static class JsonSerializerOptionsFactory
     /// <param name="options">The JsonSerializerOptions to add converters to</param>
     public static void AddLmCoreConverters(JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
         // IMessage polymorphic converters
         options.Converters.Add(new IMessageJsonConverter());
         options.Converters.Add(new TextMessageJsonConverter());

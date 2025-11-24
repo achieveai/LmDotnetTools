@@ -237,8 +237,7 @@ public class FunctionRegistryBuilderTests
         var provider2 = CreateTestProvider("Provider2");
 
         var registry =
-            new FunctionRegistry().AddProvider(provider1).AddProvider(provider2).Configure()
-            as IConfiguredFunctionRegistry;
+            new FunctionRegistry().AddProvider(provider1).AddProvider(provider2).Configure();
 
         // Act
         var providers = registry.GetProviders();
@@ -255,8 +254,7 @@ public class FunctionRegistryBuilderTests
         // Arrange
         string[] stringArray = ["func1"];
         var registry =
-            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure()
-            as IConfiguredFunctionRegistry;
+            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure();
 
         // Act
         var markdown = registry.GetMarkdownDocumentation();
@@ -274,8 +272,7 @@ public class FunctionRegistryBuilderTests
         // Arrange
         string[] stringArray = ["func1"];
         var registry =
-            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure()
-            as IConfiguredFunctionRegistry;
+            new FunctionRegistry().AddProvider(CreateTestProvider("Provider1", stringArray)).Configure();
 
         // Act
         var middleware = registry.BuildMiddleware("TestMiddleware");

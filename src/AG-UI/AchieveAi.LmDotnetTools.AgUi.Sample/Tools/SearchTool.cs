@@ -102,7 +102,7 @@ public class SearchTool : IFunctionProvider
             {
                 query = args.Query,
                 totalResults = results.Count,
-                results = results,
+                results,
                 timestamp = DateTime.UtcNow.ToString("o"),
             };
 

@@ -7,6 +7,8 @@ public static class AsyncEnumerableExtensions
 {
     public static IAsyncEnumerable<T> ToAsyncEnumerable<T>(this T[] array)
     {
+        ArgumentNullException.ThrowIfNull(array);
+
         return array.ToAsyncEnumerableInternal();
     }
 

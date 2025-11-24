@@ -698,7 +698,7 @@ internal class SimpleJsonResponseProvider : IResponseProvider, IDisposable
     private readonly string _jsonResponse;
     private readonly HttpStatusCode _statusCode;
     private readonly byte[] _cachedContentBytes;
-    private readonly object _lock = new object();
+    private readonly object _lock = new();
     private bool _disposed;
 
     public SimpleJsonResponseProvider(string jsonResponse, HttpStatusCode statusCode = HttpStatusCode.OK)
@@ -1551,7 +1551,7 @@ public class EnhancedConditionalBuilder
             type = "message",
             id = "msg_" + Guid.NewGuid().ToString("N")[..8],
             role = "assistant",
-            model = model,
+            model,
             stop_reason = "end_turn",
             content = new object[] { new { type = "text", text = content } },
             usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
@@ -1654,7 +1654,7 @@ public class ConditionalBuilder
             id = "msg_" + Guid.NewGuid().ToString("N")[..8],
             role = "assistant",
             content = new[] { new { type = "text", text = content } },
-            model = model,
+            model,
             stop_reason = "end_turn",
             usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
         };
@@ -1960,13 +1960,13 @@ public class MockHttpHandlerBuilder
             id = "chatcmpl_test" + Guid.NewGuid().ToString("N")[..8],
             @object = "chat.completion",
             created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            model = model,
+            model,
             choices = new[]
             {
                 new
                 {
                     index = 0,
-                    message = new { role = "assistant", content = content },
+                    message = new { role = "assistant", content },
                     finish_reason = "stop",
                 },
             },
@@ -2730,12 +2730,12 @@ internal class SseFileStream : Stream, IDisposable
                     events.Add(currentEvent);
                 }
 
-                currentEvent = new SseEvent { EventType = line.Substring(7).Trim() };
+                currentEvent = new SseEvent { EventType = line[7..].Trim() };
             }
             else if (line.StartsWith("data: ") && currentEvent != null)
             {
                 // Data for the current event
-                currentEvent.Data = line.Substring(6).Trim();
+                currentEvent.Data = line[6..].Trim();
             }
         }
 
@@ -3439,7 +3439,7 @@ internal class RecordPlaybackMiddleware : IHttpHandlerMiddleware, IDisposable
                     // Extract data lines (lines starting with "data: ")
                     if (line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
                     {
-                        var data = line.Substring(6); // Remove "data: " prefix
+                        var data = line[6..]; // Remove "data: " prefix
                         if (!string.IsNullOrWhiteSpace(data) && data.Trim() != "[DONE]")
                         {
                             dataLines.Add(data.Trim());

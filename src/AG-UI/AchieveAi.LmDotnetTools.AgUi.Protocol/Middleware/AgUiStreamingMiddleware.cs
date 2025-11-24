@@ -78,6 +78,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         // For non-streaming responses, just pass through
         return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
@@ -93,6 +94,7 @@ public class AgUiStreamingMiddleware : IStreamingMiddleware, IToolResultCallback
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         // Get stream from next middleware in the chain
         var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
 

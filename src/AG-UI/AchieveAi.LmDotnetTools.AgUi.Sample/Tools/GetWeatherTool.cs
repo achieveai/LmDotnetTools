@@ -85,7 +85,7 @@ public class GetWeatherTool : IFunctionProvider
             var result = new
             {
                 city = args.City,
-                temperature = temperature,
+                temperature,
                 units = args.Units ?? "celsius",
                 condition = Conditions[Random.Shared.Next(Conditions.Length)],
                 humidity = Random.Shared.Next(30, 90),

@@ -350,16 +350,16 @@ public class BaseEmbeddingServiceApiTypeTests
                     return embeddingResponse?.Embeddings == null
                         ? throw new InvalidOperationException("Invalid response from API")
                         : new EmbeddingResponse
-                    {
-                        Embeddings = [.. embeddingResponse
+                        {
+                            Embeddings = [.. embeddingResponse
                             .Embeddings.Select(e => new EmbeddingItem
                             {
                                 Vector = e.Vector,
                                 Index = e.Index,
                                 Text = e.Text,
                             })],
-                        Model = embeddingResponse.Model,
-                        Usage =
+                            Model = embeddingResponse.Model,
+                            Usage =
                             embeddingResponse.Usage != null
                                 ? new EmbeddingUsage
                                 {
@@ -367,7 +367,7 @@ public class BaseEmbeddingServiceApiTypeTests
                                     TotalTokens = embeddingResponse.Usage.TotalTokens,
                                 }
                                 : null,
-                    };
+                        };
                 },
                 cancellationToken: cancellationToken
             );

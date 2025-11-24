@@ -8,7 +8,7 @@ public sealed record ResponseFormat
     /// <summary>
     /// Predefined instance for JSON object response format
     /// </summary>
-    public static readonly ResponseFormat JSON = new ResponseFormat();
+    public static readonly ResponseFormat JSON = new();
 
     /// <summary>
     /// The type of response format.
@@ -343,29 +343,40 @@ public static class JsonSchemaTypeHelper
 {
     public static bool IsNullable(JsonSchemaObject schemaObject)
     {
+        ArgumentNullException.ThrowIfNull(schemaObject);
         return schemaObject.Type.Contains("null");
     }
 
     public static bool IsStringType(JsonSchemaObject schemaObject)
     {
+        ArgumentNullException.ThrowIfNull(schemaObject);
         return schemaObject.Type.Contains("string");
     }
 
     public static bool IsTypeString(this JsonSchemaObject schemaObject, string type)
     {
+        ArgumentNullException.ThrowIfNull(schemaObject);
         return schemaObject.Type.Contains(type);
     }
 
     public static bool Contains(this Union<string, IReadOnlyList<string>> type, string value)
     {
-        return type.Is<string>() ? type.Get<string>() == value : type.Get<IReadOnlyList<string>>().Contains(value);
+        ArgumentNullException.ThrowIfNull(value);
+        // Note: 'type' is a struct (Union<T1, T2>) and cannot be null
+
+        var list = type.Get<IReadOnlyList<string>>();
+        ArgumentNullException.ThrowIfNull(list);
+        return type.Is<string>() ? type.Get<string>() == value : list.Contains(value);
     }
 
     public static string GetTypeString(this Union<string, IReadOnlyList<string>> type)
     {
+        // Note: 'type' is a struct (Union<T1, T2>) and cannot be null
+        var list = type.Get<IReadOnlyList<string>>();
+        ArgumentNullException.ThrowIfNull(list);
         return type.Is<string>()
             ? type.Get<string>()
-            : type.Get<IReadOnlyList<string>>().FirstOrDefault(x => x != "null") ?? "object";
+            : list.FirstOrDefault(x => x != "null") ?? "object";
     }
 
     public static Union<string, IReadOnlyList<string>> ToType(string typeString)

@@ -49,6 +49,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
         logger ??= NullLogger<McpClientFunctionProvider>.Instance;
 
         logger.LogInformation(
@@ -128,6 +130,8 @@ public partial class McpClientFunctionProvider : IFunctionProvider
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
         logger ??= NullLogger<McpClientFunctionProvider>.Instance;
 
         logger.LogInformation(
@@ -207,7 +211,7 @@ public partial class McpClientFunctionProvider : IFunctionProvider
             {
                 toolFilterConfig.ProviderConfigs = serverConfigs.ToDictionary(
                     kvp => kvp.Key,
-                    kvp => (AchieveAi.LmDotnetTools.LmCore.Configuration.ProviderFilterConfig)kvp.Value
+                    kvp => kvp.Value
                 );
             }
             toolFilter = new FunctionFilter(toolFilterConfig, logger);

@@ -1,9 +1,3 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Middleware;
 
 public class MessageTransformationMiddlewareTests
@@ -329,7 +323,7 @@ public class MessageTransformationMiddlewareTests
         private readonly IMessage[] _responsesToReturn;
         public List<IMessage> ReceivedMessages { get; } = new();
 
-        public string Name => "MockAgent";
+        public static string Name => "MockAgent";
 
         public MockAgent(params IMessage[] responsesToReturn)
         {
@@ -350,7 +344,7 @@ public class MessageTransformationMiddlewareTests
     {
         private readonly IAsyncEnumerable<IMessage> _streamToReturn;
 
-        public string Name => "MockStreamingAgent";
+        public static string Name => "MockStreamingAgent";
 
         public MockStreamingAgent(IAsyncEnumerable<IMessage> streamToReturn)
         {

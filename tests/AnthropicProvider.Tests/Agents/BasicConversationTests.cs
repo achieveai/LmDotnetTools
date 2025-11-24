@@ -41,7 +41,7 @@ public class BasicConversationTests
         foreach (var msg in messages)
         {
             TestLogger.Log(
-                $"Message - Role: {msg.Role}, Type: {msg.GetType().Name}, Text: {(msg as TextMessage)?.Text ?? "null"}"
+                $"Message - Role: {msg.Role}, Type: {msg.GetType().Name}, Text: {msg?.Text ?? "null"}"
             );
         }
 

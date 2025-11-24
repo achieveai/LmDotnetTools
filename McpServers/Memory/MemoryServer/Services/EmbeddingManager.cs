@@ -38,6 +38,7 @@ public class EmbeddingManager : IEmbeddingManager
         IOptions<MemoryServerOptions> options
     )
     {
+        ArgumentNullException.ThrowIfNull(options);
         _lmConfigService = lmConfigService;
         _memoryRepository = memoryRepository;
         _cache = cache;

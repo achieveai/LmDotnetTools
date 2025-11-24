@@ -151,6 +151,7 @@ public class ToolsCallMessageBuilder : IMessageBuilder<ToolsCallMessage, ToolsCa
 
     public void Add(ToolsCallUpdateMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         // Capture GenerationId from the message update if not already set
         if (GenerationId == null && streamingMessageUpdate.GenerationId != null)
         {

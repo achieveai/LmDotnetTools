@@ -8,7 +8,7 @@ namespace AchieveAi.LmDotnetTools.LmTestUtils;
 public static class EnvironmentHelper
 {
     private static bool _envLoaded = false;
-    private static readonly object _lockObject = new object();
+    private static readonly object _lockObject = new();
 
     /// <summary>
     /// Loads environment variables from .env file if not already loaded.

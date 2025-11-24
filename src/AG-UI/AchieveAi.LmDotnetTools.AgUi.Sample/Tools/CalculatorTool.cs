@@ -99,7 +99,7 @@ public class CalculatorTool : IFunctionProvider
                 operation = args.Operation,
                 a = args.A,
                 b = args.B,
-                result = result,
+                result,
                 timestamp = DateTime.UtcNow.ToString("o"),
             };
 

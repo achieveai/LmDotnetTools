@@ -49,6 +49,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         // Check if options is null or doesn't contain ModelId
         if (context.Options?.ModelId == null)
         {
@@ -111,6 +112,7 @@ public class ModelFallbackMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         // Check if options is null or doesn't contain ModelId
         if (context.Options?.ModelId == null)
         {

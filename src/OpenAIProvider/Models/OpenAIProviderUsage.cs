@@ -105,6 +105,8 @@ public record OpenAIProviderUsage
     /// </summary>
     public static OpenAIProviderUsage FromCoreUsage(Usage coreUsage)
     {
+        ArgumentNullException.ThrowIfNull(coreUsage);
+
         return new OpenAIProviderUsage
         {
             PromptTokens = coreUsage.PromptTokens,

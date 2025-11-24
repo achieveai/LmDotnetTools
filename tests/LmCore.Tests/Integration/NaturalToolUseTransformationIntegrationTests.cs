@@ -51,7 +51,7 @@ public class NaturalToolUseTransformationIntegrationTests
         // Assert - Verify the transformation
         _ = Assert.IsType<TextMessage>(transformed);
 
-        var textMessage = (TextMessage)transformed;
+        var textMessage = transformed;
 
         // Check basic properties are preserved
         Assert.Equal(Role.Assistant, textMessage.Role);

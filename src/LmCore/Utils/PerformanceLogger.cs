@@ -153,7 +153,7 @@ public static class TokenMetrics
     /// <returns>Tokens per second</returns>
     public static double CalculateTokensPerSecond(int tokenCount, long durationMs)
     {
-        return durationMs <= 0 ? 0 : (double)tokenCount / (durationMs / 1000.0);
+        return durationMs <= 0 ? 0 : tokenCount / (durationMs / 1000.0);
     }
 
     /// <summary>

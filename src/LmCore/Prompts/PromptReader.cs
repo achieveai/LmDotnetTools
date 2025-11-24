@@ -42,6 +42,8 @@ public class PromptReader : IPromptReader
     /// <param name="resourceName">The name of the embedded resource.</param>
     public PromptReader(Assembly assembly, string resourceName)
     {
+        ArgumentNullException.ThrowIfNull(assembly);
+
         using var stream =
             assembly.GetManifestResourceStream(resourceName)
             ?? throw new FileNotFoundException(

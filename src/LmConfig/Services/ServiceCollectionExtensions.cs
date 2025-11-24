@@ -24,6 +24,8 @@ public static class ServiceCollectionExtensions
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfig(this IServiceCollection services, IConfiguration configuration)
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
         return services.AddLmConfig(configuration.GetSection("LmConfig"));
     }
 
@@ -38,6 +40,8 @@ public static class ServiceCollectionExtensions
         IConfigurationSection configurationSection
     )
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configurationSection);
         // Configure AppConfig from configuration
         _ = services.Configure<AppConfig>(configurationSection);
 
@@ -53,6 +57,7 @@ public static class ServiceCollectionExtensions
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddLmConfig(this IServiceCollection services, AppConfig appConfig)
     {
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(appConfig);
 
         // Configure AppConfig as singleton
@@ -122,6 +127,8 @@ public static class ServiceCollectionExtensions
         Action<LmConfigOptions> configureOptions
     )
     {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configureOptions);
         var options = new LmConfigOptions();
         configureOptions(options);
 

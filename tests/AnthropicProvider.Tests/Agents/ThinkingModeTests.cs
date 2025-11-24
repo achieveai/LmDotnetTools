@@ -140,8 +140,7 @@ public class ThinkingModeTests
             Description = "Execute Python code in a Docker container",
             Parameters = new List<FunctionParameterContract>
             {
-                new FunctionParameterContract
-                {
+                new() {
                     Name = "code",
                     Description = "Python code to execute",
                     ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),

@@ -159,6 +159,9 @@ public record OpenUsage
 
     public static OpenUsage operator +(OpenUsage a, OpenUsage b)
     {
+        ArgumentNullException.ThrowIfNull(a);
+        ArgumentNullException.ThrowIfNull(b);
+
         return new OpenUsage
         {
             ModelId = a.ModelId,

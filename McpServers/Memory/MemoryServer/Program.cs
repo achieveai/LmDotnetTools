@@ -272,6 +272,8 @@ public class Startup
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
     {
+        ArgumentNullException.ThrowIfNull(app);
+
         // Initialize database using our extension method to avoid deadlock
         app.ApplicationServices.InitializeDatabaseSync();
 

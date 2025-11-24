@@ -116,7 +116,7 @@ public class OpenRouterUsageMiddlewareTests : IDisposable
             {
                 data = new
                 {
-                    model = model,
+                    model,
                     tokens_prompt = promptTokens,
                     tokens_completion = completionTokens,
                     total_cost = totalCost,

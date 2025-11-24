@@ -260,7 +260,7 @@ public class TestSqliteSessionFactory : ISqliteSessionFactory
             var trimmed = part.Trim();
             if (trimmed.StartsWith("Data Source=", StringComparison.OrdinalIgnoreCase))
             {
-                return trimmed.Substring("Data Source=".Length);
+                return trimmed["Data Source=".Length..];
             }
         }
         return string.Empty;

@@ -389,8 +389,8 @@ public class AnthropicStreamParser
                 "usage",
                 new
                 {
-                    InputTokens = _usage.InputTokens,
-                    OutputTokens = _usage.OutputTokens,
+                    _usage.InputTokens,
+                    _usage.OutputTokens,
                     TotalTokens = _usage.InputTokens + _usage.OutputTokens,
                 }
             );

@@ -73,7 +73,7 @@ public class TopicBasedDomainSpecificTests
         foreach (var (segment, index) in result.Select((s, i) => (s, i)))
         {
             _output.WriteLine(
-                $"  Segment {index + 1}: {segment.Content.Substring(0, Math.Min(50, segment.Content.Length))}..."
+                $"  Segment {index + 1}: {segment.Content[..Math.Min(50, segment.Content.Length)]}..."
             );
         }
     }

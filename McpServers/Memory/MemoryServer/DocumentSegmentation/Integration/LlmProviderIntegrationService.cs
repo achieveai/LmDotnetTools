@@ -48,6 +48,8 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
+
         _logger.LogDebug(
             "Starting strategy analysis for document type {DocumentType}, content length: {Length}",
             documentType,
@@ -297,7 +299,7 @@ public class LlmProviderIntegrationService : ILlmProviderIntegrationService
                 Strategy = fallback.Strategy,
                 Confidence = Math.Min(fallback.Confidence + 0.1, 1.0),
                 Reasoning =
-                    $"{fallback.Reasoning} Enhanced with LLM analysis: {content.Substring(0, Math.Min(200, content.Length))}...",
+                    $"{fallback.Reasoning} Enhanced with LLM analysis: {content[..Math.Min(200, content.Length)]}...",
                 Alternatives = fallback.Alternatives,
             };
 

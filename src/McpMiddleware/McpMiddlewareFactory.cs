@@ -67,6 +67,8 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(config);
+
         _logger.LogInformation("Creating MCP middleware from config with {ClientCount} clients", config.Clients.Count);
 
         _logger.LogDebug(
@@ -329,6 +331,8 @@ public class McpMiddlewareFactory
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
         _logger.LogInformation("Creating MCP middleware from {ClientCount} clients asynchronously", mcpClients.Count);
 
         _logger.LogDebug(

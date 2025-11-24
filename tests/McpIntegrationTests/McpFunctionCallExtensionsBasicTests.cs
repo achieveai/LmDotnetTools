@@ -16,14 +16,12 @@ public class McpFunctionCallExtensionsBasicTests
         // Arrange - create simple function contracts and handlers
         var functionContracts = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "Echo",
                 Description = "Returns the input text",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "text",
                         Description = "Text to echo",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -31,21 +29,18 @@ public class McpFunctionCallExtensionsBasicTests
                     },
                 },
             },
-            new FunctionContract
-            {
+            new() {
                 Name = "Add",
                 Description = "Adds two numbers",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "a",
                         Description = "First number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
                         IsRequired = true,
                     },
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "b",
                         Description = "Second number",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(double)),
@@ -102,14 +97,12 @@ public class McpFunctionCallExtensionsBasicTests
         // Arrange - create simple function contracts and handlers
         var functionContracts = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "Echo",
                 Description = "Returns the input text",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "text",
                         Description = "Text to echo",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),

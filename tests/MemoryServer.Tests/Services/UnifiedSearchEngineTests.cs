@@ -179,8 +179,7 @@ public class UnifiedSearchEngineTests
         // Setup mock responses
         var mockMemories = new List<Memory>
         {
-            new Memory
-            {
+            new() {
                 Id = 1,
                 Content = "Test memory content",
                 UserId = sessionContext.UserId,
@@ -190,8 +189,7 @@ public class UnifiedSearchEngineTests
 
         var mockEntities = new List<Entity>
         {
-            new Entity
-            {
+            new() {
                 Id = 1,
                 Name = "Test Entity",
                 Type = "Person",
@@ -202,8 +200,7 @@ public class UnifiedSearchEngineTests
 
         var mockRelationships = new List<Relationship>
         {
-            new Relationship
-            {
+            new() {
                 Id = 1,
                 Source = "Entity1",
                 Target = "Entity2",
@@ -614,8 +611,7 @@ public class UnifiedSearchEngineTests
         // Setup mock responses with different scores
         var mockMemories = new List<Memory>
         {
-            new Memory
-            {
+            new() {
                 Id = 1,
                 Content = "Test memory",
                 UserId = sessionContext.UserId,
@@ -625,8 +621,7 @@ public class UnifiedSearchEngineTests
 
         var mockEntities = new List<Entity>
         {
-            new Entity
-            {
+            new() {
                 Id = 1,
                 Name = "Test Entity",
                 Type = "Person",
@@ -637,8 +632,7 @@ public class UnifiedSearchEngineTests
 
         var mockRelationships = new List<Relationship>
         {
-            new Relationship
-            {
+            new() {
                 Id = 1,
                 Source = "Entity1",
                 Target = "Entity2",

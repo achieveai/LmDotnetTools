@@ -37,10 +37,11 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
     )
     {
         // Generate reply from the agent
+        ArgumentNullException.ThrowIfNull(agent);
         var replies = await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
 
         // Assign message ordering
-        var orderedMessages = AssignMessageOrdering(replies);
+        var orderedMessages = MessageOrderingMiddleware.AssignMessageOrdering(replies);
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
@@ -60,6 +61,7 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
     )
     {
         // Get the streaming response from the agent
+        ArgumentNullException.ThrowIfNull(agent);
         var streamingResponse = await agent.GenerateReplyStreamingAsync(
             context.Messages,
             context.Options,
@@ -67,13 +69,13 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
         );
 
         // Wrap the async enumerable to assign ordering on the fly
-        return AssignMessageOrderingStreaming(streamingResponse);
+        return MessageOrderingMiddleware.AssignMessageOrderingStreaming(streamingResponse);
     }
 
     /// <summary>
     /// Assigns messageOrderIdx to messages with the same GenerationId
     /// </summary>
-    private IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
+    private static IEnumerable<IMessage> AssignMessageOrdering(IEnumerable<IMessage> messages)
     {
         var messageList = messages.ToList();
         var orderIndexByGeneration = new Dictionary<string, int>();
@@ -143,7 +145,7 @@ public class MessageOrderingMiddleware : IStreamingMiddleware
     /// <summary>
     /// Assigns messageOrderIdx to streaming messages on the fly
     /// </summary>
-    private async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
+    private static async IAsyncEnumerable<IMessage> AssignMessageOrderingStreaming(
         IAsyncEnumerable<IMessage> messages
     )
     {

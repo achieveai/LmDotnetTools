@@ -51,9 +51,9 @@ public class ImmutableDictionarySerializationTests
             return ExtraProperties == null
                 ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
                 : (this with
-            {
-                ExtraProperties = ExtraProperties.Add(key, value),
-            });
+                {
+                    ExtraProperties = ExtraProperties.Add(key, value),
+                });
         }
 
         public T? GetExtraProperty<T>(string key)
@@ -86,9 +86,9 @@ public class ImmutableDictionarySerializationTests
             return ExtraProperties == null
                 ? (this with { ExtraProperties = ImmutableDictionary<string, object?>.Empty.Add(key, value) })
                 : (this with
-            {
-                ExtraProperties = ExtraProperties.Add(key, value),
-            });
+                {
+                    ExtraProperties = ExtraProperties.Add(key, value),
+                });
         }
 
         public T? GetExtraProperty<T>(string key)

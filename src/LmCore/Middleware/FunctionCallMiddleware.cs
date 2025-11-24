@@ -117,6 +117,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
 
         // Generate reply with the configured options
+        ArgumentNullException.ThrowIfNull(agent);
         var replies = await agent.GenerateReplyAsync(context.Messages, options, cancellationToken);
 
         var processedReplies = new List<IMessage>();
@@ -297,6 +298,7 @@ public class FunctionCallMiddleware : IStreamingMiddleware
         }
 
         // Get the streaming response from the agent
+        ArgumentNullException.ThrowIfNull(agent);
         var streamingResponse = await agent.GenerateReplyStreamingAsync(context.Messages, options, cancellationToken);
 
         // Return a transformed stream that applies the builder pattern

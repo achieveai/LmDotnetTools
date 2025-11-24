@@ -12,6 +12,8 @@ public static class FunctionContractExtension
     /// <returns><see cref="FunctionDefinition"/></returns>
     public static FunctionDefinition ToOpenFunctionDefinition(this FunctionContract functionContract)
     {
+        ArgumentNullException.ThrowIfNull(functionContract);
+
         var name = functionContract.Name ?? throw new Exception("Function name cannot be null");
         var description = functionContract.Description ?? throw new Exception("Function description cannot be null");
 

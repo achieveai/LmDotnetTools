@@ -17,10 +17,11 @@ public class SqliteManager : IDisposable
     private readonly SemaphoreSlim _initSemaphore;
     private readonly DatabaseOptions _options;
     private bool _isInitialized = false;
-    private readonly object _initLock = new object();
+    private readonly object _initLock = new();
 
     public SqliteManager(IOptions<DatabaseOptions> options, ILogger<SqliteManager> logger)
     {
+        ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
         _connectionString = _options.ConnectionString;
         _logger = logger;
@@ -680,6 +681,7 @@ public class ManagedSqliteConnection : IDisposable
 
     public ManagedSqliteConnection(SqliteConnection connection, SqliteManager manager)
     {
+        ArgumentNullException.ThrowIfNull(connection);
         _connection = connection;
         _manager = manager;
         _connectionId = Interlocked.Increment(ref _nextConnectionId);
@@ -751,5 +753,9 @@ public class ManagedSqliteConnection : IDisposable
     }
 
     // Implicit conversion to SqliteConnection for compatibility
-    public static implicit operator SqliteConnection(ManagedSqliteConnection managed) => managed._connection;
+    public static implicit operator SqliteConnection(ManagedSqliteConnection managed)
+    {
+        ArgumentNullException.ThrowIfNull(managed);
+        return managed._connection;
+    }
 }

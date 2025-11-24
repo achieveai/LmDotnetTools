@@ -58,6 +58,8 @@ public class AgentController : ControllerBase
         CancellationToken cancellationToken
     )
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         _logger.LogInformation(
             "RunAgent called with agent: {AgentName}, message: {Message}, stream: {Stream}",
             request.AgentName,

@@ -67,6 +67,8 @@ public class LmCoreToAgUiConverter : ILmCoreToAgUiConverter
     /// <inheritdoc/>
     public DataObjects.DTOs.ToolCall ConvertToolCall(ToolCall toolCall)
     {
+        ArgumentNullException.ThrowIfNull(toolCall);
+
         if (string.IsNullOrWhiteSpace(toolCall.ToolCallId))
         {
             throw new ArgumentException("ToolCall.ToolCallId cannot be null or empty", nameof(toolCall));

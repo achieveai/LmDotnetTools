@@ -1,9 +1,3 @@
-using System.Collections.Immutable;
-using AchieveAi.LmDotnetTools.LmCore.Agents;
-using AchieveAi.LmDotnetTools.LmCore.Messages;
-using AchieveAi.LmDotnetTools.LmCore.Middleware;
-using Xunit;
-
 namespace AchieveAi.LmDotnetTools.LmCore.Tests.Integration;
 
 /// <summary>
@@ -314,7 +308,7 @@ public class AgenticLoopIntegrationTests
         private readonly Queue<IMessage> _responsesToReturn;
         public List<IMessage> ReceivedMessages { get; } = new();
 
-        public string Name => "MockAgent";
+        public static string Name => "MockAgent";
 
         public MockAgent(params IMessage[] responsesToReturn)
         {
@@ -351,7 +345,7 @@ public class AgenticLoopIntegrationTests
     {
         private readonly Queue<IEnumerable<IMessage>> _responseSequence;
 
-        public string Name => "MockSequentialAgent";
+        public static string Name => "MockSequentialAgent";
 
         public MockSequentialAgent(params IEnumerable<IMessage>[] responseSequence)
         {
@@ -377,7 +371,7 @@ public class AgenticLoopIntegrationTests
         private readonly IMessage _responseToReturn;
         public List<IMessage> ReceivedMessages { get; } = new();
 
-        public string Name => "MessageTrackingAgent";
+        public static string Name => "MessageTrackingAgent";
 
         public MessageTrackingAgent(IMessage responseToReturn)
         {
@@ -399,7 +393,7 @@ public class AgenticLoopIntegrationTests
         private readonly IMessage _responseToReturn;
         public GenerateReplyOptions? CapturedOptions { get; private set; }
 
-        public string Name => "OptionsCapturingAgent";
+        public static string Name => "OptionsCapturingAgent";
 
         public OptionsCapturingAgent(IMessage responseToReturn)
         {

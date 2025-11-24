@@ -109,6 +109,9 @@ public class ExtraPropertiesConverter : JsonConverter<ImmutableDictionary<string
         JsonSerializerOptions options
     )
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
         writer.WriteStartObject();
         foreach (var kvp in value)
         {

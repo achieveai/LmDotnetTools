@@ -345,8 +345,7 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
         // Arrange
         var segments = new List<DocumentSegment>
         {
-            new DocumentSegment
-            {
+            new() {
                 Id = "seg1",
                 Content =
                     "First, we need to understand the problem. The issue began when users started reporting errors.",
@@ -357,8 +356,7 @@ Resolution: Finally, we implemented a load balancing solution that resolved the 
                     ["narrative_function"] = NarrativeFunction.Setup.ToString(),
                 },
             },
-            new DocumentSegment
-            {
+            new() {
                 Id = "seg2",
                 Content =
                     "Then, we investigated the cause. After analysis, we found the root issue was in the database.",

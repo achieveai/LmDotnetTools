@@ -24,15 +24,13 @@ public class NaturalToolUseMiddlewareTests
                 Description = "A test tool",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "location",
                         ParameterType = new JsonSchemaObject { Type = "string" },
                         Description = "First parameter",
                         IsRequired = true,
                     },
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "unit",
                         ParameterType = new JsonSchemaObject { Type = "string" },
                         Description = "Second parameter",

@@ -84,6 +84,9 @@ public class ImmutableDictionaryJsonConverter<TKey, TValue> : JsonConverter<Immu
         JsonSerializerOptions options
     )
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+
         writer.WriteStartObject();
 
         foreach (var kvp in value)

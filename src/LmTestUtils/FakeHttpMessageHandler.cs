@@ -241,13 +241,13 @@ public class FakeHttpMessageHandler : HttpMessageHandler
             id = "chatcmpl-test123",
             @object = "chat.completion",
             created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            model = model,
+            model,
             choices = new[]
             {
                 new
                 {
                     index = 0,
-                    message = new { role = "assistant", content = content },
+                    message = new { role = "assistant", content },
                     finish_reason = "stop",
                 },
             },
@@ -291,7 +291,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                     text = content,
                 },
             },
-            model = model,
+            model,
             stop_reason = "end_turn",
             stop_sequence = (string?)null,
             usage = new { input_tokens = inputTokens, output_tokens = outputTokens },
@@ -323,7 +323,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                         id = "chatcmpl-test123",
                         @object = "chat.completion.chunk",
                         created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                        model = model,
+                        model,
                         choices = new[]
                         {
                             new
@@ -348,7 +348,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                             id = "chatcmpl-test123",
                             @object = "chat.completion.chunk",
                             created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                            model = model,
+                            model,
                             choices = new[]
                             {
                                 new
@@ -372,7 +372,7 @@ public class FakeHttpMessageHandler : HttpMessageHandler
                         id = "chatcmpl-test123",
                         @object = "chat.completion.chunk",
                         created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                        model = model,
+                        model,
                         choices = new[]
                         {
                             new

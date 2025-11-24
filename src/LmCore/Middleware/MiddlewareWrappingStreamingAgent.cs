@@ -32,6 +32,7 @@ public class MiddlewareWrappingStreamingAgent : IStreamingAgent
 
     public MiddlewareWrappingStreamingAgent(IStreamingAgent agent, IStreamingMiddleware middleware)
     {
+        ArgumentNullException.ThrowIfNull(middleware);
         _agent = agent;
         _middleware = middleware.InvokeAsync;
         _streamingMiddleware = middleware.InvokeStreamingAsync;

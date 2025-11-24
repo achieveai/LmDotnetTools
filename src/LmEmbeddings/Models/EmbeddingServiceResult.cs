@@ -96,6 +96,8 @@ public record EmbeddingServiceResult<T>
         RequestMetrics? metrics = null
     )
     {
+        ArgumentNullException.ThrowIfNull(exception);
+
         var errorSource = ClassifyException(exception);
         var isRetryable = IsRetryableException(exception);
 
@@ -210,6 +212,8 @@ public static class EmbeddingResults
     /// </summary>
     public static EmbeddingServiceResult<T> RateLimitError<T>(RateLimitInfo rateLimitInfo, string? requestId = null)
     {
+        ArgumentNullException.ThrowIfNull(rateLimitInfo);
+
         var error = new EmbeddingError
         {
             Code = "RATE_LIMIT_EXCEEDED",

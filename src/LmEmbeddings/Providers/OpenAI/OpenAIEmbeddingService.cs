@@ -339,11 +339,11 @@ public class OpenAIEmbeddingService : BaseEmbeddingService
                     + $"Consider omitting EncodingFormat to enable auto-detection."
             )
             : requestedFormat switch
-        {
-            "base64" => DecodeBase64Embedding(embedding.ToString()!),
-            "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
-            _ => throw new NotSupportedException($"Encoding format '{requestedFormat}' is not supported"),
-        };
+            {
+                "base64" => DecodeBase64Embedding(embedding.ToString()!),
+                "float" => DecodeFloatArrayEmbedding((JsonElement)embedding),
+                _ => throw new NotSupportedException($"Encoding format '{requestedFormat}' is not supported"),
+            };
     }
 
     /// <summary>

@@ -46,6 +46,8 @@ public static class McpFunctionCallExtensions
         IDictionary<string, Func<string, Task<string>>>
     ) CreateFunctionCallComponentsFromTypes(IEnumerable<Type> toolTypes)
     {
+        ArgumentNullException.ThrowIfNull(toolTypes);
+
         var functionContracts = new List<FunctionContract>();
         var functionMap = new Dictionary<string, Func<string, Task<string>>>();
 

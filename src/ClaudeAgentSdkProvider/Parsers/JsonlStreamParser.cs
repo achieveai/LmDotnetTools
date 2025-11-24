@@ -51,7 +51,7 @@ public class JsonlStreamParser
     /// Convert an AssistantMessageEvent to IMessage instances
     /// Returns multiple messages: content messages + usage message
     /// </summary>
-    public IEnumerable<IMessage> ConvertToMessages(AssistantMessageEvent assistantEvent)
+    public static IEnumerable<IMessage> ConvertToMessages(AssistantMessageEvent assistantEvent)
     {
         ArgumentNullException.ThrowIfNull(assistantEvent);
 
@@ -67,7 +67,7 @@ public class JsonlStreamParser
         // Process each content block
         foreach (var contentBlock in assistantEvent.Message.Content)
         {
-            var message = ConvertContentBlock(contentBlock, role, generationId, runId, parentRunId, threadId);
+            var message = JsonlStreamParser.ConvertContentBlock(contentBlock, role, generationId, runId, parentRunId, threadId);
             if (message != null)
             {
                 messages.Add(message);
@@ -77,7 +77,7 @@ public class JsonlStreamParser
         // Add usage message if available
         if (assistantEvent.Message.Usage != null)
         {
-            var usageMessage = ConvertUsage(
+            var usageMessage = JsonlStreamParser.ConvertUsage(
                 assistantEvent.Message.Usage,
                 role,
                 generationId,
@@ -122,7 +122,7 @@ public class JsonlStreamParser
             {
                 foreach (var contentBlock in contentBlocks)
                 {
-                    var message = ConvertContentBlock(contentBlock, role, generationId, runId, null, threadId);
+                    var message = JsonlStreamParser.ConvertContentBlock(contentBlock, role, generationId, runId, null, threadId);
                     if (message != null)
                     {
                         messages.Add(message);
@@ -154,7 +154,7 @@ public class JsonlStreamParser
     /// <summary>
     /// Convert a single content block to an IMessage
     /// </summary>
-    private IMessage? ConvertContentBlock(
+    private static IMessage? ConvertContentBlock(
         ContentBlock contentBlock,
         Role role,
         string generationId,
@@ -221,7 +221,7 @@ public class JsonlStreamParser
     /// <summary>
     /// Convert usage information to UsageMessage
     /// </summary>
-    private UsageMessage ConvertUsage(
+    private static UsageMessage ConvertUsage(
         UsageInfo usageInfo,
         Role role,
         string generationId,

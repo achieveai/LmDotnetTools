@@ -347,6 +347,7 @@ public static class FunctionRegistryTypeExtensions
         int priority = 100
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
         var provider = new TypeFunctionProvider(type, providerName, priority);
         return registry.AddProvider(provider);
     }
@@ -366,6 +367,7 @@ public static class FunctionRegistryTypeExtensions
         int priority = 100
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
         var provider = new TypeFunctionProvider(instance, providerName, priority);
         return registry.AddProvider(provider);
     }
@@ -383,6 +385,9 @@ public static class FunctionRegistryTypeExtensions
         int priority = 100
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(types);
+
         foreach (var type in types)
         {
             _ = registry.AddFunctionsFromType(type, type.Name, priority);

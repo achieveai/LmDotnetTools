@@ -14,6 +14,7 @@ public static class MessageExtensions
     /// </summary>
     public static IEnumerable<string> GetAllTextContent(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetText textMessage)
@@ -32,6 +33,7 @@ public static class MessageExtensions
     /// </summary>
     public static IEnumerable<BinaryData> GetAllBinaryContent(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetBinary binaryMessage)
@@ -50,6 +52,7 @@ public static class MessageExtensions
     /// </summary>
     public static IEnumerable<ToolCall> GetAllToolCalls(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetToolCalls toolCallMessage)
@@ -95,6 +98,7 @@ public static class MessageExtensions
     /// </summary>
     public static IEnumerable<Usage> GetAllUsage(this IEnumerable<IMessage> messages)
     {
+        ArgumentNullException.ThrowIfNull(messages);
         foreach (var message in messages)
         {
             if (message is ICanGetUsage usageMessage)

@@ -412,7 +412,7 @@ public partial class ModelConfigGeneratorService
                 {
                     m.Id,
                     Family = GetModelFamily(m.Id),
-                    IsReasoning = m.IsReasoning,
+                    m.IsReasoning,
                     HasMultimodal = m.HasCapability("multimodal"),
                     ContextLength = m.Capabilities?.TokenLimits?.MaxContextTokens,
                     ProviderCount = m.Providers.Count,

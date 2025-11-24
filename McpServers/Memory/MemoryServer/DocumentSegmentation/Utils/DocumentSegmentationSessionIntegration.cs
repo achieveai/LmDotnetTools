@@ -43,6 +43,8 @@ public class DocumentSegmentationSessionIntegration
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(sessionContext);
+
         _logger.LogInformation(
             "Starting document segmentation workflow for document {DocumentId} in session {UserId}/{AgentId}/{RunId}",
             parentDocumentId,
@@ -121,6 +123,8 @@ public class DocumentSegmentationSessionIntegration
 
             // Step 5: Create sample segments (in a real implementation, this would use LLM)
             _logger.LogDebug("Step 5: Creating sample segments...");
+            ArgumentNullException.ThrowIfNull(content);
+            ArgumentNullException.ThrowIfNull(result.DocumentStatistics);
             result.Segments = CreateSampleSegments(content, result.DocumentStatistics, sessionContext);
 
             // Step 6: Store segments in database using session pattern

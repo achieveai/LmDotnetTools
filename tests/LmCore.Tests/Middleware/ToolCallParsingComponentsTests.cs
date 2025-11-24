@@ -307,7 +307,7 @@ public class ToolCallParsingComponentsTests
         if (shouldMatch)
         {
             Assert.Equal(expectedStartIndex, result.StartIndex);
-            Assert.Equal(input.Substring(expectedStartIndex), result.PartialPattern);
+            Assert.Equal(input[expectedStartIndex..], result.PartialPattern);
         }
         else
         {

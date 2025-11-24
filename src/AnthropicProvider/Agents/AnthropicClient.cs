@@ -73,6 +73,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(request);
         var metrics = RequestMetrics.StartNew(ProviderName, request.Model, "ChatCompletion");
 
         try
@@ -150,6 +151,7 @@ public class AnthropicClient : BaseHttpService, IAnthropicClient
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(request);
         var metrics = RequestMetrics.StartNew(ProviderName, request.Model, "StreamingChatCompletion");
 
         try

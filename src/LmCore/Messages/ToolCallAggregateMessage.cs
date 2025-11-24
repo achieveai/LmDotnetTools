@@ -75,6 +75,9 @@ public record ToolsCallAggregateMessage : IMessage
         string? fromAgent = null
     )
     {
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
+        ArgumentNullException.ThrowIfNull(toolCallResult);
+
         ToolsCallMessage = toolCallMessage;
         ToolsCallResult = toolCallResult;
         FromAgent = fromAgent;

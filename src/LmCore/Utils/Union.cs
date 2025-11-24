@@ -52,6 +52,7 @@ public record Union<T1, T2> : Union
     public Union(Union<T1, T2> other)
         : base(other)
     {
+        ArgumentNullException.ThrowIfNull(other);
         _v1 = other._v1;
         _v2 = other._v2;
     }
@@ -70,13 +71,21 @@ public record Union<T1, T2> : Union
         return base.Get<T>();
     }
 
-    public static implicit operator T1(Union<T1, T2> union) => union.Get<T1>();
+    public static implicit operator T1(Union<T1, T2> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T1>();
+    }
 
-    public static implicit operator T2(Union<T1, T2> union) => union.Get<T2>();
+    public static implicit operator T2(Union<T1, T2> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T2>();
+    }
 
-    public static implicit operator Union<T1, T2>(T1 value) => new Union<T1, T2>(value);
+    public static implicit operator Union<T1, T2>(T1 value) => new(value);
 
-    public static implicit operator Union<T1, T2>(T2 value) => new Union<T1, T2>(value);
+    public static implicit operator Union<T1, T2>(T2 value) => new(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -144,6 +153,7 @@ public record Union<T1, T2, T3> : Union<T1, T2>
     public Union(Union<T1, T2, T3> other)
         : base(other as Union<T1, T2>)
     {
+        ArgumentNullException.ThrowIfNull(other);
         _v3 = other._v3;
     }
 
@@ -152,17 +162,29 @@ public record Union<T1, T2, T3> : Union<T1, T2>
         return typeof(T).IsAssignableFrom(typeof(T3)) ? (T)(object)_v3! : base.Get<T>();
     }
 
-    public static implicit operator T1(Union<T1, T2, T3> union) => union.Get<T1>();
+    public static implicit operator T1(Union<T1, T2, T3> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T1>();
+    }
 
-    public static implicit operator T2(Union<T1, T2, T3> union) => union.Get<T2>();
+    public static implicit operator T2(Union<T1, T2, T3> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T2>();
+    }
 
-    public static implicit operator T3(Union<T1, T2, T3> union) => union.Get<T3>();
+    public static implicit operator T3(Union<T1, T2, T3> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T3>();
+    }
 
-    public static implicit operator Union<T1, T2, T3>(T1 value) => new Union<T1, T2, T3>(value);
+    public static implicit operator Union<T1, T2, T3>(T1 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3>(T2 value) => new Union<T1, T2, T3>(value);
+    public static implicit operator Union<T1, T2, T3>(T2 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3>(T3 value) => new Union<T1, T2, T3>(value);
+    public static implicit operator Union<T1, T2, T3>(T3 value) => new(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -230,6 +252,7 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
     public Union(Union<T1, T2, T3, T4> other)
         : base(other as Union<T1, T2, T3>)
     {
+        ArgumentNullException.ThrowIfNull(other);
         _v4 = other._v4;
     }
 
@@ -238,21 +261,37 @@ public record Union<T1, T2, T3, T4> : Union<T1, T2, T3>
         return typeof(T).IsAssignableFrom(typeof(T4)) ? (T)(object)_v4! : base.Get<T>();
     }
 
-    public static implicit operator T1(Union<T1, T2, T3, T4> union) => union.Get<T1>();
+    public static implicit operator T1(Union<T1, T2, T3, T4> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T1>();
+    }
 
-    public static implicit operator T2(Union<T1, T2, T3, T4> union) => union.Get<T2>();
+    public static implicit operator T2(Union<T1, T2, T3, T4> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T2>();
+    }
 
-    public static implicit operator T3(Union<T1, T2, T3, T4> union) => union.Get<T3>();
+    public static implicit operator T3(Union<T1, T2, T3, T4> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T3>();
+    }
 
-    public static implicit operator T4(Union<T1, T2, T3, T4> union) => union.Get<T4>();
+    public static implicit operator T4(Union<T1, T2, T3, T4> union)
+    {
+        ArgumentNullException.ThrowIfNull(union);
+        return union.Get<T4>();
+    }
 
-    public static implicit operator Union<T1, T2, T3, T4>(T1 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T1 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T2 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T2 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T3 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T3 value) => new(value);
 
-    public static implicit operator Union<T1, T2, T3, T4>(T4 value) => new Union<T1, T2, T3, T4>(value);
+    public static implicit operator Union<T1, T2, T3, T4>(T4 value) => new(value);
 
     public override void Serialize(Utf8JsonWriter writer, JsonSerializerOptions options)
     {
@@ -299,6 +338,9 @@ public class UnionJsonConverter<T1, T2> : JsonConverter<Union<T1, T2>>
 
     public override void Write(Utf8JsonWriter writer, Union<T1, T2> value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(options);
         value.Serialize(writer, options);
     }
 }
@@ -317,6 +359,9 @@ public class UnionJsonConverter<T1, T2, T3> : JsonConverter<Union<T1, T2, T3>>
 
     public override void Write(Utf8JsonWriter writer, Union<T1, T2, T3> value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(options);
         value.Serialize(writer, options);
     }
 }
@@ -335,6 +380,9 @@ public class UnionJsonConverter<T1, T2, T3, T4> : JsonConverter<Union<T1, T2, T3
 
     public override void Write(Utf8JsonWriter writer, Union<T1, T2, T3, T4> value, JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(options);
         value.Serialize(writer, options);
     }
 }

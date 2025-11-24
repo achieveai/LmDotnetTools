@@ -731,7 +731,7 @@ public class TopicBasedLoadTestingTests
             _ = content.AppendLine();
         }
 
-        return content.ToString().Substring(0, Math.Min(targetSize, content.Length));
+        return content.ToString()[..Math.Min(targetSize, content.Length)];
     }
 
     private static string GenerateLegalDocument()

@@ -58,6 +58,8 @@ public class CopilotKitController : ControllerBase
         CancellationToken cancellationToken
     )
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         _logger.LogInformation(
             "CopilotKit request received - ThreadId: {ThreadId}, RunId: {RunId}, AgentName: {AgentName}",
             request.ThreadId ?? "NULL",

@@ -386,7 +386,7 @@ public class AnthropicClientHttpTests
                     text = content,
                 },
             },
-            model = model,
+            model,
             stop_reason = "end_turn",
             stop_sequence = (string?)null,
             usage = new { input_tokens = 10, output_tokens = 20 },

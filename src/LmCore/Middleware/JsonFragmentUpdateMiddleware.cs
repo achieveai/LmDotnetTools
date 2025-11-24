@@ -22,6 +22,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
     /// <returns>The processed stream of messages with JsonFragmentUpdates added</returns>
     public async IAsyncEnumerable<IMessage> ProcessAsync(IAsyncEnumerable<IMessage> messageStream)
     {
+        ArgumentNullException.ThrowIfNull(messageStream);
         await foreach (var message in messageStream)
         {
             yield return message is ToolsCallUpdateMessage toolsCallUpdateMessage
@@ -119,6 +120,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         var stream = await agent.GenerateReplyStreamingAsync(context.Messages, context.Options, cancellationToken);
         return ProcessAsync(stream);
     }
@@ -129,6 +131,7 @@ public class JsonFragmentUpdateMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         return agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 }

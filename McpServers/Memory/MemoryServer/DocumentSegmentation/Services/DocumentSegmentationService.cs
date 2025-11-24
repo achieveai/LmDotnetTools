@@ -60,10 +60,14 @@ public class DocumentSegmentationService : IDocumentSegmentationService
 
         var result = new DocumentSegmentationResult();
 
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(sessionContext);
+
         try
         {
             // Step 1: Analyze document size and determine if segmentation is needed
             var statistics = await _sizeAnalyzer.AnalyzeDocumentAsync(content, cancellationToken);
+            ArgumentNullException.ThrowIfNull(statistics);
             var shouldSegment = _sizeAnalyzer.ShouldSegmentDocument(statistics, request.DocumentType);
 
             _logger.LogDebug(
@@ -210,6 +214,7 @@ public class DocumentSegmentationService : IDocumentSegmentationService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(result);
         var assessment = new SegmentationQualityAssessment();
 
         if (result.Segments.Count == 0)

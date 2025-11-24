@@ -42,6 +42,7 @@ public partial class FunctionCollisionDetector
         );
 
         // Step 1: Group functions by their base name
+        ArgumentNullException.ThrowIfNull(functions);
         var functionGroups = new Dictionary<string, List<FunctionDescriptor>>();
 
         foreach (var function in functions)
@@ -190,6 +191,7 @@ public partial class FunctionCollisionDetector
     /// <returns>Analysis report of collisions</returns>
     public static CollisionAnalysisReport AnalyzeCollisions(IEnumerable<FunctionDescriptor> functions)
     {
+        ArgumentNullException.ThrowIfNull(functions);
         var report = new CollisionAnalysisReport();
         var functionGroups = new Dictionary<string, List<FunctionDescriptor>>();
 

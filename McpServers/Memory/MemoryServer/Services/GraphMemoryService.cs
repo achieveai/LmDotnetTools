@@ -42,6 +42,7 @@ public class GraphMemoryService : IGraphMemoryService
     )
     {
         var stopwatch = Stopwatch.StartNew();
+        ArgumentNullException.ThrowIfNull(memory);
         var summary = new GraphUpdateSummary();
 
         try
@@ -301,6 +302,7 @@ public class GraphMemoryService : IGraphMemoryService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(sessionContext);
         var stopwatch = Stopwatch.StartNew();
         var summary = new GraphRebuildSummary();
 

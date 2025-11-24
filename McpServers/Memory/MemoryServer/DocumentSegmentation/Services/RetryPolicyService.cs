@@ -68,6 +68,8 @@ public class RetryPolicyService : IRetryPolicyService
     )
         where T : class
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         var context = new RetryContext
         {
             AttemptNumber = 1,
@@ -356,6 +358,7 @@ public static class RetryPolicyExtensions
     )
         where T : class
     {
+        ArgumentNullException.ThrowIfNull(retryService);
         return await retryService.ExecuteAsync(operation, operationName, cancellationToken);
     }
 
@@ -370,6 +373,7 @@ public static class RetryPolicyExtensions
     )
         where T : class
     {
+        ArgumentNullException.ThrowIfNull(retryService);
         return await retryService.ExecuteWithNullAsync(operation, operationName, cancellationToken);
     }
 }

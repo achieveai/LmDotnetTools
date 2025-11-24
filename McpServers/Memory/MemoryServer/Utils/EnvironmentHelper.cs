@@ -8,7 +8,7 @@ namespace MemoryServer.Utils;
 public static class EnvironmentHelper
 {
     private static bool _envLoaded = false;
-    private static readonly Lock _lockObject = new Lock();
+    private static readonly Lock _lockObject = new();
 
     /// <summary>
     /// Loads environment variables from .env file if not already loaded.

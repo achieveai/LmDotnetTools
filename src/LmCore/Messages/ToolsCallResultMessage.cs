@@ -66,6 +66,7 @@ public record ToolsCallResultMessage : IMessage
         string? generationId = null
     )
     {
+        ArgumentNullException.ThrowIfNull(toolCall);
         return new ToolsCallResultMessage
         {
             Role = role,

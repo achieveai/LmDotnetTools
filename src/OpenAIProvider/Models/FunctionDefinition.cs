@@ -62,6 +62,8 @@ public sealed record FunctionDefinition
         Func<JsonSchemaObjectBuilder, JsonSchemaObjectBuilder> parametersBuilder
     )
     {
+        ArgumentNullException.ThrowIfNull(parametersBuilder);
+
         var builder = JsonSchemaObject.Create();
         var schema = parametersBuilder(builder).Build();
 

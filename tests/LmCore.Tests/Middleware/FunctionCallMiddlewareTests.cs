@@ -32,8 +32,7 @@ public class FunctionCallMiddlewareTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract
-            {
+            new() {
                 Name = "getWeather",
                 Description = "Get the weather in a location",
                 Parameters =
@@ -67,7 +66,7 @@ public class FunctionCallMiddlewareTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract { Name = "getWeather", Description = "Get the weather in a location" },
+            new() { Name = "getWeather", Description = "Get the weather in a location" },
         };
 
         // Act & Assert
@@ -95,8 +94,8 @@ public class FunctionCallMiddlewareTests
         // Arrange
         var functions = new List<FunctionContract>
         {
-            new FunctionContract { Name = "function1", Description = "Test function 1" },
-            new FunctionContract { Name = "function2", Description = "Test function 2" },
+            new() { Name = "function1", Description = "Test function 1" },
+            new() { Name = "function2", Description = "Test function 2" },
         };
 
         var functionMap = new Dictionary<string, Func<string, Task<string>>>
@@ -122,6 +121,7 @@ public class FunctionCallMiddlewareTests
         var toolCallMessage = CreateToolCallMessage("getWeather", new { location = "San Francisco", unit = "celsius" });
 
         // Create the context with our tool call message
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
         var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Mock the agent
@@ -157,6 +157,7 @@ public class FunctionCallMiddlewareTests
         var toolCallMessage = CreateToolCallMessage("getNonExistentFunction", new { param = "value" });
 
         // Create the context with our tool call message
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
         var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Mock the agent
@@ -193,6 +194,7 @@ public class FunctionCallMiddlewareTests
         var message = new TextMessage { Text = "What's the weather in San Francisco?", Role = Role.User };
 
         // Create the context with our message
+        ArgumentNullException.ThrowIfNull(message);
         var context = new MiddlewareContext(new[] { message }, new GenerateReplyOptions());
 
         // Mock the agent
@@ -208,7 +210,11 @@ public class FunctionCallMiddlewareTests
                 )
             )
             .Callback<IEnumerable<IMessage>, GenerateReplyOptions, CancellationToken>(
-                (msgs, options, token) => capturedOptions = options
+                (msgs, options, token) =>
+                {
+                    ArgumentNullException.ThrowIfNull(options);
+                    capturedOptions = options;
+                }
             )
             .ReturnsAsync(
                 new[]
@@ -243,6 +249,7 @@ public class FunctionCallMiddlewareTests
         var toolCallMessage = CreateToolCallMessage("add", new { a = 5, b = 7 });
 
         // Create the context with our tool call message
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
         var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Mock the agent
@@ -279,10 +286,12 @@ public class FunctionCallMiddlewareTests
         );
 
         // Create the context with our tool call message
+        ArgumentNullException.ThrowIfNull(toolCallMessage);
         var context = new MiddlewareContext(new[] { toolCallMessage }, new GenerateReplyOptions());
 
         // Create a simple streaming agent that returns no messages
         var nextAgent = new MockStreamingAgent(Array.Empty<IMessage>());
+        ArgumentNullException.ThrowIfNull(nextAgent);
 
         // Act - invoke the streaming middleware
         var resultStreamTask = middleware.InvokeStreamingAsync(context, nextAgent);
@@ -315,12 +324,12 @@ public class FunctionCallMiddlewareTests
     {
         return new Dictionary<string, Func<string, Task<string>>>
         {
-            ["getWeather"] = argsJson => Task.FromResult(GetWeatherAsync(argsJson)),
-            ["getWeatherHistory"] = argsJson => Task.FromResult(GetWeatherHistoryAsync(argsJson)),
-            ["add"] = argsJson => Task.FromResult(AddAsync(argsJson)),
-            ["subtract"] = argsJson => Task.FromResult(SubtractAsync(argsJson)),
-            ["multiply"] = argsJson => Task.FromResult(MultiplyAsync(argsJson)),
-            ["divide"] = argsJson => Task.FromResult(DivideAsync(argsJson)),
+            ["getWeather"] = argsJson => { ArgumentNullException.ThrowIfNull(argsJson); return Task.FromResult(GetWeatherAsync(argsJson)); },
+            ["getWeatherHistory"] = argsJson => { ArgumentNullException.ThrowIfNull(argsJson); return Task.FromResult(GetWeatherHistoryAsync(argsJson)); },
+            ["add"] = argsJson => { ArgumentNullException.ThrowIfNull(argsJson); return Task.FromResult(AddAsync(argsJson)); },
+            ["subtract"] = argsJson => { ArgumentNullException.ThrowIfNull(argsJson); return Task.FromResult(SubtractAsync(argsJson)); },
+            ["multiply"] = argsJson => { ArgumentNullException.ThrowIfNull(argsJson); return Task.FromResult(MultiplyAsync(argsJson)); },
+            ["divide"] = argsJson => { ArgumentNullException.ThrowIfNull(argsJson); return Task.FromResult(DivideAsync(argsJson)); },
         };
     }
 
@@ -496,7 +505,7 @@ public class FunctionCallMiddlewareTests
             var temperature = unit == "celsius" ? 23 : 73;
             var condition = "Sunny";
 
-            return $"Weather in {location}: {temperature}°{unit.Substring(0, 1).ToUpper()}, {condition}. Unit: {unit}";
+            return $"Weather in {location}: {temperature}°{unit[..1].ToUpper()}, {condition}. Unit: {unit}";
         }
         catch (Exception ex)
         {
@@ -680,15 +689,13 @@ public class FunctionCallMiddlewareTests
                 Description = "Get current weather for a location",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "location",
                         Description = "City name",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "unit",
                         Description = "Temperature unit (celsius or fahrenheit)",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -806,8 +813,7 @@ public class FunctionCallMiddlewareTests
                     "\nExecute Python code in a Docker container. The environment is limited to the container.\nFollowing packages are available:\n- pandas\n- numpy\n- matplotlib\n- seaborn\n- plotly\n- bokeh\n- hvplot\n- datashader\n- plotnine\n- cufflinks\n- graphviz\n- scipy\n- statsmodels\n- openpyxl\n- xlrd\n- xlsxwriter\n- pandasql\n- csv23\n- csvkit\n- polars\n- pyarrow\n- fastparquet\n- dask\n- vaex\n- python-dateutil\n- beautifulsoup4\n- requests\n- lxml\n- geopandas\n- folium\n- pydeck\n- holoviews\n- altair\n- visualkeras\n- kaleido\n- panel\n- voila\n\nArgs:\n    code: Python code to execute\n\nReturns:\n    Output from executed code\n",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "code",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -822,8 +828,7 @@ public class FunctionCallMiddlewareTests
                     "\nList the contents of a directory within the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: list root code directory)\n    \nReturns:\n    Directory listing as a string\n",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -838,8 +843,7 @@ public class FunctionCallMiddlewareTests
                     "\nRead a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    File contents as a string\n",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -854,15 +858,13 @@ public class FunctionCallMiddlewareTests
                     "\nWrite content to a file in the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    content: Content to write to the file\n    \nReturns:\n    Status message\n",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                         IsRequired = true,
                     },
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "content",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -877,8 +879,7 @@ public class FunctionCallMiddlewareTests
                     "\nDelete a file from the code directory where python code is executed\n\nArgs:\n    relative_path: Relative path to the file within the code directory\n    \nReturns:\n    Status message\n",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -893,8 +894,7 @@ public class FunctionCallMiddlewareTests
                     "\nGet an ASCII tree representation of a directory structure where python code is executed\n\nArgs:\n    relative_path: Relative path within the code directory (default: root code directory)\n    \nReturns:\n    ASCII tree representation as a string\n",
                 Parameters = new List<FunctionParameterContract>
                 {
-                    new FunctionParameterContract
-                    {
+                    new() {
                         Name = "relative_path",
                         Description = "",
                         ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -1148,8 +1148,7 @@ public class FunctionCallMiddlewareTests
                         Description = "Get current weather for a location",
                         Parameters = new List<FunctionParameterContract>
                         {
-                            new FunctionParameterContract
-                            {
+                            new() {
                                 Name = "location",
                                 Description = "City name",
                                 ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),

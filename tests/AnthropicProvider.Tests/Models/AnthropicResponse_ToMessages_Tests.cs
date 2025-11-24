@@ -247,11 +247,11 @@ public class AnthropicResponse_ToMessages_Tests
 
             if (line.StartsWith("event:"))
             {
-                currentEvent.Event = line.Substring(6).Trim();
+                currentEvent.Event = line[6..].Trim();
             }
             else if (line.StartsWith("data:"))
             {
-                currentEvent.Data = line.Substring(5).Trim();
+                currentEvent.Data = line[5..].Trim();
             }
         }
 

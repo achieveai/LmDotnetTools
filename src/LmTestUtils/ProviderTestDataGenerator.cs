@@ -16,7 +16,7 @@ public static class ProviderTestDataGenerator
         public const string Empty = "";
         public const string WhitespaceOnly = "   ";
         public const string TooShort = "abc";
-        public static readonly string TooLong = new string('x', 1000);
+        public static readonly string TooLong = new('x', 1000);
     }
 
     /// <summary>
@@ -146,7 +146,7 @@ public static class ProviderTestDataGenerator
     /// <returns>Generic message object</returns>
     public static object CreateTestMessage(string role, string content)
     {
-        return new { role = role, content = content };
+        return new { role, content };
     }
 
     /// <summary>

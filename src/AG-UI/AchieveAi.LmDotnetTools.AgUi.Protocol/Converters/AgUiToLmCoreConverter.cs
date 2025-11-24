@@ -205,7 +205,7 @@ public class AgUiToLmCoreConverter : IAgUiToLmCoreConverter
             {
                 float f => f,
                 double d => (float)d,
-                int i => (float)i,
+                int i => i,
                 _ => null,
             };
     }

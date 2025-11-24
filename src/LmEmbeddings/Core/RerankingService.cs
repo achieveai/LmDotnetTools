@@ -303,6 +303,8 @@ public class RerankingService : IRerankService, IDisposable
 
     public async Task<RerankResponse> RerankAsync(RerankRequest request, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         var rankedDocuments = await RerankAsync(request.Query, request.Documents, cancellationToken);
 
         return new RerankResponse

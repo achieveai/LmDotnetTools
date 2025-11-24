@@ -74,6 +74,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug(
             "Starting structure-based segmentation for document type {DocumentType}, content length: {Length}",
             documentType,
@@ -128,6 +129,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Detecting structural boundaries for {DocumentType}", documentType);
 
         var boundaries = new List<StructureBoundary>();
@@ -175,6 +177,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug("Analyzing hierarchical structure for content length: {Length}", content.Length);
 
         try
@@ -242,6 +245,8 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Validating {Count} structure-based segments", segments.Count);
 
         var validation = new StructureSegmentationValidation();
@@ -472,7 +477,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                 $"Creating segment {segmentIndex}: start={startPosition}, end={endPosition}"
             );
 
-            var segmentContent = content.Substring(startPosition, endPosition - startPosition).Trim();
+            var segmentContent = content[startPosition..endPosition].Trim();
 
             if (segmentContent.Length >= options.MinSegmentSize)
             {
@@ -484,7 +489,7 @@ public partial class StructureBasedSegmentationService : IStructureBasedSegmenta
                 );
                 segments.Add(segment);
                 System.Diagnostics.Debug.WriteLine(
-                    $"Created segment: '{segmentContent.Substring(0, Math.Min(50, segmentContent.Length))}...'"
+                    $"Created segment: '{segmentContent[..Math.Min(50, segmentContent.Length)]}...'"
                 );
             }
             else

@@ -170,7 +170,7 @@ public static class AgUiServiceCollectionExtensions
             var factory = provider.GetService<IDbConnectionFactory>();
             if (factory == null)
             {
-                return null as DatabaseInitializer;
+                return null;
             }
 
             var logger = provider.GetService<Microsoft.Extensions.Logging.ILogger<DatabaseInitializer>>();

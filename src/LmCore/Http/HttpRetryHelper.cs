@@ -27,6 +27,8 @@ public static class HttpRetryHelper
         Func<bool>? checkDisposed = null
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(logger);
         if (checkDisposed?.Invoke() == true)
         {
             throw new ObjectDisposedException("Service has been disposed");
@@ -77,6 +79,9 @@ public static class HttpRetryHelper
         Func<bool>? checkDisposed = null
     )
     {
+        ArgumentNullException.ThrowIfNull(httpOperation);
+        ArgumentNullException.ThrowIfNull(responseProcessor);
+        ArgumentNullException.ThrowIfNull(logger);
         if (checkDisposed?.Invoke() == true)
         {
             throw new ObjectDisposedException("Service has been disposed");
@@ -173,6 +178,7 @@ public static class HttpRetryHelper
     /// <returns>True if the error is retryable</returns>
     public static bool IsRetryableError(HttpRequestException exception)
     {
+        ArgumentNullException.ThrowIfNull(exception);
         // Retry on network errors, timeouts, and server errors (5xx)
         var message = exception.Message;
 

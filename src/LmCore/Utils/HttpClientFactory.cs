@@ -32,6 +32,8 @@ public static class HttpClientFactory
         string apiKeyPrefix = "Bearer "
     )
     {
+        ArgumentNullException.ThrowIfNull(baseUrl);
+
         ValidationHelper.ValidateApiKey(apiKey, nameof(apiKey));
         ValidationHelper.ValidateBaseUrl(baseUrl, nameof(baseUrl));
 
@@ -112,6 +114,8 @@ public static class HttpClientFactory
         string apiKeyPrefix = "Bearer "
     )
     {
+        ArgumentNullException.ThrowIfNull(configuration);
+
         configuration.Validate();
 
         return CreateWithApiKey(apiKey, baseUrl, configuration.Timeout, headers, apiKeyHeaderName, apiKeyPrefix);
@@ -134,6 +138,8 @@ public static class HttpClientFactory
         string compatibility = "OpenAI"
     )
     {
+        ArgumentNullException.ThrowIfNull(compatibility);
+
         return compatibility.ToUpperInvariant() switch
         {
             "ANTHROPIC" => CreateForAnthropic(apiKey, endpointUrl, timeout, connectionHeaders),

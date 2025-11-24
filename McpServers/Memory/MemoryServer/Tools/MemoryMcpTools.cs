@@ -206,7 +206,7 @@ public class MemoryMcpTools
             return new
             {
                 success = true,
-                query = query,
+                query,
                 results = results.Select(m => new
                 {
                     id = m.Id,
@@ -307,8 +307,8 @@ public class MemoryMcpTools
                     metadata = m.Metadata,
                 }),
                 total_count = memories.Count,
-                limit = limit,
-                offset = offset,
+                limit,
+                offset,
             };
         }
         catch (Exception ex)
@@ -695,7 +695,7 @@ public class MemoryMcpTools
             {
                 success = true,
                 user_id = sessionContext.UserId,
-                agents = agents,
+                agents,
                 total_count = agents.Count,
             };
         }
@@ -744,7 +744,7 @@ public class MemoryMcpTools
                 success = true,
                 user_id = sessionContext.UserId,
                 agent_id = agentId,
-                runs = runs,
+                runs,
                 total_count = runs.Count,
             };
         }

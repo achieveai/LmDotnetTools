@@ -36,6 +36,7 @@ public static class FunctionRegistryExtensions
             cancellationToken
         );
 
+        ArgumentNullException.ThrowIfNull(registry);
         _ = registry.AddProvider(provider);
         return registry;
     }
@@ -57,6 +58,8 @@ public static class FunctionRegistryExtensions
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(mcpClients);
         var provider = await McpClientFunctionProvider.CreateAsync(mcpClients, providerName, logger, cancellationToken);
 
         _ = registry.AddProvider(provider);
@@ -84,6 +87,8 @@ public static class FunctionRegistryExtensions
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(mcpClients);
         var provider = await McpClientFunctionProvider.CreateAsync(
             mcpClients,
             toolFilterConfig,

@@ -160,6 +160,8 @@ public class PerformanceTracker : IPerformanceTracker
                 )
                 .ToList();
 
+            ArgumentNullException.ThrowIfNull(orderBy);
+
             var ordered = orderBy.ToLower() switch
             {
                 "tokens" => allModels.OrderByDescending(m => m.Stats.TotalTokens),

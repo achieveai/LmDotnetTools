@@ -71,6 +71,8 @@ public partial class McpMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(mcpClients);
+
         // Use default name if not provided
         name ??= nameof(McpMiddleware);
 

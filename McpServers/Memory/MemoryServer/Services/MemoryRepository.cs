@@ -37,6 +37,7 @@ public class MemoryRepository : IMemoryRepository
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(sessionContext);
         if (string.IsNullOrWhiteSpace(content))
         {
             throw new ArgumentException("Memory content cannot be empty", nameof(content));
@@ -82,7 +83,7 @@ public class MemoryRepository : IMemoryRepository
                 _ = command.Parameters.AddWithValue("@runId", memory.RunId ?? (object)DBNull.Value);
                 _ = command.Parameters.AddWithValue(
                     "@metadata",
-                    metadata != null ? JsonSerializer.Serialize(metadata) : (object)DBNull.Value
+                    metadata != null ? JsonSerializer.Serialize(metadata) : DBNull.Value
                 );
                 _ = command.Parameters.AddWithValue("@createdAt", memory.CreatedAt);
                 _ = command.Parameters.AddWithValue("@updatedAt", memory.UpdatedAt);
@@ -200,7 +201,7 @@ public class MemoryRepository : IMemoryRepository
                 _ = command.Parameters.AddWithValue("@content", content.Trim());
                 _ = command.Parameters.AddWithValue(
                     "@metadata",
-                    metadata != null ? JsonSerializer.Serialize(metadata) : (object)DBNull.Value
+                    metadata != null ? JsonSerializer.Serialize(metadata) : DBNull.Value
                 );
                 _ = command.Parameters.AddWithValue("@updatedAt", updatedAt);
                 _ = command.Parameters.AddWithValue("@userId", sessionContext.UserId);
@@ -532,10 +533,10 @@ public class MemoryRepository : IMemoryRepository
                             ? 0
                             : reader.GetDouble(avgContentLengthOrdinal),
                         OldestMemory = reader.IsDBNull(oldestMemoryOrdinal)
-                            ? (DateTime?)null
+                            ? null
                             : reader.GetDateTime(oldestMemoryOrdinal),
                         NewestMemory = reader.IsDBNull(newestMemoryOrdinal)
-                            ? (DateTime?)null
+                            ? null
                             : reader.GetDateTime(newestMemoryOrdinal),
                     };
                 }

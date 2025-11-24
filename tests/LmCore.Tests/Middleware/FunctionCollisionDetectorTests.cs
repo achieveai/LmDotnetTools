@@ -323,8 +323,7 @@ public class FunctionCollisionDetectorTests
         var detector = new FunctionCollisionDetector(_mockLogger.Object);
         var functions = new List<FunctionDescriptor>
         {
-            new FunctionDescriptor
-            {
+            new() {
                 Contract = new FunctionContract { Name = "func1" },
                 Handler = _ => Task.FromResult("result"),
                 ProviderName = string.Empty,

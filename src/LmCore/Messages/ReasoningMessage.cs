@@ -186,6 +186,7 @@ public class ReasoningMessageBuilder : IMessageBuilder<ReasoningMessage, Reasoni
 
     public void Add(ReasoningUpdateMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         _ = _builder.Append(streamingMessageUpdate.Reasoning);
     }
 

@@ -66,6 +66,7 @@ public class SessionDefaults
     /// <returns>SessionDefaults populated from URL parameters</returns>
     public static SessionDefaults FromUrlParameters(IDictionary<string, string> queryParameters)
     {
+        ArgumentNullException.ThrowIfNull(queryParameters);
         var defaults = new SessionDefaults
         {
             ConnectionId = "sse-url",
@@ -98,6 +99,7 @@ public class SessionDefaults
     /// <returns>SessionDefaults populated from HTTP headers</returns>
     public static SessionDefaults FromHttpHeaders(IDictionary<string, string> headers)
     {
+        ArgumentNullException.ThrowIfNull(headers);
         var defaults = new SessionDefaults
         {
             ConnectionId = "sse-headers",

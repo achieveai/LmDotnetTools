@@ -34,7 +34,7 @@ public record AppConfig
             var bracketIndex = modelId.IndexOf('[');
             if (bracketIndex >= 0)
             {
-                modelId = modelId.Substring(0, bracketIndex);
+                modelId = modelId[..bracketIndex];
             }
             return Models.FirstOrDefault(m => m.Id.Equals(modelId, StringComparison.OrdinalIgnoreCase));
         }

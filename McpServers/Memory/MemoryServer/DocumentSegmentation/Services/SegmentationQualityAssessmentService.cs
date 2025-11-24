@@ -40,6 +40,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Starting comprehensive quality assessment for {SegmentCount} segments", segments.Count);
 
         var startTime = DateTime.UtcNow;
@@ -155,6 +157,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segment);
         _logger.LogDebug("Validating semantic coherence for segment {SegmentId}", segment.Id);
 
         options ??= new QualityAssessmentOptions();
@@ -216,6 +219,9 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segment);
+        ArgumentNullException.ThrowIfNull(allSegments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Calculating independence score for segment {SegmentId}", segment.Id);
 
         var analysis = new IndependenceScoreAnalysis { SegmentId = segment.Id };
@@ -272,6 +278,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Validating topic consistency across {SegmentCount} segments", segments.Count);
 
         var validation = new TopicConsistencyValidation();
@@ -324,6 +332,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Verifying completeness of segmentation");
 
         var verification = new CompletenessVerification();
@@ -380,6 +390,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Analyzing quality issues across {SegmentCount} segments", segments.Count);
 
         var analysis = new QualityIssueAnalysis();
@@ -514,6 +526,7 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(assessment);
         _logger.LogDebug("Generating improvement recommendations");
 
         var recommendations = new ImprovementRecommendations();
@@ -579,6 +592,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segmentationResults);
+        ArgumentNullException.ThrowIfNull(originalContent);
         _logger.LogDebug("Comparing quality across {StrategyCount} segmentation strategies", segmentationResults.Count);
 
         var analysis = new ComparativeQualityAnalysis();
@@ -657,6 +672,8 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(customCriteria);
         _logger.LogDebug(
             "Validating {SegmentCount} segments against {CriteriaCount} custom criteria",
             segments.Count,
@@ -1235,12 +1252,13 @@ public partial class SegmentationQualityAssessmentService : ISegmentationQuality
             var significantWords = ExtractSignificantWords(segment.Content).Take(5).ToList();
             foreach (var word in significantWords)
             {
-                if (!distribution.ContainsKey(word))
+                if (!distribution.TryGetValue(word, out var value))
                 {
-                    distribution[word] = [];
+                    value = ([]);
+                    distribution[word] = value;
                 }
 
-                distribution[word].Add(segment.Id);
+                value.Add(segment.Id);
             }
         }
 

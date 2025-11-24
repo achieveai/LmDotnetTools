@@ -52,6 +52,7 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
         var modifiedOptions = PrepareOptions(context.Options);
 
         // Generate reply with the modified options
+        ArgumentNullException.ThrowIfNull(agent);
         var replies = await agent.GenerateReplyAsync(context.Messages, modifiedOptions, cancellationToken);
 
         return replies;
@@ -75,6 +76,7 @@ public class ToolCallInjectionMiddleware : IStreamingMiddleware
         var modifiedOptions = PrepareOptions(context.Options);
 
         // Get the streaming response from the agent
+        ArgumentNullException.ThrowIfNull(agent);
         var streamingResponse = await agent.GenerateReplyStreamingAsync(
             context.Messages,
             modifiedOptions,

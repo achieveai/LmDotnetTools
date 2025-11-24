@@ -43,6 +43,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug(
             "Starting hybrid segmentation for document type {DocumentType}, content length: {Length}",
             documentType,
@@ -217,6 +218,10 @@ public class HybridSegmentationService : IHybridSegmentationService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(structureSegments);
+        ArgumentNullException.ThrowIfNull(narrativeSegments);
+        ArgumentNullException.ThrowIfNull(topicSegments);
+        ArgumentNullException.ThrowIfNull(weights);
         _logger.LogDebug(
             "Combining segmentation results: Structure={StructureCount}, Narrative={NarrativeCount}, Topic={TopicCount}",
             structureSegments.Count,
@@ -265,6 +270,9 @@ public class HybridSegmentationService : IHybridSegmentationService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(originalContent);
+        ArgumentNullException.ThrowIfNull(weights);
         _logger.LogDebug("Validating hybrid segmentation quality for {Count} segments", segments.Count);
 
         var validation = new HybridSegmentationValidation();
@@ -322,6 +330,7 @@ public class HybridSegmentationService : IHybridSegmentationService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(content);
         _logger.LogDebug(
             "Adapting segmentation strategy based on {ResultCount} previous results and {FeedbackCount} feedback items",
             previousResults?.Count ?? 0,
@@ -448,6 +457,7 @@ public class HybridSegmentationService : IHybridSegmentationService
     /// </summary>
     private static DocumentCharacteristics AnalyzeDocumentCharacteristics(string content)
     {
+        ArgumentNullException.ThrowIfNull(content);
         var characteristics = new DocumentCharacteristics();
 
         // Basic text analysis

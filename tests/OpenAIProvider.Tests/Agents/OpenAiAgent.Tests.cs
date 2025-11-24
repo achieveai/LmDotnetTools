@@ -139,15 +139,13 @@ public class OpenAiAgentTests
                     Description = "Get current weather for a location",
                     Parameters = new List<FunctionParameterContract>
                     {
-                        new FunctionParameterContract
-                        {
+                        new() {
                             Name = "location",
                             Description = "City name",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = true,
                         },
-                        new FunctionParameterContract
-                        {
+                        new() {
                             Name = "unit",
                             Description = "Temperature unit (celsius or fahrenheit)",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -225,15 +223,13 @@ public class OpenAiAgentTests
                     Description = "Get current weather for a location",
                     Parameters = new List<FunctionParameterContract>
                     {
-                        new FunctionParameterContract
-                        {
+                        new() {
                             Name = "location",
                             Description = "City name",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = true,
                         },
-                        new FunctionParameterContract
-                        {
+                        new() {
                             Name = "unit",
                             Description = "Temperature unit (celsius or fahrenheit)",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
@@ -322,15 +318,13 @@ public class OpenAiAgentTests
                     Description = "Get current weather for a location",
                     Parameters = new List<FunctionParameterContract>
                     {
-                        new FunctionParameterContract
-                        {
+                        new() {
                             Name = "location",
                             Description = "City name",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),
                             IsRequired = true,
                         },
-                        new FunctionParameterContract
-                        {
+                        new() {
                             Name = "unit",
                             Description = "Temperature unit (celsius or fahrenheit)",
                             ParameterType = SchemaHelper.CreateJsonSchemaFromType(typeof(string)),

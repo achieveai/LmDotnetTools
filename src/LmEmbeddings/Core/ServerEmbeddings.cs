@@ -60,7 +60,7 @@ public class ServerEmbeddings : BaseEmbeddingService
     private readonly EmbeddingApiType _apiType;
     private readonly ConcurrentQueue<BatchRequest> _batchQueue;
     private readonly Timer _batchTimer;
-    private readonly object _batchLock = new object();
+    private readonly object _batchLock = new();
     private const int BatchTimeoutMs = 100; // 100ms batch timeout
     private const int MaxTextLength = 8192; // Maximum text length before chunking
 
@@ -228,6 +228,7 @@ public class ServerEmbeddings : BaseEmbeddingService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(request);
         ValidateRequest(request);
 
         // Apply text chunking if needed
@@ -292,6 +293,9 @@ public class ServerEmbeddings : BaseEmbeddingService
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(httpOperation);
+        ArgumentNullException.ThrowIfNull(responseProcessor);
+
         var attempt = 0;
         Exception? lastException = null;
 

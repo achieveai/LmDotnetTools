@@ -17,6 +17,7 @@ public static class AnthropicExtensions
     /// <returns>A list of IMessage objects representing the response content.</returns>
     public static List<IMessage> ToMessages(this AnthropicResponse response, string agentName)
     {
+        ArgumentNullException.ThrowIfNull(response);
         var messages = new List<IMessage>();
 
         // Process content blocks
@@ -71,8 +72,8 @@ public static class AnthropicExtensions
                         "usage",
                         new
                         {
-                            InputTokens = messageDeltaEvent.Usage.InputTokens,
-                            OutputTokens = messageDeltaEvent.Usage.OutputTokens,
+                            messageDeltaEvent.Usage.InputTokens,
+                            messageDeltaEvent.Usage.OutputTokens,
                             TotalTokens = messageDeltaEvent.Usage.InputTokens + messageDeltaEvent.Usage.OutputTokens,
                         }
                     ),
@@ -123,6 +124,7 @@ public static class AnthropicExtensions
     /// <returns>The corresponding LmCore Role.</returns>
     public static Role ParseRole(string role)
     {
+        ArgumentNullException.ThrowIfNull(role);
         return role.ToLower() switch
         {
             "assistant" => Role.Assistant,

@@ -91,6 +91,7 @@ public class ImageMessageBuilder : IMessageBuilder<ImageMessage, ImageMessage>
 
     public void Add(ImageMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         ImageData.Add(streamingMessageUpdate.ImageData);
 
         // Merge metadata from the update

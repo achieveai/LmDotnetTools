@@ -73,7 +73,7 @@ public class TextMessageJsonConverter : ShadowPropertiesJsonConverter<TextMessag
 
 public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage>
 {
-    private readonly StringBuilder _textBuilder = new StringBuilder();
+    private readonly StringBuilder _textBuilder = new();
 
     public string? FromAgent { get; set; }
 
@@ -100,6 +100,7 @@ public class TextMessageBuilder : IMessageBuilder<TextMessage, TextUpdateMessage
 
     public void Add(TextUpdateMessage streamingMessageUpdate)
     {
+        ArgumentNullException.ThrowIfNull(streamingMessageUpdate);
         _ = _textBuilder.Append(streamingMessageUpdate.Text);
 
         // Set IsThinking from the update

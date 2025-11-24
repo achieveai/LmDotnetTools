@@ -45,6 +45,8 @@ public static class OpenAIJsonSerializerOptionsFactory
     /// <param name="options">The JsonSerializerOptions to add OpenAI converters to</param>
     public static void AddOpenAIConverters(JsonSerializerOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+
         // OpenAI-specific Union converters for content types (not in LmCore)
         options.Converters.Add(new UnionJsonConverter<string, Union<TextContent, ImageContent>[]>());
         options.Converters.Add(new UnionJsonConverter<TextContent, ImageContent>());

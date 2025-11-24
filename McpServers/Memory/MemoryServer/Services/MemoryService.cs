@@ -28,6 +28,7 @@ public class MemoryService : IMemoryService
         IDocumentSegmentationService? documentSegmentationService = null
     )
     {
+        ArgumentNullException.ThrowIfNull(options);
         _memoryRepository = memoryRepository;
         _graphMemoryService = graphMemoryService;
         _embeddingManager = embeddingManager;

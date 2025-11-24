@@ -245,7 +245,7 @@ public partial class ToolCallingAgent : IStreamingAgent
             var index = text.IndexOf(keyword, StringComparison.OrdinalIgnoreCase);
             if (index >= 0)
             {
-                var query = text.Substring(index + keyword.Length).Trim();
+                var query = text[(index + keyword.Length)..].Trim();
                 return string.IsNullOrWhiteSpace(query) ? "AG-UI protocol" : query;
             }
         }

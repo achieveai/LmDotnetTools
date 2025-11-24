@@ -35,6 +35,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
     )
     {
         // For non-streaming responses, we just pass through to the agent
+        ArgumentNullException.ThrowIfNull(agent);
         return await agent.GenerateReplyAsync(context.Messages, context.Options, cancellationToken);
     }
 
@@ -47,6 +48,7 @@ public class MessageUpdateJoinerMiddleware : IStreamingMiddleware
         CancellationToken cancellationToken = default
     )
     {
+        ArgumentNullException.ThrowIfNull(agent);
         var sourceStream = await agent.GenerateReplyStreamingAsync(
             context.Messages,
             context.Options,

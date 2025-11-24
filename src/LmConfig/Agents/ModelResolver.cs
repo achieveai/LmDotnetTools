@@ -15,6 +15,7 @@ public class ModelResolver : IModelResolver
 
     public ModelResolver(IOptions<AppConfig> config, ILogger<ModelResolver> logger)
     {
+        ArgumentNullException.ThrowIfNull(config);
         _config = config.Value ?? throw new ArgumentNullException(nameof(config));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }

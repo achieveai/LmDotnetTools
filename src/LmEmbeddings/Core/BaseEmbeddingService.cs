@@ -219,6 +219,7 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// </example>
     protected virtual Dictionary<string, object> FormatRequestPayload(EmbeddingRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
         ValidateRequest(request);
 
         return request.ApiType switch
@@ -251,6 +252,8 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// </remarks>
     protected virtual Dictionary<string, object> FormatJinaRequest(EmbeddingRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         var payload = new Dictionary<string, object>
         {
             ["input"] = request.Inputs.ToArray(),
@@ -307,6 +310,8 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// </remarks>
     protected virtual Dictionary<string, object> FormatOpenAIRequest(EmbeddingRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         var payload = new Dictionary<string, object>
         {
             ["input"] = request.Inputs.ToArray(),
@@ -392,6 +397,8 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// </remarks>
     protected virtual void ValidateApiSpecificParameters(EmbeddingRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         switch (request.ApiType)
         {
             case EmbeddingApiType.Jina:
@@ -427,6 +434,8 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// </remarks>
     protected virtual void ValidateJinaParameters(EmbeddingRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         if (!string.IsNullOrEmpty(request.EncodingFormat))
         {
             var validFormats = new[] { "float", "binary", "base64" };
@@ -455,6 +464,8 @@ public abstract class BaseEmbeddingService : BaseHttpService, IEmbeddingService
     /// </remarks>
     protected virtual void ValidateOpenAIParameters(EmbeddingRequest request)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         if (!string.IsNullOrEmpty(request.EncodingFormat))
         {
             var validFormats = new[] { "float", "base64" };

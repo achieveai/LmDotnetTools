@@ -26,6 +26,8 @@ public static class PerformanceLoggingUtilities
         LogLevel logLevel = LogLevel.Debug
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -71,6 +73,8 @@ public static class PerformanceLoggingUtilities
         LogLevel logLevel = LogLevel.Debug
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -114,6 +118,8 @@ public static class PerformanceLoggingUtilities
         LogLevel logLevel = LogLevel.Debug
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -286,6 +292,8 @@ public static class PerformanceLoggingUtilities
         bool forceGC = false
     )
     {
+        ArgumentNullException.ThrowIfNull(operation);
+
         if (forceGC)
         {
             GC.Collect();
@@ -525,6 +533,8 @@ public static class PerformanceLoggingUtilities
         T obj
     )
     {
+        ArgumentNullException.ThrowIfNull(serializer);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {
@@ -570,6 +580,9 @@ public static class PerformanceLoggingUtilities
         string data
     )
     {
+        ArgumentNullException.ThrowIfNull(deserializer);
+        ArgumentNullException.ThrowIfNull(data);
+
         var stopwatch = Stopwatch.StartNew();
         try
         {

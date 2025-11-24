@@ -26,13 +26,13 @@ public static class ChatCompletionTestData
         var response = new
         {
             id = "test-response-id",
-            model = model,
+            model,
             choices = new[]
             {
                 new
                 {
                     index = 0,
-                    message = new { role = "assistant", content = content },
+                    message = new { role = "assistant", content },
                     finish_reason = "stop",
                 },
             },
@@ -63,13 +63,13 @@ public static class ChatCompletionTestData
         var response = new
         {
             id = "test-stream-id",
-            model = model,
+            model,
             choices = new[]
             {
                 new
                 {
                     index = 0,
-                    delta = new { role = finishReason == null ? (string?)"assistant" : null, content = content },
+                    delta = new { role = finishReason == null ? (string?)"assistant" : null, content },
                     finish_reason = finishReason,
                 },
             },
