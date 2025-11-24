@@ -19,8 +19,18 @@ internal class Program
             ? args[promptArg + 1]
             : "Hello! Can you tell me what MCP tools are available to you?";
 
-        // Check if user wants to run all examples (excluding ClaudeAgentSDK)
+        // Check if user wants to run all examples (excluding ClaudeAgentSDK and Grok)
         var runAllExamples = args.Contains("--all");
+
+        // Check if user wants to run Grok agentic example
+        var runGrokExample = args.Contains("--grok");
+
+        if (runGrokExample)
+        {
+            Console.WriteLine("=== OpenAI Grok4.1 Agentic Loop Example ===\n");
+            await RunGrokAgenticExample(prompt);
+            return;
+        }
 
         if (runAllExamples)
         {
@@ -32,7 +42,9 @@ internal class Program
             await RunProviderAvailabilityExample();
             await RunModelIdResolutionExample();
             Console.WriteLine("\nNote: ClaudeAgentSDK example (Example 7) requires OneShot mode.");
-            Console.WriteLine("Run with: dotnet run --prompt \"Your question here\"\n");
+            Console.WriteLine("Run with: dotnet run --prompt \"Your question here\"");
+            Console.WriteLine("\nNote: Grok Agentic example (Example 8) requires xAI API key.");
+            Console.WriteLine("Run with: dotnet run --grok --prompt \"Your question here\"\n");
             return;
         }
 
@@ -504,6 +516,38 @@ internal class Program
         catch (Exception ex)
         {
             Console.WriteLine($"✗ ClaudeAgentSDK one-shot example failed: {ex.Message}");
+            Console.WriteLine($"  Stack: {ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// Example 8: OpenAI Grok4.1 Agentic Loop Example
+    /// Demonstrates the agentic loop pattern with middleware chain
+    /// </summary>
+    private static async Task RunGrokAgenticExample(string prompt)
+    {
+        try
+        {
+            var services = new ServiceCollection();
+            _ = services.AddLogging(builder => builder
+                .AddConsole()
+                .SetMinimumLevel(LogLevel.Information));
+
+            // Load configuration
+            _ = services.AddLmConfigFromFile("models.json");
+
+            var serviceProvider = services.BuildServiceProvider();
+            var modelResolver = serviceProvider.GetRequiredService<IModelResolver>();
+            var agentFactory = serviceProvider.GetRequiredService<IProviderAgentFactory>();
+            var logger = serviceProvider.GetRequiredService<ILogger<OpenAiGrokAgenticExample>>();
+
+            // Create and run the example
+            var example = new OpenAiGrokAgenticExample(modelResolver, agentFactory, logger);
+            await example.RunAsync(prompt);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"✗ Grok agentic example failed: {ex.Message}");
             Console.WriteLine($"  Stack: {ex.StackTrace}");
         }
     }
